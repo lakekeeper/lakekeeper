@@ -367,7 +367,7 @@ mod test {
         use std::collections::HashSet;
 
         use itertools::Itertools;
-        use serde_yaml::Value;
+        use serde_norway::Value;
         use strum::IntoEnumIterator;
 
         use crate::api::endpoints::Endpoint;
@@ -381,9 +381,9 @@ mod test {
 
         // Parse YAML files
         let management: Value =
-            serde_yaml::from_str(management_yaml).expect("Failed to parse management YAML");
+            serde_norway::from_str(management_yaml).expect("Failed to parse management YAML");
         let catalog: Value =
-            serde_yaml::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
+            serde_norway::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
 
         // Extract endpoints from management YAML
         let mut expected_endpoints = HashSet::new();

@@ -210,6 +210,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
+                warehouse_id: warehouse.id,
                 namespace_id: namespace.namespace_id,
                 table_ident: &table,
                 table_metadata,
@@ -367,8 +368,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
             if let Some(previous_table_id) = previous_table_id {
                 tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' with id {previous_table_id} for overwrite operation",
-                    table.name, table.namespace
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table_id} for overwrite operation",
+                    table.name, table.namespace, warehouse.name
                 );
                 // Verify authorization to drop the table first
                 authorizer
@@ -380,8 +381,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .await?;
 
                 // Drop the existing table to overwrite it
-                let _previous_table_location =
-                    C::drop_table(previous_table_id, false, t_write.transaction()).await?;
+                let _previous_table_location = C::drop_table(
+                    warehouse_id,
+                    previous_table_id,
+                    false,
+                    t_write.transaction(),
+                )
+                .await?;
                 // We don't drop the files for the previous table on overwrite
             }
         }
@@ -397,6 +403,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
+                warehouse_id: warehouse.id,
                 namespace_id,
                 table_ident: &table,
                 table_metadata,
@@ -752,7 +759,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         match warehouse.tabular_delete_profile {
             TabularDeleteProfile::Hard {} => {
-                let location = C::drop_table(table_id, force, t.transaction()).await?;
+                let location =
+                    C::drop_table(warehouse_id, table_id, force, t.transaction()).await?;
 
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
@@ -801,8 +809,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 )
                 .await?;
 
-                C::mark_tabular_as_deleted(TabularId::Table(*table_id), force, t.transaction())
-                    .await?;
+                C::mark_tabular_as_deleted(
+                    warehouse_id,
+                    TabularId::Table(*table_id),
+                    force,
+                    t.transaction(),
+                )
+                .await?;
 
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
                 t.commit().await?;
@@ -1076,7 +1089,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
         }
         let dups = counts
             .into_iter()
-            .filter(|&(_i, c)| (c > 1))
+            .filter(|&(_i, c)| c > 1)
             .map(|(i, _c)| i.to_string())
             .collect::<Vec<_>>()
             .join(", ");
@@ -2028,12 +2041,18 @@ pub(crate) mod test {
             },
             ApiContext,
         },
-        catalog::{tables::validate_table_properties, test::impl_pagination_tests, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        catalog::{
+            tables::validate_table_properties,
+            test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
+            Catalog, CatalogServer,
+        },
+        implementations::postgres::{
+            tabular::table::tests::initialize_table, PostgresCatalog, SecretsState,
+        },
         request_metadata::RequestMetadata,
         service::{
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
-            State, UserId,
+            ListFlags, State, TableId, UserId,
         },
         tests::random_request_metadata,
         WarehouseId,
@@ -3674,5 +3693,204 @@ pub(crate) mod test {
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());
         assert_ne!(loaded_table.metadata.uuid(), initial_table.metadata.uuid());
+    }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_table_ids_hard_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Hard {};
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let t_id = TableId::new_random();
+        let t_name = "t1".to_string();
+        let list_flags = ListFlags::all();
+
+        // Create tables with the same table ID across different warehouses.
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+            let _inited_table = initialize_table(
+                *wh_id,
+                ctx.v1_state.catalog.clone(),
+                false,
+                Some(ns_params.namespace.clone()),
+                Some(t_id),
+                Some(t_name.clone()),
+            )
+            .await;
+
+            // Verify table creation.
+            let _meta = PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should exist");
+        }
+
+        // Hard delete one of the tables.
+        let deleted_table_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: deleted_table_data.2.prefix.clone(),
+                table: TableIdent {
+                    namespace: deleted_table_data.2.namespace.clone(),
+                    name: t_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Deleted table cannot be accessed anymore.
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_none(), "Table should be deleted");
+
+        // Tables in other warehouses are still there.
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
+            PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+        }
+
+        // As the delete was hard, the table can be recreated in the warehouse.
+        let _inited_table = initialize_table(
+            deleted_table_data.0,
+            ctx.v1_state.catalog.clone(),
+            false,
+            Some(deleted_table_data.2.namespace.clone()),
+            Some(t_id),
+            Some(t_name.clone()),
+        )
+        .await;
+        let _meta = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("table and metadata should exist");
+    }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(10),
+        };
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let t_id = TableId::new_random();
+        let t_name = "t1".to_string();
+        let list_flags_active = ListFlags::default();
+
+        // Create tables with the same table ID across different warehouses.
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+            let _inited_table = initialize_table(
+                *wh_id,
+                ctx.v1_state.catalog.clone(),
+                false,
+                Some(ns_params.namespace.clone()),
+                Some(t_id),
+                Some(t_name.clone()),
+            )
+            .await;
+
+            // Verify table creation.
+            let _meta = PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags_active,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should exist");
+        }
+
+        // Soft delete one of the tables.
+        let deleted_table_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: deleted_table_data.2.prefix.clone(),
+                table: TableIdent {
+                    namespace: deleted_table_data.2.namespace.clone(),
+                    name: t_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Check availability depending on list flags.
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags_active,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_none(), "Table should be soft deleted");
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            ListFlags::all(), // include soft deleted
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_some(), "Table should be only soft deleted");
+
+        // Tables in other warehouses are still there.
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
+            PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags_active,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+        }
     }
 }

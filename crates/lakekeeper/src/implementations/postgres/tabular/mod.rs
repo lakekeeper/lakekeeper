@@ -42,6 +42,7 @@ pub(crate) enum TabularType {
 }
 
 pub(crate) async fn set_tabular_protected(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -55,10 +56,11 @@ pub(crate) async fn set_tabular_protected(
     let row = sqlx::query!(
         r#"
         UPDATE tabular
-        SET protected = $2
-        WHERE tabular_id = $1
+        SET protected = $3
+        WHERE warehouse_id = $1 AND tabular_id = $2
         RETURNING protected, updated_at
         "#,
+        *warehouse_id,
         *tabular_id,
         protected
     )
@@ -86,12 +88,12 @@ pub(crate) async fn set_tabular_protected(
 }
 
 pub(crate) async fn get_tabular_protected(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
     tracing::debug!(
-        "Getting tabular protection status for {} ({})",
-        tabular_id,
+        "Getting tabular protection status for {tabular_id} ({}) in {warehouse_id}",
         tabular_id.typ_str()
     );
 
@@ -99,8 +101,9 @@ pub(crate) async fn get_tabular_protected(
         r#"
         SELECT protected, updated_at
         FROM tabular
-        WHERE tabular_id = $1
+        WHERE warehouse_id = $1 AND tabular_id = $2
         "#,
+        *warehouse_id,
         *tabular_id
     )
     .fetch_one(&mut **transaction)
@@ -143,10 +146,12 @@ where
         r#"
         SELECT t.tabular_id, t.typ as "typ: TabularType", fs_protocol, fs_location
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE n.namespace_name = $1 AND t.name = $2
-        AND n.warehouse_id = $3
+        INNER JOIN namespace n
+            ON n.warehouse_id = $3 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $3
+        WHERE t.warehouse_id = $3 
+        AND n.namespace_name = $1 
+        AND t.name = $2
         AND w.status = 'active'
         AND t.typ = $4
         AND (t.deleted_at IS NULL OR $5)
@@ -213,7 +218,7 @@ where
         return Ok(HashMap::new());
     }
 
-    if batch_tables.len() > (MAX_PARAMETERS / 2) {
+    if batch_tables.len() > (MAX_PARAMETERS / 3) {
         return Err(ErrorModel::bad_request(
             "Too many tables or views to fetch",
             "TooManyTablesOrViews",
@@ -232,9 +237,10 @@ where
                t.name as tabular_name,
                t.typ as "typ: TabularType"
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.status = 'active' and n."warehouse_id" = $1
+        INNER JOIN namespace n
+            ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE t.warehouse_id = $1 AND w.status = 'active'
             AND (t.deleted_at is NULL OR $2)
             AND (t.metadata_location is not NULL OR $3) "#,
         *warehouse_id,
@@ -338,6 +344,7 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) id: Uuid,
     pub(crate) name: &'a str,
     pub(crate) namespace_id: Uuid,
+    pub(crate) warehouse_id: Uuid,
     pub(crate) typ: TabularType,
     pub(crate) metadata_location: Option<&'a Location>,
     pub(crate) location: &'a Location,
@@ -361,6 +368,7 @@ pub(crate) async fn create_tabular(
         id,
         name,
         namespace_id,
+        warehouse_id,
         typ,
         metadata_location,
         location,
@@ -372,13 +380,14 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO tabular (tabular_id, name, namespace_id, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING tabular_id
         "#,
         id,
         name,
         namespace_id,
+        warehouse_id,
         typ as _,
         metadata_location.map(Location::as_str),
         fs_protocol,
@@ -395,13 +404,12 @@ pub(crate) async fn create_tabular(
         r#"SELECT EXISTS (
                SELECT 1
                FROM tabular ta
-               JOIN namespace n ON ta.namespace_id = n.namespace_id
-               JOIN warehouse w ON w.warehouse_id = n.warehouse_id
-               WHERE (fs_location = ANY($1) OR
+               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
-                      (length($3) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $3 || '/%'))
-               ) AND tabular_id != $2
+                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
+               ) AND tabular_id != $3
            ) as "exists!""#,
+        warehouse_id,
         &partial_locations,
         id,
         fs_location
@@ -468,11 +476,10 @@ where
             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
-        WHERE (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND n.warehouse_id = $1
+        WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
             AND (namespace_name = $2 OR $2 IS NULL)
             AND (n.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
@@ -583,11 +590,12 @@ pub(crate) async fn rename_tabular(
             r#"
             UPDATE tabular ti
             SET name = $1
-            WHERE tabular_id = $2 AND typ = $3
+            WHERE warehouse_id = $4 AND tabular_id = $2 AND typ = $3
                 AND metadata_location IS NOT NULL
                 AND ti.deleted_at IS NULL
                 AND $4 IN (
                     SELECT warehouse_id FROM warehouse WHERE status = 'active'
+                    AND warehouse_id = $4
                 )
             RETURNING tabular_id
             "#,
@@ -617,12 +625,14 @@ pub(crate) async fn rename_tabular(
             UPDATE tabular ti
             SET name = $1, namespace_id = ns_id.namespace_id
             FROM ns_id
-            WHERE tabular_id = $4 AND typ = $5 AND metadata_location IS NOT NULL
+            WHERE warehouse_id = $2 AND tabular_id = $4 AND typ = $5
+                AND metadata_location IS NOT NULL
                 AND ti.name = $6
                 AND ti.deleted_at IS NULL
                 AND ns_id.namespace_id IS NOT NULL
                 AND $2 IN (
                     SELECT warehouse_id FROM warehouse WHERE status = 'active'
+                    AND warehouse_id = $2
                 )
             RETURNING tabular_id
             "#,
@@ -688,16 +698,21 @@ pub(crate) async fn clear_tabular_deleted_at(
         r#"WITH validation AS (
                 SELECT NOT EXISTS (
                     SELECT 1 FROM unnest($1::uuid[]) AS id
-                    WHERE id NOT IN (SELECT tabular_id FROM tabular)
+                    WHERE id NOT IN
+                        (SELECT tabular_id FROM tabular WHERE warehouse_id = $2)
                 ) AS all_found
             )
             UPDATE tabular
             SET deleted_at = NULL
-            FROM tabular t JOIN namespace n ON t.namespace_id = n.namespace_id
-            LEFT JOIN task ta ON t.tabular_id = ta.entity_id AND ta.entity_type = 'tabular' AND ta.warehouse_id = $2
-            WHERE tabular.namespace_id = n.namespace_id
-                AND n.warehouse_id = $2
-                AND tabular.tabular_id = ANY($1::uuid[])
+            FROM tabular t
+            JOIN namespace n ON t.namespace_id = n.namespace_id
+            LEFT JOIN task ta ON t.tabular_id = ta.entity_id
+                AND ta.entity_type = 'tabular'
+                AND ta.warehouse_id = $2
+            WHERE t.warehouse_id = $2
+                AND tabular.warehouse_id = t.warehouse_id
+                AND tabular.tabular_id = t.tabular_id
+                AND t.tabular_id = ANY($1::uuid[])
                 AND ta.queue_name = 'tabular_expiration'
             RETURNING
                 tabular.name,
@@ -713,18 +728,14 @@ pub(crate) async fn clear_tabular_deleted_at(
     .map_err(|e| {
         tracing::warn!("Error marking tabular as undeleted: {e}");
         match &e {
-            sqlx::Error::Database(db_err) => {
-                match db_err.constraint() {
-                    Some("unique_name_per_namespace_id") => {
-                        ErrorModel::bad_request(
-                            "Tabular with the same name already exists in the namespace.",
-                            "TabularNameAlreadyExists",
-                            Some(Box::new(e)),
-                        )
-                    }
-                    _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
-                }
-            }
+            sqlx::Error::Database(db_err) => match db_err.constraint() {
+                Some("unique_name_per_namespace_id") => ErrorModel::bad_request(
+                    "Tabular with the same name already exists in the namespace.",
+                    "TabularNameAlreadyExists",
+                    Some(Box::new(e)),
+                ),
+                _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
+            },
             _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
         }
     })?;
@@ -756,6 +767,7 @@ pub(crate) async fn clear_tabular_deleted_at(
 }
 
 pub(crate) async fn mark_tabular_as_deleted(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     force: bool,
     delete_date: Option<chrono::DateTime<Utc>>,
@@ -766,16 +778,17 @@ pub(crate) async fn mark_tabular_as_deleted(
         WITH update_info as (
             SELECT protected
             FROM tabular
-            WHERE tabular_id = $1
+            WHERE warehouse_id = $1 AND tabular_id = $2
         ), update as (
             UPDATE tabular
-            SET deleted_at = $2
-            WHERE tabular_id = $1
-                AND ((NOT protected) OR $3)
+            SET deleted_at = $3
+            WHERE warehouse_id = $1 AND tabular_id = $2
+                AND ((NOT protected) OR $4)
             RETURNING tabular_id
         )
         SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
         "#,
+        *warehouse_id,
         *tabular_id,
         delete_date.unwrap_or(Utc::now()),
         force,
@@ -791,14 +804,17 @@ pub(crate) async fn mark_tabular_as_deleted(
             )
         } else {
             tracing::warn!("Error marking tabular as deleted: {}", e);
-            e.into_error_model(format!("Error marking {} as deleted", tabular_id.typ_str()))
+            e.into_error_model(format!(
+                "Error marking {} in {warehouse_id} as deleted",
+                tabular_id.typ_str()
+            ))
         }
     })?;
 
     if r.protected && !force {
         return Err(ErrorModel::conflict(
             format!(
-                "{} is protected and cannot be deleted",
+                "{} in warehouse {warehouse_id} is protected and cannot be deleted",
                 tabular_id.typ_str()
             ),
             "ProtectedTabularError",
@@ -811,6 +827,7 @@ pub(crate) async fn mark_tabular_as_deleted(
 }
 
 pub(crate) async fn drop_tabular(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     force: bool,
     required_metadata_location: Option<&Location>,
@@ -821,20 +838,30 @@ pub(crate) async fn drop_tabular(
                SELECT
                    protected
                FROM tabular
-               WHERE tabular_id = $1 AND typ = $2
-                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+               WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = $3
+                   AND EXISTS (
+                       SELECT 1 FROM active_tabulars at
+                       WHERE at.warehouse_id = $1
+                       AND at.tabular_id = $2
+                   )
            ),
            deleted as (
            DELETE FROM tabular
-               WHERE tabular_id = $1
-                   AND typ = $2
-                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-                   AND ((NOT protected) OR $3)
+               WHERE warehouse_id = $1
+                   AND tabular_id = $2
+                   AND typ = $3
+                   AND EXISTS (
+                       SELECT 1 FROM active_tabulars at
+                       WHERE at.warehouse_id = $1
+                       AND at.tabular_id = $2
+                   )
+                   AND ((NOT protected) OR $4)
               RETURNING metadata_location, fs_location, fs_protocol)
               SELECT protected as "protected!",
                      (SELECT metadata_location from deleted),
                      (SELECT fs_protocol from deleted),
                      (SELECT fs_location from deleted) from delete_info"#,
+        *warehouse_id,
         *tabular_id,
         TabularType::from(tabular_id) as _,
         force

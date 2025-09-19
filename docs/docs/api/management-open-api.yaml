@@ -4845,8 +4845,12 @@ components:
         - type: object
           required:
             - table-id
+            - warehouse-id
           properties:
             table-id:
+              type: string
+              format: uuid
+            warehouse-id:
               type: string
               format: uuid
         - type: object
