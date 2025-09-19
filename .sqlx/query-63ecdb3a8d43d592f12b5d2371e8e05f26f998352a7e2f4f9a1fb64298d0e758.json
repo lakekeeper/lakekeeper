@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH locked_tabular AS (\n                SELECT tabular_id, name, namespace_id\n                FROM tabular\n                WHERE tabular_id = $2\n                    AND warehouse_id = $4\n                    AND typ = $3\n                    AND metadata_location IS NOT NULL\n                    AND deleted_at IS NULL\n                FOR UPDATE\n            ),\n            locked_source_namespace AS ( -- source namespace of the tabular\n                SELECT n.namespace_id\n                FROM namespace n\n                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id\n                WHERE n.warehouse_id = $4\n                FOR UPDATE\n            ),\n            warehouse_check AS (\n                SELECT warehouse_id\n                FROM warehouse\n                WHERE warehouse_id = $4 AND status = 'active'\n            ),\n            conflict_check AS (\n                SELECT 1\n                FROM tabular t\n                JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4\n                WHERE t.name = $1\n                FOR UPDATE\n            )\n            UPDATE tabular\n            SET name = $1\n            FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn\n            WHERE tabular.tabular_id = lt.tabular_id\n                AND tabular.warehouse_id = $4\n                AND wc.warehouse_id = $4\n                AND lsn.namespace_id IS NOT NULL\n                AND NOT EXISTS (SELECT 1 FROM conflict_check)\n            RETURNING tabular.tabular_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "63ecdb3a8d43d592f12b5d2371e8e05f26f998352a7e2f4f9a1fb64298d0e758"
+}

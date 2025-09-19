@@ -577,6 +577,10 @@ pub(crate) async fn rename_tabular(
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
+    if source == destination {
+        return Ok(());
+    }
+
     let TableIdent {
         namespace: source_namespace,
         name: source_name,
@@ -622,6 +626,7 @@ pub(crate) async fn rename_tabular(
             SET name = $1
             FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn
             WHERE tabular.tabular_id = lt.tabular_id
+                AND tabular.warehouse_id = $4
                 AND wc.warehouse_id = $4
                 AND lsn.namespace_id IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM conflict_check)
@@ -805,10 +810,11 @@ pub(crate) async fn clear_tabular_deleted_at(
         }
     })?;
 
-    if undrop_tabular_informations
+    let all_found = undrop_tabular_informations
         .first()
-        .is_some_and(|r| !r.all_found)
-    {
+        .map(|r| r.all_found)
+        .unwrap_or(tabular_ids.is_empty());
+    if !all_found {
         return Err(ErrorModel::not_found(
             "One or more tabular IDs to undrop not found",
             "NoSuchTabularError",
@@ -917,7 +923,11 @@ pub(crate) async fn drop_tabular(
         ),
         deleted AS (
             DELETE FROM tabular
-            WHERE tabular_id IN (SELECT tabular_id FROM locked_tabular WHERE ((NOT protected) OR $4))
+            WHERE tabular_id IN (
+                SELECT tabular_id FROM locked_tabular 
+                WHERE ((NOT protected) OR $4)
+                AND ($5::text IS NULL OR metadata_location = $5)
+            )
             AND warehouse_id = $1
             RETURNING tabular_id
         )
@@ -931,7 +941,8 @@ pub(crate) async fn drop_tabular(
         *warehouse_id,
         *tabular_id,
         TabularType::from(tabular_id) as _,
-        force
+        force,
+        required_metadata_location.map(ToString::to_string)
     )
     .fetch_one(&mut **transaction)
     .await
@@ -982,6 +993,11 @@ pub(crate) async fn drop_tabular(
         }
     }
 
+    debug_assert!(
+        location.was_deleted,
+        "If we didn't delete anything, we should have errored out earlier"
+    );
+
     Ok(join_location(&location.fs_protocol, &location.fs_location))
 }
 
@@ -1020,5 +1036,278 @@ impl From<TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
+        implementations::postgres::{
+            namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
+            CatalogState,
+        },
+        service::NamespaceId,
+    };
+    use iceberg::ErrorKind;
+    use lakekeeper_io::Location;
+    use std::str::FromStr as _;
+    use uuid::Uuid;
+
+    async fn setup_test_table(
+        pool: &sqlx::PgPool,
+        protected: bool,
+    ) -> (WarehouseId, TabularId, Location, NamespaceId) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let table_name = format!("test_table_{}", Uuid::now_v7());
+        let location = Location::from_str(&format!("s3://test-bucket/{}/", table_name)).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("s3://test-bucket/{}/metadata/v1.json", table_name))
+                .unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let table_id = Uuid::now_v7();
+        let tabular_id = create_tabular(
+            CreateTabular {
+                id: table_id,
+                name: &table_name,
+                namespace_id: *namespace_id,
+                warehouse_id: *warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+
+        // Set protection status if needed
+        if protected {
+            set_tabular_protected(
+                warehouse_id,
+                TabularId::Table(tabular_id),
+                true,
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+        }
+
+        transaction.commit().await.unwrap();
+
+        (
+            warehouse_id,
+            TabularId::Table(tabular_id),
+            metadata_location,
+            namespace_id,
+        )
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_table_not_found_returns_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let nonexistent_table_id = TabularId::Table(Uuid::now_v7());
+
+        let result = drop_tabular(
+            warehouse_id,
+            nonexistent_table_id,
+            false,
+            None,
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+        assert!(error.error.message.contains("Table with ID"));
+        assert!(error.error.message.contains("not found"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_protected_table_without_force_returns_protected_error(
+        pool: sqlx::PgPool,
+    ) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false, // force = false
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 409);
+        assert_eq!(error.error.r#type, "ProtectedTabularError");
+        assert!(error
+            .error
+            .message
+            .contains("is protected and cannot be dropped"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_protected_table_with_force_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            true, // force = true
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_concurrent_update_error_wrong_metadata_location(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, _actual_metadata_location, _) =
+            setup_test_table(&pool, false).await;
+
+        let wrong_metadata_location =
+            Location::from_str("s3://wrong-bucket/wrong/metadata/v1.json").unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&wrong_metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 400);
+        assert_eq!(error.error.r#type, CONCURRENT_UPDATE_ERROR_TYPE);
+        assert!(error
+            .error
+            .message
+            .contains("Concurrent update on tabular with id"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_with_correct_metadata_location_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, false).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_without_metadata_location_check_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, _metadata_location, _) =
+            setup_test_table(&pool, false).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            None, // No metadata location check
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_view_not_found_returns_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let nonexistent_view_id = TabularId::View(Uuid::now_v7());
+
+        let result = drop_tabular(
+            warehouse_id,
+            nonexistent_view_id,
+            false,
+            None,
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+        assert!(error.error.message.contains("View with ID"));
+        assert!(error.error.message.contains("not found"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_inactive_warehouse_returns_404(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, false).await;
+
+        // Deactivate the warehouse
+        let mut transaction = pool.begin().await.unwrap();
+        crate::implementations::postgres::warehouse::set_warehouse_status(
+            warehouse_id,
+            crate::api::management::v1::warehouse::WarehouseStatus::Inactive,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
     }
 }
