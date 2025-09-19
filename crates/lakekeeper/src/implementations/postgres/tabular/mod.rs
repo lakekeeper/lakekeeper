@@ -603,7 +603,7 @@ pub(crate) async fn rename_tabular(
                 SELECT n.namespace_id
                 FROM namespace n
                 JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
-                WHERE n.warehouse_id = $2
+                WHERE n.warehouse_id = $4
                 FOR UPDATE
             ),
             warehouse_check AS (
