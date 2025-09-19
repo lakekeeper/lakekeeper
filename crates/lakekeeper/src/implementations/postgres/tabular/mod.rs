@@ -812,8 +812,7 @@ pub(crate) async fn clear_tabular_deleted_at(
 
     let all_found = undrop_tabular_informations
         .first()
-        .map(|r| r.all_found)
-        .unwrap_or(tabular_ids.is_empty());
+        .map_or(tabular_ids.is_empty(), |r| r.all_found);
     if !all_found {
         return Err(ErrorModel::not_found(
             "One or more tabular IDs to undrop not found",
