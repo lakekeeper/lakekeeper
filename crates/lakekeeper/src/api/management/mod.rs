@@ -1022,14 +1022,6 @@ pub mod v1 {
         .await
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct RecursiveDeleteQuery {
-        #[serde(default)]
-        force: bool,
-        #[serde(default)]
-        purge: bool,
-    }
-
     #[derive(Deserialize, Debug, ToSchema)]
     pub struct SetProtectionRequest {
         /// Setting this to `true` will prevent the entity from being deleted unless `force` is used.

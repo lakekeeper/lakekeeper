@@ -1793,7 +1793,7 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist in task_log");
@@ -1856,7 +1856,7 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist in task_log");
@@ -1945,7 +1945,7 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist in task_log");
@@ -2022,7 +2022,7 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist in task_log");
@@ -2097,7 +2097,7 @@ mod test {
         .unwrap();
 
         // Verify task is still marked as successful using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist in task_log");
@@ -2173,7 +2173,7 @@ mod test {
             .unwrap();
 
         // Verify the task's scheduled_for was updated to the specific time
-        let details2 = get_task_details(warehouse_id, task_id2, 10, &mut conn)
+        let details2 = get_task_details(warehouse_id, task_id2, 10, &pool)
             .await
             .unwrap()
             .expect("Task 2 should exist");
@@ -2188,7 +2188,7 @@ mod test {
         );
 
         // Test 3: Verify using get_task_details shows the updated scheduling
-        let details1 = get_task_details(warehouse_id, task_id1, 10, &mut conn)
+        let details1 = get_task_details(warehouse_id, task_id1, 10, &pool)
             .await
             .unwrap()
             .expect("Task 1 should exist");
@@ -2254,7 +2254,7 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist");
@@ -2270,7 +2270,7 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .expect("Task should exist");

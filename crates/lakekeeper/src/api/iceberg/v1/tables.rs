@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
 };
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ListTablesQuery {
     #[serde(skip_serializing_if = "PageToken::skip_serialize")]
