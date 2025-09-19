@@ -39,7 +39,7 @@ pub(crate) async fn get_namespace(
             n.warehouse_id,
             namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
         FROM namespace n
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE n.warehouse_id = $1 AND n.namespace_id = $2
         AND w.status = 'active'
         "#,
@@ -52,7 +52,7 @@ pub(crate) async fn get_namespace(
         sqlx::Error::RowNotFound => ErrorModel::builder()
             .code(StatusCode::NOT_FOUND.into())
             .message(format!(
-                "Namespace with id {warehouse_id} not found in warehouse {namespace_id}"
+                "Namespace with id {namespace_id} not found in warehouse {warehouse_id}"
             ))
             .r#type("NamespaceNotFound".to_string())
             .build(),
@@ -123,7 +123,7 @@ pub(crate) async fn list_namespaces(
                 n.created_at,
                 n.protected
             FROM namespace n
-            INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+            INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
             AND w.status = 'active'
             AND array_length("namespace_name", 1) = $2 + 1
@@ -155,7 +155,7 @@ pub(crate) async fn list_namespaces(
                 n.created_at,
                 n.protected
             FROM namespace n
-            INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+            INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
             AND array_length("namespace_name", 1) = 1
             AND w.status = 'active'
@@ -308,7 +308,7 @@ pub(crate) async fn namespace_to_id(
         r#"
         SELECT namespace_id
         FROM namespace n
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE n.warehouse_id = $1 AND namespace_name = $2
         AND w.status = 'active'
         "#,
@@ -355,11 +355,11 @@ pub(crate) async fn drop_namespace(
         tabulars AS (
             SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
             FROM tabular ta
-            WHERE namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+            WHERE warehouse_id = $1 AND (namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
             SELECT t.task_id, t.status as task_status from task t
-            WHERE t.status = 'running' AND t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.entity_type = 'tabular' AND queue_name = 'tabular_expiration'
+            WHERE t.status = 'running' AND t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type = 'tabular' AND queue_name = 'tabular_expiration'
         )
         SELECT
             (SELECT protected FROM namespace_info) AS "is_protected!",
@@ -467,7 +467,7 @@ pub(crate) async fn drop_namespace(
 
     if record.rows_affected() == 0 {
         return Err(ErrorModel::internal(
-            format!("Namespace {namespace_id} naaot found in warehouse {warehouse_id}"),
+            format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
             "NamespaceNotFound",
             None,
         )
@@ -903,7 +903,7 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
-        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -931,7 +931,7 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
-        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1267,6 +1267,7 @@ pub(crate) mod tests {
             false,
             Some(outer_namespace),
             None,
+            None,
         )
         .await;
 
@@ -1274,6 +1275,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         set_tabular_protected(
+            warehouse_id,
             TabularId::Table(*tab.table_id),
             true,
             transaction.transaction(),

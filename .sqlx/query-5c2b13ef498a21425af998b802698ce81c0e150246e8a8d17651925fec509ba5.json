@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_statistics(table_id, warehouse_id, snapshot_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)\n           SELECT $2, $3, u.* FROM UNNEST($1::BIGINT[], $4::TEXT[], $5::BIGINT[], $6::BIGINT[], $7::TEXT[], $8::JSONB[]) u",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "Int8Array",
+        "Int8Array",
+        "TextArray",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5c2b13ef498a21425af998b802698ce81c0e150246e8a8d17651925fec509ba5"
+}

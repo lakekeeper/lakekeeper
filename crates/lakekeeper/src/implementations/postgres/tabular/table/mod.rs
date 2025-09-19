@@ -433,10 +433,9 @@ pub(crate) async fn load_storage_profile(
         SELECT w.storage_secret_id,
         w.storage_profile as "storage_profile: Json<StorageProfile>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.warehouse_id = $1
+        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1
             AND t."table_id" = $2
             AND w.status = 'active'
         "#,
@@ -515,26 +514,29 @@ pub(crate) async fn load_tables(
             tstat.key_metadatas as "table_stats_key_metadata: Vec<Option<String>>",
             tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        INNER JOIN table_current_schema tcs ON tcs.table_id = t.table_id
-        LEFT JOIN table_default_partition_spec tdps ON tdps.table_id = t.table_id
-        LEFT JOIN table_default_sort_order tdsort ON tdsort.table_id = t.table_id
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        INNER JOIN table_current_schema tcs
+            ON tcs.warehouse_id = $1 AND tcs.table_id = t.table_id
+        LEFT JOIN table_default_partition_spec tdps
+            ON tdps.warehouse_id = $1 AND tdps.table_id = t.table_id
+        LEFT JOIN table_default_sort_order tdsort
+            ON tdsort.warehouse_id = $1 AND tdsort.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(schema) as schemas
-                   FROM table_schema WHERE table_id = ANY($2)
+                   FROM table_schema WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) ts ON ts.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(partition_spec) as partition_spec,
                           ARRAY_AGG(partition_spec_id) as partition_spec_id
-                   FROM table_partition_spec WHERE table_id = ANY($2)
+                   FROM table_partition_spec WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tps ON tps.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                             ARRAY_AGG(key) as keys,
                             ARRAY_AGG(value) as values
-                     FROM table_properties WHERE table_id = ANY($2)
+                     FROM table_properties WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tp ON tp.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -544,34 +546,34 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(summary) as summaries,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(timestamp_ms) as timestamp
-                   FROM table_snapshot WHERE table_id = ANY($2)
+                   FROM table_snapshot WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
-                     FROM table_snapshot_log WHERE table_id = ANY($2)
+                     FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tsl ON tsl.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps,
                           ARRAY_AGG(metadata_file ORDER BY sequence_number) as metadata_files
-                   FROM table_metadata_log WHERE table_id = ANY($2)
+                   FROM table_metadata_log WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tml ON tml.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(sort_order_id) as sort_order_ids,
                           ARRAY_AGG(sort_order) as sort_orders
-                     FROM table_sort_order WHERE table_id = ANY($2)
+                     FROM table_sort_order WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tso ON tso.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(table_ref_name) as table_ref_names,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(retention) as retentions
-                   FROM table_refs WHERE table_id = ANY($2)
+                   FROM table_refs WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tr ON tr.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(statistics_path) as statistics_paths,
                           ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s
-                    FROM partition_statistics WHERE table_id = ANY($2)
+                    FROM partition_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)
                     GROUP BY table_id) pstat ON pstat.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -580,9 +582,9 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(file_footer_size_in_bytes) as file_footer_size_in_bytes_s,
                           ARRAY_AGG(key_metadata) as key_metadatas,
                           ARRAY_AGG(blob_metadata) as blob_metadatas
-                    FROM table_statistics WHERE table_id = ANY($2)
+                    FROM table_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)
                     GROUP BY table_id) tstat ON tstat.table_id = t.table_id
-        WHERE w.warehouse_id = $1
+        WHERE t.warehouse_id = $1
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
             AND t."table_id" = ANY($2)
@@ -593,7 +595,7 @@ pub(crate) async fn load_tables(
     )
     .fetch_all(&mut **transaction)
     .await
-    .unwrap();
+    .map_err(|e| e.into_error_model("Error fetching tables".to_string()))?;
 
     let mut tables = HashMap::new();
     let mut failed_to_fetch = HashSet::new();
@@ -675,10 +677,10 @@ pub(crate) async fn get_table_metadata_by_id(
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.warehouse_id = $1 AND t."table_id" = $2
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE t.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
         "#,
@@ -744,10 +746,10 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              w.storage_profile as "storage_profile: Json<StorageProfile>",
              w."storage_secret_id"
          FROM "table" t
-         INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-         WHERE w.warehouse_id = $1
+         INNER JOIN tabular ti ON t.warehouse_id = $1 AND t.table_id = ti.tabular_id
+         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+         INNER JOIN warehouse w ON w.warehouse_id = $1
+         WHERE t.warehouse_id = $1
              AND ti.fs_location = ANY($2)
              AND LENGTH(ti.fs_location) <= $3
              AND w.status = 'active'
@@ -817,11 +819,19 @@ pub(crate) async fn rename_table(
 }
 
 pub(crate) async fn drop_table(
+    warehouse_id: WarehouseId,
     table_id: TableId,
     force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularId::Table(*table_id), force, None, transaction).await
+    drop_tabular(
+        warehouse_id,
+        TabularId::Table(*table_id),
+        force,
+        None,
+        transaction,
+    )
+    .await
 }
 
 #[derive(Default)]
@@ -851,7 +861,7 @@ impl From<&[TableUpdate]> for TableUpdates {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    // Desired behaviour:
+    // Desired behavior:
     // - Stage-Create => Load fails with 404
     // - No Stage-Create => Next create fails with 409, load succeeds
     // - Stage-Create => Next stage-create works & overwrites
@@ -972,11 +982,18 @@ pub(crate) mod tests {
         pub(crate) table_ident: TableIdent,
     }
 
+    /// Creates a table in the given warehouse.
+    ///
+    /// Parameters:
+    ///
+    /// * `namespace`: If provided creates the table in that namespace, otherwise creates new one.
+    /// * `table_id`: If provided uses this as the table's id, otherwise creates a random id.
     pub(crate) async fn initialize_table(
         warehouse_id: WarehouseId,
         state: CatalogState,
         staged: bool,
         namespace: Option<NamespaceIdent>,
+        table_id: Option<TableId>,
         table_name: Option<String>,
     ) -> InitializedTable {
         // my_namespace_<uuid>
@@ -995,7 +1012,7 @@ pub(crate) mod tests {
             namespace: namespace.clone(),
             name: request.name.clone(),
         };
-        let table_id = Uuid::now_v7().into();
+        let table_id = table_id.unwrap_or_else(|| Uuid::now_v7().into());
 
         let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
         let schema = table_metadata.current_schema_id();
@@ -1037,6 +1054,7 @@ pub(crate) mod tests {
             .unwrap()
             .metadata;
         let create = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1078,6 +1096,7 @@ pub(crate) mod tests {
                 .unwrap();
 
         let request = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1146,6 +1165,7 @@ pub(crate) mod tests {
         let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1191,6 +1211,7 @@ pub(crate) mod tests {
         let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1251,7 +1272,7 @@ pub(crate) mod tests {
         assert!(exists.is_none());
         drop(table_ident);
 
-        let table = initialize_table(warehouse_id, state.clone(), true, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
 
         // Table is staged - no result if include_staged is false
         let exists = resolve_table_ident(
@@ -1301,7 +1322,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(exists.len() == 1 && exists.get(&table_ident).unwrap().is_none());
 
-        let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
+        let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
         let mut tables = HashSet::new();
         tables.insert(&table_1.table_ident);
 
@@ -1335,7 +1356,7 @@ pub(crate) mod tests {
         );
 
         // Second Table
-        let table_2 = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table_2 = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
         tables.insert(&table_2.table_ident);
 
         let exists = table_idents_to_ids(
@@ -1402,6 +1423,7 @@ pub(crate) mod tests {
             state.clone(),
             false,
             Some(namespace_lower.clone()),
+            None,
             Some(table_ident_lower.name.clone()),
         )
         .await;
@@ -1410,6 +1432,7 @@ pub(crate) mod tests {
             state.clone(),
             false,
             Some(namespace_lower.clone()),
+            None,
             Some("a_table_not_to_be_included_in_results".to_string()),
         )
         .await;
@@ -1450,7 +1473,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_table_ident = TableIdent {
             namespace: table.namespace.clone(),
@@ -1496,7 +1519,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &new_namespace, None).await;
@@ -1544,7 +1567,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
 
@@ -1586,7 +1609,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(tables.len(), 0);
 
-        let table1 = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table1 = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let tables = list_tables(
             warehouse_id,
@@ -1603,7 +1626,7 @@ pub(crate) mod tests {
             table1.table_ident
         );
 
-        let table2 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
+        let table2 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
         let tables = list_tables(
             warehouse_id,
             &table2.namespace,
@@ -1656,6 +1679,7 @@ pub(crate) mod tests {
             state.clone(),
             false,
             Some(namespace.clone()),
+            None,
             Some("t1".into()),
         )
         .await;
@@ -1664,6 +1688,7 @@ pub(crate) mod tests {
             state.clone(),
             true,
             Some(namespace.clone()),
+            None,
             Some("t2".into()),
         )
         .await;
@@ -1672,6 +1697,7 @@ pub(crate) mod tests {
             state.clone(),
             true,
             Some(namespace.clone()),
+            None,
             Some("t3".into()),
         )
         .await;
@@ -1744,7 +1770,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let metadata = get_table_metadata_by_id(
             warehouse_id,
@@ -1830,7 +1856,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
         let mut transaction = pool.begin().await.expect("Failed to start transaction");
         set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut transaction)
             .await
@@ -1853,7 +1879,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let mut transaction = pool.begin().await.unwrap();
 
@@ -1874,6 +1900,7 @@ pub(crate) mod tests {
         .unwrap();
 
         mark_tabular_as_deleted(
+            warehouse_id,
             TabularId::Table(*table.table_id),
             false,
             None,
@@ -1909,7 +1936,7 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        drop_table(table.table_id, false, &mut transaction)
+        drop_table(warehouse_id, table.table_id, false, &mut transaction)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
