@@ -2068,7 +2068,10 @@ pub(crate) mod test {
         },
         request_metadata::RequestMetadata,
         service::{
-            authz::{tests::HidingAuthorizer, AllowAllAuthorizer, CatalogTableAction},
+            authz::{
+                tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
+                CatalogTableAction,
+            },
             ListFlags, State, TableId, UserId,
         },
         tests::random_request_metadata,
@@ -3632,9 +3635,9 @@ pub(crate) mod test {
         .await
         .unwrap();
 
-        // Cannot rename source table
+        // Not authorized to rename the source table
         authz.block_action(format!("table:{}", CatalogTableAction::CanRename).as_str());
-        let cannot_rename_table_response = CatalogServer::rename_table(
+        let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {
                 source: TableIdent {
@@ -3652,14 +3655,177 @@ pub(crate) mod test {
         .await
         .unwrap_err();
 
-        assert_eq!(
-            cannot_rename_table_response.error.code,
-            StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            cannot_rename_table_response.error.r#type,
-            "TableActionForbidden"
-        );
+        assert_eq!(response.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(response.error.r#type, "TableActionForbidden");
+    }
+
+    #[sqlx::test]
+    async fn test_rename_table_without_can_create(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+
+        let from_ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "from_ns".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: from_ns.namespace.clone(),
+        };
+        let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+        let table_name = "from_table".to_string();
+        CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(table_name.clone()), Some(false)),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Not authorized to create a table in the destination namepsace
+        authz.block_action(format!("table:{}", CatalogNamespaceAction::CanCreateTable).as_str());
+        let response = CatalogServer::rename_table(
+            prefix,
+            RenameTableRequest {
+                source: TableIdent {
+                    namespace: ns_params.namespace.clone(),
+                    name: table_name.clone(),
+                },
+                destination: TableIdent {
+                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    name: table_name,
+                },
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(response.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(response.error.r#type, "NoSuchNamespaceException");
+    }
+
+    #[sqlx::test]
+    async fn test_rename_table_without_target_namespace(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::memory_io_profile();
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+
+        let from_ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "from_ns".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: from_ns.namespace.clone(),
+        };
+        let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+        let table_name = "from_table".to_string();
+        CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(table_name.clone()), Some(false)),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // All actions are allowed but the target namespace does not exist
+        let response = CatalogServer::rename_table(
+            prefix,
+            RenameTableRequest {
+                source: TableIdent {
+                    namespace: ns_params.namespace.clone(),
+                    name: table_name.clone(),
+                },
+                destination: TableIdent {
+                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    name: table_name,
+                },
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(response.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(response.error.r#type, "NoSuchNamespaceException");
+    }
+
+    #[sqlx::test]
+    async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::memory_io_profile();
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+
+        let from_ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "from_ns".to_string(),
+        )
+        .await;
+        let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+        let table_name = "from_table".to_string();
+
+        // All actions are allowed but the origin table does not exist
+        let response = CatalogServer::rename_table(
+            prefix,
+            RenameTableRequest {
+                source: TableIdent {
+                    namespace: from_ns.namespace.clone(),
+                    name: table_name.clone(),
+                },
+                destination: TableIdent {
+                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    name: table_name,
+                },
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(response.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(response.error.r#type, "TableActionForbidden");
     }
 
     #[sqlx::test]
