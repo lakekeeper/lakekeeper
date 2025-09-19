@@ -1,4 +1,7 @@
-use crate::{AuthZBackend, CONFIG, service::{ServerId, authz::ErrorModel}};
+use crate::{
+    service::{authz::ErrorModel, ServerId},
+    AuthZBackend, CONFIG,
+};
 
 pub(super) mod allow_all;
 

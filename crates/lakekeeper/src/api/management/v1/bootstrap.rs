@@ -202,7 +202,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         Ok(ServerInfo {
             version,
-            bootstrapped: server_data.is_open_for_bootstrap(),
+            bootstrapped: !server_data.is_open_for_bootstrap(),
             server_id: *server_data.server_id(),
             default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {

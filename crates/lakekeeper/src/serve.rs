@@ -498,11 +498,12 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
 
     if !server_info.terms_accepted() {
         return Err(anyhow!("The terms of service have not been accepted."));
-    } else {
-        tracing::info!("The terms of service have been accepted.");
     }
 
-    tracing::info!("Server ID: {}", server_info.server_id());
+    tracing::info!(
+        "Server ID {}. The terms of service have been accepted.",
+        server_info.server_id()
+    );
 
     Ok(())
 }

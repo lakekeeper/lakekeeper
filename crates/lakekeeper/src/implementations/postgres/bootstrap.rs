@@ -13,13 +13,18 @@ pub(super) async fn get_or_set_server_id<
     connection: E,
 ) -> anyhow::Result<ServerId> {
     let server_id = ServerId::new_random();
-    let result = sqlx::query!(
+    let existing: uuid::Uuid = sqlx::query_scalar!(
         r#"
-        INSERT INTO server (single_row, server_id, open_for_bootstrap, terms_accepted)
-        VALUES (true, $1, true, false)
-        ON CONFLICT (single_row)
-        DO NOTHING
-        returning server_id
+        WITH inserted AS (
+            INSERT INTO server (single_row, server_id, open_for_bootstrap, terms_accepted)
+            VALUES (true, $1, true, false)
+            ON CONFLICT (single_row) DO NOTHING
+            RETURNING server_id
+        )
+        SELECT server_id as "server_id!" FROM inserted
+        UNION ALL
+        SELECT server_id as "server_id!" FROM server
+        LIMIT 1
         "#,
         *server_id,
     )
@@ -27,7 +32,7 @@ pub(super) async fn get_or_set_server_id<
     .await
     .map_err(|e| e.into_error_model("Error getting or setting server_id".to_string()))?;
 
-    Ok(ServerId::from(result.server_id))
+    Ok(ServerId::from(existing))
 }
 
 pub(super) async fn get_validation_data<
@@ -65,11 +70,11 @@ pub(super) async fn get_validation_data<
             terms_accepted: server.terms_accepted,
         })
     } else {
-        return Err(ErrorModel::failed_dependency(
+        Err(ErrorModel::failed_dependency(
             "No server_id found in database. Please run migration first.",
             "ServerIdMissing",
             None,
-        ));
+        ))
     }
 }
 
@@ -109,9 +114,7 @@ mod test {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::{
-        implementations::postgres::{migrations::migrate, CatalogState},
-    };
+    use crate::implementations::postgres::{migrations::migrate, CatalogState};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {
@@ -130,5 +133,40 @@ mod test {
 
         let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
         assert!(!success);
+    }
+
+    #[sqlx::test]
+    async fn test_get_or_set_server_id(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // First call should create a new server with a random ID
+        let server_id_1 = get_or_set_server_id(&state.read_write.write_pool)
+            .await
+            .unwrap();
+
+        // Verify the server was created with correct defaults
+        let data = get_validation_data(&state.read_pool()).await.unwrap();
+        assert_eq!(data.server_id(), server_id_1);
+        assert!(data.is_open_for_bootstrap());
+        assert!(!data.terms_accepted());
+
+        // Second call should return the same server ID (no new insert)
+        let server_id_2 = get_or_set_server_id(&state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert_eq!(server_id_1, server_id_2);
+
+        // Verify only one server exists in the database
+        let server_count = sqlx::query!("SELECT COUNT(*) as count FROM server")
+            .fetch_one(&state.read_pool())
+            .await
+            .unwrap();
+        assert_eq!(server_count.count.unwrap(), 1);
+
+        // Verify the server ID is consistent across multiple calls
+        let server_id_3 = get_or_set_server_id(&state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert_eq!(server_id_1, server_id_3);
     }
 }
