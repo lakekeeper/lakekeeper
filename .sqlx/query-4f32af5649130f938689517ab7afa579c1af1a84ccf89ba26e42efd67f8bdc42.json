@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH update_info as (\n            SELECT protected\n            FROM tabular\n            WHERE warehouse_id = $1 AND tabular_id = $2\n        ), update as (\n            UPDATE tabular\n            SET deleted_at = $3\n            WHERE warehouse_id = $1 AND tabular_id = $2\n                AND ((NOT protected) OR $4)\n            RETURNING tabular_id\n        )\n        SELECT protected as \"protected!\", (SELECT tabular_id from update) from update_info\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "4f32af5649130f938689517ab7afa579c1af1a84ccf89ba26e42efd67f8bdc42"
+}

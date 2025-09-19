@@ -24,9 +24,9 @@ mod test {
         let conn = pool.begin().await.unwrap();
         let (_api, warehouse) = crate::tests::setup(
             pool.clone(),
-            crate::tests::test_io_profile(),
+            crate::tests::memory_io_profile(),
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             None,
             1,
@@ -63,9 +63,9 @@ mod test {
         let mut conn = pool.begin().await.unwrap();
         let (_api, _warehouse) = crate::tests::setup(
             pool.clone(),
-            crate::tests::test_io_profile(),
+            crate::tests::memory_io_profile(),
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             None,
             1,

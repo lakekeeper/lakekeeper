@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE tabular ti\n            SET name = $1\n            WHERE warehouse_id = $4 AND tabular_id = $2 AND typ = $3\n                AND metadata_location IS NOT NULL\n                AND ti.deleted_at IS NULL\n                AND $4 IN (\n                    SELECT warehouse_id FROM warehouse WHERE status = 'active'\n                    AND warehouse_id = $4\n                )\n            RETURNING tabular_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "30edc2ab6f86048f7e931be5ea40b92140581770bae81a924bb259dabaffe49a"
+}

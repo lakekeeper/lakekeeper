@@ -12,13 +12,15 @@ use crate::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
         task_queue::{
-            tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue::TabularPurgePayload, EntityId, TaskMetadata,
+            tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            EntityId, TaskMetadata,
         },
         Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     DropParams {
@@ -65,10 +67,10 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
-            let location = C::drop_view(view_id, force, t.transaction()).await?;
+            let location = C::drop_view(warehouse_id, view_id, force, t.transaction()).await?;
 
             if purge_requested {
-                C::queue_tabular_purge(
+                TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
                         warehouse_id,
                         entity_id: EntityId::Tabular(*view_id),
@@ -95,7 +97,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .ok();
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
-            let _ = C::queue_tabular_expiration(
+            let _ = TabularExpirationTask::schedule_task::<C>(
                 TaskMetadata {
                     entity_id: EntityId::Tabular(*view_id),
                     warehouse_id,
@@ -113,7 +115,13 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 t.transaction(),
             )
             .await?;
-            C::mark_tabular_as_deleted(TabularId::View(*view_id), force, t.transaction()).await?;
+            C::mark_tabular_as_deleted(
+                warehouse_id,
+                TabularId::View(*view_id),
+                force,
+                t.transaction(),
+            )
+            .await?;
 
             tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
             t.commit().await?;
@@ -172,12 +180,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();
@@ -230,12 +238,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();
@@ -326,12 +334,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH deleted as (\n                    DELETE FROM task\n                    WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)\n                    RETURNING *\n                )\n                INSERT INTO task_log(task_id,\n                                        warehouse_id,\n                                        queue_name,\n                                        task_data,\n                                        entity_id,\n                                        entity_type,\n                                        status,\n                                        attempt,\n                                        started_at,\n                                        duration,\n                                        progress,\n                                        execution_details,\n                                        attempt_scheduled_for,\n                                        last_heartbeat_at,\n                                        parent_task_id,\n                                        task_created_at)\n                SELECT task_id,\n                        warehouse_id,\n                        queue_name,\n                        task_data,\n                        entity_id,\n                        entity_type,\n                        $4,\n                        attempt,\n                        picked_up_at,\n                        case when picked_up_at is not null\n                            then now() - picked_up_at\n                            else null\n                        end,\n                        progress,\n                        execution_details,\n                        scheduled_for,\n                        last_heartbeat_at,\n                        parent_task_id,\n                        created_at\n                FROM deleted\n                ON CONFLICT (task_id, attempt) DO NOTHING\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        },
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "883cf05f80797b83966b5dc5fc50df81f5eef600eae7ea9ac2c84bdc3d674bbc"
+}

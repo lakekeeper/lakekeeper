@@ -913,7 +913,7 @@ def test_old_metadata_files_are_deleted(
         spark.sql(
             f"""
             CREATE TABLE {namespace.spark_name}.{tbl_name} (my_ints INT) USING iceberg
-            TBLPROPERTIES ('write.metadata.previous-versions-max'='2')
+            TBLPROPERTIES ('write.metadata.previous-versions-max'='2', 'write.metadata.delete-after-commit.enabled'='false')
             """
         )
     else:

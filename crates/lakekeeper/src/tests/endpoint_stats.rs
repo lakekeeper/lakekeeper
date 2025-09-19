@@ -645,12 +645,12 @@ async fn setup_stats_test(
         .ok();
     configure_trigger(&pool).await;
 
-    let prof = crate::tests::test_io_profile();
+    let prof = crate::tests::memory_io_profile();
     let (ctx, warehouse) = crate::tests::setup(
         pool.clone(),
         prof,
         None,
-        AllowAllAuthorizer,
+        AllowAllAuthorizer::default(),
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         number_of_warehouses,

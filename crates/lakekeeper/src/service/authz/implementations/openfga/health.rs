@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use openfga_client::client::CheckRequestTupleKey;
 
-use super::{OpenFGAAuthorizer, OpenFgaEntity, ServerRelation, OPENFGA_SERVER};
+use super::{OpenFGAAuthorizer, OpenFgaEntity, ServerRelation};
 use crate::{
     service::health::{Health, HealthExt, HealthStatus},
     ProjectId,
@@ -17,7 +17,7 @@ impl HealthExt for OpenFGAAuthorizer {
             .check(CheckRequestTupleKey {
                 user: ProjectId::new_random().to_openfga(),
                 relation: ServerRelation::Project.to_string(),
-                object: OPENFGA_SERVER.to_string(),
+                object: self.openfga_server().to_string(),
             })
             .await;
 
@@ -37,10 +37,7 @@ impl HealthExt for OpenFGAAuthorizer {
 
 #[cfg(test)]
 mod tests {
-    use needs_env_var::needs_env_var;
-
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
@@ -59,6 +56,7 @@ mod tests {
                 client.clone(),
                 Some(store_name),
                 ConsistencyPreference::HigherConsistency,
+                uuid::Uuid::new_v4(), // random server id for test
             )
             .await
             .unwrap();

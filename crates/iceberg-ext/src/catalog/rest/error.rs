@@ -30,6 +30,12 @@ impl From<IcebergErrorResponse> for iceberg::Error {
     }
 }
 
+impl std::fmt::Display for IcebergErrorResponse {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
 impl From<ErrorModel> for iceberg::Error {
     fn from(value: ErrorModel) -> Self {
         let mut error = iceberg::Error::new(iceberg::ErrorKind::DataInvalid, &value.message)
@@ -54,6 +60,12 @@ fn error_chain_fmt(e: impl std::error::Error, f: &mut std::fmt::Formatter<'_>) -
 impl From<ErrorModel> for IcebergErrorResponse {
     fn from(value: ErrorModel) -> Self {
         IcebergErrorResponse { error: value }
+    }
+}
+
+impl From<IcebergErrorResponse> for ErrorModel {
+    fn from(value: IcebergErrorResponse) -> Self {
+        value.error
     }
 }
 
@@ -92,13 +104,21 @@ impl StdError for ErrorModel {
 
 impl Display for ErrorModel {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} ({}): {}", self.r#type, self.code, self.message)?;
+
+        if !self.stack.is_empty() {
+            writeln!(f, "Stack:")?;
+            for detail in &self.stack {
+                writeln!(f, "  {detail}")?;
+            }
+        }
+
         if let Some(source) = self.source.as_ref() {
-            writeln!(f, "{}", self.message)?;
+            writeln!(f, "Caused by:")?;
             // Dereference `source` to get `dyn StdError` and then take a reference to pass
             error_chain_fmt(&**source, f)?;
-        } else {
-            write!(f, "{}", self.message)?;
         }
+
         Ok(())
     }
 }
@@ -236,6 +256,20 @@ impl ErrorModel {
     }
 }
 
+impl IcebergErrorResponse {
+    #[must_use]
+    pub fn append_details(mut self, details: impl IntoIterator<Item = String>) -> Self {
+        self.error.stack.extend(details);
+        self
+    }
+
+    #[must_use]
+    pub fn append_detail(mut self, detail: impl Into<String>) -> Self {
+        self.error.stack.push(detail.into());
+        self
+    }
+}
+
 #[cfg(feature = "axum")]
 impl axum::response::IntoResponse for IcebergErrorResponse {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
@@ -249,18 +283,36 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             stack: details,
         } = error;
         let error_id = uuid::Uuid::now_v7();
-        tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
+        let mut response = if code >= 500 || [401, 403, 424].contains(&code) {
+            tracing::error!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
+            axum::Json(IcebergErrorResponse {
+                error: ErrorModel {
+                    message,
+                    r#type,
+                    code,
+                    source: None,
+                    stack: vec![format!("Error ID: {error_id}")],
+                },
+            })
+            .into_response()
+        } else {
+            // Log at info level for 4xx errors
+            tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
 
-        let mut response = axum::Json(IcebergErrorResponse {
-            error: ErrorModel {
-                message,
-                r#type,
-                code,
-                source: None,
-                stack: vec![error_id.to_string()],
-            },
-        })
-        .into_response();
+            let mut details = details;
+            details.push(format!("Error ID: {error_id}"));
+
+            axum::Json(IcebergErrorResponse {
+                error: ErrorModel {
+                    message,
+                    r#type,
+                    code,
+                    source: None,
+                    stack: details,
+                },
+            })
+            .into_response()
+        };
 
         *response.status_mut() = axum::http::StatusCode::from_u16(code)
             .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
@@ -269,7 +321,6 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
 }
 
 #[cfg(test)]
-#[cfg(feature = "axum")]
 mod tests {
     use futures_util::stream::StreamExt;
 
@@ -311,5 +362,128 @@ mod tests {
 
         let resp: IcebergErrorResponse = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(resp).unwrap(), json);
+    }
+
+    #[test]
+    fn test_error_model_display() {
+        // Test basic error without source or stack
+        let error = ErrorModel {
+            message: "Something went wrong".to_string(),
+            r#type: "TestError".to_string(),
+            code: 500,
+            source: None,
+            stack: vec![],
+        };
+
+        let display_output = format!("{error}");
+        assert!(display_output.contains("Something went wrong"));
+        assert!(display_output.contains("TestError"));
+        assert!(display_output.contains("500"));
+        // Should not contain "Stack:" since it's empty
+        assert!(!display_output.contains("Stack:"));
+        // Should not contain "Caused by:" since there's no source
+        assert!(!display_output.contains("Caused by:"));
+
+        // Test error with stack details
+        let error_with_stack = ErrorModel {
+            message: "Another error".to_string(),
+            r#type: "StackError".to_string(),
+            code: 400,
+            source: None,
+            stack: vec!["detail1".to_string(), "detail2".to_string()],
+        };
+
+        let display_output = format!("{error_with_stack}");
+        assert!(display_output.contains("Another error"));
+        assert!(display_output.contains("StackError"));
+        assert!(display_output.contains("400"));
+        assert!(display_output.contains("Stack:"));
+        assert!(display_output.contains("  detail1"));
+        assert!(display_output.contains("  detail2"));
+
+        // Test error with source
+        let source_error = Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "File not found",
+        )) as Box<dyn std::error::Error + Send + Sync + 'static>;
+
+        let error_with_source = ErrorModel {
+            message: "IO operation failed".to_string(),
+            r#type: "IOError".to_string(),
+            code: 404,
+            source: Some(source_error),
+            stack: vec!["io_stack".to_string()],
+        };
+
+        let display_output = format!("{error_with_source}");
+        assert!(display_output.contains("IO operation failed"));
+        assert!(display_output.contains("IOError"));
+        assert!(display_output.contains("404"));
+        assert!(display_output.contains("Stack:"));
+        assert!(display_output.contains("  io_stack"));
+        assert!(display_output.contains("Caused by:"));
+        assert_eq!(display_output.matches("Caused by:").count(), 1);
+        assert!(display_output.contains("File not found"));
+    }
+
+    #[tokio::test]
+    async fn test_into_response_server_error_redacts_stack_and_adds_error_id() {
+        let val = IcebergErrorResponse {
+            error: ErrorModel {
+                message: "internal error".into(),
+                r#type: "Internal".into(),
+                code: 500,
+                source: None,
+                stack: vec!["secret detail".into()],
+            },
+        };
+        let resp = axum::response::IntoResponse::into_response(val);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = resp
+            .into_body()
+            .into_data_stream()
+            .collect::<Vec<_>>()
+            .await;
+        let buf = body
+            .into_iter()
+            .flat_map(|r| r.unwrap())
+            .collect::<bytes::Bytes>();
+        let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
+
+        // Stack should contain only the error id, not the original detail
+        assert!(parsed.error.stack.len() == 1);
+        assert!(parsed.error.stack[0].starts_with("Error ID: "));
+    }
+
+    #[tokio::test]
+    async fn test_into_response_client_error_preserves_stack_and_adds_error_id() {
+        let val = IcebergErrorResponse {
+            error: ErrorModel {
+                message: "bad input".into(),
+                r#type: "BadRequest".into(),
+                code: 400,
+                source: None,
+                stack: vec!["user detail".into()],
+            },
+        };
+        let resp = axum::response::IntoResponse::into_response(val);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .into_data_stream()
+            .collect::<Vec<_>>()
+            .await;
+        let buf = body
+            .into_iter()
+            .flat_map(|r| r.unwrap())
+            .collect::<bytes::Bytes>();
+        let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
+
+        // Stack should preserve original and append error id
+        assert_eq!(parsed.error.stack.len(), 2);
+        assert!(parsed.error.stack[0] == "user detail");
+        assert!(parsed.error.stack[1].starts_with("Error ID: "));
     }
 }

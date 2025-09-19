@@ -24,7 +24,7 @@ macro_rules! list_entities {
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
             async move {
-                let query = PaginationQuery {
+                let query = crate::api::iceberg::v1::PaginationQuery {
                     page_size: Some(ps),
                     page_token: page_token.into(),
                 };
@@ -42,7 +42,7 @@ macro_rules! list_entities {
                         $namespace_id,
                         CatalogNamespaceAction::CanListEverything,
                     )
-                    .await?;
+                    .await?.into_inner();
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
@@ -55,9 +55,8 @@ macro_rules! list_entities {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions>](
                             &request_metadata,
-                            ids.clone(),
-                            vec![[<Catalog $entity Action>]::CanIncludeInList; ids.len()],
-                        ).await?
+                            ids.iter().map(|id| (*id, [<Catalog $entity Action>]::CanIncludeInList)).collect(),
+                        ).await?.into_inner()
                     }
                 };
 

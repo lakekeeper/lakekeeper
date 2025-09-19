@@ -13,19 +13,20 @@ use iceberg::{
         TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
         PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
     },
-    NamespaceIdent, TableUpdate,
+    ErrorKind, NamespaceIdent, TableUpdate,
 };
 use iceberg_ext::{
-    catalog::rest::{LoadCredentialsResponse, StorageCredential},
-    configs::{namespace::NamespaceProperties, Location, ParseFromStr},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    configs::{namespace::NamespaceProperties, ParseFromStr},
 };
 use itertools::Itertools;
+use lakekeeper_io::{InvalidLocationError, Location};
 use serde::Serialize;
 use uuid::Uuid;
 
 use super::{
     commit_tables::apply_commit,
-    io::{delete_file, read_metadata_file, write_metadata_file},
+    io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::{authorized_namespace_ident_to_id, validate_namespace_ident},
     require_warehouse_id, CatalogServer,
@@ -35,9 +36,9 @@ use crate::{
         iceberg::{
             types::DropParams,
             v1::{
-                ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
-                CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, NamespaceParameters, PaginationQuery, Prefix,
+                tables::DataAccessMode, ApiContext, CommitTableRequest, CommitTableResponse,
+                CommitTransactionRequest, CreateTableRequest, DataAccess, ErrorModel,
+                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters, Prefix,
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
@@ -46,18 +47,15 @@ use crate::{
     },
     catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
     request_metadata::RequestMetadata,
-    retry::retry_fn,
     service::{
-        authz::{
-            Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
-            TableUuid,
-        },
+        authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
         task_queue::{
-            tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue::TabularPurgePayload, EntityId, TaskMetadata,
+            tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            EntityId, TaskMetadata,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
@@ -68,7 +66,7 @@ use crate::{
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
     "write.metadata.delete-after-commit.enabled";
-const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = false;
+const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
 pub(crate) const CONCURRENT_UPDATE_ERROR_TYPE: &str = "ConcurrentUpdateError";
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
@@ -103,8 +101,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             t.transaction(),
         )
         .await?;
-        // ------------------- BUSINESS LOGIC -------------------
 
+        // ------------------- BUSINESS LOGIC -------------------
         let (identifiers, table_uuids, next_page_token) =
             catalog::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
@@ -143,10 +141,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         parameters: NamespaceParameters,
         // mut because we need to change location
         mut request: CreateTableRequest,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
+        let data_access = data_access.into();
         // ------------------- VALIDATIONS -------------------
         let NamespaceParameters { namespace, prefix } = parameters.clone();
         let warehouse_id = require_warehouse_id(prefix.clone())?;
@@ -211,6 +210,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
+                warehouse_id: warehouse.id,
                 namespace_id: namespace.namespace_id,
                 table_ident: &table,
                 table_metadata,
@@ -229,46 +229,21 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
-        retry_fn(|| async {
-            match crate::service::storage::check_location_is_empty(
-                &file_io,
-                &table_location,
-                storage_profile,
-                || crate::service::storage::ValidationError::InvalidLocation {
-                    reason: "Unexpected files in location, tabular locations have to be empty"
-                        .to_string(),
-                    location: table_location.to_string(),
-                    source: None,
-                    storage_type: storage_profile.storage_type(),
-                },
-            )
-            .await
-            {
-                Err(e @ ValidationError::IoOperationFailed(_, _)) => {
-                    tracing::warn!(
-                        "Error while checking location is empty: {e}, retrying up to three times.."
-                    );
-                    Err(e)
-                }
-                Ok(()) => {
-                    tracing::debug!("Location is empty");
-                    Ok(Ok(()))
-                }
-                Err(other) => {
-                    tracing::error!("Unrecoverable error: {other:?}");
-                    Ok(Err(other))
-                }
-            }
-        })
-        .await??;
+        if !crate::service::storage::is_empty(&file_io, &table_location).await? {
+            return Err(ValidationError::from(InvalidLocationError::new(
+                table_location.to_string(),
+                "Unexpected files in location, tabular locations have to be empty",
+            ))
+            .into());
+        }
 
         if let Some(metadata_location) = &metadata_location {
             let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
-            write_metadata_file(
+            write_file(
+                &file_io,
                 metadata_location,
                 &table_metadata,
                 compression_codec,
-                &file_io,
             )
             .await?;
         }
@@ -303,7 +278,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         authorizer
-            .create_table(&request_metadata, TableId::from(*tabular_id), namespace_id)
+            .create_table(&request_metadata, table_id, namespace_id)
             .await?;
 
         // Metadata file written, now we can commit the transaction
@@ -393,8 +368,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
             if let Some(previous_table_id) = previous_table_id {
                 tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' with id {previous_table_id} for overwrite operation",
-                    table.name, table.namespace
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table_id} for overwrite operation",
+                    table.name, table.namespace, warehouse.name
                 );
                 // Verify authorization to drop the table first
                 authorizer
@@ -406,8 +381,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .await?;
 
                 // Drop the existing table to overwrite it
-                let _previous_table_location =
-                    C::drop_table(previous_table_id, false, t_write.transaction()).await?;
+                let _previous_table_location = C::drop_table(
+                    warehouse_id,
+                    previous_table_id,
+                    false,
+                    t_write.transaction(),
+                )
+                .await?;
                 // We don't drop the files for the previous table on overwrite
             }
         }
@@ -423,6 +403,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
+                warehouse_id: warehouse.id,
                 namespace_id,
                 table_ident: &table,
                 table_metadata,
@@ -434,7 +415,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let config = storage_profile
             .generate_table_config(
-                DataAccess::not_specified(),
+                DataAccess::not_specified().into(),
                 storage_secret.as_ref(),
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
@@ -509,7 +490,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn load_table(
         parameters: TableParameters,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
@@ -548,14 +529,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut metadatas = C::load_tables(
-            warehouse_id,
-            vec![tabular_details.ident],
-            list_flags.include_deleted,
-            t.transaction(),
-        )
-        .await?;
-        t.commit().await?;
         let CatalogLoadTableResult {
             table_id,
             namespace_id: _,
@@ -563,8 +536,15 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             metadata_location,
             storage_secret_ident,
             storage_profile,
-        } = take_table_metadata(&tabular_details.ident, &table, &mut metadatas)?;
-        require_not_staged(metadata_location.as_ref())?;
+        } = load_table_inner::<C>(
+            warehouse_id,
+            tabular_details.table_id,
+            &table,
+            list_flags.include_deleted,
+            &mut t,
+        )
+        .await?;
+        t.commit().await?;
 
         let table_location =
             parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -577,7 +557,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             Some(
                 storage_profile
                     .generate_table_config(
-                        data_access,
+                        data_access.into(),
                         storage_secret.as_ref(),
                         &table_location,
                         storage_permissions,
@@ -641,12 +621,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         ))?;
 
         let (storage_secret_ident, storage_profile) =
-            C::load_storage_profile(warehouse_id, tabular_details.ident, t.transaction()).await?;
+            C::load_storage_profile(warehouse_id, tabular_details.table_id, t.transaction())
+                .await?;
+        // DB work is done; release the read transaction before external IO/crypto work.
+        t.commit().await?;
+
         let storage_secret =
             maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
         let storage_config = storage_profile
             .generate_table_config(
-                data_access,
+                data_access.into(),
                 storage_secret.as_ref(),
                 &parse_location(
                     tabular_details.location.as_str(),
@@ -655,7 +639,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 storage_permission,
                 &request_metadata,
                 warehouse_id,
-                tabular_details.table_uuid().into(),
+                tabular_details.table_id.into(),
             )
             .await?;
 
@@ -685,7 +669,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &parameters.table,
             request.identifier.as_ref(),
         )?);
-        let t = commit_tables_internal(
+        let t = commit_tables_with_authz(
             parameters.prefix,
             CommitTransactionRequest {
                 table_changes: vec![request],
@@ -694,7 +678,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             request_metadata,
         )
         .await?;
-        let Some(item) = t.into_iter().next() else {
+        let mut it = t.into_iter();
+        let Some(item) = it.next() else {
             return Err(ErrorModel::internal(
                 "No new metadata returned by backend",
                 "NoNewMetadataReturned",
@@ -702,6 +687,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .into());
         };
+        debug_assert!(
+            it.next().is_none(),
+            "commit_table must return exactly one CommitContext"
+        );
 
         Ok(CommitTableResponse {
             metadata_location: item.new_metadata_location.to_string(),
@@ -770,10 +759,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         match warehouse.tabular_delete_profile {
             TabularDeleteProfile::Hard {} => {
-                let location = C::drop_table(table_id, force, t.transaction()).await?;
+                let location =
+                    C::drop_table(warehouse_id, table_id, force, t.transaction()).await?;
 
                 if purge_requested {
-                    C::queue_tabular_purge(
+                    TabularPurgeTask::schedule_task::<C>(
                         TaskMetadata {
                             warehouse_id,
                             entity_id: EntityId::Tabular(*table_id),
@@ -800,7 +790,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .ok();
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
-                let _ = C::queue_tabular_expiration(
+                let _ = TabularExpirationTask::schedule_task::<C>(
                     TaskMetadata {
                         entity_id: EntityId::Tabular(*table_id),
                         warehouse_id,
@@ -819,8 +809,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 )
                 .await?;
 
-                C::mark_tabular_as_deleted(TabularId::Table(*table_id), force, t.transaction())
-                    .await?;
+                C::mark_tabular_as_deleted(
+                    warehouse_id,
+                    TabularId::Table(*table_id),
+                    force,
+                    t.transaction(),
+                )
+                .await?;
 
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
                 t.commit().await?;
@@ -972,7 +967,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let _ = commit_tables_internal(prefix, request, state, request_metadata).await?;
+        let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
+        tracing::debug!("Successfully committed {} table(s)", contexts.len());
         Ok(())
     }
 }
@@ -995,12 +991,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
             .await?;
 
         // We can't fail before AuthZ.
-        let table_id = C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
+        let tabular_details =
+            C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
 
-        let table_id = authorizer
+        let tabular_details = authorizer
             .require_table_action(
                 request_metadata,
-                table_id,
+                tabular_details,
                 CatalogTableAction::CanGetMetadata,
             )
             .await
@@ -1009,36 +1006,52 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
-                table_id.ident,
+                tabular_details.table_id,
                 CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
-                table_id.ident,
+                tabular_details.table_id,
                 CatalogTableAction::CanWriteData,
             ),
         )?;
+        let can_read = read_access.into_inner();
+        let can_write = write_access.into_inner();
 
-        let storage_permissions = if write_access {
+        let storage_permissions = if can_write {
             Some(StoragePermissions::ReadWriteDelete)
-        } else if read_access {
+        } else if can_read {
             Some(StoragePermissions::Read)
         } else {
             None
         };
-        Ok((table_id, storage_permissions))
+        Ok((tabular_details, storage_permissions))
     }
 }
 
-#[allow(clippy::too_many_lines)]
-async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-    prefix: Option<Prefix>,
-    request: CommitTransactionRequest,
-    state: ApiContext<State<A, C, S>>,
-    request_metadata: RequestMetadata,
-) -> Result<Vec<CommitContext>> {
-    // ------------------- VALIDATIONS -------------------
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+/// Load a table from the catalog, ensuring that it is not staged
+///
+/// # Errors
+/// Returns an error if the table is staged, if it cannot be found, or if a DB error occurs.
+async fn load_table_inner<C: Catalog>(
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    table_ident: &TableIdent,
+    include_deleted: bool,
+    t: &mut C::Transaction,
+) -> Result<CatalogLoadTableResult> {
+    let mut metadatas =
+        C::load_tables(warehouse_id, [table_id], include_deleted, t.transaction()).await?;
+    let result = take_table_metadata(&table_id, table_ident, &mut metadatas)?;
+    require_not_staged(result.metadata_location.as_ref())?;
+    Ok(result)
+}
+
+/// Validate commit table requests
+///
+/// # Errors
+/// Returns an error if any validation fails.
+fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
     for change in &request.table_changes {
         validate_table_updates(&change.updates)?;
         change
@@ -1049,7 +1062,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
         if change.identifier.is_none() {
             return Err(ErrorModel::bad_request(
-                "Table identifier is required for each change in the CommitTransactionRequest",
+                "Table identifier is required for each change in the CommitTransactionRequest (one of the changes was missing an identifier)",
                 "TableIdentifierRequiredForCommitTransaction",
                 None,
             )
@@ -1057,91 +1070,64 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         }
     }
 
-    // ------------------- AUTHZ -------------------
-    let authorizer = state.v1_state.authz.clone();
-    authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-
-    let include_staged = true;
-    let include_deleted = false;
-    let include_active = true;
-
+    // Check table identifier uniqueness
     let identifiers = request
         .table_changes
         .iter()
         .filter_map(|change| change.identifier.as_ref())
         .collect::<HashSet<_>>();
     let n_identifiers = identifiers.len();
-    let table_ids = C::table_idents_to_ids(
-        warehouse_id,
-        identifiers,
-        ListFlags {
-            include_active,
-            include_staged,
-            include_deleted,
-        },
-        state.v1_state.catalog.clone(),
-    )
-    .await
-    .map_err(|e| {
-        ErrorModel::internal("Error fetching table ids", "TableIdsFetchError", None)
-            .append_details(vec![e.error.message, e.error.r#type])
-            .append_details(e.error.stack)
-    })?;
-
-    let authz_checks = table_ids
-        .values()
-        .map(|table_id| {
-            authorizer.require_table_action(
-                &request_metadata,
-                Ok(*table_id),
-                CatalogTableAction::CanCommit,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let table_uuids = futures::future::try_join_all(authz_checks).await?;
-    let table_ids = Arc::new(
-        table_ids
-            .into_iter()
-            .zip(table_uuids)
-            .map(|((table_ident, _), table_uuid)| (table_ident, table_uuid))
-            .collect::<HashMap<_, _>>(),
-    );
-
-    // ------------------- BUSINESS LOGIC -------------------
 
     if n_identifiers != request.table_changes.len() {
+        let mut counts = std::collections::HashMap::<&TableIdent, usize>::new();
+        for ident in request
+            .table_changes
+            .iter()
+            .filter_map(|c| c.identifier.as_ref())
+        {
+            *counts.entry(ident).or_default() += 1;
+        }
+        let dups = counts
+            .into_iter()
+            .filter(|&(_i, c)| c > 1)
+            .map(|(i, _c)| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(ErrorModel::bad_request(
-            "Table identifiers must be unique in the CommitTransactionRequest",
+            format!("Table identifiers must be unique; duplicates: [{dups}]"),
             "UniqueTableIdentifiersRequiredForCommitTransaction",
             None,
         )
         .into());
     }
 
-    let mut events = vec![];
-    let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
-    let mut updates = vec![];
-    for commit_table_request in &request.table_changes {
-        if let Some(id) = &commit_table_request.identifier {
-            if let Some(uuid) = table_ids.get(id) {
-                events.push(maybe_body_to_json(commit_table_request));
-                event_table_ids.push((id.clone(), *uuid));
-                updates.push(commit_table_request.updates.clone());
-            }
-        }
-    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+/// Commit updates to multiple tables without authorization checks
+///
+/// # Errors
+/// Returns an error if the commit fails or if a DB error occurs.
+/// This function will retry on concurrent update errors up to a maximum number of retries.
+async fn commit_tables_inner<
+    C: Catalog,
+    A: Authorizer,
+    S: SecretStore,
+    H: ::std::hash::BuildHasher + 'static + Send + Sync,
+>(
+    warehouse_id: WarehouseId,
+    request: CommitTransactionRequest,
+    table_ids: Arc<HashMap<TableIdent, TableId, H>>,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+) -> Result<Vec<CommitContext>> {
+    let include_deleted = false;
 
     // Start the retry loop
     let mut attempt = 0;
     loop {
-        let result = try_commit_tables::<C, A, S>(
+        let result = try_commit_tables::<C, A, S, _>(
             &request,
             warehouse_id,
             table_ids.clone(),
@@ -1172,24 +1158,127 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             {
                 attempt += 1;
                 tracing::info!(
-                    "Concurrent update detected (attempt {}/{}), retrying commit operation",
-                    attempt,
-                    MAX_RETRIES_ON_CONCURRENT_UPDATE
+                    warehouse_id = %warehouse_id,
+                    n_tables = %table_ids.len(),
+                    attempt = attempt,
+                    max_attempts = MAX_RETRIES_ON_CONCURRENT_UPDATE,
+                    "Concurrent update detected, retrying commit operation"
                 );
-                // Short delay before retry to reduce contention
-                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                // Short jittered exponential backoff to reduce contention
+                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
+                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
+                let base = 50u64.saturating_mul(1u64 << exp);
+                let jitter = fastrand::u64(..base / 2);
+                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
+                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                if attempt > 0 {
+                    tracing::warn!(
+                        warehouse_id = %warehouse_id,
+                        n_tables = %table_ids.len(),
+                        attempt = attempt,
+                        "Table commit operation failed after {} attempts. Operation was retried due to concurrent updates. {e}",
+                        attempt + 1
+                    );
+                }
+                return Err(e);
+            }
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
+/// Commit updates to multiple tables in an atomic operation
+///
+/// # Errors
+/// Returns an error if the commit fails, if the table identifiers are not unique,
+/// or if the table identifiers are not provided for each change.
+/// This function will retry on concurrent update errors up to a maximum number of retries.
+async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    prefix: Option<Prefix>,
+    request: CommitTransactionRequest,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+) -> Result<Vec<CommitContext>> {
+    // ------------------- VALIDATIONS -------------------
+    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    commit_tables_validate(&request)?;
+
+    // ------------------- AUTHZ -------------------
+    let authorizer = state.v1_state.authz.clone();
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+
+    let include_staged = true;
+    let include_deleted = false;
+    let include_active = true;
+
+    let identifiers = request
+        .table_changes
+        .iter()
+        .filter_map(|change| change.identifier.as_ref())
+        .collect::<HashSet<_>>();
+    let table_ids = C::table_idents_to_ids(
+        warehouse_id,
+        identifiers,
+        ListFlags {
+            include_active,
+            include_staged,
+            include_deleted,
+        },
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .map_err(|e| {
+        ErrorModel::internal("Error fetching table ids", "TableIdsFetchError", None)
+            .append_detail(e.error.message)
+            .append_details(e.error.stack)
+    })?;
+
+    // Build futures alongside their idents to preserve pairing
+    let authz_checks = table_ids
+        .iter()
+        .map(|(ident, table_id)| {
+            (
+                ident.clone(),
+                authorizer.require_table_action(
+                    &request_metadata,
+                    Ok(*table_id),
+                    CatalogTableAction::CanCommit,
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    // Resolve and re-associate
+    let resolved: Vec<(TableIdent, TableId)> = futures::future::try_join_all(
+        authz_checks
+            .into_iter()
+            .map(|(ident, fut)| async move { fut.await.map(|id| (ident, id)) }),
+    )
+    .await?;
+    let table_ids = Arc::new(resolved.into_iter().collect::<HashMap<_, _>>());
+
+    // ------------------- BUSINESS LOGIC -------------------
+    commit_tables_inner(warehouse_id, request, table_ids, state, request_metadata).await
+}
+
 // Extract the core commit logic to a separate function for retry purposes
 #[allow(clippy::too_many_lines)]
-async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn try_commit_tables<
+    C: Catalog,
+    A: Authorizer + Clone,
+    S: SecretStore,
+    H: ::std::hash::BuildHasher,
+>(
     request: &CommitTransactionRequest,
     warehouse_id: WarehouseId,
-    table_ids: Arc<HashMap<TableIdent, TableId>>,
+    table_ids: Arc<HashMap<TableIdent, TableId, H>>,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
 ) -> Result<Vec<CommitContext>> {
@@ -1204,6 +1293,8 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         transaction.transaction(),
     )
     .await?;
+
+    transaction.commit().await?;
 
     let mut expired_metadata_logs: Vec<MetadataLog> = vec![];
 
@@ -1276,14 +1367,6 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Commit changes in DB
-    C::commit_table_transaction(
-        warehouse_id,
-        commits.iter().map(CommitContext::commit),
-        transaction.transaction(),
-    )
-    .await?;
-
     // Check contract verification
     let futures = commits.iter().map(|c| {
         state
@@ -1311,17 +1394,49 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     let write_futures: Vec<_> = commits
         .iter()
         .map(|commit| {
-            write_metadata_file(
+            write_file(
+                &file_io,
                 &commit.new_metadata_location,
                 &commit.new_metadata,
                 commit.new_compression_codec,
-                &file_io,
             )
         })
         .collect();
     futures::future::try_join_all(write_futures).await?;
 
-    transaction.commit().await?;
+    // Make changes in DB
+    let transaction_result = async {
+        let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+        C::commit_table_transaction(
+            warehouse_id,
+            commits.iter().map(CommitContext::commit),
+            transaction.transaction(),
+        )
+        .await?;
+
+        transaction.commit().await?;
+        Result::<_, IcebergErrorResponse>::Ok(())
+    }
+    .await;
+
+    // If transaction fails, delete the metadata files we just wrote (best-effort), then
+    // return the original error.
+    if let Err(e) = transaction_result {
+        let delete_result = futures::future::join_all(
+            commits
+                .iter()
+                .map(|commit| delete_file(&file_io, &commit.new_metadata_location))
+                .collect::<Vec<_>>(),
+        )
+        .await;
+        // Log any delete errors, but return the original error
+        for r in delete_result {
+            if let Err(e) = r {
+                tracing::warn!("Failed to delete metadata file after failed commit: {e:?}");
+            }
+        }
+        return Err(e);
+    }
 
     // Delete files in parallel - if one delete fails, we still want to delete the rest
     let expired_locations = expired_metadata_logs
@@ -1574,26 +1689,26 @@ fn calculate_diffs(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TableMetadataDiffs {
-    pub(crate) removed_snapshots: Vec<i64>,
-    pub(crate) added_snapshots: Vec<i64>,
-    pub(crate) removed_schemas: Vec<i32>,
-    pub(crate) added_schemas: Vec<i32>,
-    pub(crate) new_current_schema_id: Option<i32>,
-    pub(crate) removed_partition_specs: Vec<i32>,
-    pub(crate) added_partition_specs: Vec<i32>,
-    pub(crate) default_partition_spec_id: Option<i32>,
-    pub(crate) removed_sort_orders: Vec<i64>,
-    pub(crate) added_sort_orders: Vec<i64>,
-    pub(crate) default_sort_order_id: Option<i64>,
-    pub(crate) head_of_snapshot_log_changed: bool,
-    pub(crate) n_removed_snapshot_log: usize,
-    pub(crate) expired_metadata_logs: usize,
-    pub(crate) added_metadata_log: usize,
-    pub(crate) added_stats: Vec<i64>,
-    pub(crate) removed_stats: Vec<i64>,
-    pub(crate) added_partition_stats: Vec<i64>,
-    pub(crate) removed_partition_stats: Vec<i64>,
+pub struct TableMetadataDiffs {
+    pub removed_snapshots: Vec<i64>,
+    pub added_snapshots: Vec<i64>,
+    pub removed_schemas: Vec<i32>,
+    pub added_schemas: Vec<i32>,
+    pub new_current_schema_id: Option<i32>,
+    pub removed_partition_specs: Vec<i32>,
+    pub added_partition_specs: Vec<i32>,
+    pub default_partition_spec_id: Option<i32>,
+    pub removed_sort_orders: Vec<i64>,
+    pub added_sort_orders: Vec<i64>,
+    pub default_sort_order_id: Option<i64>,
+    pub head_of_snapshot_log_changed: bool,
+    pub n_removed_snapshot_log: usize,
+    pub expired_metadata_logs: usize,
+    pub added_metadata_log: usize,
+    pub added_stats: Vec<i64>,
+    pub removed_stats: Vec<i64>,
+    pub added_partition_stats: Vec<i64>,
+    pub removed_partition_stats: Vec<i64>,
 }
 
 pub(crate) fn determine_table_ident(
@@ -1691,7 +1806,7 @@ fn require_table_id(table_ident: &TableIdent, table_id: Option<TableId>) -> Resu
                 table_ident.namespace.to_url_string(),
                 table_ident.name
             ),
-            "TableNotFound",
+            ErrorKind::TableNotFound.to_string(),
             None,
         )
         .into()
@@ -1702,7 +1817,7 @@ fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
     if metadata_location.is_none() {
         return Err(ErrorModel::not_found(
             "Table not found or staged.",
-            "TableNotFoundOrStaged",
+            ErrorKind::TableNotFound.to_string(),
             None,
         )
         .into());
@@ -1725,7 +1840,7 @@ fn take_table_metadata<T>(
                     table_ident.namespace.to_url_string(),
                     table_ident.name
                 ),
-                "TableNotFound",
+                ErrorKind::TableNotFound.to_string(),
                 None,
             )
         })
@@ -1746,7 +1861,7 @@ pub(crate) fn require_active_warehouse(status: WarehouseStatus) -> Result<()> {
 
 // Quick validation of properties for early fails.
 // Full validation is performed when changes are applied.
-fn validate_table_updates(updates: &Vec<TableUpdate>) -> Result<()> {
+fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
     for update in updates {
         match update {
             TableUpdate::SetProperties { updates } => {
@@ -1765,7 +1880,7 @@ pub(crate) fn get_delete_after_commit_enabled(properties: &HashMap<String, Strin
     properties
         .get(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED)
         .map_or(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT, |v| {
-            v == "true"
+            matches!(v.to_lowercase().as_str(), "true" | "yes" | "1")
         })
 }
 
@@ -1903,13 +2018,11 @@ pub(crate) mod test {
         },
         TableIdent,
     };
-    use iceberg_ext::{
-        catalog::rest::{
-            CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
-        },
-        configs::Location,
+    use iceberg_ext::catalog::rest::{
+        CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
     };
     use itertools::Itertools;
+    use lakekeeper_io::Location;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -1928,12 +2041,18 @@ pub(crate) mod test {
             },
             ApiContext,
         },
-        catalog::{tables::validate_table_properties, test::impl_pagination_tests, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        catalog::{
+            tables::validate_table_properties,
+            test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
+            Catalog, CatalogServer,
+        },
+        implementations::postgres::{
+            tabular::table::tests::initialize_table, PostgresCatalog, SecretsState,
+        },
         request_metadata::RequestMetadata,
         service::{
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
-            State, UserId,
+            ListFlags, State, TableId, UserId,
         },
         tests::random_request_metadata,
         WarehouseId,
@@ -2038,7 +2157,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
         let updates = table_metadata.changes;
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2197,7 +2316,7 @@ pub(crate) mod test {
             .unwrap();
 
         let updates = table_metadata.changes;
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2254,7 +2373,7 @@ pub(crate) mod test {
             .unwrap();
         let updates = table_metadata.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2338,7 +2457,7 @@ pub(crate) mod test {
             .unwrap();
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2390,7 +2509,7 @@ pub(crate) mod test {
             .unwrap()
             .build()
             .unwrap();
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2429,7 +2548,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let committed = super::commit_tables_internal(
+        let committed = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2472,7 +2591,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2553,7 +2672,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2615,7 +2734,7 @@ pub(crate) mod test {
 
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2672,7 +2791,7 @@ pub(crate) mod test {
 
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2710,7 +2829,7 @@ pub(crate) mod test {
 
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2783,13 +2902,13 @@ pub(crate) mod test {
         NamespaceParameters,
         String,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let base_loc = prof.base_location().unwrap().to_string();
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             None,
         )
@@ -3005,7 +3124,7 @@ pub(crate) mod test {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let base_location = prof.base_location().unwrap();
         let authz = HidingAuthorizer::new();
         // Prevent hidden tables from becoming visible through `can_list_everything`.
@@ -3063,7 +3182,7 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden tables from becoming visible through `can_list_everything`.
@@ -3271,7 +3390,7 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
@@ -3500,6 +3619,8 @@ pub(crate) mod test {
         .await
         .unwrap();
 
+        // Read table metadata
+
         // Drop second table, keep data
         CatalogServer::drop_table(
             TableParameters {
@@ -3572,5 +3693,204 @@ pub(crate) mod test {
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());
         assert_ne!(loaded_table.metadata.uuid(), initial_table.metadata.uuid());
+    }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_table_ids_hard_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Hard {};
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let t_id = TableId::new_random();
+        let t_name = "t1".to_string();
+        let list_flags = ListFlags::all();
+
+        // Create tables with the same table ID across different warehouses.
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+            let _inited_table = initialize_table(
+                *wh_id,
+                ctx.v1_state.catalog.clone(),
+                false,
+                Some(ns_params.namespace.clone()),
+                Some(t_id),
+                Some(t_name.clone()),
+            )
+            .await;
+
+            // Verify table creation.
+            let _meta = PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should exist");
+        }
+
+        // Hard delete one of the tables.
+        let deleted_table_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: deleted_table_data.2.prefix.clone(),
+                table: TableIdent {
+                    namespace: deleted_table_data.2.namespace.clone(),
+                    name: t_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Deleted table cannot be accessed anymore.
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_none(), "Table should be deleted");
+
+        // Tables in other warehouses are still there.
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
+            PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+        }
+
+        // As the delete was hard, the table can be recreated in the warehouse.
+        let _inited_table = initialize_table(
+            deleted_table_data.0,
+            ctx.v1_state.catalog.clone(),
+            false,
+            Some(deleted_table_data.2.namespace.clone()),
+            Some(t_id),
+            Some(t_name.clone()),
+        )
+        .await;
+        let _meta = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("table and metadata should exist");
+    }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(10),
+        };
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let t_id = TableId::new_random();
+        let t_name = "t1".to_string();
+        let list_flags_active = ListFlags::default();
+
+        // Create tables with the same table ID across different warehouses.
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+            let _inited_table = initialize_table(
+                *wh_id,
+                ctx.v1_state.catalog.clone(),
+                false,
+                Some(ns_params.namespace.clone()),
+                Some(t_id),
+                Some(t_name.clone()),
+            )
+            .await;
+
+            // Verify table creation.
+            let _meta = PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags_active,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should exist");
+        }
+
+        // Soft delete one of the tables.
+        let deleted_table_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: deleted_table_data.2.prefix.clone(),
+                table: TableIdent {
+                    namespace: deleted_table_data.2.namespace.clone(),
+                    name: t_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Check availability depending on list flags.
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags_active,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_none(), "Table should be soft deleted");
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            ListFlags::all(), // include soft deleted
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_some(), "Table should be only soft deleted");
+
+        // Tables in other warehouses are still there.
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
+            PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags_active,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+        }
     }
 }

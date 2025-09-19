@@ -139,14 +139,13 @@ impl PostgresStatisticsSink {
                             status_code,
                             cnt,
                             get_stats_date_default()
-                        FROM (
-                            SELECT
-                                unnest($1::text[]) as project_id,
-                                unnest($2::UUID[]) as warehouse,
-                                unnest($3::api_endpoints[]) as uri,
-                                unnest($4::INT[]) as status_code,
-                                unnest($5::BIGINT[]) as cnt
-                        ) t
+                        FROM unnest(
+                                $1::text[],
+                                $2::UUID[],
+                                $3::api_endpoints[],
+                                $4::INT[],
+                                $5::BIGINT[]
+                            ) AS u(project_id, warehouse, uri, status_code, cnt)
                         ON CONFLICT (project_id, warehouse_id, matched_path, status_code, timestamp)
                             DO UPDATE SET count = endpoint_statistics.count + EXCLUDED.count"#,
                 projects.as_slice(),
@@ -223,7 +222,7 @@ async fn resolve_warehouses(
         r#"SELECT project_id, warehouse_name, warehouse_id
                FROM warehouse
                WHERE (project_id, warehouse_name) IN (
-                   SELECT unnest($1::text[]), unnest($2::text[])
+                   Select * FROM unnest($1::text[], $2::text[]) as u(project_id, warehouse_name)
                )"#,
         &projects,
         &warehouse_idents

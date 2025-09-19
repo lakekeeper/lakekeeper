@@ -91,18 +91,34 @@ static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = L
     },
 );
 
-pub(crate) static OPENFGA_SERVER: LazyLock<String> =
-    LazyLock::new(|| format!("server:{}", CONFIG.server_id));
-
 #[derive(Clone, Debug)]
 pub struct OpenFGAAuthorizer {
     client: BasicOpenFgaClient,
     health: Arc<RwLock<Vec<Health>>>,
+    server_id: uuid::Uuid,
+    // Pre-formatted "server:<uuid>" for OpenFGA object ids
+    openfga_server: String,
+}
+
+impl OpenFGAAuthorizer {
+    pub fn new(client: BasicOpenFgaClient, server_id: uuid::Uuid) -> Self {
+        let openfga_server = format!("server:{server_id}");
+        Self {
+            client,
+            health: Arc::new(RwLock::new(vec![])),
+            server_id,
+            openfga_server,
+        }
+    }
 }
 
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
+    fn server_id(&self) -> uuid::Uuid {
+        self.server_id
+    }
+
     fn api_doc() -> utoipa::openapi::OpenApi {
         api::ApiDoc::openapi()
     }
@@ -186,7 +202,7 @@ impl Authorizer for OpenFGAAuthorizer {
             Some(vec![TupleKey {
                 user: user.to_openfga(),
                 relation: relation.to_string(),
-                object: OPENFGA_SERVER.clone(),
+                object: self.openfga_server().to_string(),
                 condition: None,
             }]),
             None,
@@ -196,17 +212,17 @@ impl Authorizer for OpenFGAAuthorizer {
         Ok(())
     }
 
-    async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
+    async fn list_projects_impl(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
         let actor = metadata.actor();
         self.list_projects_internal(actor).await
     }
 
-    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool> {
+    async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool> {
         // Currently all authenticated principals can search users
         Ok(metadata.actor().is_authenticated())
     }
 
-    async fn is_allowed_role_action(
+    async fn is_allowed_role_action_impl(
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
@@ -221,7 +237,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_user_action(
+    async fn is_allowed_user_action_impl(
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
@@ -246,7 +262,7 @@ impl Authorizer for OpenFGAAuthorizer {
             };
         }
 
-        let server_id = OPENFGA_SERVER.clone();
+        let server_id = self.openfga_server().to_string();
         match action {
             // Currently, given a user-id, all information about a user can be retrieved.
             // For multi-tenant setups, we need to restrict this to a tenant.
@@ -255,7 +271,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 self.check(CheckRequestTupleKey {
                     user: actor.to_openfga(),
                     relation: CatalogServerAction::CanUpdateUsers.to_string(),
-                    object: server_id,
+                    object: server_id.clone(),
                 })
                 .await
             }
@@ -271,7 +287,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_server_action(
+    async fn is_allowed_server_action_impl(
         &self,
         metadata: &RequestMetadata,
         action: CatalogServerAction,
@@ -279,13 +295,13 @@ impl Authorizer for OpenFGAAuthorizer {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: OPENFGA_SERVER.clone(),
+            object: self.openfga_server().to_string(),
         })
         .await
         .map_err(Into::into)
     }
 
-    async fn is_allowed_project_action(
+    async fn is_allowed_project_action_impl(
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
@@ -300,7 +316,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_warehouse_action(
+    async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
@@ -315,7 +331,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_namespace_action<A>(
+    async fn is_allowed_namespace_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_id: NamespaceId,
@@ -333,18 +349,16 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_namespace_actions<A>(
+    async fn are_allowed_namespace_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        namespace_ids: Vec<NamespaceId>,
-        actions: Vec<A>,
+        namespaces_with_actions: Vec<(NamespaceId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
     {
-        let items: Vec<_> = namespace_ids
+        let items: Vec<_> = namespaces_with_actions
             .into_iter()
-            .zip(actions.into_iter())
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
@@ -354,7 +368,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.batch_check(items).await
     }
 
-    async fn is_allowed_table_action<A>(
+    async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         table_id: TableId,
@@ -372,18 +386,16 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_table_actions<A>(
+    async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        table_ids: Vec<TableId>,
-        actions: Vec<A>,
+        tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
-        let items: Vec<_> = table_ids
+        let items: Vec<_> = tables_with_actions
             .into_iter()
-            .zip(actions.into_iter())
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
@@ -393,7 +405,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.batch_check(items).await
     }
 
-    async fn is_allowed_view_action<A>(
+    async fn is_allowed_view_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         view_id: ViewId,
@@ -411,18 +423,16 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_view_actions<A>(
+    async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        view_ids: Vec<ViewId>,
-        actions: Vec<A>,
+        views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
-        let items: Vec<_> = view_ids
+        let items: Vec<_> = views_with_actions
             .into_iter()
-            .zip(actions.into_iter())
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
@@ -480,7 +490,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(project_id).await?;
-        let server = OPENFGA_SERVER.clone();
+        let server = self.openfga_server().to_string();
         let this_id = project_id.to_openfga();
         self.write(
             Some(vec![
@@ -710,12 +720,17 @@ impl Authorizer for OpenFGAAuthorizer {
 }
 
 impl OpenFGAAuthorizer {
+    #[must_use]
+    fn openfga_server(&self) -> &str {
+        &self.openfga_server
+    }
+
     async fn list_projects_internal(&self, actor: &Actor) -> Result<ListProjectsResponse> {
         let list_all = self
             .check(CheckRequestTupleKey {
                 user: actor.to_openfga(),
                 relation: ServerRelation::CanListAllProjects.to_string(),
-                object: OPENFGA_SERVER.clone(),
+                object: self.openfga_server().to_string(),
             })
             .await?;
 
@@ -1055,10 +1070,7 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use needs_env_var::needs_env_var;
-
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use http::StatusCode;
         use openfga_client::client::ConsistencyPreference;
 
@@ -1075,9 +1087,14 @@ pub(crate) mod tests {
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
             migrate(&client, Some(store_name.clone())).await.unwrap();
 
-            new_authorizer(client, Some(store_name), TEST_CONSISTENCY)
-                .await
-                .unwrap()
+            new_authorizer(
+                client,
+                Some(store_name),
+                TEST_CONSISTENCY,
+                uuid::Uuid::now_v7(), // random server id
+            )
+            .await
+            .unwrap()
         }
 
         #[tokio::test]

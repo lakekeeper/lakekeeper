@@ -24,7 +24,7 @@ pub mod v1 {
 
     pub use self::{
         namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery},
-        tables::{DataAccess, ListTablesQuery, TableParameters},
+        tables::{DataAccess, DataAccessMode, ListTablesQuery, TableParameters},
         views::ViewParameters,
     };
     pub use crate::{
@@ -87,7 +87,11 @@ pub mod v1 {
         T: std::hash::Hash + Eq + Debug + Clone + 'static,
         V: Debug + 'static,
     {
-        pub(crate) fn map<
+        /// Creates a new `PaginatedMapping` with the specified capacity.
+        ///
+        /// # Errors
+        /// If the provided `key_map` or `value_map` functions return an error
+        pub fn map<
             NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
             NewVal: Debug + 'static,
         >(
@@ -104,7 +108,7 @@ pub mod v1 {
         }
 
         #[must_use]
-        pub(crate) fn with_capacity(capacity: usize) -> Self {
+        pub fn with_capacity(capacity: usize) -> Self {
             Self {
                 entities: HashMap::with_capacity(capacity),
                 next_page_tokens: Vec::with_capacity(capacity),
@@ -112,7 +116,7 @@ pub mod v1 {
             }
         }
 
-        pub(crate) fn insert(&mut self, key: T, value: V, next_page_token: String) {
+        pub fn insert(&mut self, key: T, value: V, next_page_token: String) {
             if self.entities.insert(key.clone(), value).is_some() {
                 let position = self
                     .ordering
@@ -223,7 +227,7 @@ mod test {
     #[test]
     fn test_supported_endpoints() {
         let openapi = include_str!("../../../../../docs/docs/api/rest-catalog-open-api.yaml");
-        let s: serde_json::Value = serde_yml::from_str(openapi).unwrap();
+        let s: serde_json::Value = serde_norway::from_str(openapi).unwrap();
         let paths = s["paths"].as_object().unwrap();
         let unsupported = &[
             "/v1/oauth/tokens",

@@ -21,6 +21,18 @@ impl Prefix {
     }
 }
 
+impl From<String> for Prefix {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Prefix {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum PageToken {

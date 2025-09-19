@@ -1,0 +1,202 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH selected_entities AS (\n            SELECT entity_id, entity_type\n            FROM unnest($10::uuid[], $11::entity_type[]) AS t(entity_id, entity_type)\n        ),\n        active_tasks AS (\n            SELECT\n                task_id,\n                warehouse_id,\n                queue_name,\n                entity_id,\n                entity_type,\n                status as task_status,\n                null::task_final_status as task_log_status,\n                scheduled_for as attempt_scheduled_for,\n                picked_up_at as started_at,\n                attempt,\n                last_heartbeat_at,\n                progress,\n                parent_task_id,\n                created_at as task_created_at,\n                updated_at\n            FROM task\n            WHERE warehouse_id = $1\n                AND ((created_at < $3 OR $3 IS NULL) OR (created_at = $3 AND task_id < $4))\n                AND ($6 OR queue_name = ANY($5))\n                AND ($9 OR status = ANY($7::task_intermediate_status[]))\n                AND ($12 OR (entity_id, entity_type) IN (SELECT entity_id, entity_type FROM selected_entities))\n                AND (created_at >= $13 OR $13 IS NULL)\n                AND (created_at <= $14 OR $14 IS NULL)\n            ORDER BY task_created_at DESC, task_id DESC\n            LIMIT $2\n        ),\n        log_tasks as (\n            SELECT DISTINCT ON (task_created_at, task_id)\n                task_id,\n                warehouse_id,\n                queue_name,\n                entity_id,\n                entity_type,\n                null::task_intermediate_status as task_status,\n                status as task_log_status,\n                attempt_scheduled_for,\n                started_at,\n                attempt,\n                last_heartbeat_at,\n                progress,\n                parent_task_id,\n                task_created_at,\n                null::timestamptz as updated_at\n            FROM task_log\n            WHERE warehouse_id = $1\n                AND ((task_created_at < $3 OR $3 IS NULL) OR (task_created_at = $3 AND task_id < $4))\n                AND ($6 OR queue_name = ANY($5))\n                AND ($9 OR status = ANY($8::task_final_status[]))\n                AND ($12 OR (entity_id, entity_type) IN (SELECT entity_id, entity_type FROM selected_entities))\n                AND (task_created_at >= $13 OR $13 IS NULL)\n                AND (task_created_at <= $14 OR $14 IS NULL)\n            ORDER BY task_created_at DESC, task_id DESC, attempt DESC\n            LIMIT $2\n        )\n        SELECT \n            task_id AS \"task_id!\",\n            warehouse_id AS \"warehouse_id!\",\n            queue_name AS \"queue_name!\",\n            entity_id AS \"entity_id!\",\n            entity_type as \"entity_type!: EntityType\",\n            task_status as \"task_status: TaskStatus\",\n            task_log_status as \"task_log_status: TaskOutcome\",\n            attempt_scheduled_for as \"attempt_scheduled_for!\",\n            started_at,\n            attempt as \"attempt!\",\n            last_heartbeat_at,\n            progress as \"progress!\",\n            parent_task_id,\n            task_created_at as \"task_created_at!\",\n            updated_at\n         FROM (\n            SELECT * FROM active_tasks\n            UNION ALL\n            SELECT * FROM log_tasks\n        ) as combined\n        ORDER BY task_created_at DESC, task_id DESC\n        LIMIT $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "queue_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "entity_type!: EntityType",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "tabular"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "task_status: TaskStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "task_log_status: TaskOutcome",
+        "type_info": {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "attempt_scheduled_for!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "attempt!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "last_heartbeat_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "progress!",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "task_created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Timestamptz",
+        "Uuid",
+        "TextArray",
+        "Bool",
+        {
+          "Custom": {
+            "name": "task_intermediate_status[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "task_intermediate_status",
+                  "kind": {
+                    "Enum": [
+                      "running",
+                      "scheduled",
+                      "should-stop"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_final_status[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "task_final_status",
+                  "kind": {
+                    "Enum": [
+                      "failed",
+                      "cancelled",
+                      "success"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bool",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "entity_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "entity_type",
+                  "kind": {
+                    "Enum": [
+                      "tabular"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bool",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "d1e9859dcc600e55628e413e2e98eb658d1d08ad10b91beb8ca168c8e17045f8"
+}

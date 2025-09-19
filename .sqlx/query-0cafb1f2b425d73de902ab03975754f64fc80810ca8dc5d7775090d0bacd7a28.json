@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH reschedule_tasks AS (\n            SELECT t.* FROM task t \n            WHERE task_id = ANY($1) AND status IN ('should-stop', 'scheduled')\n            FOR UPDATE\n        ),\n        inserted AS (\n            INSERT INTO task_log(\n                task_id,\n                warehouse_id,\n                queue_name,\n                task_data,\n                status,\n                entity_id,\n                entity_type,\n                message,\n                attempt,\n                started_at,\n                duration,\n                progress,\n                execution_details,\n                attempt_scheduled_for,\n                last_heartbeat_at,\n                parent_task_id,\n                task_created_at\n            )\n            SELECT\n                task_id,\n                warehouse_id,\n                queue_name,\n                task_data,\n                'failed',\n                entity_id,\n                entity_type,\n                'Task did not stop in time before being rescheduled.',\n                attempt,\n                picked_up_at,\n                now() - picked_up_at,\n                progress,\n                execution_details,\n                scheduled_for,\n                last_heartbeat_at,\n                parent_task_id,\n                created_at\n            FROM reschedule_tasks\n            WHERE status != 'scheduled'\n            ON CONFLICT (task_id, attempt) DO NOTHING\n        )\n        UPDATE task\n        SET \n            scheduled_for = (CASE WHEN $3 THEN now() ELSE $2 END),\n            status = 'scheduled',\n            progress = 0.0,\n            execution_details = NULL,\n            picked_up_at = NULL\n        FROM reschedule_tasks r\n        WHERE task.task_id = r.task_id AND task.attempt = r.attempt\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0cafb1f2b425d73de902ab03975754f64fc80810ca8dc5d7775090d0bacd7a28"
+}

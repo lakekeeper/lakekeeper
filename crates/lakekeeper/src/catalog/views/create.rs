@@ -5,12 +5,12 @@ use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
 
 use crate::{
     api::{
-        iceberg::v1::{DataAccess, NamespaceParameters},
+        iceberg::v1::{DataAccessMode, NamespaceParameters},
         ApiContext,
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::write_metadata_file,
+        io::write_file,
         maybe_get_secret, require_warehouse_id,
         tables::{
             determine_tabular_location, require_active_warehouse, validate_table_or_view_ident,
@@ -32,9 +32,10 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: DataAccess,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
+    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.clone())?;
@@ -120,6 +121,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     })?;
 
     C::create_view(
+        warehouse_id,
         namespace_id,
         &view,
         metadata.metadata.clone(),
@@ -135,11 +137,11 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
     let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
     let compression_codec = CompressionCodec::try_from_metadata(&metadata.metadata)?;
-    write_metadata_file(
+    write_file(
+        &file_io,
         &metadata_location,
         &metadata.metadata,
         compression_codec,
-        &file_io,
     )
     .await?;
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
@@ -204,7 +206,7 @@ pub(crate) mod test {
 
     use super::*;
     use crate::{
-        api::iceberg::types::Prefix,
+        api::iceberg::{types::Prefix, v1::DataAccess},
         implementations::postgres::{
             namespace::tests::initialize_namespace, secrets::SecretsState,
         },
@@ -223,7 +225,7 @@ pub(crate) mod test {
         rq: CreateViewRequest,
         prefix: Option<String>,
     ) -> Result<LoadViewResult> {
-        super::create_view(
+        Box::pin(super::create_view(
             NamespaceParameters {
                 namespace: namespace.clone(),
                 prefix: Some(Prefix(
@@ -237,7 +239,7 @@ pub(crate) mod test {
                 remote_signing: false,
             },
             RequestMetadata::new_unauthenticated(),
-        )
+        ))
         .await
     }
 
@@ -247,32 +249,32 @@ pub(crate) mod test {
 
         let mut rq = create_view_request(None, None);
 
-        let _view = create_view(
+        let _view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq.clone(),
             Some(whi.to_string()),
-        )
+        ))
         .await
         .unwrap();
-        let view = create_view(
+        let view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq.clone(),
             Some(whi.to_string()),
-        )
+        ))
         .await
         .expect_err("Recreate with same ident should fail.");
         assert_eq!(view.error.code, 409);
         let old_name = rq.name.clone();
         rq.name = "some-other-name".to_string();
 
-        let _view = create_view(
+        let _view = Box::pin(create_view(
             api_context.clone(),
             namespace,
             rq.clone(),
             Some(whi.to_string()),
-        )
+        ))
         .await
         .expect("Recreate with with another name it should work");
 
@@ -284,7 +286,7 @@ pub(crate) mod test {
                 .1
                 .namespace;
 
-        let _view = create_view(api_context, new_ns, rq, Some(whi.to_string()))
+        let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))
             .await
             .expect("Recreate with same name but different ns should work.");
     }
