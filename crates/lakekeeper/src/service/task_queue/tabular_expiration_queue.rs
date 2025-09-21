@@ -354,10 +354,13 @@ mod test {
         let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
             .await
             .unwrap();
+        let mut entity_name = tab.table_ident.namespace.to_vec();
+        entity_name.push(tab.table_ident.name.clone());
         TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
                 warehouse_id: warehouse,
                 entity_id: EntityId::Tabular(tab.table_id.0),
+                entity_name,
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
             },

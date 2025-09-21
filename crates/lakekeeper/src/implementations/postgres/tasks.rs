@@ -49,11 +49,12 @@ pub(crate) async fn queue_task_batch(
     let queue_name = queue_name.as_str();
     let mut task_ids = Vec::with_capacity(tasks.len());
     let mut parent_task_ids = Vec::with_capacity(tasks.len());
-    let mut warehouse_idents = Vec::with_capacity(tasks.len());
+    let mut warehouse_ids = Vec::with_capacity(tasks.len());
     let mut scheduled_fors = Vec::with_capacity(tasks.len());
     let mut entity_ids = Vec::with_capacity(tasks.len());
     let mut entity_types = Vec::with_capacity(tasks.len());
     let mut payloads = Vec::with_capacity(tasks.len());
+    let mut entity_names = Vec::with_capacity(tasks.len());
     for TaskInput {
         task_metadata:
             TaskMetadata {
@@ -61,17 +62,25 @@ pub(crate) async fn queue_task_batch(
                 warehouse_id,
                 schedule_for,
                 entity_id,
+                entity_name,
             },
         payload,
     } in tasks
     {
         task_ids.push(Uuid::now_v7());
         parent_task_ids.push(parent_task_id.as_deref().copied());
-        warehouse_idents.push(*warehouse_id);
+        warehouse_ids.push(*warehouse_id);
         scheduled_fors.push(schedule_for);
         payloads.push(payload);
         entity_types.push(EntityType::from(entity_id));
         entity_ids.push(entity_id.to_uuid());
+        entity_names.push(serde_json::to_value(&entity_name).map_err(|e| {
+            ErrorModel::internal(
+                format!("Failed to serialize entity name: {entity_name:?}, error: {e}"),
+                "InternalError",
+                None,
+            )
+        })?);
     }
 
     Ok(sqlx::query!(
@@ -84,6 +93,7 @@ pub(crate) async fn queue_task_batch(
                 payload,
                 entity_ids,
                 entity_types,
+                entity_name,
                 $2 as queue_name
             FROM unnest(
                 $1::uuid[],
@@ -92,7 +102,8 @@ pub(crate) async fn queue_task_batch(
                 $5::timestamptz[],
                 $6::jsonb[],
                 $7::uuid[],
-                $8::entity_type[]
+                $8::entity_type[],
+                $10::jsonb[]
             ) AS t(
                 task_id,
                 parent_task_id,
@@ -100,7 +111,8 @@ pub(crate) async fn queue_task_batch(
                 scheduled_for,
                 payload,
                 entity_ids,
-                entity_types
+                entity_types,
+                entity_name
             )
         )
         INSERT INTO task(
@@ -112,7 +124,8 @@ pub(crate) async fn queue_task_batch(
                 scheduled_for,
                 task_data,
                 entity_id,
-                entity_type)
+                entity_type,
+                entity_name)
         SELECT
             i.task_id,
             i.queue_name,
@@ -122,14 +135,15 @@ pub(crate) async fn queue_task_batch(
             coalesce(i.scheduled_for, now()),
             i.payload,
             i.entity_ids,
-            i.entity_types
+            i.entity_types,
+            ARRAY(SELECT jsonb_array_elements_text(entity_name))
         FROM input_rows i
         ON CONFLICT (warehouse_id, entity_type, entity_id, queue_name) DO NOTHING
         RETURNING task_id, queue_name, entity_id, entity_type as "entity_type: EntityType""#,
         &task_ids,
         queue_name,
         &parent_task_ids as _,
-        &warehouse_idents,
+        &warehouse_ids,
         &scheduled_fors
             .iter()
             .map(|t| t.as_ref())
@@ -138,6 +152,7 @@ pub(crate) async fn queue_task_batch(
         &entity_ids,
         &entity_types as _,
         TaskStatus::Scheduled as _,
+        &entity_names,
     )
     .fetch_all(conn)
     .await
@@ -249,6 +264,7 @@ pub(crate) async fn pick_task(
             task.task_id,
             task.entity_id,
             task.entity_type as "entity_type: EntityType",
+            task.entity_name,
             task.warehouse_id,
             task.task_data,
             task.scheduled_for,
@@ -277,6 +293,7 @@ pub(crate) async fn pick_task(
                 entity_id: match task.entity_type {
                     EntityType::Tabular => EntityId::Tabular(task.entity_id),
                 },
+                entity_name: task.entity_name,
                 parent_task_id: task.parent_task_id.map(TaskId::from),
                 schedule_for: Some(task.scheduled_for),
             },
@@ -314,6 +331,7 @@ pub(crate) async fn record_success(
             status,
             entity_id,
             entity_type,
+            entity_name,
             message,
             attempt,
             started_at,
@@ -332,6 +350,7 @@ pub(crate) async fn record_success(
                 'success',
                 entity_id,
                 entity_type,
+                entity_name,
                 $2,
                 attempt,
                 picked_up_at,
@@ -390,6 +409,7 @@ pub(crate) async fn record_failure(
                 status,
                 entity_id,
                 entity_type,
+                entity_name,
                 message,
                 attempt,
                 started_at,
@@ -409,6 +429,7 @@ pub(crate) async fn record_failure(
                 'failed',
                 entity_id,
                 entity_type,
+                entity_name,
                 $3,
                 attempt,
                 picked_up_at,
@@ -445,6 +466,7 @@ pub(crate) async fn record_failure(
                     status,
                     entity_id,
                     entity_type,
+                    entity_name,
                     message,
                     attempt,
                     started_at,
@@ -464,6 +486,7 @@ pub(crate) async fn record_failure(
                     'failed',
                     entity_id,
                     entity_type,
+                    entity_name,
                     $2,
                     attempt,
                     picked_up_at,
@@ -637,6 +660,7 @@ pub(crate) async fn reschedule_tasks_for(
                 status,
                 entity_id,
                 entity_type,
+                entity_name,
                 message,
                 attempt,
                 started_at,
@@ -656,6 +680,7 @@ pub(crate) async fn reschedule_tasks_for(
                 'failed',
                 entity_id,
                 entity_type,
+                entity_name,
                 'Task did not stop in time before being rescheduled.',
                 attempt,
                 picked_up_at,
@@ -766,6 +791,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         task_data,
                                         entity_id,
                                         entity_type,
+                                        entity_name,
                                         status,
                                         attempt,
                                         started_at,
@@ -782,6 +808,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                         task_data,
                         entity_id,
                         entity_type,
+                        entity_name,
                         $4,
                         attempt,
                         picked_up_at,
@@ -832,6 +859,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         status,
                                         entity_id,
                                         entity_type,
+                                        entity_name,
                                         attempt,
                                         started_at,
                                         duration,
@@ -848,6 +876,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                         $2,
                         entity_id,
                         entity_type,
+                        entity_name,
                         attempt,
                         picked_up_at,
                         case when picked_up_at is not null
@@ -884,6 +913,8 @@ pub(crate) async fn cancel_scheduled_tasks(
 
 #[cfg(test)]
 mod test {
+    use std::vec;
+
     use chrono::{DateTime, Utc};
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -920,6 +951,7 @@ mod test {
                     warehouse_id,
                     parent_task_id,
                     entity_id,
+                    entity_name: vec![format!("entity-{}", entity_id.to_uuid())],
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -1459,6 +1491,8 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
+        let task_1_entity_name = vec![String::from("entity-1")];
+        let task_2_entity_name = vec![String::from("entity-2")];
         let ids = queue_task_batch(
             &mut conn,
             &tq_name,
@@ -1466,6 +1500,7 @@ mod test {
                 TaskInput {
                     task_metadata: TaskMetadata {
                         entity_id: EntityId::Tabular(Uuid::now_v7()),
+                        entity_name: task_1_entity_name.clone(),
                         warehouse_id,
                         parent_task_id: None,
                         schedule_for: None,
@@ -1476,6 +1511,7 @@ mod test {
                 TaskInput {
                     task_metadata: TaskMetadata {
                         entity_id: EntityId::Tabular(Uuid::now_v7()),
+                        entity_name: task_2_entity_name.clone(),
                         warehouse_id,
                         parent_task_id: None,
                         schedule_for: None,
@@ -1511,6 +1547,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
+        assert_eq!(task.task_metadata.entity_name, task_1_entity_name);
 
         assert_eq!(task2.task_id(), id2);
         assert!(matches!(task2.status, TaskStatus::Running));
@@ -1518,6 +1555,8 @@ mod test {
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, &tq_name);
+        assert_eq!(task2.task_metadata.entity_name, task_2_entity_name);
+
 
         record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
@@ -1530,6 +1569,7 @@ mod test {
     fn task_metadata(warehouse_id: WarehouseId, entity_id: EntityId) -> TaskMetadata {
         TaskMetadata {
             entity_id,
+            entity_name: vec![format!("entity-{}", entity_id.to_uuid())],
             warehouse_id,
             parent_task_id: None,
             schedule_for: None,
