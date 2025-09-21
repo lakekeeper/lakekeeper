@@ -365,7 +365,7 @@ pub(crate) async fn drop_namespace(
             WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type = 'tabular'
         )
         SELECT
-            (SELECT protected FROM namespace_info) AS "is_protected!",
+            ni.protected AS "is_protected!",
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name = 'tabular_expiration') AS "has_running_expiration!",
@@ -378,6 +378,7 @@ pub(crate) async fn drop_namespace(
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
+        FROM namespace_info ni
 "#,
         *warehouse_id,
         *namespace_id,
@@ -437,7 +438,6 @@ pub(crate) async fn drop_namespace(
         );
     }
 
-    // Return 404 not found if namespace does not exist
     let record = sqlx::query!(
         r#"
         DELETE FROM namespace
@@ -446,6 +446,7 @@ pub(crate) async fn drop_namespace(
             AND (namespace_id = any($2) or namespace_id = $3)
             AND warehouse_id IN (
                 SELECT warehouse_id FROM warehouse WHERE status = 'active'
+                AND warehouse_id = $1
             )
         "#,
         *warehouse_id,
@@ -940,6 +941,28 @@ pub(crate) mod tests {
 
         assert_eq!(namespaces.next_token(), None);
         assert_eq!(namespaces.into_hashmap(), HashMap::new());
+    }
+
+    #[sqlx::test]
+    async fn test_drop_nonexistent_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = drop_namespace(
+            warehouse_id,
+            NamespaceId::new_random(),
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(result.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(result.error.r#type, "NamespaceNotFound");
     }
 
     #[sqlx::test]
