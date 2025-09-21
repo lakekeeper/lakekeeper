@@ -20,9 +20,11 @@ use crate::{
         tabular::view::{ViewFormatVersion, ViewRepresentationType},
     },
     service::{storage::join_location, ViewId, ViewMetadataWithLocation},
+    WarehouseId,
 };
 
 pub(crate) async fn load_view(
+    warehouse_id: WarehouseId,
     view_id: ViewId,
     include_deleted: bool,
     conn: &mut PgConnection,
@@ -49,7 +51,7 @@ pub(crate) async fn load_view(
         view_representation_typ,
         view_representation_sql,
         view_representation_dialect,
-    } = query(*view_id, include_deleted, &mut *conn).await?;
+    } = query(warehouse_id, *view_id, include_deleted, &mut *conn).await?;
 
     let schemas = prepare_schemas(schema_ids, schemas)?;
     let properties = prepare_props(view_properties_keys, view_properties_values)?;
@@ -93,12 +95,14 @@ pub(crate) async fn load_view(
 }
 
 async fn query(
+    warehouse_id: WarehouseId,
     view_id: Uuid,
     include_deleted: bool,
     conn: &mut PgConnection,
 ) -> Result<Query, IcebergErrorResponse> {
     let rs = sqlx::query_as!(Query,
-            r#"SELECT v.view_id,
+            r#"
+SELECT v.view_id,
        v.view_format_version            as "view_format_version: ViewFormatVersion",
        ta.fs_location                      AS view_fs_location,
        ta.fs_protocol                      AS view_fs_protocol,
@@ -120,25 +124,30 @@ async fn query(
        vvr.sql                           AS "view_representation_sql: Json<Vec<Vec<String>>>",
        vvr.dialect                       AS "view_representation_dialect: Json<Vec<Vec<String>>>"
 FROM view v
-         INNER JOIN tabular ta ON v.view_id = ta.tabular_id
-         INNER JOIN namespace n ON ta.namespace_id = n.namespace_id
-         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-         INNER JOIN current_view_metadata_version cvv ON v.view_id = cvv.view_id
+         INNER JOIN tabular ta ON ta.warehouse_id = $1 AND ta.tabular_id = v.view_id
+         INNER JOIN current_view_metadata_version cvv
+             ON cvv.warehouse_id = $1 AND v.view_id = cvv.view_id
          LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(schema_id) AS schema_ids,
                            ARRAY_AGG(schema)    AS schemas
                     FROM view_schema
-                    GROUP BY view_id) vs ON v.view_id = vs.view_id
+                    WHERE warehouse_id = $1 and view_id = $2
+                    GROUP BY view_id) vs
+                    ON v.view_id = vs.view_id
          LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(version_id) AS version_log_ids,
                            ARRAY_AGG(timestamp)  AS version_log_timestamps
                     FROM view_version_log
-                    GROUP BY view_id) vvl ON v.view_id = vvl.view_id
+                    WHERE warehouse_id = $1 and view_id = $2
+                    GROUP BY view_id) vvl
+                    ON v.view_id = vvl.view_id
          LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(key)   AS view_properties_keys,
                            ARRAY_AGG(value) AS view_properties_values
                     FROM view_properties
-                    GROUP BY view_id) vp ON v.view_id = vp.view_id
+                    WHERE warehouse_id = $1 and view_id = $2
+                    GROUP BY view_id) vp
+                    ON v.view_id = vp.view_id
          LEFT JOIN (SELECT vv.view_id,
                            JSONB_AGG(version_id)           AS version_ids,
                            ARRAY_AGG(summary)              AS summaries,
@@ -156,8 +165,13 @@ FROM view v
                                                ARRAY_AGG(sql)     as sql,
                                                ARRAY_AGG(dialect) as dialect
                                         FROM view_representation
-                                        GROUP BY view_version_id, view_id) vr ON vv.version_id = vr.view_version_id AND vv.view_id = vr.view_id
-                    GROUP BY vv.view_id) vvr ON v.view_id = vvr.view_id WHERE v.view_id = $1 AND (ta.deleted_at is NULL OR $2)"#,
+                                        WHERE warehouse_id = $1 and view_id = $2
+                                        GROUP BY view_version_id, view_id) vr
+                                        ON vv.version_id = vr.view_version_id AND vv.view_id = vr.view_id
+                    WHERE vv.warehouse_id = $1 and vv.view_id = $2
+                    GROUP BY vv.view_id) vvr ON v.view_id = vvr.view_id
+         WHERE v.warehouse_id = $1 AND v.view_id = $2 AND (ta.deleted_at is NULL OR $3)"#,
+            *warehouse_id,
             view_id,
             include_deleted
         )

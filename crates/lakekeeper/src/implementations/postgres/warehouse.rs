@@ -675,7 +675,7 @@ pub(crate) async fn get_warehouse_stats(
         page_token,
     }: PaginationQuery,
 ) -> crate::api::Result<WarehouseStatisticsResponse> {
-    let page_size = CONFIG.page_size_or_pagination_max(page_size);
+    let page_size = CONFIG.page_size_or_pagination_default(page_size);
 
     let token = page_token
         .as_option()

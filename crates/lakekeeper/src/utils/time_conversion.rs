@@ -147,6 +147,43 @@ pub(crate) mod iso8601_duration_serde {
     }
 }
 
+pub(crate) mod iso8601_option_duration_serde {
+    use chrono::Duration;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::iso8601_duration_serde;
+
+    #[allow(clippy::ref_option)]
+    pub(crate) fn serialize<S>(
+        duration: &Option<Duration>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match duration {
+            Some(d) => iso8601_duration_serde::serialize(d, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<String> = Option::deserialize(deserializer)?;
+        match opt {
+            Some(duration_str) => {
+                let duration = iso8601_duration_serde::deserialize(
+                    serde::de::value::StrDeserializer::new(&duration_str),
+                )?;
+                Ok(Some(duration))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
@@ -252,9 +289,9 @@ mod iso8601_duration_serde_tests {
 
     // Test struct with a Duration field using our serializer
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct TestDuration {
+    pub(super) struct TestDuration {
         #[serde(with = "iso8601_duration_serde")]
-        duration: Duration,
+        pub(super) duration: Duration,
     }
 
     #[test]
@@ -383,5 +420,188 @@ mod iso8601_duration_serde_tests {
         let serde_string = json_value["duration"].as_str().unwrap();
 
         assert_eq!(iso_string, serde_string);
+    }
+}
+
+#[cfg(test)]
+mod iso8601_option_duration_serde_tests {
+    use chrono::Duration;
+    use serde::{Deserialize, Serialize};
+
+    use super::iso8601_option_duration_serde;
+
+    // Test struct with an Option<Duration> field using our serializer
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct TestOptionalDuration {
+        #[serde(with = "iso8601_option_duration_serde")]
+        duration: Option<Duration>,
+    }
+
+    #[test]
+    fn test_serialize_some_durations() {
+        // Some duration - 1 day
+        let test = TestOptionalDuration {
+            duration: Some(Duration::days(1)),
+        };
+        let json = serde_json::to_string(&test).unwrap();
+        assert_eq!(json, r#"{"duration":"P1D"}"#);
+
+        // Some complex duration
+        let test = TestOptionalDuration {
+            duration: Some(Duration::days(2) + Duration::hours(3) + Duration::minutes(45)),
+        };
+        let json = serde_json::to_string(&test).unwrap();
+        assert_eq!(json, r#"{"duration":"P2DT3H45M"}"#);
+
+        // Some duration using weeks
+        let test = TestOptionalDuration {
+            duration: Some(Duration::weeks(3)),
+        };
+        let json = serde_json::to_string(&test).unwrap();
+        assert_eq!(json, r#"{"duration":"P3W"}"#);
+    }
+
+    #[test]
+    fn test_serialize_none_duration() {
+        let test = TestOptionalDuration { duration: None };
+        let json = serde_json::to_string(&test).unwrap();
+        assert_eq!(json, r#"{"duration":null}"#);
+    }
+
+    #[test]
+    fn test_deserialize_some_durations() {
+        // Some duration - 1 day
+        let json = r#"{"duration":"P1D"}"#;
+        let test: TestOptionalDuration = serde_json::from_str(json).unwrap();
+        assert_eq!(test.duration, Some(Duration::days(1)));
+
+        // Some complex duration
+        let json = r#"{"duration":"P2DT3H45M"}"#;
+        let test: TestOptionalDuration = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            test.duration,
+            Some(Duration::days(2) + Duration::hours(3) + Duration::minutes(45))
+        );
+
+        // Some weeks format
+        let json = r#"{"duration":"P3W"}"#;
+        let test: TestOptionalDuration = serde_json::from_str(json).unwrap();
+        assert_eq!(test.duration, Some(Duration::weeks(3)));
+
+        // Some duration with fractional seconds
+        let json = r#"{"duration":"PT1H30M45.5S"}"#;
+        let test: TestOptionalDuration = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            test.duration,
+            Some(
+                Duration::hours(1)
+                    + Duration::minutes(30)
+                    + Duration::seconds(45)
+                    + Duration::milliseconds(500)
+            )
+        );
+    }
+
+    #[test]
+    fn test_deserialize_none_duration() {
+        // Explicit null
+        let json = r#"{"duration":null}"#;
+        let test: TestOptionalDuration = serde_json::from_str(json).unwrap();
+        assert_eq!(test.duration, None);
+    }
+
+    #[test]
+    fn test_roundtrip_serialization() {
+        let test_cases = vec![
+            None,
+            Some(Duration::days(2) + Duration::hours(12) + Duration::minutes(30)),
+            Some(Duration::weeks(1)),
+            Some(Duration::minutes(90)),
+            Some(Duration::seconds(3600)),
+            Some(Duration::milliseconds(5000)),
+        ];
+
+        for original in test_cases {
+            let test = TestOptionalDuration { duration: original };
+            let json = serde_json::to_string(&test).unwrap();
+            let roundtrip: TestOptionalDuration = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(
+                original, roundtrip.duration,
+                "Failed roundtrip for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deserialize_errors() {
+        // Invalid format - missing P (when Some)
+        let json = r#"{"duration":"1D"}"#;
+        let result = serde_json::from_str::<TestOptionalDuration>(json);
+        assert!(result.is_err());
+
+        // Contains year and month (not supported) when Some
+        let json = r#"{"duration":"P1Y2M"}"#;
+        let result = serde_json::from_str::<TestOptionalDuration>(json);
+        assert!(result.is_err());
+
+        // Completely invalid string when Some
+        let json = r#"{"duration":"not-a-duration"}"#;
+        let result = serde_json::from_str::<TestOptionalDuration>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compare_with_inner_serde() {
+        use super::iso8601_duration_serde_tests::TestDuration;
+
+        // Verify that Some(duration) produces the same results as the inner module
+        let duration = Duration::days(3) + Duration::hours(5) + Duration::minutes(30);
+
+        let inner_test = TestDuration { duration };
+        let inner_json = serde_json::to_string(&inner_test).unwrap();
+
+        // Using the option module with Some
+        let option_test = TestOptionalDuration {
+            duration: Some(duration),
+        };
+        let option_json = serde_json::to_string(&option_test).unwrap();
+
+        // Extract the duration values from both JSON strings
+        let inner_value: serde_json::Value = serde_json::from_str(&inner_json).unwrap();
+        let option_value: serde_json::Value = serde_json::from_str(&option_json).unwrap();
+
+        assert_eq!(
+            inner_value["duration"], option_value["duration"],
+            "Duration serialization should be identical"
+        );
+    }
+
+    #[test]
+    fn test_optional_field_behavior() {
+        // Test that the field can be omitted entirely
+        #[derive(Serialize, Deserialize, Debug, PartialEq)]
+        struct TestOptionalField {
+            #[serde(with = "iso8601_option_duration_serde", default)]
+            duration: Option<Duration>,
+            other_field: String,
+        }
+
+        let json = r#"{"other_field":"test"}"#;
+        let test: TestOptionalField = serde_json::from_str(json).unwrap();
+        assert_eq!(test.duration, None);
+        assert_eq!(test.other_field, "test");
+
+        // Test that explicit null works
+        let json = r#"{"duration":null,"other_field":"test"}"#;
+        let test: TestOptionalField = serde_json::from_str(json).unwrap();
+        assert_eq!(test.duration, None);
+        assert_eq!(test.other_field, "test");
+
+        // Test that a value works
+        let json = r#"{"duration":"P1D","other_field":"test"}"#;
+        let test: TestOptionalField = serde_json::from_str(json).unwrap();
+        assert_eq!(test.duration, Some(Duration::days(1)));
+        assert_eq!(test.other_field, "test");
     }
 }

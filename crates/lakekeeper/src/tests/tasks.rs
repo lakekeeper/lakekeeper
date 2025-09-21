@@ -10,7 +10,7 @@ use crate::{
 };
 
 mod test {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, LazyLock, Mutex};
 
     use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
@@ -22,8 +22,9 @@ mod test {
         implementations::postgres::PostgresCatalog,
         service::{
             task_queue::{
-                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, TaskData, TaskInput,
-                TaskMetadata, TaskQueueRegistry, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+                EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
+                TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
+                TaskQueueRegistry,
             },
             Catalog, Transaction,
         },
@@ -40,11 +41,20 @@ mod test {
         struct TestTaskData {
             tabular_id: Uuid,
         }
+        #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+        struct ExecutionDetails {}
+
+        impl TaskExecutionDetails for ExecutionDetails {}
+
         impl TaskData for TestTaskData {}
-        const QUEUE_NAME: &str = "test_queue";
+        static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "test_queue".into());
         impl QueueConfigTrait for Config {
-            fn queue_name() -> &'static str {
-                QUEUE_NAME
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
+            }
+
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(120)
             }
         }
         let setup = super::setup_tasks_test(pool).await;
@@ -60,43 +70,43 @@ mod test {
         let result = Arc::new(Mutex::new(false));
         let result_clone = result.clone();
 
-        let mut task_queue_registry = TaskQueueRegistry::new();
-        task_queue_registry.register_queue::<Config>(QueueRegistration {
-            queue_name: QUEUE_NAME,
-            worker_fn: Arc::new(move |_| {
-                let ctx = ctx_clone.clone();
-                let rx = rx.clone();
-                let result_clone = result_clone.clone();
-                Box::pin(async move {
-                    let task_id = rx.recv().await.unwrap();
+        let task_queue_registry = TaskQueueRegistry::new();
+        task_queue_registry
+            .register_queue::<Config>(QueueRegistration {
+                queue_name: &QUEUE_NAME,
+                worker_fn: Arc::new(move |_| {
+                    let ctx = ctx_clone.clone();
+                    let rx = rx.clone();
+                    let result_clone = result_clone.clone();
+                    Box::pin(async move {
+                        let task_id = rx.recv().await.unwrap();
 
-                    let task = PostgresCatalog::pick_new_task(
-                        QUEUE_NAME,
-                        DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
-                        ctx.v1_state.catalog.clone(),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                    let config = task.queue_config::<Config>().unwrap().unwrap();
-                    assert_eq!(config.some_val, "test_value");
+                        let task = SpecializedTask::<Config, TestTaskData, ExecutionDetails>::pick_new_task::<
+                            PostgresCatalog,
+                        >(ctx.v1_state.catalog.clone())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                        let config = task.config.clone().unwrap();
+                        assert_eq!(config.some_val, "test_value");
 
-                    assert_eq!(task_id, task.task_id);
+                        assert_eq!(task_id, task.task_id());
 
-                    let task = task.task_data::<TestTaskData>().unwrap();
-                    assert_eq!(task, task_state);
-                    *result_clone.lock().unwrap() = true;
-                })
-            }),
-            num_workers: 1,
-        });
+                        let task = task.data;
+                        assert_eq!(task, task_state);
+                        *result_clone.lock().unwrap() = true;
+                    })
+                }),
+                num_workers: 1,
+            })
+            .await;
         let mut transaction =
             <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
                 .await
                 .unwrap();
         <PostgresCatalog as Catalog>::set_task_queue_config(
             setup.warehouse.warehouse_id,
-            QUEUE_NAME,
+            &QUEUE_NAME,
             SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(
                     serde_json::to_value(Config {
@@ -117,7 +127,7 @@ mod test {
             .unwrap();
 
         let task_id = PostgresCatalog::enqueue_task(
-            QUEUE_NAME,
+            &QUEUE_NAME,
             TaskInput {
                 task_metadata: TaskMetadata {
                     warehouse_id: setup.warehouse.warehouse_id,
@@ -139,6 +149,7 @@ mod test {
         let task_handle = tokio::task::spawn(
             task_queue_registry
                 .task_queues_runner(cancellation_token.clone())
+                .await
                 .run_queue_workers(false),
         );
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -170,7 +181,7 @@ async fn setup_tasks_test(pool: PgPool) -> TasksSetup {
         pool.clone(),
         prof,
         None,
-        AllowAllAuthorizer,
+        AllowAllAuthorizer::default(),
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         1,

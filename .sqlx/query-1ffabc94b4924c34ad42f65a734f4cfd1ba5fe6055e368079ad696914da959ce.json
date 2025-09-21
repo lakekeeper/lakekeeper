@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO view_properties (warehouse_id, view_id, key, value)\n           SELECT $1, $2, u.* FROM UNNEST($3::text[], $4::text[]) u\n              ON CONFLICT (warehouse_id, view_id, key)\n                DO UPDATE SET value = EXCLUDED.value\n           ;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1ffabc94b4924c34ad42f65a734f4cfd1ba5fe6055e368079ad696914da959ce"
+}

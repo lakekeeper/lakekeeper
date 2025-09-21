@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH locked_tabulars AS (\n            SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name\n            FROM tabular t \n            JOIN namespace n ON t.namespace_id = n.namespace_id\n            WHERE n.warehouse_id = $2\n                AND t.warehouse_id = $2\n                AND t.tabular_id = ANY($1::uuid[])\n            FOR UPDATE OF t\n        ),\n        validation AS (\n            SELECT NOT EXISTS (\n                SELECT 1 FROM unnest($1::uuid[]) AS id\n                WHERE id NOT IN (SELECT tabular_id FROM locked_tabulars)\n            ) AS all_found\n        ),\n        locked_tasks AS (\n            SELECT ta.task_id, ta.entity_id\n            FROM task ta\n            JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id\n            WHERE ta.entity_type = 'tabular' \n                AND ta.warehouse_id = $2\n                AND ta.queue_name = 'tabular_expiration'\n            FOR UPDATE OF ta\n        )\n        UPDATE tabular\n        SET deleted_at = NULL\n        FROM locked_tabulars lt\n        LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id\n        WHERE tabular.tabular_id = lt.tabular_id AND tabular.warehouse_id = $2\n        RETURNING\n            tabular.name,\n            tabular.tabular_id,\n            lta.task_id as \"task_id?\",\n            lt.namespace_name,\n            (SELECT all_found FROM validation) as \"all_found!\";",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "task_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "all_found!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "bdaa60e71c4197cfc14a789d194bfbc32cb7c1d0c6f0e640da743c6a2f74512a"
+}

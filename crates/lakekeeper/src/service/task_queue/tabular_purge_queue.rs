@@ -6,68 +6,85 @@ use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{QueueApiConfig, QueueConfig};
+use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
-    service::{
-        task_queue::{SpecializedTask, TaskData},
-        Catalog, SecretStore, Transaction,
-    },
+    service::{task_queue::TaskQueueName, Catalog, SecretStore, Transaction},
 };
 
-pub(crate) const QUEUE_NAME: &str = "tabular_purge";
+const QN_STR: &str = "tabular_purge";
+pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
-    queue_name: QUEUE_NAME,
+    queue_name: &QUEUE_NAME,
     utoipa_type_name: PurgeQueueConfig::name(),
     utoipa_schema: PurgeQueueConfig::schema(),
 });
 
+pub type TabularPurgeTask =
+    SpecializedTask<PurgeQueueConfig, TabularPurgePayload, TabularPurgeExecutionDetails>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct TabularPurgePayload {
+pub struct TabularPurgePayload {
     pub(crate) tabular_location: String,
     pub(crate) tabular_type: TabularType,
+}
+
+impl TabularPurgePayload {
+    pub fn new(tabular_location: impl Into<String>, tabular_type: TabularType) -> Self {
+        Self {
+            tabular_location: tabular_location.into(),
+            tabular_type,
+        }
+    }
 }
 
 impl TaskData for TabularPurgePayload {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
-pub(crate) struct PurgeQueueConfig {}
+pub struct PurgeQueueConfig {}
 
-impl QueueConfig for PurgeQueueConfig {
-    fn queue_name() -> &'static str {
-        QUEUE_NAME
+impl TaskConfig for PurgeQueueConfig {
+    fn queue_name() -> &'static TaskQueueName {
+        &QUEUE_NAME
+    }
+
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(3600)
     }
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TabularPurgeExecutionDetails {}
+
+impl TaskExecutionDetails for TabularPurgeExecutionDetails {}
 
 pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
-    poll_interval: &Duration,
+    poll_interval: Duration,
     cancellation_token: crate::CancellationToken,
 ) {
     loop {
-        let task =
-            SpecializedTask::<PurgeQueueConfig, TabularPurgePayload>::poll_for_new_task::<C>(
-                catalog_state.clone(),
-                poll_interval,
-                cancellation_token.clone(),
-            )
-            .await;
+        let task = TabularPurgeTask::poll_for_new_task::<C>(
+            catalog_state.clone(),
+            &poll_interval,
+            cancellation_token.clone(),
+        )
+        .await;
 
         let Some(task) = task else {
-            tracing::info!("Graceful shutdown: exiting tabular purge worker");
+            tracing::info!("Graceful shutdown: exiting `{QN_STR}` worker");
             return;
         };
 
         let span = tracing::debug_span!(
-            QUEUE_NAME,
+            QN_STR,
             location = %task.data.tabular_location,
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
-            queue_name = %task.queue_name(),
-            attempt = %task.attempt,
-            task_id = %task.task_id,
+            attempt = %task.attempt(),
+            task_id = %task.task_id(),
         );
 
         instrumented_purge::<_, C>(catalog_state.clone(), &secret_state, &task)
@@ -79,12 +96,12 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
 async fn instrumented_purge<S: SecretStore, C: Catalog>(
     catalog_state: C::State,
     secret_state: &S,
-    task: &SpecializedTask<PurgeQueueConfig, TabularPurgePayload>,
+    task: &TabularPurgeTask,
 ) {
     match purge::<C, S>(task, secret_state, catalog_state.clone()).await {
         Ok(()) => {
             tracing::info!(
-                "Task of `{QUEUE_NAME}` worker exited successfully. Data at location `{}` deleted.",
+                "Task of `{QN_STR}` worker exited successfully. Data at location `{}` deleted.",
                 task.data.tabular_location
             );
             task.record_success::<C>(catalog_state, Some("Purged tabular data"))
@@ -92,7 +109,7 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
         }
         Err(err) => {
             tracing::error!(
-                "Error in `{QUEUE_NAME}` worker. Failed to purge location {}. {err}",
+                "Error in `{QN_STR}` worker. Failed to purge location {}. {err}",
                 task.data.tabular_location,
             );
             task.record_failure::<C>(
@@ -108,7 +125,7 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
 }
 
 async fn purge<C, S>(
-    task: &SpecializedTask<PurgeQueueConfig, TabularPurgePayload>,
+    task: &TabularPurgeTask,
     secret_state: &S,
     catalog_state: C::State,
 ) -> Result<()>
@@ -131,7 +148,7 @@ where
         })?;
 
     if let Err(e) = trx.commit().await {
-        tracing::warn!("Failed to commit read transaction for `{QUEUE_NAME}` before IO. {e}");
+        tracing::warn!("Failed to commit read transaction for `{QN_STR}` before IO. {e}");
     }
 
     let tabular_location = Location::from_str(tabular_location_str).map_err(|e| {
