@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
-use sqlx::{postgres::types::PgInterval, PgConnection};
+use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use super::EntityType;
@@ -140,12 +140,15 @@ fn pg_interval_to_duration(interval: PgInterval) -> Result<Duration, ErrorModel>
     Ok(Duration::days(days.into()) + Duration::microseconds(microseconds))
 }
 
-pub(crate) async fn get_task_details(
+pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     task_id: TaskId,
     num_attempts: u16,
-    transaction: &mut PgConnection,
-) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse> {
+    state: E,
+) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse>
+where
+    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
     // Overwrite necessary due to:
     // https://github.com/launchbadge/sqlx/issues/1266
     let records = sqlx::query_as!(
@@ -225,7 +228,7 @@ pub(crate) async fn get_task_details(
         *task_id,
         i32::from(num_attempts) // Query limit is num_attempts + 1 to handle the case where there's an active task plus historical attempts
     )
-    .fetch_all(&mut *transaction)
+    .fetch_all(state)
     .await
     .map_err(|e| e.into_error_model("Failed to get task details"))?;
 
@@ -573,11 +576,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_task_details_nonexistent_task(pool: PgPool) {
-        let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let task_id = TaskId::from(Uuid::now_v7());
 
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap();
 
@@ -627,7 +629,7 @@ mod tests {
         assert_eq!(check_result, TaskCheckState::Continue);
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -698,7 +700,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -774,7 +776,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -845,7 +847,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -910,7 +912,7 @@ mod tests {
             .unwrap();
 
         // Get task details with limit of 3 attempts
-        let result = get_task_details(warehouse_id, task_id, 3, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 3, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -969,7 +971,7 @@ mod tests {
             .unwrap();
 
         // Get child task details
-        let result = get_task_details(warehouse_id, child_task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, child_task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -1003,7 +1005,7 @@ mod tests {
         .unwrap();
 
         // Try to get task details with wrong warehouse ID
-        let result = get_task_details(wrong_warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(wrong_warehouse_id, task_id, 10, &pool)
             .await
             .unwrap();
 
