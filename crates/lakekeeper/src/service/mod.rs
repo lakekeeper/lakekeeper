@@ -70,6 +70,8 @@ impl NamedEntity for TableIdent {
             .into_iter()
             .chain(std::iter::once(self.name))
             .collect()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 pub struct ServerId(uuid::Uuid);
