@@ -4462,6 +4462,7 @@ components:
       required:
         - version
         - bootstrapped
+        - server-id
         - authz-backend
         - aws-system-identities-enabled
         - azure-system-identities-enabled
@@ -4494,9 +4495,7 @@ components:
             type: string
           description: List of queues that are registered for the server.
         server-id:
-          type:
-            - string
-            - 'null'
+          type: string
           format: uuid
           description: |-
             ID of the server.

@@ -16,11 +16,9 @@ use crate::{
             },
         },
         management::v1::{
-            bootstrap::{BootstrapRequest, Service as _},
             tasks::{ListTasksRequest, Service as _, TaskStatus},
             warehouse::{
-                CreateWarehouseRequest, ListDeletedTabularsQuery, Service, TabularDeleteProfile,
-                UndropTabularsRequest,
+                ListDeletedTabularsQuery, Service, TabularDeleteProfile, UndropTabularsRequest,
             },
             ApiServer,
         },
@@ -31,7 +29,7 @@ use crate::{
         task_queue::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,
         TabularId,
     },
-    tests::{get_api_context, random_request_metadata},
+    tests::random_request_metadata,
 };
 
 #[sqlx::test]
@@ -39,32 +37,18 @@ async fn test_soft_deletion(pool: PgPool) {
     let storage_profile = crate::tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
 
-    let api_context = get_api_context(&pool, authorizer).await;
-
-    // Bootstrap
-    ApiServer::bootstrap(
-        api_context.clone(),
-        random_request_metadata(),
-        BootstrapRequest::builder().accept_terms_of_use().build(),
+    let (api_context, warehouse) = crate::tests::setup(
+        pool.clone(),
+        storage_profile.clone(),
+        None,
+        authorizer,
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(300),
+        },
+        None,
+        1,
     )
-    .await
-    .unwrap();
-
-    // Create a warehouse
-    let warehouse_name = format!("test_warehouse_{}", Uuid::now_v7());
-    let warehouse = ApiServer::create_warehouse(
-        CreateWarehouseRequest::builder()
-            .warehouse_name(warehouse_name.clone())
-            .storage_profile(storage_profile)
-            .delete_profile(TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(300),
-            })
-            .build(),
-        api_context.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .unwrap();
+    .await;
 
     // Create namespace
     let ns_ident = NamespaceIdent::new(format!("test_namespace_{}", Uuid::now_v7()));

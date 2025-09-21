@@ -7,10 +7,7 @@ use crate::{
     api::{management::v1::ApiServer, ApiContext},
     config,
     request_metadata::RequestMetadata,
-    service::{
-        authz::Authorizer, Actor, Catalog, Result, SecretStore, ServerInfo as CatalogServerInfo,
-        State, Transaction,
-    },
+    service::{authz::Authorizer, Actor, Catalog, Result, SecretStore, State, Transaction},
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
@@ -61,7 +58,7 @@ pub struct ServerInfo {
     pub bootstrapped: bool,
     /// ID of the server.
     /// Returns null if the catalog has not been bootstrapped.
-    pub server_id: Option<uuid::Uuid>,
+    pub server_id: uuid::Uuid,
     /// Default Project ID. Null if not set
     #[schema(value_type = Option::<String>)]
     pub default_project_id: Option<ProjectId>,
@@ -107,20 +104,12 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // We check at two places if we can bootstrap: AuthZ and the catalog.
         // AuthZ just checks if the request metadata could be added as the servers
         // global admin
-        let server_id = state.v1_state.server_id();
         let authorizer = state.v1_state.authz;
         authorizer.can_bootstrap(&request_metadata).await?;
 
         // ------------------- Business Logic -------------------
         let server_info = C::get_server_info(state.v1_state.catalog.clone()).await?;
-        let (previous_server_id, open_for_bootstrap) = match server_info {
-            CatalogServerInfo::Bootstrapped {
-                server_id,
-                open_for_bootstrap,
-                ..
-            } => (Some(server_id), open_for_bootstrap),
-            CatalogServerInfo::NotBootstrapped => (None, true),
-        };
+        let open_for_bootstrap = server_info.is_open_for_bootstrap();
 
         if !open_for_bootstrap {
             return Err(ErrorModel::bad_request(
@@ -131,17 +120,8 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .into());
         }
 
-        if previous_server_id.is_some() && previous_server_id != Some(server_id) {
-            return Err(ErrorModel::bad_request(
-                "Catalog already bootstrapped with a different server ID",
-                "CatalogAlreadyBootstrappedDifferentServerID",
-                None,
-            )
-            .into());
-        }
-
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-        let success = C::bootstrap(accept_terms_of_use, server_id, t.transaction()).await?;
+        let success = C::bootstrap(accept_terms_of_use, t.transaction()).await?;
         if !success {
             return Err(ErrorModel::bad_request(
                 "Concurrent bootstrap detected, catalog already bootstrapped",
@@ -222,8 +202,8 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         Ok(ServerInfo {
             version,
-            bootstrapped: server_data.is_bootstrapped(),
-            server_id: server_data.server_id(),
+            bootstrapped: !server_data.is_open_for_bootstrap(),
+            server_id: *server_data.server_id(),
             default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
