@@ -2,8 +2,9 @@ use std::{collections::HashMap, ops::Deref};
 
 use chrono::Utc;
 use http::StatusCode;
+use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use itertools::{izip, Itertools};
+use itertools::izip;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -342,20 +343,22 @@ pub(crate) async fn drop_namespace(
 ) -> Result<NamespaceDropInfo> {
     let info = sqlx::query!(r#"
         WITH namespace_info AS (
-            SELECT namespace_name, protected
+            SELECT namespace_name, namespace_id, protected
             FROM namespace
             WHERE warehouse_id = $1 AND namespace_id = $2
         ),
         child_namespaces AS (
-            SELECT n.protected, n.namespace_id
+            SELECT n.protected, n.namespace_id, n.namespace_name
             FROM namespace n
             INNER JOIN namespace_info ni ON n.namespace_name[1:array_length(ni.namespace_name, 1)] = ni.namespace_name
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
         ),
         tabulars AS (
-            SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
+            SELECT ta.tabular_id, ta.name as table_name, COALESCE(ni.namespace_name, cn.namespace_name) as namespace_name, fs_location, fs_protocol, ta.typ, ta.protected, deleted_at
             FROM tabular ta
-            WHERE warehouse_id = $1 AND (namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
+            LEFT JOIN namespace_info ni ON ta.namespace_id = ni.namespace_id
+            LEFT JOIN child_namespaces cn ON ta.namespace_id = cn.namespace_id
+            WHERE warehouse_id = $1 AND (ta.namespace_id = $2 AND metadata_location IS NOT NULL OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
             SELECT t.task_id, t.status as task_status from task t
@@ -367,6 +370,8 @@ pub(crate) async fn drop_namespace(
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
+            ARRAY(SELECT namespace_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<Vec<String>>",
+            ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
@@ -480,18 +485,31 @@ pub(crate) async fn drop_namespace(
             info.child_tabulars,
             info.child_tabular_fs_protocol,
             info.child_tabular_fs_location,
-            info.child_tabular_typ
+            info.child_tabular_typ,
+            info.child_tabulars_namespace_names,
+            info.child_tabulars_table_names
         )
-        .map(|(id, protocol, fs_location, typ)| {
-            (
+        .map(|(id, protocol, fs_location, typ, ns_name, t_name)| {
+            let table_ident = TableIdent::new(
+                NamespaceIdent::from_vec(ns_name).map_err(|e| {
+                    ErrorModel::internal(
+                        "Error converting namespace",
+                        "NamespaceConversionError",
+                        Some(Box::new(e)),
+                    )
+                })?,
+                t_name,
+            );
+            Ok::<_, ErrorModel>((
                 match typ {
                     TabularType::Table => TabularId::Table(id),
                     TabularType::View => TabularId::View(id),
                 },
                 join_location(protocol.as_str(), fs_location.as_str()),
-            )
+                table_ident,
+            ))
         })
-        .collect_vec(),
+        .collect::<Result<Vec<_>, _>>()?,
         open_tasks: info
             .child_tabular_task_id
             .into_iter()
@@ -957,6 +975,9 @@ pub(crate) mod tests {
         assert_eq!(drop_info.child_namespaces.len(), 0);
         assert_eq!(drop_info.child_tables.len(), 1);
         assert_eq!(drop_info.open_tasks.len(), 0);
+        let r0 = &drop_info.child_tables[0];
+        assert_eq!(r0.0, TabularId::Table(*table.table_id));
+        assert_eq!(r0.2, table.table_ident);
 
         transaction.commit().await.unwrap();
 

@@ -1557,7 +1557,6 @@ mod test {
         assert_eq!(&task2.queue_name, &tq_name);
         assert_eq!(task2.task_metadata.entity_name, task_2_entity_name);
 
-
         record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();

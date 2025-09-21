@@ -58,8 +58,8 @@ use crate::{
             EntityId, TaskMetadata,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
-        LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
-        TabularDetails, TabularId, Transaction, WarehouseStatus,
+        LoadTableResponse as CatalogLoadTableResult, NamedEntity, State, TableCommit,
+        TableCreation, TableId, TabularDetails, TabularId, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -775,6 +775,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                             entity_id: EntityId::Tabular(*table_id),
                             parent_task_id: None,
                             schedule_for: None,
+                            entity_name: table.clone().into_name_parts(),
                         },
                         TabularPurgePayload {
                             tabular_location: location,
@@ -802,6 +803,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         warehouse_id,
                         parent_task_id: None,
                         schedule_for: Some(chrono::Utc::now() + expiration_seconds),
+                        entity_name: table.clone().into_name_parts(),
                     },
                     TabularExpirationPayload {
                         tabular_type: TabularType::Table,

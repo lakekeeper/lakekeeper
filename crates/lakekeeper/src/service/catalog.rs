@@ -253,7 +253,8 @@ pub struct NamespaceInfo {
 #[derive(Debug)]
 pub struct NamespaceDropInfo {
     pub child_namespaces: Vec<NamespaceId>,
-    pub child_tables: Vec<(TabularId, String)>,
+    // table-id, location, table-ident
+    pub child_tables: Vec<(TabularId, String, TableIdent)>,
     pub open_tasks: Vec<TaskId>,
 }
 

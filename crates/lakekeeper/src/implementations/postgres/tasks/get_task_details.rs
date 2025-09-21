@@ -549,6 +549,7 @@ mod tests {
         assert!(matches!(attempt1.status, APITaskStatus::Failed));
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn queue_task_helper(
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
