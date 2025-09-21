@@ -1,4 +1,3 @@
-import json
 import uuid
 
 import conftest
@@ -1057,14 +1056,18 @@ def test_case_insensitivity(
         .reset_index(drop=True)
     )
     assert pdf["My_Ints"].tolist() == [1, 2]
-    assert pdf["My_Floats"].tolist() == [None, 2.2]
+    assert len(pdf["My_Floats"]) == 2
+    assert pd.isna(pdf["My_Floats"].iloc[0])
+    assert pdf["My_Floats"].iloc[1] == 2.2
 
     spark.sql(f"ALTER TABLE {namespace.spark_name}.my_table RENAME TO my_renamed_table")
     pdf = spark.sql(
         f"SELECT * FROM {namespace.spark_name}.MY_RENAMED_TABLE ORDER BY My_Ints"
     ).toPandas()
     assert pdf["My_Ints"].tolist() == [1, 2]
-    assert pdf["My_Floats"].tolist() == [None, 2.2]
+    assert len(pdf["My_Floats"]) == 2
+    assert pd.isna(pdf["My_Floats"].iloc[0])
+    assert pdf["My_Floats"].iloc[1] == 2.2
 
     spark.sql(f"DROP TABLE {namespace.spark_name}.MY_RENAMED_TABLE")
     assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
