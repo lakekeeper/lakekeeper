@@ -370,7 +370,7 @@ pub(crate) async fn drop_namespace(
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
-            ARRAY(SELECT namespace_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<Vec<String>>",
+            ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
             ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
@@ -490,16 +490,7 @@ pub(crate) async fn drop_namespace(
             info.child_tabulars_table_names
         )
         .map(|(id, protocol, fs_location, typ, ns_name, t_name)| {
-            let table_ident = TableIdent::new(
-                NamespaceIdent::from_vec(ns_name).map_err(|e| {
-                    ErrorModel::internal(
-                        "Error converting namespace",
-                        "NamespaceConversionError",
-                        Some(Box::new(e)),
-                    )
-                })?,
-                t_name,
-            );
+            let table_ident = TableIdent::new(json_value_to_namespace_ident(ns_name)?, t_name);
             Ok::<_, ErrorModel>((
                 match typ {
                     TabularType::Table => TabularId::Table(id),
@@ -516,6 +507,42 @@ pub(crate) async fn drop_namespace(
             .map(TaskId::from)
             .collect(),
     })
+}
+
+fn json_value_to_namespace_ident(v: serde_json::Value) -> Result<NamespaceIdent, ErrorModel> {
+    if let serde_json::Value::Array(arr) = v {
+        let str_vec: Result<Vec<String>, ErrorModel> = arr
+            .into_iter()
+            .map(|item| {
+                if let serde_json::Value::String(s) = item {
+                    Ok(s)
+                } else {
+                    Err(ErrorModel::internal(
+                        "Error converting namespace",
+                        "NamespaceConversionError",
+                        None,
+                    )
+                    .append_detail(format!(
+                        "Expected string in namespace array, found: {item:?}"
+                    )))
+                }
+            })
+            .collect();
+        Ok(NamespaceIdent::from_vec(str_vec?).map_err(|e| {
+            ErrorModel::internal(
+                "Error converting namespace",
+                "NamespaceConversionError",
+                Some(Box::new(e)),
+            )
+        })?)
+    } else {
+        Err(ErrorModel::internal(
+            "Error converting namespace",
+            "NamespaceConversionError",
+            None,
+        )
+        .append_detail(format!("Expected array for namespace, found: {v:?}")))
+    }
 }
 
 pub(crate) async fn set_namespace_protected(
