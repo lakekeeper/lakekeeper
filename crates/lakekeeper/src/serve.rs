@@ -494,16 +494,18 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
         tracing::info!("The catalog is open for bootstrap. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly.");
     } else {
         tracing::info!("The catalog is not open for bootstrap.");
+        if !server_info.terms_accepted() {
+            tracing::error!("The terms of service have not been accepted.");
+            return Err(anyhow!(
+                "Server ID {}.The terms of service have not been accepted.",
+                server_info.server_id()
+            ));
+        }
+        tracing::info!(
+            "Server ID {}. The terms of service have been accepted.",
+            server_info.server_id()
+        );
     }
-
-    if !server_info.terms_accepted() {
-        return Err(anyhow!("The terms of service have not been accepted."));
-    }
-
-    tracing::info!(
-        "Server ID {}. The terms of service have been accepted.",
-        server_info.server_id()
-    );
 
     Ok(())
 }

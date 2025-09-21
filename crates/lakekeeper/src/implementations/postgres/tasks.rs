@@ -1317,11 +1317,11 @@ mod test {
         .unwrap()
         .unwrap();
 
-        assert!(
+        assert_eq!(
             pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
-                .unwrap()
-                .is_none()
+                .unwrap(),
+            None
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
