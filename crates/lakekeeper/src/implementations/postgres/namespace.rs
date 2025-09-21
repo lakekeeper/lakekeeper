@@ -373,10 +373,10 @@ pub(crate) async fn drop_namespace(
             ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
             ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
+            ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is not NULL) AS "child_tabular_fs_protocol!",
+            ARRAY(SELECT fs_location FROM tabulars where deleted_at is not NULL) AS "child_tabular_fs_location!",
+            ARRAY(SELECT typ FROM tabulars where deleted_at is not NULL) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
-            ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
-            ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
-            ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
 "#,
         *warehouse_id,

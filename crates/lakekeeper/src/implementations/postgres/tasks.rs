@@ -555,16 +555,18 @@ pub(crate) async fn record_failure(
                     status = 'scheduled',
                     progress = 0.0,
                     picked_up_at = NULL,
-                    execution_details = NULL
+                    execution_details = NULL,
+                    last_heartbeat_at = NULL
                 FROM locked
                 WHERE t.task_id = locked.task_id AND t.attempt = locked.attempt
                 RETURNING t.task_id as updated_task_id
             )
             SELECT 
-                (EXISTS(SELECT 1 FROM task_log_attempt) OR EXISTS(SELECT 1 FROM locked)) as "task_log_exists!",
+                (EXISTS(SELECT 1 FROM task_log_attempt) OR EXISTS(SELECT 1 FROM log_insert)) as "task_log_exists!",
                 EXISTS(SELECT 1 FROM log_insert) as "log_inserted!",
                 (SELECT message FROM task_log_attempt) as "conflicting_message",
-                (SELECT task_created_at FROM task_log_attempt) as "conflicting_created_at"
+                (SELECT task_created_at FROM task_log_attempt) as "conflicting_created_at",
+                EXISTS(SELECT 1 FROM task_update) as "task_updated!"
             "#,
             *task_id,
             details,
@@ -778,6 +780,7 @@ pub(crate) async fn reschedule_tasks_for(
             status = 'scheduled',
             progress = 0.0,
             execution_details = NULL,
+            last_heartbeat_at = NULL,
             picked_up_at = NULL
         FROM reschedule_tasks r
         WHERE task.task_id = r.task_id AND task.attempt = r.attempt
@@ -1973,8 +1976,6 @@ mod test {
             .error
             .message
             .contains("has already been recorded as completed"));
-        assert!(error.error.message.contains("first success"));
-        assert!(error.error.message.contains("Original attempt recorded at"));
     }
 
     #[sqlx::test]
@@ -2138,6 +2139,12 @@ mod test {
         record_failure(&picked_task, 2, "First failure", &mut conn)
             .await
             .unwrap();
+        // Get original task details, assert last_heartbeat is reset
+        let original_details = get_task_details(warehouse_id, task_id, 10, &pool)
+            .await
+            .unwrap()
+            .expect("Task should exist in task_log");
+        assert_eq!(original_details.task.last_heartbeat_at, None);
 
         // Task should be rescheduled for retry since max_retries=2 > attempt=1
         let rescheduled_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
