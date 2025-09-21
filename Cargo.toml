@@ -64,7 +64,7 @@ serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"
 serde_json = { version = "^1.0", features = ["raw_value"] }
-serde_yaml = "0.9.34"
+serde_norway = "0.9.42"
 quick-xml = "0.37.4"
 url = { version = "^2.5", features = ["serde"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
@@ -137,17 +137,14 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
-utoipa = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
+utoipa = { version = "5.4.0", features = [
     "axum_extras",
     "chrono",
     "url",
     "uuid",
     "yaml",
 ] }
-serde_yml = "0.0.12"
-utoipa-swagger-ui = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
-    "axum",
-] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"

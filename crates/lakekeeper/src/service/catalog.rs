@@ -45,6 +45,7 @@ use crate::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
+        ServerId,
     },
     SecretIdent,
 };
@@ -178,6 +179,7 @@ pub struct TableCommit {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit<'a> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub view_id: ViewId,
     pub view_ident: &'a TableIdent,
@@ -189,6 +191,7 @@ pub struct ViewCommit<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub table_ident: &'c TableIdent,
     pub metadata_location: Option<&'c Location>,
@@ -203,42 +206,40 @@ pub enum CreateOrUpdateUserResponse {
 
 #[derive(Debug, Clone)]
 pub struct UndropTabularResponse {
-    pub table_ident: TableId,
-    pub task_id: TaskId,
+    pub table_id: TableId,
+    pub expiration_task_id: Option<TaskId>,
     pub name: String,
     pub namespace: NamespaceIdent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerInfo {
-    /// Catalog is not bootstrapped
-    NotBootstrapped,
-    /// Catalog is bootstrapped
-    Bootstrapped {
-        /// Server ID of the catalog at the time of bootstrapping
-        server_id: uuid::Uuid,
-        /// Whether the terms have been accepted
-        terms_accepted: bool,
-        /// Whether the catalog is open for re-bootstrap,
-        /// i.e. to recover admin access.
-        open_for_bootstrap: bool,
-    },
+pub struct ServerInfo {
+    /// Server ID of the catalog at the time of bootstrapping
+    pub(crate) server_id: ServerId,
+    /// Whether the terms have been accepted
+    pub(crate) terms_accepted: bool,
+    /// Whether the catalog is open for re-bootstrap,
+    /// i.e. to recover admin access.
+    pub(crate) open_for_bootstrap: bool,
 }
 
 impl ServerInfo {
     /// Returns the server ID if the catalog is bootstrapped.
     #[must_use]
-    pub fn server_id(&self) -> Option<uuid::Uuid> {
-        match self {
-            ServerInfo::NotBootstrapped => None,
-            ServerInfo::Bootstrapped { server_id, .. } => Some(*server_id),
-        }
+    pub fn server_id(&self) -> ServerId {
+        self.server_id
     }
 
     /// Returns true if the catalog is bootstrapped.
     #[must_use]
-    pub fn is_bootstrapped(&self) -> bool {
-        matches!(self, ServerInfo::Bootstrapped { .. })
+    pub fn is_open_for_bootstrap(&self) -> bool {
+        self.open_for_bootstrap
+    }
+
+    /// Returns true if the terms have been accepted.
+    #[must_use]
+    pub fn terms_accepted(&self) -> bool {
+        self.terms_accepted
     }
 }
 
@@ -303,31 +304,14 @@ where
     type Transaction: Transaction<Self::State>;
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
-    async fn determine_server_id(state: Self::State) -> anyhow::Result<uuid::Uuid> {
-        let server_info = Self::get_server_info(state.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!(e).context("Failed to determine server id"))?;
-        let previous_server_id = match server_info {
-            ServerInfo::Bootstrapped { server_id, .. } => Some(server_id),
-            ServerInfo::NotBootstrapped => None,
-        };
-
-        let server_id = previous_server_id.unwrap_or_else(uuid::Uuid::now_v7);
-        Ok(server_id)
-    }
-
     /// Get data required for startup validations and server info endpoint
-    async fn get_server_info(
-        catalog_state: Self::State,
-    ) -> std::result::Result<ServerInfo, ErrorModel>;
+    async fn get_server_info(catalog_state: Self::State) -> Result<ServerInfo, ErrorModel>;
 
     /// Bootstrap the catalog.
-    /// Use this hook to persist the provided `server_id`.
     /// Must return Ok(false) if the catalog is not open for bootstrap.
     /// If bootstrapping succeeds, return Ok(true).
     async fn bootstrap<'a>(
         terms_accepted: bool,
-        server_id: uuid::Uuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
 
@@ -525,6 +509,7 @@ where
     ///
     /// Returns the table location
     async fn drop_table<'a>(
+        warehouse_id: WarehouseId,
         table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -541,6 +526,7 @@ where
     ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
+        warehouse_id: WarehouseId,
         table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -763,6 +749,7 @@ where
     ) -> Result<Option<ViewId>>;
 
     async fn create_view<'a>(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,
@@ -772,6 +759,7 @@ where
     ) -> Result<()>;
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -793,6 +781,7 @@ where
     /// Returns location of the dropped view.
     /// Used for cleanup
     async fn drop_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -821,12 +810,14 @@ where
     ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
@@ -876,7 +867,7 @@ where
     async fn resolve_tasks_impl(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>>;
 
     /// Resolve tasks among all known active and historical tasks.
@@ -885,7 +876,7 @@ where
     async fn resolve_tasks(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
         if task_ids.is_empty() {
             return Ok(HashMap::new());
@@ -913,7 +904,7 @@ where
             return Ok(cached_results);
         }
         let resolve_uncached_result =
-            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, transaction).await?;
+            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, state).await?;
         for (id, value) in resolve_uncached_result {
             cached_results.insert(id, value.clone());
             TASKS_CACHE.insert(id, value).await;
@@ -924,9 +915,9 @@ where
     async fn resolve_required_tasks(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
-        let tasks = Self::resolve_tasks(warehouse_id, task_ids, transaction).await?;
+        let tasks = Self::resolve_tasks(warehouse_id, task_ids, state).await?;
 
         for task_id in task_ids {
             if !tasks.contains_key(task_id) {
@@ -978,7 +969,7 @@ where
         warehouse_id: WarehouseId,
         task_id: TaskId,
         num_attempts: u16, // Number of attempts to retrieve in the task details
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>>;
 
     /// Get task details by task id.
@@ -987,9 +978,9 @@ where
         warehouse_id: WarehouseId,
         task_id: TaskId,
         num_attempts: u16,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>> {
-        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, transaction).await
+        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, state).await
     }
 
     /// List tasks

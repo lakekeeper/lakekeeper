@@ -6,7 +6,8 @@ use openfga_client::client::{
 
 use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use crate::{
-    service::authz::implementations::openfga::migration::get_active_auth_model_id, OpenFGAAuth,
+    service::{authz::implementations::openfga::migration::get_active_auth_model_id, ServerId},
+    OpenFGAAuth,
 };
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
@@ -58,7 +59,7 @@ pub(crate) async fn new_client_from_config() -> OpenFGAResult<BasicOpenFgaServic
 /// - Store (name) not found (from crate Config)
 /// - Active Authorization model not found
 pub(crate) async fn new_authorizer_from_config(
-    server_id: uuid::Uuid,
+    server_id: ServerId,
 ) -> OpenFGAResult<OpenFGAAuthorizer> {
     let client = new_client_from_config().await?;
     new_authorizer(
@@ -82,7 +83,7 @@ pub(crate) async fn new_authorizer(
     mut service_client: BasicOpenFgaServiceClient,
     store_name: Option<String>,
     consistency: ConsistencyPreference,
-    server_id: uuid::Uuid,
+    server_id: ServerId,
 ) -> OpenFGAResult<OpenFGAAuthorizer> {
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
     let auth_model_id =
