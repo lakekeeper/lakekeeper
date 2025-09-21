@@ -481,7 +481,6 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
         let drop_info =
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
 
-        // cancel pending tasks
         C::cancel_scheduled_tasks(
             None,
             TaskFilter::TaskIds(drop_info.open_tasks),

@@ -358,24 +358,24 @@ pub(crate) async fn drop_namespace(
             FROM tabular ta
             LEFT JOIN namespace_info ni ON ta.namespace_id = ni.namespace_id
             LEFT JOIN child_namespaces cn ON ta.namespace_id = cn.namespace_id
-            WHERE warehouse_id = $1 AND ((ta.namespace_id = $2 AND metadata_location IS NOT NULL) OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
+            WHERE warehouse_id = $1 AND metadata_location IS NOT NULL AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
-            SELECT t.task_id, t.status as task_status from task t
-            WHERE t.status = 'running' AND t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type = 'tabular' AND queue_name = 'tabular_expiration'
+            SELECT t.task_id, t.queue_name, t.status as task_status from task t
+            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type = 'tabular'
         )
         SELECT
             (SELECT protected FROM namespace_info) AS "is_protected!",
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
-            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
+            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name = 'tabular_expiration') AS "has_running_expiration!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
             ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
             ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
+            ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_protocol!",
+            ARRAY(SELECT fs_location FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_location!",
+            ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
-            ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is not NULL) AS "child_tabular_fs_protocol!",
-            ARRAY(SELECT fs_location FROM tabulars where deleted_at is not NULL) AS "child_tabular_fs_location!",
-            ARRAY(SELECT typ FROM tabulars where deleted_at is not NULL) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
 "#,
@@ -431,7 +431,7 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
-    if info.has_running_tasks {
+    if info.has_running_expiration {
         return Err(
             ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
         );
