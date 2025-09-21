@@ -144,7 +144,7 @@ utoipa = { version = "5.4.0", features = [
     "uuid",
     "yaml",
 ] }
-utoipa-swagger-ui = { version = "5.4.0", features = ["axum"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"
