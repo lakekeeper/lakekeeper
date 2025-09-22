@@ -1397,6 +1397,78 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
+    async fn test_to_ids_case_insensitivity(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace_lower =
+            NamespaceIdent::from_vec(vec!["my_namespace".to_string(), "child".to_string()])
+                .unwrap();
+        let namespace_upper =
+            NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string(), "CHILD".to_string()])
+                .unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace_lower, None).await;
+
+        let table_ident_lower = TableIdent {
+            namespace: namespace_lower.clone(),
+            name: "my_table".to_string(),
+        };
+        let table_ident_upper = TableIdent {
+            namespace: namespace_upper.clone(),
+            name: "MY_TABLE".to_string(),
+        };
+
+        let created = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace_lower.clone()),
+            None,
+            Some(table_ident_lower.name.clone()),
+        )
+        .await;
+        let _ = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace_lower.clone()),
+            None,
+            Some("a_table_not_to_be_included_in_results".to_string()),
+        )
+        .await;
+
+        // Lower idents are in db and we query upper.
+        let existing = table_idents_to_ids(
+            warehouse_id,
+            HashSet::from([&table_ident_upper]),
+            ListFlags::default(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(existing.len(), 1);
+        // The queried ident must be the key in the map.
+        assert_eq!(
+            existing.get(&table_ident_upper),
+            Some(&Some(created.table_id))
+        );
+
+        // Verify behavior of querying the same table twice with different cases.
+        let existing = table_idents_to_ids(
+            warehouse_id,
+            HashSet::from([&table_ident_lower, &table_ident_upper]),
+            ListFlags::default(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(existing.len(), 2);
+        let entry_lower = existing.get(&table_ident_lower).unwrap().unwrap();
+        let entry_upper = existing.get(&table_ident_upper).unwrap().unwrap();
+        assert_eq!(entry_lower, entry_upper);
+    }
+
+    #[sqlx::test]
     async fn test_rename_without_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 

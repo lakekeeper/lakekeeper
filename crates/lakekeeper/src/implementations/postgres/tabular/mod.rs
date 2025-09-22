@@ -12,7 +12,7 @@ use http::StatusCode;
 use iceberg::ErrorKind;
 use iceberg_ext::NamespaceIdent;
 use lakekeeper_io::Location;
-use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
+use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
@@ -31,8 +31,6 @@ use crate::{
     },
     WarehouseId, CONFIG,
 };
-
-const MAX_PARAMETERS: usize = 30000;
 
 #[derive(Debug, sqlx::Type, Copy, Clone, strum::Display)]
 #[sqlx(type_name = "tabular_type", rename_all = "kebab-case")]
@@ -188,14 +186,28 @@ where
 #[derive(Debug, FromRow)]
 struct TabularRow {
     tabular_id: Uuid,
-    namespace: Vec<String>,
-    tabular_name: String,
+    // Despite `IS NOT NULL` filter sqlx thinks column selected from input is nullable.
+    namespace: Option<Vec<String>>,
+    // Despite `IS NOT NULL` filter sqlx thinks column selected from input is nullable.
+    tabular_name: Option<String>,
     // apparently this is needed, we need 'as "typ: TabularType"' in the query else the select won't
     // work, but that apparently aliases the whole column to "typ: TabularType"
     #[sqlx(rename = "typ: TabularType")]
     typ: TabularType,
 }
 
+/// The keys in the returned map correspond to the input identifiers in the `tables` parameter.
+///
+/// These may differ in case from identifiers stored in the db, since case insensitivity is achieved
+/// by collation. For example:
+///
+/// - Table name in the db is `table1`
+/// - The input parameter is `TABLE1`
+/// - `table1` and `TABLE1` match due to collation and the key in the returned map is `TABLE1`
+///
+/// In line with that, querying both `table1` and `TABLE1` returns a map with two entries,
+/// both mapping to the same table id.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     tables: HashSet<TabularIdentBorrowed<'_>>,
@@ -205,77 +217,96 @@ pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
-    let batch_tables = tables
-        .iter()
-        .map(|t| {
-            let TableIdent { namespace, name } = t.to_table_ident_tuple();
-            let typ: TabularType = t.into();
-            (namespace, name, typ)
-        })
-        .collect::<Vec<_>>();
-
-    if batch_tables.is_empty() {
+    if tables.is_empty() {
         return Ok(HashMap::new());
     }
+    let (ns_names, t_names, t_typs) = tables.iter().fold(
+        (
+            Vec::with_capacity(tables.len()),
+            Vec::with_capacity(tables.len()),
+            Vec::with_capacity(tables.len()),
+        ),
+        |(mut ns_names, mut t_names, mut t_typs), t| {
+            let TableIdent { namespace, name } = t.to_table_ident_tuple();
+            let typ: TabularType = t.into();
+            ns_names.push(namespace.as_ref());
+            t_names.push(name);
+            t_typs.push(typ);
+            (ns_names, t_names, t_typs)
+        },
+    );
 
-    if batch_tables.len() > (MAX_PARAMETERS / 3) {
-        return Err(ErrorModel::bad_request(
-            "Too many tables or views to fetch",
-            "TooManyTablesOrViews",
-            None,
+    // Encoding `ns_names` as json is a workaround for `sqlx` not supporting `Vec<Vec<String>>`.
+    let ns_names_json = serde_json::to_value(&ns_names).map_err(|e| {
+        ErrorModel::internal(
+            "Error json encoding namespace names",
+            "EncodingError",
+            Some(Box::new(e)),
         )
-        .into());
-    }
+    })?;
 
-    // This query is statically verified against our DB, we then take it apart to do some dynamic
-    // extension further down before reconstructing it.
-    let mut statically_checked_query = sqlx::query_as!(
+    // For columns with collation, the query must return the value as in input `tables`.
+    let rows = sqlx::query_as!(
         TabularRow,
         r#"
         SELECT t.tabular_id,
-               n.namespace_name as "namespace",
-               t.name as tabular_name,
-               t.typ as "typ: TabularType"
-        FROM tabular t
-        INNER JOIN namespace n
-            ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+            in_ns.name as "namespace",
+            in_t.name as tabular_name,
+            t.typ as "typ: TabularType"
+        FROM LATERAL (
+            SELECT (
+                SELECT array_agg(val ORDER BY ord)
+                FROM jsonb_array_elements_text(x.name) WITH ORDINALITY AS e(val, ord)
+            ) AS name, x.idx
+            FROM jsonb_array_elements($2) WITH ORDINALITY AS x(name, idx)
+        ) in_ns
+        INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])
+            WITH ORDINALITY AS in_t(name, typ, idx)
+            ON in_ns.idx = in_t.idx
+        INNER JOIN tabular t ON t.warehouse_id = $1 AND
+            t.name = in_t.name AND t.typ = in_t.typ
+        INNER JOIN namespace n ON n.warehouse_id = $1
+            AND t.namespace_id = n.namespace_id AND n.namespace_name = in_ns.name
         INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE t.warehouse_id = $1 AND w.status = 'active'
-            AND (t.deleted_at is NULL OR $2)
-            AND (t.metadata_location is not NULL OR $3) "#,
+        WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
+            AND w.status = 'active'
+            AND (t.deleted_at is NULL OR $5)
+            AND (t.metadata_location is not NULL OR $6) "#,
         *warehouse_id,
+        ns_names_json as _,
+        t_names.as_slice() as _,
+        t_typs.as_slice() as _,
         list_flags.include_deleted,
         list_flags.include_staged
-    );
-    let checked_sql = statically_checked_query.sql();
-
-    let mut query_builder: QueryBuilder<'_, Postgres> = sqlx::QueryBuilder::new(checked_sql);
-
-    let mut args = statically_checked_query
-        .take_arguments()
-        .map_err(|e| {
-            ErrorModel::internal("Failed to build dynamic query", "DatabaseError", Some(e))
-        })?
-        .unwrap_or_default();
-
-    append_dynamic_filters(batch_tables.as_slice(), &mut query_builder, &mut args)?;
-
-    let query = query_builder.build();
-
-    let rows: Vec<TabularRow> = sqlx::query_as_with(query.sql(), args)
-        .fetch_all(catalog_state)
-        .await
-        .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
+    )
+    .fetch_all(catalog_state)
+    .await
+    .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
 
     let mut table_map = HashMap::with_capacity(tables.len());
     for TabularRow {
         tabular_id,
-        namespace,
-        tabular_name: name,
+        namespace: in_namespace,
+        tabular_name: in_tabular_name,
         typ,
     } in rows
     {
+        let namespace = in_namespace.ok_or_else(|| {
+            ErrorModel::internal(
+                "Namespace name should not be null",
+                "InternalDatabaseError",
+                None,
+            )
+        })?;
+        let name = in_tabular_name.ok_or_else(|| {
+            ErrorModel::internal(
+                "Tabular name should not be null",
+                "InternalDatabaseError",
+                None,
+            )
+        })?;
         let namespace = try_parse_namespace_ident(namespace)?;
+
         match typ {
             TabularType::Table => {
                 table_map.insert(
@@ -293,51 +324,13 @@ where
     }
 
     // Missing tables are added with None
-    for table in tables {
-        table_map.entry(table.into()).or_insert(None);
+    if table_map.len() < tables.len() {
+        for table in tables {
+            table_map.entry(table.into()).or_insert(None);
+        }
     }
 
     Ok(table_map)
-}
-
-fn append_dynamic_filters(
-    batch_tables: &[(&NamespaceIdent, &String, TabularType)],
-    query_builder: &mut QueryBuilder<'_, Postgres>,
-    args: &mut PgArguments,
-) -> Result<()> {
-    query_builder.push(r" AND (n.namespace_name, t.name, t.typ) IN ");
-    query_builder.push("(");
-
-    let mut arg_idx = args.len() + 1;
-    for (i, (ns_ident, name, typ)) in batch_tables.iter().enumerate() {
-        query_builder.push(format!("(${arg_idx}"));
-        arg_idx += 1;
-        args.add(ns_ident.as_ref()).map_err(|e| {
-            ErrorModel::internal("Failed to add namespace to query", "DatabaseError", Some(e))
-        })?;
-
-        query_builder.push(", ");
-
-        query_builder.push(format!("${arg_idx}"));
-        arg_idx += 1;
-        args.add(name).map_err(|e| {
-            ErrorModel::internal("Failed to add name to query", "DatabaseError", Some(e))
-        })?;
-        query_builder.push(", ");
-
-        query_builder.push(format!("${arg_idx}"));
-        arg_idx += 1;
-        args.add(*typ).map_err(|e| {
-            ErrorModel::internal("Failed to add type to query", "DatabaseError", Some(e))
-        })?;
-
-        query_builder.push(")");
-        if i != batch_tables.len() - 1 {
-            query_builder.push(", ");
-        }
-    }
-    query_builder.push(")");
-    Ok(())
 }
 
 pub(crate) struct CreateTabular<'a> {
