@@ -98,7 +98,7 @@ pub(crate) mod tests {
         super::{client::new_authorizer, OpenFGAAuthorizer},
         *,
     };
-    use crate::service::authz::implementations::openfga::new_client_from_config;
+    use crate::service::{authz::implementations::openfga::new_client_from_config, ServerId};
 
     pub(crate) async fn authorizer_for_empty_store(
     ) -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
@@ -112,7 +112,7 @@ pub(crate) mod tests {
             client.clone(),
             Some(store_name),
             ConsistencyPreference::HigherConsistency,
-            uuid::Uuid::new_v4(), // random server id for test
+            ServerId::new_random(), // random server id for test
         )
         .await
         .unwrap();
