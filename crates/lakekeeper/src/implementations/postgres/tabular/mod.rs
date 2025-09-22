@@ -254,8 +254,11 @@ where
             in_t.name as tabular_name,
             t.typ as "typ: TabularType"
         FROM LATERAL (
-            SELECT jsonb_to_textarr(name) AS name, idx
-            FROM jsonb_array_elements($2) WITH ORDINALITY AS t(name, idx)
+            SELECT (
+                SELECT array_agg(val ORDER BY ord)
+                FROM jsonb_array_elements_text(x.name) WITH ORDINALITY AS e(val, ord)
+            ) AS name, x.idx
+            FROM jsonb_array_elements($2) WITH ORDINALITY AS x(name, idx)
         ) in_ns
         INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])
             WITH ORDINALITY AS in_t(name, typ, idx)
