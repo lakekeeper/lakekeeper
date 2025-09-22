@@ -135,10 +135,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Migrate {}) => {
             print_info();
-            println!("Migrating authorizer...");
-            lakekeeper::service::authz::implementations::migrate_default_authorizer().await?;
-            println!("Authorizer migration complete.");
-
             println!("Migrating database...");
             let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
                 CONFIG
@@ -149,9 +145,14 @@ async fn main() -> anyhow::Result<()> {
 
             // This embeds database migrations in the application binary so we can ensure the database
             // is migrated correctly on startup
-            let _server_id =
+            let server_id =
                 lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
             println!("Database migration complete.");
+
+            println!("Migrating authorizer...");
+            lakekeeper::service::authz::implementations::migrate_default_authorizer(server_id)
+                .await?;
+            println!("Authorizer migration complete.");
         }
         Some(Commands::Serve { force_start }) => {
             print_info();

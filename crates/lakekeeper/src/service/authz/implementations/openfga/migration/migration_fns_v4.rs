@@ -11,15 +11,18 @@ use openfga_client::client::{
 use strum::IntoEnumIterator;
 use tokio::{sync::Semaphore, task::JoinSet};
 
-use crate::service::authz::implementations::openfga::{
-    NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
-    MAX_TUPLES_PER_WRITE,
+use crate::service::{
+    authz::implementations::openfga::{
+        NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
+        MAX_TUPLES_PER_WRITE,
+    },
+    ServerId,
 };
 
 #[derive(Clone, Debug)]
 pub(crate) struct MigrationState {
     pub store_name: String,
-    pub server_id: uuid::Uuid,
+    pub server_id: ServerId,
 }
 
 fn openfga_user_type(inp: &str) -> Option<String> {
@@ -189,7 +192,7 @@ pub(crate) async fn v4_push_down_warehouse_id(
 
 async fn get_all_projects(
     client: &BasicOpenFgaClient,
-    server_id: uuid::Uuid,
+    server_id: ServerId,
 ) -> anyhow::Result<Vec<String>> {
     let request_key = ReadRequestTupleKey {
         user: format!("server:{server_id}"),
@@ -485,14 +488,19 @@ mod tests {
         use crate::{
             api::RequestMetadata,
             service::{
-                authz::implementations::openfga::{
-                    migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION, V4_MODEL_VERSION},
-                    new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation,
-                    AUTH_CONFIG, OPENFGA_SERVER,
+                authz::{
+                    implementations::openfga::{
+                        migration::{
+                            add_model_v3, add_model_v4, V3_MODEL_VERSION, V4_MODEL_VERSION,
+                        },
+                        new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation,
+                        AUTH_CONFIG,
+                    },
+                    Authorizer,
                 },
-                NamespaceId, TableId, UserId, ViewId,
+                NamespaceId, ServerId, TableId, UserId, ViewId,
             },
-            ProjectId, WarehouseId, CONFIG,
+            ProjectId, WarehouseId,
         };
 
         // Tests must write tuples according to v3 model manually.
@@ -505,9 +513,11 @@ mod tests {
         // functions to construct a v3 client/authorizer.
 
         /// Constructs a client for a store that has been initialized and migrated to v3.
-        /// Returns the client and the name of the store.
-        async fn v3_client_for_empty_store() -> anyhow::Result<(BasicOpenFgaClient, String)> {
+        /// Returns the client, name of the store, and server id.
+        async fn v3_client_for_empty_store(
+        ) -> anyhow::Result<(BasicOpenFgaClient, String, ServerId)> {
             let mut client = new_client_from_config().await?;
+            let server_id = ServerId::new_random();
             let test_uuid = uuid::Uuid::now_v7();
             let store_name = format!("test_store_{test_uuid}");
 
@@ -519,7 +529,7 @@ mod tests {
             let mut model_manager = add_model_v3(model_manager);
             let migration_state = MigrationState {
                 store_name: store_name.clone(),
-                server_id: CONFIG.server_id,
+                server_id,
             };
             model_manager.migrate(migration_state).await?;
 
@@ -533,14 +543,18 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("Auth model should be set after migration"))?;
             let client = BasicOpenFgaClient::new(client, &store.id, &auth_model_id)
                 .set_consistency(ConsistencyPreference::HigherConsistency);
-            Ok((client, store_name))
+            Ok((client, store_name, server_id))
         }
 
         async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
-            let (client, _) = v3_client_for_empty_store().await?;
+            let (client, _, server_id) = v3_client_for_empty_store().await?;
+            // TODO(1361) server_id.to_openfga()
+            let openfga_server = format!("server:{server_id}");
             Ok(OpenFGAAuthorizer {
                 client,
                 health: Arc::new(RwLock::new(vec![])),
+                server_id,
+                openfga_server,
             })
         }
 
@@ -549,6 +563,7 @@ mod tests {
         async fn migrate_to_v4(
             client: BasicOpenFgaClient,
             store_name: String,
+            server_id: ServerId,
         ) -> anyhow::Result<BasicOpenFgaClient> {
             // Migrate the store.
             let model_manager = TupleModelManager::new(
@@ -559,7 +574,7 @@ mod tests {
             let mut model_manager = add_model_v4(model_manager);
             let migration_state = MigrationState {
                 store_name: store_name.clone(),
-                server_id: CONFIG.server_id,
+                server_id,
             };
             model_manager.migrate(migration_state).await?;
 
@@ -575,11 +590,15 @@ mod tests {
         }
 
         async fn new_v4_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
-            let (client, store_name) = v3_client_for_empty_store().await?;
-            let client_v4 = migrate_to_v4(client, store_name).await?;
+            let (client, store_name, server_id) = v3_client_for_empty_store().await?;
+            let client_v4 = migrate_to_v4(client, store_name, server_id).await?;
+            // TODO(1361) server_id.to_openfga()
+            let openfga_server = format!("server:{server_id}");
             Ok(OpenFGAAuthorizer {
                 client: client_v4,
                 health: Arc::new(RwLock::new(vec![])),
+                server_id,
+                openfga_server,
             })
         }
 
@@ -591,13 +610,13 @@ mod tests {
                 .write(
                     Some(vec![
                         TupleKey {
-                            user: OPENFGA_SERVER.clone(),
+                            user: authorizer.openfga_server().to_string(),
                             relation: ProjectRelation::Server.to_string(),
                             object: "project:p1".to_string(),
                             condition: None,
                         },
                         TupleKey {
-                            user: OPENFGA_SERVER.clone(),
+                            user: authorizer.openfga_server().to_string(),
                             relation: ProjectRelation::Server.to_string(),
                             object: "project:p2".to_string(),
                             condition: None,
@@ -622,7 +641,7 @@ mod tests {
                 )
                 .await?;
 
-            let mut projects = get_all_projects(&authorizer.client, CONFIG.server_id).await?;
+            let mut projects = get_all_projects(&authorizer.client, authorizer.server_id()).await?;
             projects.sort();
             assert_eq!(
                 projects,
@@ -636,7 +655,7 @@ mod tests {
             let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Test with a server that has no projects
-            let projects = get_all_projects(&authorizer.client, CONFIG.server_id).await?;
+            let projects = get_all_projects(&authorizer.client, authorizer.server_id()).await?;
             assert!(projects.is_empty());
             Ok(())
         }
@@ -1114,7 +1133,9 @@ mod tests {
         #[tokio::test]
         #[allow(clippy::too_many_lines)]
         async fn test_v4_push_down_warehouse_id() -> anyhow::Result<()> {
-            let (client, store_name) = v3_client_for_empty_store().await?;
+            let (client, store_name, server_id) = v3_client_for_empty_store().await?;
+            // TODO(1361) server_id.to_openfga()
+            let openfga_server = format!("server:{server_id}");
 
             // Create the initial tuple structure:
             //
@@ -1125,7 +1146,7 @@ mod tests {
             let initial_tuples = vec![
                 // Project structure
                 TupleKey {
-                    user: OPENFGA_SERVER.clone(),
+                    user: openfga_server,
                     relation: ProjectRelation::Server.to_string(),
                     object: "project:p1".to_string(),
                     condition: None,
@@ -1244,7 +1265,7 @@ mod tests {
             client.write(Some(initial_tuples.clone()), None).await?;
 
             // Migrate to v4, which will call the migration fn.
-            let client_v4 = migrate_to_v4(client, store_name.clone()).await?;
+            let client_v4 = migrate_to_v4(client, store_name.clone(), server_id).await?;
 
             // Read all tuples from store
             let all_tuples = client_v4
@@ -1403,10 +1424,14 @@ mod tests {
             /// half tables, half views, equally distributed among namespaces
             const NUM_TABULARS: usize = 10_000;
 
-            let (client, store_name) = v3_client_for_empty_store().await?;
+            let (client, store_name, server_id) = v3_client_for_empty_store().await?;
+            // TODO(1361) server_id.to_openfga()
+            let openfga_server = format!("server:{server_id}");
             let authorizer = OpenFGAAuthorizer {
                 client: client.clone(),
                 health: Arc::default(),
+                server_id,
+                openfga_server: openfga_server.clone(),
             };
             let req_meta_human =
                 RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
@@ -1420,7 +1445,6 @@ mod tests {
 
             // Write project tuples manually
             let actor = req_meta_human.actor();
-            let server = OPENFGA_SERVER.clone();
             let project_openfga = format!("project:{project_id}");
             authorizer
                 .write(
@@ -1432,7 +1456,7 @@ mod tests {
                             condition: None,
                         },
                         TupleKey {
-                            user: server.clone(),
+                            user: openfga_server.clone(),
                             relation: ProjectRelation::Server.to_string(),
                             object: project_openfga.clone(),
                             condition: None,
@@ -1440,7 +1464,7 @@ mod tests {
                         TupleKey {
                             user: project_openfga,
                             relation: ServerRelation::Project.to_string(),
-                            object: server,
+                            object: openfga_server.clone(),
                             condition: None,
                         },
                     ]),
@@ -1629,7 +1653,7 @@ mod tests {
 
             tracing::info!("Migrating the OpenFGA store");
             let start_migrating = Instant::now();
-            let client_v4 = migrate_to_v4(client, store_name).await?;
+            let client_v4 = migrate_to_v4(client, store_name, server_id).await?;
             tracing::info!(
                 "Migrated the OpenFGA store in {} seconds",
                 start_migrating.elapsed().as_secs()
@@ -1694,7 +1718,7 @@ mod tests {
                     Some(vec![
                         // Project structure
                         TupleKey {
-                            user: OPENFGA_SERVER.clone(),
+                            user: authorizer.openfga_server().to_string(),
                             relation: ProjectRelation::Server.to_string(),
                             object: project_openfga.clone(),
                             condition: None,
