@@ -878,6 +878,7 @@ pub(crate) mod tests {
                 warehouse_id,
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity_name: vec!["myview".to_string()],
             },
             TabularExpirationPayload {
                 tabular_type: crate::api::management::v1::TabularType::View,

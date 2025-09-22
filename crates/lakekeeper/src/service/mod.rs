@@ -59,6 +59,20 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> State<A, C, S> {
     }
 }
 
+pub trait NamedEntity {
+    fn into_name_parts(self) -> Vec<String>;
+}
+
+impl NamedEntity for TableIdent {
+    fn into_name_parts(self) -> Vec<String> {
+        self.namespace
+            .inner()
+            .into_iter()
+            .chain(std::iter::once(self.name))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 pub struct ServerId(uuid::Uuid);
 

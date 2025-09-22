@@ -40,6 +40,8 @@ pub struct Task {
     pub queue_name: TaskQueueName,
     /// Type of entity this task operates on
     pub entity: TaskEntity,
+    /// Name of the entity this task operates on
+    pub entity_name: Vec<String>,
     /// Current status of the task
     pub status: TaskStatus,
     /// When the latest attempt of the task is scheduled for
