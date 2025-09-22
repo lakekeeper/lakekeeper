@@ -16,7 +16,7 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        Catalog, NamedEntity, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
@@ -76,6 +76,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         entity_id: EntityId::Tabular(*view_id),
                         parent_task_id: None,
                         schedule_for: None,
+                        entity_name: view.clone().into_name_parts(),
                     },
                     TabularPurgePayload {
                         tabular_location: location,
@@ -103,6 +104,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     warehouse_id,
                     parent_task_id: None,
                     schedule_for: Some(chrono::Utc::now() + expiration_seconds),
+                    entity_name: view.clone().into_name_parts(),
                 },
                 TabularExpirationPayload {
                     tabular_type: TabularType::View,

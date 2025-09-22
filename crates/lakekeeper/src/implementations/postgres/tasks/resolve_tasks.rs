@@ -138,6 +138,7 @@ mod tests {
                     warehouse_id,
                     parent_task_id,
                     entity_id,
+                    entity_name: vec!["ns".to_string(), format!("table{}", entity_id.to_uuid())],
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
