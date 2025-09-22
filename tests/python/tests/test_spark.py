@@ -1,4 +1,3 @@
-import json
 import uuid
 
 import conftest
@@ -1034,3 +1033,43 @@ def test_register_table(
         f"SELECT * FROM {namespace.spark_name}.my_registered_table"
     ).toPandas()
     assert pdf["my_ints"].tolist() == [1]
+
+
+def test_case_insensitivity(
+    spark,
+    namespace,
+):
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.My_Table (My_Ints INT) USING iceberg"
+    )
+    spark.sql(f"INSERT INTO {namespace.spark_name}.My_Table VALUES (1)")
+    pdf = spark.sql(f"SELECT * FROM {namespace.spark_name}.my_table").toPandas()
+    assert pdf["My_Ints"].tolist() == [1]
+
+    spark.sql(
+        f"ALTER TABLE {namespace.spark_name}.MY_TABLE ADD COLUMN My_Floats DOUBLE"
+    )
+    spark.sql(f"INSERT INTO {namespace.spark_name}.my_table VALUES (2, 2.2)")
+    pdf = (
+        spark.sql(f"SELECT * FROM {namespace.spark_name}.my_table ORDER BY My_Ints")
+        .toPandas()
+        .reset_index(drop=True)
+    )
+    assert pdf["My_Ints"].tolist() == [1, 2]
+    assert len(pdf["My_Floats"]) == 2
+    assert pd.isna(pdf["My_Floats"].iloc[0])
+    assert pdf["My_Floats"].iloc[1] == 2.2
+
+    spark.sql(f"ALTER TABLE {namespace.spark_name}.my_table RENAME TO my_renamed_table")
+    pdf = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.MY_RENAMED_TABLE ORDER BY My_Ints"
+    ).toPandas()
+    assert pdf["My_Ints"].tolist() == [1, 2]
+    assert len(pdf["My_Floats"]) == 2
+    assert pd.isna(pdf["My_Floats"].iloc[0])
+    assert pdf["My_Floats"].iloc[1] == 2.2
+
+    spark.sql(f"DROP TABLE {namespace.spark_name}.MY_RENAMED_TABLE")
+    assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
+    with pytest.raises(Exception) as e:
+        spark.sql(f"SELECT * FROM {namespace.spark_name}.my_renamed_table").toPandas()
