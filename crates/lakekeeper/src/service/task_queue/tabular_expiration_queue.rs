@@ -241,6 +241,7 @@ where
                     warehouse_id: task.task_metadata.warehouse_id,
                     parent_task_id: Some(task.task_id()),
                     schedule_for: None,
+                    entity_name: task.task_metadata.entity_name.clone(),
                 },
                 TabularPurgePayload::new(tabular_location, task.data.tabular_type),
                 trx.transaction(),
@@ -286,7 +287,8 @@ mod test {
             CatalogState, PostgresCatalog, PostgresTransaction, SecretsState,
         },
         service::{
-            authz::AllowAllAuthorizer, storage::MemoryProfile, Catalog, ListFlags, Transaction,
+            authz::AllowAllAuthorizer, storage::MemoryProfile, Catalog, ListFlags, NamedEntity,
+            Transaction,
         },
     };
 
@@ -323,7 +325,7 @@ mod test {
         )
         .await;
 
-        let tab = initialize_table(
+        let table = initialize_table(
             warehouse,
             catalog_state.clone(),
             false,
@@ -348,7 +350,7 @@ mod test {
         )
         .await
         .unwrap()
-        .remove(&tab.table_id.into())
+        .remove(&table.table_id.into())
         .unwrap();
         trx.commit().await.unwrap();
         let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
@@ -357,9 +359,10 @@ mod test {
         TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
                 warehouse_id: warehouse,
-                entity_id: EntityId::Tabular(tab.table_id.0),
+                entity_id: EntityId::Tabular(table.table_id.0),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity_name: table.table_ident.into_name_parts(),
             },
             TabularExpirationPayload {
                 tabular_type: TabularType::Table,
@@ -372,7 +375,7 @@ mod test {
 
         <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
             warehouse,
-            tab.table_id.into(),
+            table.table_id.into(),
             false,
             trx.transaction(),
         )
@@ -398,7 +401,7 @@ mod test {
         )
         .await
         .unwrap()
-        .remove(&tab.table_id.into())
+        .remove(&table.table_id.into())
         .unwrap()
         .deletion_details;
         del.unwrap();
@@ -422,7 +425,7 @@ mod test {
             )
             .await
             .unwrap()
-            .remove(&tab.table_id.into())
+            .remove(&table.table_id.into())
             .is_none();
             trx.commit().await.unwrap();
             if gone || std::time::Instant::now() >= deadline {
@@ -448,7 +451,7 @@ mod test {
         )
         .await
         .unwrap()
-        .remove(&tab.table_id.into())
+        .remove(&table.table_id.into())
         .is_none());
         trx.commit().await.unwrap();
 

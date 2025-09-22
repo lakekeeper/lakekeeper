@@ -491,7 +491,6 @@ impl StorageProfile {
         );
         let mut test_file_write = metadata_location.parent();
         test_file_write.push("test");
-        println!("Test file write location: {test_file_write}");
         let mut test_file_write = test_file_write.parent();
         test_file_write.push("test");
         tracing::debug!("Validating access to: {}", test_file_write);

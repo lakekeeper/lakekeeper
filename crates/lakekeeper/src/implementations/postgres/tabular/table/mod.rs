@@ -898,7 +898,7 @@ pub(crate) mod tests {
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
                 EntityId, TaskMetadata,
             },
-            ListFlags, NamespaceId, TableCreation,
+            ListFlags, NamedEntity, NamespaceId, TableCreation,
         },
     };
 
@@ -1817,6 +1817,7 @@ pub(crate) mod tests {
                 warehouse_id,
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity_name: table.table_ident.into_name_parts(),
             },
             TabularExpirationPayload {
                 tabular_type: crate::api::management::v1::TabularType::Table,

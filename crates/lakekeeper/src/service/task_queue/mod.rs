@@ -172,6 +172,7 @@ pub struct TaskMetadata {
     pub warehouse_id: WarehouseId,
     pub parent_task_id: Option<TaskId>,
     pub entity_id: EntityId,
+    pub entity_name: Vec<String>,
     pub schedule_for: Option<chrono::DateTime<Utc>>,
 }
 

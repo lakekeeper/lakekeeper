@@ -4462,6 +4462,7 @@ components:
       required:
         - version
         - bootstrapped
+        - server-id
         - authz-backend
         - aws-system-identities-enabled
         - azure-system-identities-enabled
@@ -4494,9 +4495,7 @@ components:
             type: string
           description: List of queues that are registered for the server.
         server-id:
-          type:
-            - string
-            - 'null'
+          type: string
           format: uuid
           description: |-
             ID of the server.
@@ -4909,6 +4908,7 @@ components:
         - warehouse-id
         - queue-name
         - entity
+        - entity-name
         - status
         - scheduled-for
         - attempt
@@ -4926,6 +4926,11 @@ components:
         entity:
           $ref: '#/components/schemas/TaskEntity'
           description: Type of entity this task operates on
+        entity-name:
+          type: array
+          items:
+            type: string
+          description: Name of the entity this task operates on
         last-heartbeat-at:
           type:
             - string

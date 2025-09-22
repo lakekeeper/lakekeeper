@@ -443,9 +443,8 @@ pub(crate) async fn delete_warehouse(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     let unfinished_task_counts_per_queue = sqlx::query!(
-        r#"WITH running_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1),
-                deletes as (DELETE FROM task where warehouse_id = $1)
-            SELECT COUNT(task_id) as "task_count!", queue_name FROM running_tasks GROUP BY queue_name"#,
+        r#"WITH active_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1)
+            SELECT COUNT(task_id) as "task_count!", queue_name FROM active_tasks GROUP BY queue_name"#,
         *warehouse_id,
     ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error deleting tasks for warehouse"))?;
     if !unfinished_task_counts_per_queue.is_empty() {

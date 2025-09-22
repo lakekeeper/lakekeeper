@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH locked_tabular AS (\n            SELECT tabular_id, protected, metadata_location, fs_location, fs_protocol\n            FROM tabular\n            WHERE tabular_id = $2\n                AND warehouse_id = $1\n                AND typ = $3\n                AND tabular_id in (SELECT tabular_id FROM active_tabulars WHERE warehouse_id = $1 AND tabular_id = $2)\n            FOR UPDATE\n        ),\n        deleted AS (\n            DELETE FROM tabular\n            WHERE tabular_id IN (\n                SELECT tabular_id FROM locked_tabular \n                WHERE ((NOT protected) OR $4)\n                AND ($5::text IS NULL OR metadata_location = $5)\n            )\n            AND warehouse_id = $1\n            RETURNING tabular_id\n        )\n        SELECT \n            lt.protected as \"protected!\",\n            lt.metadata_location,\n            lt.fs_protocol,\n            lt.fs_location,\n            (SELECT tabular_id FROM deleted) IS NOT NULL as \"was_deleted!\"\n        FROM locked_tabular lt",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "metadata_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "was_deleted!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a02df0ff30895ec09168d38c713f34b0966fdd3290a8fee6ac26323cd311808a"
+}

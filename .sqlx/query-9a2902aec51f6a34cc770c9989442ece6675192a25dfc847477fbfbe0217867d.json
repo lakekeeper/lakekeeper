@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH locked_tabular AS (\n                SELECT tabular_id, name, namespace_id\n                FROM tabular\n                WHERE tabular_id = $4\n                    AND warehouse_id = $2\n                    AND typ = $5\n                    AND metadata_location IS NOT NULL\n                    AND name = $6\n                    AND deleted_at IS NULL\n                FOR UPDATE\n            ),\n            locked_namespace AS ( -- target namespace\n                SELECT namespace_id\n                FROM namespace\n                WHERE warehouse_id = $2 AND namespace_name = $3\n                FOR UPDATE\n            ),\n            locked_source_namespace AS ( -- source namespace of the tabular\n                SELECT n.namespace_id\n                FROM namespace n\n                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id\n                WHERE n.warehouse_id = $2\n                FOR UPDATE\n            ),\n            warehouse_check AS (\n                SELECT warehouse_id FROM warehouse\n                WHERE warehouse_id = $2 AND status = 'active'\n            ),\n            conflict_check AS (\n                SELECT 1\n                FROM tabular t\n                JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $2\n                WHERE t.name = $1\n                FOR UPDATE\n            )\n            UPDATE tabular t\n            SET name = $1, namespace_id = ln.namespace_id\n            FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc\n            WHERE t.tabular_id = lt.tabular_id\n            AND t.warehouse_id = $2\n            AND ln.namespace_id IS NOT NULL\n            AND wc.warehouse_id = $2\n            AND lsn.namespace_id IS NOT NULL\n            AND NOT EXISTS (SELECT 1 FROM conflict_check)\n            RETURNING t.tabular_id;\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "TextArray",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9a2902aec51f6a34cc770c9989442ece6675192a25dfc847477fbfbe0217867d"
+}
