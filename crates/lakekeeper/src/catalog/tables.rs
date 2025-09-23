@@ -2185,7 +2185,7 @@ pub(crate) mod test {
             .unwrap()
     }
 
-    /// Creates a `CreateTableRequest`` with the given name and format version
+    /// Creates a `CreateTableRequest` with the given name and format version
     fn create_table_request(
         name: &str,
         format_version: Option<FormatVersion>,
@@ -2213,7 +2213,7 @@ pub(crate) mod test {
         }
     }
 
-    /// Helper to load a table using `CatalogServer``
+    /// Helper to load a table using `CatalogServer`
     async fn load_table(
         ctx: &ApiContext<
             State<impl crate::service::authz::Authorizer, impl Catalog, impl SecretStore>,

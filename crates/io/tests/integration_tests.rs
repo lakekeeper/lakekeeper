@@ -54,7 +54,7 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
         endpoint: endpoint
             .map(|e| e.parse())
             .transpose()
-            .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {}", e))?,
+            .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {e}"))?,
         region,
         path_style_access: Some(true),
         aws_kms_key_arn: None,
@@ -123,7 +123,7 @@ async fn create_gcs_storage(bucket_env_var: &str) -> anyhow::Result<(StorageBack
     let credential = std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL")
         .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__GCS_CREDENTIAL not set"))?;
     let bucket =
-        std::env::var(bucket_env_var).map_err(|_| anyhow::anyhow!("{} not set", bucket_env_var))?;
+        std::env::var(bucket_env_var).map_err(|_| anyhow::anyhow!("{bucket_env_var} not set"))?;
 
     let credential_file: lakekeeper_io::gcs::CredentialsFile = serde_json::from_str(&credential)
         .map_err(|e| anyhow::anyhow!("Failed to parse GCS credential file: {e}"))?;
