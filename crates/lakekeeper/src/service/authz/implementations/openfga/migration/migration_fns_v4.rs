@@ -1361,7 +1361,7 @@ mod openfga_integration_tests {
             },
             TupleKey {
                 user: "role:other-role#assignee".to_string(),
-                relation: TableRelation::Modify.to_string(),
+                relation: TableRelation::Select.to_string(),
                 object: "lakekeeper_table:wh2/t4".to_string(),
                 condition: None,
             },
