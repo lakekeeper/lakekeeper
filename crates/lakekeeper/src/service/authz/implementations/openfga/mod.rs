@@ -102,6 +102,7 @@ pub struct OpenFGAAuthorizer {
 
 impl OpenFGAAuthorizer {
     pub fn new(client: BasicOpenFgaClient, server_id: ServerId) -> Self {
+        // TODO(1361) server_id.to_openfga()
         let openfga_server = format!("server:{server_id}");
         Self {
             client,
@@ -786,7 +787,7 @@ impl OpenFGAAuthorizer {
     /// Read all tuples for a given request
     async fn read_all(
         &self,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: Option<impl Into<ReadRequestTupleKey>>,
     ) -> OpenFGAResult<Vec<Tuple>> {
         self.client
             .read_all_pages(tuple_key, 100, 500)
@@ -1068,7 +1069,6 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod tests {
     mod openfga_integration_tests {
         use http::StatusCode;
@@ -1084,17 +1084,15 @@ pub(crate) mod tests {
                 .await
                 .expect("Failed to create OpenFGA client");
 
+            let server_id = ServerId::new_random();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            migrate(&client, Some(store_name.clone())).await.unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
 
-            new_authorizer(
-                client,
-                Some(store_name),
-                TEST_CONSISTENCY,
-                ServerId::new_random(),
-            )
-            .await
-            .unwrap()
+            new_authorizer(client, Some(store_name), TEST_CONSISTENCY, server_id)
+                .await
+                .unwrap()
         }
 
         #[tokio::test]

@@ -323,7 +323,7 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<WarehouseId>>;
 
-    /// Wrapper around get_warehouse_by_name that returns
+    /// Wrapper around `get_warehouse_by_name` that returns
     /// not found error if the warehouse does not exist.
     async fn require_warehouse_by_name(
         warehouse_name: &str,
@@ -349,7 +349,7 @@ where
         request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>>;
 
-    /// Wrapper around get_config_for_warehouse that returns
+    /// Wrapper around `get_config_for_warehouse` that returns
     /// not found error if the warehouse does not exist.
     async fn require_config_for_warehouse(
         warehouse_id: WarehouseId,
@@ -432,7 +432,7 @@ where
     ) -> Result<PaginatedMapping<TableId, TableInfo>>;
 
     /// Return Err only on unexpected errors, not if the table does not exist.
-    /// If include_staged is true, also return staged tables.
+    /// If `include_staged` is true, also return staged tables.
     /// If the table does not exist, return Ok(None).
     ///
     /// We use this function also to handle the `table_exists` endpoint.
@@ -475,7 +475,7 @@ where
     ) -> Result<HashMap<TableId, LoadTableResponse>>;
 
     /// Get table metadata by table id.
-    /// If include_staged is true, also return staged tables,
+    /// If `include_staged` is true, also return staged tables,
     /// i.e. tables with no metadata file yet.
     /// Return Ok(None) if the table does not exist.
     async fn get_table_metadata_by_id(
@@ -639,7 +639,7 @@ where
 
     /// Return a list of all project ids in the catalog
     ///
-    /// If project_ids is None, return all projects, otherwise return only the projects in the set
+    /// If `project_ids` is None, return all projects, otherwise return only the projects in the set
     async fn list_projects(
         project_ids: Option<HashSet<ProjectId>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -648,7 +648,7 @@ where
     /// Get endpoint statistics for the project
     ///
     /// We'll return statistics for the time-frame end - interval until end.
-    /// If status_codes is None, return all status codes.
+    /// If `status_codes` is None, return all status codes.
     async fn get_endpoint_statistics(
         project_id: ProjectId,
         warehouse_id: WarehouseFilter,
@@ -674,7 +674,7 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<GetWarehouseResponse>>;
 
-    /// Wrapper around get_warehouse that returns a not-found error if the warehouse does not exist.
+    /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
     async fn require_warehouse<'a>(
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -738,7 +738,7 @@ where
     ) -> Result<()>;
 
     /// Return Err only on unexpected errors, not if the table does not exist.
-    /// If include_staged is true, also return staged tables.
+    /// If `include_staged` is true, also return staged tables.
     /// If the table does not exist, return Ok(None).
     ///
     /// We use this function also to handle the `view_exists` endpoint.
@@ -1002,7 +1002,7 @@ where
 
     /// Enqueue a batch of tasks to a task queue.
     ///
-    /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
+    /// There can only be a single task running or pending for a (`entity_id`, `queue_name`) tuple.
     /// Any resubmitted pending/running task will be omitted from the returned task ids.
     ///
     /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`.
@@ -1014,7 +1014,7 @@ where
 
     /// Enqueue a single task to a task queue.
     ///
-    /// There can only be a single active task for a (entity_id, queue_name) tuple.
+    /// There can only be a single active task for a (`entity_id`, `queue_name`) tuple.
     /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
     async fn enqueue_task(
         queue_name: &'static TaskQueueName,

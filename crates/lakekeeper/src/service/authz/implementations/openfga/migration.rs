@@ -2,24 +2,45 @@ use std::sync::LazyLock;
 
 use openfga_client::{
     client::{BasicAuthLayer, BasicOpenFgaServiceClient},
-    migration::{AuthorizationModelVersion, MigrationFn},
+    migration::{AuthorizationModelVersion, MigrationFn, TupleModelManager},
 };
 
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use crate::service::ServerId;
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| AuthorizationModelVersion::new(3, 4)); // <- Change this for every change in the model
+    LazyLock::new(|| *V4_MODEL_VERSION); // <- Change this for every change in the model
+
+pub(super) static V4_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+    LazyLock::new(|| AuthorizationModelVersion::new(4, 0));
+
+#[cfg(test)]
+pub(super) static V3_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+    LazyLock::new(|| AuthorizationModelVersion::new(3, 4));
+
+mod migration_fns_v4;
+use migration_fns_v4::{v4_push_down_warehouse_id, MigrationState};
 
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
-) -> openfga_client::migration::TupleModelManager<BasicAuthLayer> {
-    openfga_client::migration::TupleModelManager::new(
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
+    let manager = TupleModelManager::new(
         client.clone(),
         &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
         &AUTH_CONFIG.authorization_model_prefix,
-    )
-    .add_model(
+    );
+    // Assume vX.Y has a migration function. Then vX.Y must remain here as long as migrations from
+    // versions < vX.Y are supported.
+    add_model_v4(manager)
+}
+
+/// Has no migration hooks.
+#[cfg(test)]
+pub(crate) fn add_model_v3(
+    manager: TupleModelManager<BasicAuthLayer, MigrationState>,
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
+    manager.add_model(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
@@ -27,15 +48,37 @@ fn get_model_manager(
         ))
         // Change also the model version in this string:
         .expect("Model v3.4 is a valid AuthorizationModel in JSON format."),
-        AuthorizationModelVersion::new(3, 4),
+        *V3_MODEL_VERSION,
         // For major version upgrades, this is where tuple migrations go.
-        None::<MigrationFn<_>>,
-        None::<MigrationFn<_>>,
+        None::<MigrationFn<_, _>>,
+        None::<MigrationFn<_, _>>,
+    )
+}
+
+/// Does have a migration hook which may add tuples to the store.
+pub(crate) fn add_model_v4(
+    manager: TupleModelManager<BasicAuthLayer, MigrationState>,
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
+    manager.add_model(
+        serde_json::from_str(include_str!(
+            // Change this for backward compatible changes.
+            // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
+            "../../../../../../../authz/openfga/v4.0/schema.json"
+        ))
+        // Change also the model version in this string:
+        .expect("Model v4.0 is a valid AuthorizationModel in JSON format."),
+        *V4_MODEL_VERSION,
+        // For major version upgrades, this is where tuple migrations go.
+        None::<MigrationFn<_, _>>,
+        Some(v4_push_down_warehouse_id),
     )
 }
 
 /// Get the active authorization model id.
 /// Leave `store_name` empty to use the default store name.
+///
+/// Active here refers to the hardcoded model version. This might not be the version you want
+/// when consecutive migrations are applied, so avoid using it in migration functions.
 ///
 /// # Errors
 /// * [`OpenFGAError::ClientError`] if the client fails to get the active model id
@@ -76,15 +119,20 @@ pub(super) async fn get_active_auth_model_id(
 pub(crate) async fn migrate(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
+    server_id: ServerId,
 ) -> OpenFGAResult<()> {
     if let Some(configured_model) = *super::CONFIGURED_MODEL_VERSION {
         tracing::info!("Skipping OpenFGA Migration because a model version is explicitly configured. Version: {configured_model}");
         return Ok(());
     }
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
-    tracing::info!("Starting OpenFGA Migration for store {store_name}");
+    tracing::info!("Starting OpenFGA Migration for store {store_name} and server {server_id}");
     let mut manager = get_model_manager(client, Some(store_name.clone()));
-    manager.migrate().await?;
+    let state = MigrationState {
+        store_name,
+        server_id,
+    };
+    manager.migrate(state).await?;
     tracing::info!("OpenFGA Migration finished");
     Ok(())
 }
@@ -104,15 +152,18 @@ pub(crate) mod tests {
     ) -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
         let client = new_client_from_config().await.unwrap();
 
+        let server_id = ServerId::new_random();
         let test_uuid = uuid::Uuid::now_v7();
         let store_name = format!("test_store_{test_uuid}");
-        migrate(&client, Some(store_name.clone())).await.unwrap();
+        migrate(&client, Some(store_name.clone()), server_id)
+            .await
+            .unwrap();
 
         let authorizer = new_authorizer(
             client.clone(),
             Some(store_name),
             ConsistencyPreference::HigherConsistency,
-            ServerId::new_random(), // random server id for test
+            server_id,
         )
         .await
         .unwrap();
@@ -129,6 +180,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_migrate() {
             let mut client = new_client_from_config().await.unwrap();
+            let server_id = ServerId::new_random();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
 
             let _model = get_active_auth_model_id(&mut client, Some(store_name.clone()))
@@ -136,9 +188,15 @@ pub(crate) mod tests {
                 .unwrap_err();
 
             // Multiple migrations should be idempotent
-            migrate(&client, Some(store_name.clone())).await.unwrap();
-            migrate(&client, Some(store_name.clone())).await.unwrap();
-            migrate(&client, Some(store_name.clone())).await.unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
 
             let store_id = client
                 .get_store_by_name(&store_name)
