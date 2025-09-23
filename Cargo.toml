@@ -80,7 +80,7 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f4e1f
 ] }
 iso8601 = "0.6.2"
 bytes = "1.10"
-openfga-client = { version = "0.3", features = ["auth-middle"] }
+openfga-client = { version = "0.4", features = ["auth-middle"] }
 typed-builder = "^0.21.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
@@ -156,10 +156,6 @@ maplit = "1.0.2"
 limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }
 fastrand = "2.3.0"
-
-[patch.crates-io]
-# TODO remove the patch once new version was released
-openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "refs/pull/16/head", features = ["auth-middle"] }
 
 [profile.dev]
 opt-level = 1
