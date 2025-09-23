@@ -70,7 +70,6 @@ use crate::{
     },
 };
 
-// TODO open issue that this must be configurable in case someone set lower limit on their server?
 const MAX_TUPLES_PER_WRITE: i32 = 100;
 
 static AUTH_CONFIG: LazyLock<crate::config::OpenFGAConfig> =
