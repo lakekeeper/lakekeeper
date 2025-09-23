@@ -485,6 +485,7 @@ mod openfga_integration_tests {
         migration::TupleModelManager,
     };
     use tokio::{sync::RwLock, task::JoinSet};
+    use tracing_test::traced_test;
 
     use super::*;
     use crate::{
@@ -1449,7 +1450,7 @@ mod openfga_integration_tests {
     /// little benefit from trying to run async code in a `bench` or using something like
     /// criterion.
     #[tokio::test(flavor = "multi_thread")]
-    #[test_log::test]
+    #[traced_test]
     #[ignore = "expensive benchmark, not testing functionality"]
     async fn test_v4_push_down_warehouse_id_bench() -> anyhow::Result<()> {
         const NUM_WAREHOUSES: usize = 10;
