@@ -201,6 +201,8 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         tracing::info!("Service is shutting down gracefully.");
     }
 
+    cancellation_token.cancel();
+
     endpoint_statistics_tracker_tx
         .send(EndpointStatisticsMessage::Shutdown)
         .await?;

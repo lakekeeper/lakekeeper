@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     @property
     def spark_supports_v3(self) -> bool:
         version = self.spark_iceberg_version
-        # Versions above 1.10.0 support Spark3
+        # Versions above 1.10.0 support Iceberg table format v3
         major_version = int(version.split(".")[0])
         minor_version = int(version.split(".")[1])
         if major_version < 1 or (major_version == 1 and minor_version < 10):

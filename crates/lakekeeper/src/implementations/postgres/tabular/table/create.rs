@@ -206,7 +206,7 @@ async fn insert_table(
                 "Table next_row_id {} must be between 0 and i64::MAX",
                 table_metadata.next_row_id()
             ),
-            "NextRowIdTooLarge",
+            "NextRowIdOverflow",
             Some(Box::new(e)),
         )
     })?;
