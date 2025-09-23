@@ -446,7 +446,7 @@ pub(crate) async fn delete_warehouse(
         r#"WITH active_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1)
             SELECT COUNT(task_id) as "task_count!", queue_name FROM active_tasks GROUP BY queue_name"#,
         *warehouse_id,
-    ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error deleting tasks for warehouse"))?;
+    ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error fetching active tasks for warehouse"))?;
     if !unfinished_task_counts_per_queue.is_empty() {
         let task_descriptions = unfinished_task_counts_per_queue
             .iter()

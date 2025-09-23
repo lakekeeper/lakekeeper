@@ -580,7 +580,7 @@ impl FromStr for PgSslMode {
             "require" => Ok(Self::Require),
             "verifyca" | "verify-ca" | "verify_ca" => Ok(Self::VerifyCa),
             "verifyfull" | "verify-full" | "verify_full" => Ok(Self::VerifyFull),
-            _ => Err(anyhow!("PgSslMode not supported: '{}'", s)),
+            _ => Err(anyhow!("PgSslMode not supported: '{s}'")),
         }
     }
 }
