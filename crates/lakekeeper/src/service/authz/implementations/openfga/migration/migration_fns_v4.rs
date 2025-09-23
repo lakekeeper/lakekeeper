@@ -1454,6 +1454,7 @@ mod openfga_integration_tests {
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
     #[ignore = "expensive benchmark, not testing functionality"]
+    #[allow(clippy::too_many_lines)]
     async fn test_v4_push_down_warehouse_id_bench() -> anyhow::Result<()> {
         const NUM_WAREHOUSES: usize = 10;
         /// equally distributed among warehouses
