@@ -70,7 +70,7 @@ static OPENFGA_REQ_PERMITS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::const_new(50)));
 
 #[tracing::instrument(skip(client), fields(store_name = %state.store_name, server_id = %state.server_id))]
-#[allow(clippy::used_underscore_binding)]
+#[allow(clippy::used_underscore_binding, clippy::too_many_lines)]
 pub(crate) async fn v4_push_down_warehouse_id(
     mut client: BasicOpenFgaServiceClient,
     _prev_auth_model_id: Option<String>,
