@@ -15,8 +15,8 @@ pub(crate) use create::create_table;
 use http::StatusCode;
 use iceberg::{
     spec::{
-        BlobMetadata, FormatVersion, PartitionSpec, Parts, Schema, SchemaId, SnapshotRetention,
-        SortOrder, Summary, MAIN_BRANCH,
+        BlobMetadata, FormatVersion, PartitionSpec, Schema, SchemaId, SnapshotRetention, SortOrder,
+        Summary, MAIN_BRANCH,
     },
     TableUpdate,
 };
@@ -118,6 +118,8 @@ pub enum DbTableFormatVersion {
     V1,
     #[sqlx(rename = "2")]
     V2,
+    #[sqlx(rename = "3")]
+    V3,
 }
 
 impl From<DbTableFormatVersion> for FormatVersion {
@@ -125,6 +127,17 @@ impl From<DbTableFormatVersion> for FormatVersion {
         match v {
             DbTableFormatVersion::V1 => FormatVersion::V1,
             DbTableFormatVersion::V2 => FormatVersion::V2,
+            DbTableFormatVersion::V3 => FormatVersion::V3,
+        }
+    }
+}
+
+impl From<FormatVersion> for DbTableFormatVersion {
+    fn from(v: FormatVersion) -> Self {
+        match v {
+            FormatVersion::V1 => DbTableFormatVersion::V1,
+            FormatVersion::V2 => DbTableFormatVersion::V2,
+            FormatVersion::V3 => DbTableFormatVersion::V3,
         }
     }
 }
@@ -170,8 +183,6 @@ where
 #[expect(dead_code)]
 #[derive(sqlx::FromRow)]
 struct TableQueryStruct {
-    // TODO: clean up the options below once we've released this and can assume that migrations
-    //       have happened
     table_id: Uuid,
     table_name: String,
     namespace_name: Vec<String>,
@@ -206,11 +217,12 @@ struct TableQueryStruct {
     current_schema: Option<i32>,
     schemas: Option<Vec<Json<Schema>>>,
     schema_ids: Option<Vec<i32>>,
-    table_format_version: Option<DbTableFormatVersion>,
-    last_sequence_number: Option<i64>,
-    last_column_id: Option<i32>,
-    last_updated_ms: Option<i64>,
-    last_partition_id: Option<i32>,
+    table_format_version: DbTableFormatVersion,
+    next_row_id: i64,
+    last_sequence_number: i64,
+    last_column_id: i32,
+    last_updated_ms: i64,
+    last_partition_id: i32,
     partition_stats_snapshot_ids: Option<Vec<i64>>,
     partition_stats_statistics_paths: Option<Vec<String>>,
     partition_stats_file_size_in_bytes: Option<Vec<i64>>,
@@ -224,31 +236,37 @@ struct TableQueryStruct {
 
 impl TableQueryStruct {
     #[expect(clippy::too_many_lines)]
-    fn into_table_metadata(self) -> Result<Option<TableMetadata>> {
-        macro_rules! expect {
-            ($e:expr) => {
-                match $e {
-                    Some(v) => v,
-                    None => return Ok(None),
-                }
-            };
+    fn into_table_metadata(self) -> Result<TableMetadata> {
+        fn expect<T>(field: Option<T>, field_name: &str) -> Result<T, ErrorModel> {
+            if let Some(v) = field {
+                Ok(v)
+            } else {
+                Err(ErrorModel::internal(
+                    format!("Did not find any {field_name} for table"),
+                    "InternalMissingRequiredField",
+                    None,
+                ))
+            }
         }
-        let schemas = expect!(self.schemas)
+
+        let schemas = expect(self.schemas, "Schemas")?
             .into_iter()
             .map(|s| (s.0.schema_id(), Arc::new(s.0)))
             .collect::<HashMap<SchemaId, _>>();
 
-        let partition_specs = expect!(self.partition_spec_ids)
+        let partition_specs = expect(self.partition_spec_ids, "Partition Specs")?
             .into_iter()
             .zip(
-                expect!(self.partition_specs)
+                expect(self.partition_specs, "Partition Specs")?
                     .into_iter()
                     .map(|s| Arc::new(s.0)),
             )
             .collect::<HashMap<_, _>>();
 
+        let default_partition_spec_id =
+            expect(self.default_partition_spec_id, "Default Partition Spec ID")?;
         let default_spec = partition_specs
-            .get(&expect!(self.default_partition_spec_id))
+            .get(&default_partition_spec_id)
             .ok_or(ErrorModel::internal(
                 "Default partition spec not found",
                 "InternalDefaultPartitionSpecNotFound",
@@ -315,10 +333,12 @@ impl TableQueryStruct {
         })
         .collect::<Vec<_>>();
 
-        let sort_orders =
-            itertools::multizip((expect!(self.sort_order_ids), expect!(self.sort_orders)))
-                .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
-                .collect::<HashMap<_, _>>();
+        let sort_orders = itertools::multizip((
+            expect(self.sort_order_ids, "Sort Order IDs")?,
+            expect(self.sort_orders, "Sort Orders")?,
+        ))
+        .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
+        .collect::<HashMap<_, _>>();
 
         let refs = itertools::multizip((
             self.table_ref_names.unwrap_or_default(),
@@ -388,38 +408,84 @@ impl TableQueryStruct {
         )
         .collect::<HashMap<_, _>>();
 
-        Ok(Some(
-            TableMetadata::try_from_parts(Parts {
-                format_version: FormatVersion::from(expect!(self.table_format_version)),
-                table_uuid: self.table_id,
-                location: join_location(&self.table_fs_protocol, &self.table_fs_location),
-                last_sequence_number: expect!(self.last_sequence_number),
-                last_updated_ms: expect!(self.last_updated_ms),
-                last_column_id: expect!(self.last_column_id),
-                schemas,
-                current_schema_id: expect!(self.current_schema),
-                partition_specs,
-                default_spec,
-                last_partition_id: expect!(self.last_partition_id),
-                properties,
-                current_snapshot_id,
-                snapshots,
-                snapshot_log,
-                metadata_log,
-                sort_orders,
-                default_sort_order_id: expect!(self.default_sort_order_id),
-                refs,
-                partition_statistics,
-                statistics,
-            })
+        let encryption_keys = HashMap::new();
+
+        let current_schema_id = self.current_schema.ok_or_else(|| {
+            ErrorModel::internal(
+                "Current schema not set for table",
+                "InternalCurrentSchemaNotSet",
+                None,
+            )
+        })?;
+
+        let default_partition_type = default_spec
+            .partition_type(schemas.get(&current_schema_id).ok_or_else(|| {
+                ErrorModel::internal(
+                    format!(
+                        "No schema exists with the current schema id {current_schema_id} in DB."
+                    ),
+                    "InternalCurrentSchemaNotFound",
+                    None,
+                )
+            })?)
             .map_err(|e| {
                 ErrorModel::internal(
-                    "Error parsing table metadata from DB",
-                    "InternalTableMetadataParseError",
+                    "Error re-creating default partition type after DB load",
+                    "InternalDefaultPartitionTypeError",
                     Some(Box::new(e)),
                 )
-            })?,
-        ))
+            })?;
+
+        let next_row_id = u64::try_from(self.next_row_id).map_err(|e| {
+            ErrorModel::internal(
+                format!(
+                    "Error converting next_row_id to u64. Got: {}",
+                    self.next_row_id
+                ),
+                "InternalNextRowIdConversionError",
+                Some(Box::new(e)),
+            )
+        })?;
+
+        let mut table_metadata = TableMetadata::builder()
+            .format_version(FormatVersion::from(self.table_format_version))
+            .table_uuid(self.table_id)
+            .location(join_location(
+                &self.table_fs_protocol,
+                &self.table_fs_location,
+            ))
+            .last_sequence_number(self.last_sequence_number)
+            .last_updated_ms(self.last_updated_ms)
+            .last_column_id(self.last_column_id)
+            .schemas(schemas)
+            .current_schema_id(current_schema_id)
+            .partition_specs(partition_specs)
+            .default_spec(default_spec)
+            .default_partition_type(default_partition_type)
+            .last_partition_id(self.last_partition_id)
+            .properties(properties)
+            .current_snapshot_id(current_snapshot_id)
+            .snapshots(snapshots)
+            .snapshot_log(snapshot_log)
+            .metadata_log(metadata_log)
+            .sort_orders(sort_orders)
+            .default_sort_order_id(expect(self.default_sort_order_id, "Default Sort Order ID")?)
+            .refs(refs)
+            .partition_statistics(partition_statistics)
+            .statistics(statistics)
+            .encryption_keys(encryption_keys)
+            .next_row_id(next_row_id)
+            .build_unchecked();
+
+        table_metadata.try_normalize().map_err(|e| {
+            ErrorModel::internal(
+                "Error parsing table metadata from DB",
+                "InternalTableMetadataParseError",
+                Some(Box::new(e)),
+            )
+        })?;
+
+        Ok(table_metadata)
     }
 }
 
@@ -471,6 +537,7 @@ pub(crate) async fn load_tables(
             t.last_updated_ms,
             t.last_partition_id,
             t.table_format_version as "table_format_version: DbTableFormatVersion",
+            t.next_row_id,
             ti.name as "table_name",
             ti.fs_location as "table_fs_location",
             ti.fs_protocol as "table_fs_protocol",
@@ -598,7 +665,6 @@ pub(crate) async fn load_tables(
     .map_err(|e| e.into_error_model("Error fetching tables".to_string()))?;
 
     let mut tables = HashMap::new();
-    let mut failed_to_fetch = HashSet::new();
     for table in table {
         let table_id = table.table_id.into();
         let metadata_location = match table
@@ -621,13 +687,7 @@ pub(crate) async fn load_tables(
         let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
         let storage_profile = table.storage_profile.deref().clone();
 
-        let Some(table_metadata) = table.into_table_metadata()? else {
-            tracing::warn!(
-                "Table metadata could not be fetched from tables, falling back to blob retrieval."
-            );
-            failed_to_fetch.insert(table_id);
-            continue;
-        };
+        let table_metadata = table.into_table_metadata()?;
 
         tables.insert(
             table_id,
@@ -641,19 +701,6 @@ pub(crate) async fn load_tables(
             },
         );
     }
-
-    for t in table_ids {
-        if !tables.contains_key(&((*t).into())) {
-            failed_to_fetch.insert((*t).into());
-        }
-    }
-    if !failed_to_fetch.is_empty() {
-        tracing::error!(
-            "Failed to fetch the following tables: '{:?}'",
-            failed_to_fetch
-        );
-    }
-
     Ok(tables)
 }
 
@@ -672,7 +719,6 @@ pub(crate) async fn get_table_metadata_by_id(
             ti.fs_protocol as "table_fs_protocol",
             namespace_name,
             ti.namespace_id,
-            t."metadata" as "metadata: Json<TableMetadata>",
             ti."metadata_location",
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id"
@@ -741,7 +787,6 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              ti.fs_location as "fs_location",
              namespace_name,
              ti.namespace_id,
-             t."metadata" as "metadata: Json<TableMetadata>",
              ti."metadata_location",
              w.storage_profile as "storage_profile: Json<StorageProfile>",
              w."storage_secret_id"

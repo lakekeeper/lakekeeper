@@ -1,9 +1,6 @@
 use std::str::FromStr;
 
-use iceberg::{
-    spec::{FormatVersion, TableMetadata},
-    TableIdent,
-};
+use iceberg::{spec::TableMetadata, TableIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 use sqlx::{Postgres, Transaction};
@@ -203,6 +200,16 @@ async fn insert_table(
     warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> Result<()> {
+    let next_row_id = i64::try_from(table_metadata.next_row_id()).map_err(|e| {
+        ErrorModel::bad_request(
+            format!(
+                "Table next_row_id {} must be between 0 and i64::MAX",
+                table_metadata.next_row_id()
+            ),
+            "NextRowIdTooLarge",
+            Some(Box::new(e)),
+        )
+    })?;
     let _ = sqlx::query!(
         r#"
         INSERT INTO "table" (warehouse_id,
@@ -211,10 +218,11 @@ async fn insert_table(
                              last_column_id,
                              last_sequence_number,
                              last_updated_ms,
-                             last_partition_id
+                             last_partition_id,
+                             next_row_id
                              )
         (
-            SELECT $1, $2, $3, $4, $5, $6, $7
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8
             WHERE EXISTS (SELECT 1
                 FROM active_tables
                 WHERE active_tables.warehouse_id = $1
@@ -223,14 +231,12 @@ async fn insert_table(
         "#,
         warehouse_id,
         tabular_id,
-        match table_metadata.format_version() {
-            FormatVersion::V1 => DbTableFormatVersion::V1,
-            FormatVersion::V2 => DbTableFormatVersion::V2,
-        } as _,
+        DbTableFormatVersion::from(table_metadata.format_version()) as _,
         table_metadata.last_column_id(),
         table_metadata.last_sequence_number(),
         table_metadata.last_updated_ms(),
-        table_metadata.last_partition_id()
+        table_metadata.last_partition_id(),
+        next_row_id
     )
     .fetch_one(&mut **transaction)
     .await

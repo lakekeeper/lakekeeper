@@ -1073,3 +1073,25 @@ def test_case_insensitivity(
     assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
     with pytest.raises(Exception) as e:
         spark.sql(f"SELECT * FROM {namespace.spark_name}.my_renamed_table").toPandas()
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_create_table_v3(spark, namespace):
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg TBLPROPERTIES ('format-version' = '3')"
+    )
+    spark.sql(
+        f"INSERT INTO {namespace.spark_name}.my_table VALUES (1, 1.2, 'foo'), (2, 2.2, 'bar')"
+    )
+    spark.sql(f"INSERT INTO {namespace.spark_name}.my_table VALUES (3, 3.2, 'baz')")
+    spark.sql(f"INSERT INTO {namespace.spark_name}.my_table VALUES (4, 4.2, 'qux')")
+    spark.sql(f"DELETE FROM {namespace.spark_name}.my_table WHERE my_ints = 2")
+    pdf = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table ORDER BY my_ints"
+    ).toPandas()
+    assert len(pdf) == 3
+    assert pdf["my_ints"].tolist() == [1, 3, 4]
+    assert pdf["my_floats"].tolist() == [1.2, 3.2, 4.2]
+    assert pdf["strings"].tolist() == ["foo", "baz", "qux"]

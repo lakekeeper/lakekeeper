@@ -29,7 +29,7 @@ services:
         condition: service_healthy
 
   trino-opa:
-    image: trinodb/trino:467
+    image: trinodb/trino:476
     environment:
       - OIDC_ISSUER=http://keycloak:8080/realms/iceberg
     healthcheck:

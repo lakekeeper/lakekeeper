@@ -107,5 +107,7 @@ fn table_update_as_str(update: &TableUpdate) -> &str {
         TableUpdate::SetPartitionStatistics { .. } => "set_partition_statistics",
         TableUpdate::RemovePartitionStatistics { .. } => "remove_partition_statistics",
         TableUpdate::RemoveSchemas { .. } => "remove_schemas",
+        TableUpdate::AddEncryptionKey { .. } => "add_encryption_key",
+        TableUpdate::RemoveEncryptionKey { .. } => "remove_encryption_key",
     }
 }
