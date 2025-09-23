@@ -37,7 +37,7 @@ Project, Server, User and Roles are entities unknown to the Iceberg Rest Specifi
 1. The Lakekeeper Management API is served at endpoints prefixed with `/management`. It is used to configure Lakekeeper and manage entities that are not part of the Iceberg REST Catalog specification, such as permissions.
 
 ### Server
-The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` must not be changed after the initial [bootstrapping](./bootstrap.md) or permissions might not work.
+The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). The Server ID is generated randomly on first startup and stored in the Database Backend.
 
 ### Project
 For single-company setups, we recommend using a single Project setup, which is the default. Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](./bootstrap.md) with the nil UUID.
@@ -154,16 +154,16 @@ Protected entities within the hierarchy will prevent recursive deletion unless f
 
 ### Force Deletion
 Force deletion is an administrative override that allows deletion of protected entities and bypasses certain safety checks:
+
 - Bypasses protection settings
 - Overrides soft-deletion mechanisms for immediate hard deletion
-- Requires appropriate administrative permissions
 
 Add the `force=true` query parameter to deletion requests:
 ```
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
-Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
 
 ## Upgrades & Migration
 Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.

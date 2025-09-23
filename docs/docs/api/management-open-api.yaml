@@ -2383,6 +2383,232 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_tabular_expiration
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TabularExpirationQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_tabular_expiration
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TabularExpirationQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_tabular_purge
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_tabular_purge
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}:
+    get:
+      tags:
+        - tasks
+      summary: Get Details about a specific task by its ID.
+      operationId: get_task_details
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: numAttempts
+          in: query
+          description: 'Number of attempts to retrieve (default: 5)'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int32
+            default: 5
+            minimum: 0
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTaskDetailsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task/control:
+    post:
+      tags:
+        - tasks
+      summary: Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
+      description: Accepts at most 100 task IDs in one request.
+      operationId: control_tasks
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlTasksRequest'
+        required: true
+      responses:
+        '204':
+          description: All requested actions were successful
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task/list:
+    post:
+      tags:
+        - tasks
+      summary: List active and historic tasks.
+      operationId: list_tasks
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListTasksRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
     get:
       tags:
@@ -2468,242 +2694,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/{warehouse_id}/task-queue/tabular_expiration/config:
-    get:
-      tags:
-        - tasks
-      summary: Get the configuration for a Task Queue.
-      description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: get_task_queue_config_tabular_expiration
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: queue_name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: ''
-          headers:
-            x-request-id:
-              schema:
-                type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TabularExpirationQueueConfig'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-    post:
-      tags:
-        - tasks
-      summary: Set the configuration for a Task Queue.
-      description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: set_task_queue_config_tabular_expiration
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TabularExpirationQueueConfig'
-        required: true
-      responses:
-        '204':
-          description: Task queue config set successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/{warehouse_id}/task-queue/tabular_purge/config:
-    get:
-      tags:
-        - tasks
-      summary: Get the configuration for a Task Queue.
-      description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: get_task_queue_config_tabular_purge
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: queue_name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: ''
-          headers:
-            x-request-id:
-              schema:
-                type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PurgeQueueConfig'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-    post:
-      tags:
-        - tasks
-      summary: Set the configuration for a Task Queue.
-      description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: set_task_queue_config_tabular_purge
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PurgeQueueConfig'
-        required: true
-      responses:
-        '204':
-          description: Task queue config set successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/{warehouse_id}/task/by-id/{task_id}:
-    get:
-      tags:
-        - tasks
-      summary: Get Details about a specific task by its ID.
-      operationId: get_task_details
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: task_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: numAttempts
-          in: query
-          description: 'Number of attempts to retrieve (default: 5)'
-          required: false
-          schema:
-            type:
-              - integer
-              - 'null'
-            format: int32
-            default: 5
-            minimum: 0
-      responses:
-        '200':
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetTaskDetailsResponse'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/{warehouse_id}/task/control:
-    post:
-      tags:
-        - tasks
-      summary: Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
-      description: Accepts at most 100 task IDs in one request.
-      operationId: control_tasks
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ControlTasksRequest'
-        required: true
-      responses:
-        '204':
-          description: All requested actions were successful
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/{warehouse_id}/task/list:
-    post:
-      tags:
-        - tasks
-      summary: List active and historic tasks.
-      operationId: list_tasks
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ListTasksRequest'
-        required: true
-      responses:
-        '200':
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ListTasksResponse'
         4XX:
           description: ''
           content:
@@ -4351,6 +4341,13 @@ components:
             Optional role ARN to assume for sts vended-credentials.
             If not provided, `assume_role_arn` is used.
             Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
+        sts-session-tags:
+          type: object
+          description: Optional session tags for STS assume role operations.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
         sts-token-validity-seconds:
           type: integer
           format: int64
@@ -4507,7 +4504,9 @@ components:
         server-id:
           type: string
           format: uuid
-          description: ID of the server.
+          description: |-
+            ID of the server.
+            Returns null if the catalog has not been bootstrapped.
         version:
           type: string
           description: Version of the server.
@@ -4853,6 +4852,7 @@ components:
           required:
             - warehouse-id
             - table-id
+            - warehouse-id
           properties:
             table-id:
               type: string
@@ -4916,6 +4916,7 @@ components:
         - warehouse-id
         - queue-name
         - entity
+        - entity-name
         - status
         - scheduled-for
         - attempt
@@ -4933,6 +4934,11 @@ components:
         entity:
           $ref: '#/components/schemas/TaskEntity'
           description: Type of entity this task operates on
+        entity-name:
+          type: array
+          items:
+            type: string
+          description: Name of the entity this task operates on
         last-heartbeat-at:
           type:
             - string

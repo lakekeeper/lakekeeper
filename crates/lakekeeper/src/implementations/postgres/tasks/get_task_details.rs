@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
-use sqlx::{postgres::types::PgInterval, PgConnection};
+use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use super::EntityType;
@@ -17,6 +17,7 @@ struct TaskDetailsRow {
     pub queue_name: String,
     pub entity_id: uuid::Uuid,
     pub entity_type: EntityType,
+    pub entity_name: Vec<String>,
     pub task_status: Option<TaskStatus>,
     pub task_log_status: Option<TaskOutcome>,
     pub attempt_scheduled_for: DateTime<chrono::Utc>,
@@ -93,6 +94,7 @@ fn parse_task_details(
                 table_id: most_recent.entity_id.into(),
             },
         },
+        entity_name: most_recent.entity_name,
         status: most_recent
             .task_status
             .map(Into::into)
@@ -140,12 +142,15 @@ fn pg_interval_to_duration(interval: PgInterval) -> Result<Duration, ErrorModel>
     Ok(Duration::days(days.into()) + Duration::microseconds(microseconds))
 }
 
-pub(crate) async fn get_task_details(
+pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     task_id: TaskId,
     num_attempts: u16,
-    transaction: &mut PgConnection,
-) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse> {
+    state: E,
+) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse>
+where
+    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
     // Overwrite necessary due to:
     // https://github.com/launchbadge/sqlx/issues/1266
     let records = sqlx::query_as!(
@@ -155,6 +160,7 @@ pub(crate) async fn get_task_details(
             queue_name AS "queue_name!",
             entity_id AS "entity_id!",
             entity_type as "entity_type!: EntityType",
+            entity_name as "entity_name!: Vec<String>",
             task_status as "task_status: TaskStatus",
             task_log_status as "task_log_status: TaskOutcome",
             attempt_scheduled_for as "attempt_scheduled_for!",
@@ -175,6 +181,7 @@ pub(crate) async fn get_task_details(
             queue_name,
             entity_id,
             entity_type,
+            entity_name,
             status as task_status,
             null as task_log_status,
             scheduled_for as attempt_scheduled_for,
@@ -200,6 +207,7 @@ pub(crate) async fn get_task_details(
             queue_name,
             entity_id,
             entity_type,
+            entity_name,
             null as task_status,
             status as task_log_status,
             attempt_scheduled_for,
@@ -225,7 +233,7 @@ pub(crate) async fn get_task_details(
         *task_id,
         i32::from(num_attempts) // Query limit is num_attempts + 1 to handle the case where there's an active task plus historical attempts
     )
-    .fetch_all(&mut *transaction)
+    .fetch_all(state)
     .await
     .map_err(|e| e.into_error_model("Failed to get task details"))?;
 
@@ -277,6 +285,7 @@ mod tests {
             queue_name: queue_name.to_string(),
             entity_id,
             entity_type: EntityType::Tabular,
+            entity_name: vec!["ns1".to_string(), "table1".to_string()],
             task_status,
             task_log_status,
             attempt_scheduled_for: scheduled_for,
@@ -540,11 +549,13 @@ mod tests {
         assert!(matches!(attempt1.status, APITaskStatus::Failed));
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn queue_task_helper(
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
         entity_id: EntityId,
+        entity_name: Vec<String>,
         warehouse_id: WarehouseId,
         schedule_for: Option<chrono::DateTime<chrono::Utc>>,
         payload: Option<serde_json::Value>,
@@ -557,6 +568,7 @@ mod tests {
                     warehouse_id,
                     parent_task_id,
                     entity_id,
+                    entity_name,
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -573,11 +585,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_task_details_nonexistent_task(pool: PgPool) {
-        let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let task_id = TaskId::from(Uuid::now_v7());
 
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap();
 
@@ -589,6 +600,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_name = vec!["ns".to_string(), "table".to_string()];
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
         let scheduled_for = Utc::now() - chrono::Duration::minutes(1);
@@ -602,6 +614,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            entity_name.clone(),
             warehouse_id,
             Some(scheduled_for),
             Some(payload.clone()),
@@ -617,6 +630,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(task.task_id(), task_id);
+        assert_eq!(&task.task_metadata.entity_name, &entity_name);
 
         // Update progress and execution details
         let execution_details = serde_json::json!({"progress": "in progress"});
@@ -627,7 +641,7 @@ mod tests {
         assert_eq!(check_result, TaskCheckState::Continue);
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -678,6 +692,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -698,7 +713,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -732,6 +747,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -774,7 +790,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -813,6 +829,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -845,7 +862,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -879,6 +896,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"many_attempts": "test"})),
@@ -910,7 +928,7 @@ mod tests {
             .unwrap();
 
         // Get task details with limit of 3 attempts
-        let result = get_task_details(warehouse_id, task_id, 3, &mut conn)
+        let result = get_task_details(warehouse_id, task_id, 3, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -940,6 +958,7 @@ mod tests {
             &tq_name,
             None,
             parent_entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "parent"})),
@@ -954,6 +973,7 @@ mod tests {
             &tq_name,
             Some(parent_task_id),
             child_entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "child"})),
@@ -969,7 +989,7 @@ mod tests {
             .unwrap();
 
         // Get child task details
-        let result = get_task_details(warehouse_id, child_task_id, 10, &mut conn)
+        let result = get_task_details(warehouse_id, child_task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -994,6 +1014,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"test": "data"})),
@@ -1003,7 +1024,7 @@ mod tests {
         .unwrap();
 
         // Try to get task details with wrong warehouse ID
-        let result = get_task_details(wrong_warehouse_id, task_id, 10, &mut conn)
+        let result = get_task_details(wrong_warehouse_id, task_id, 10, &pool)
             .await
             .unwrap();
 

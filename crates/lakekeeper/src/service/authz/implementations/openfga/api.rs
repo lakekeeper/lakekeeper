@@ -6,7 +6,6 @@ use axum::{
     Extension, Json, Router,
 };
 use http::StatusCode;
-use iceberg_ext::catalog::rest::ErrorModel;
 use openfga_client::client::{
     CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
 };
@@ -32,7 +31,6 @@ use super::{
         ViewRelation as AllViewRelations, WarehouseAssignment,
         WarehouseRelation as AllWarehouseRelation,
     },
-    OPENFGA_SERVER,
 };
 use crate::{
     api::ApiContext,
@@ -367,10 +365,11 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    let openfga_server = authorizer.openfga_server().to_string();
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
-        &OPENFGA_SERVER,
+        &openfga_server,
         query.principal.as_ref(),
     )
     .await?;
@@ -711,38 +710,6 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get my access to a table
-///
-/// This endpoint is deprecated and will be removed in a future version.
-#[utoipa::path(
-    get,
-    tag = "permissions",
-    path = "/management/v1/permissions/table/{table_id}/access",
-    params(
-        GetAccessQuery,
-        ("table_id" = Uuid, Path, description = "Table ID")
-    ),
-    responses(
-            (status = 200, description = "Server Relations", body = GetTableAccessResponse),
-    )
-)]
-#[deprecated(
-    since = "0.10.0",
-    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access` instead."
-)]
-async fn get_table_access_by_id_deprecated<C: Catalog, S: SecretStore>(
-    Path(_table_id): Path<TableId>,
-    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
-    Extension(_metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
-    Err(ErrorModel::bad_request(
-        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access` instead.",
-        "DeprecatedEndpoint",
-        None).into()
-    )
-}
-
 /// Get my access to a view
 #[utoipa::path(
     get,
@@ -781,38 +748,6 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get my access to a view
-///
-/// This endpoint is deprecated and will be removed in a future version.
-#[utoipa::path(
-    get,
-    tag = "permissions",
-    path = "/management/v1/permissions/view/{view_id}/access",
-    params(
-        GetAccessQuery,
-        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
-        ("view_id" = Uuid, Path, description = "View ID"),
-    ),
-    responses(
-            (status = 200, body = GetViewAccessResponse),
-    )
-)]
-#[deprecated(
-    since = "0.10.0",
-    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access` instead."
-)]
-async fn get_view_access_by_id_deprecated<C: Catalog, S: SecretStore>(
-    Path(_view_id): Path<ViewId>,
-    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
-    Extension(_metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
-    Err(ErrorModel::bad_request(
-        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access` instead.",
-        "DeprecatedEndpoint",
-        None).into()
-    )
-}
 /// Get user and role assignments of a role
 #[utoipa::path(
     get,
@@ -864,14 +799,11 @@ async fn get_server_assignments<C: Catalog, S: SecretStore>(
     Query(query): Query<GetServerAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let server_id = authorizer.openfga_server().to_string();
     authorizer
-        .require_action(
-            &metadata,
-            AllServerAction::CanReadAssignments,
-            &OPENFGA_SERVER,
-        )
+        .require_action(&metadata, AllServerAction::CanReadAssignments, &server_id)
         .await?;
-    let assignments = get_relations(authorizer, query.relations, &OPENFGA_SERVER).await?;
+    let assignments = get_relations(authorizer, query.relations, &server_id).await?;
 
     Ok((
         StatusCode::OK,
@@ -1055,38 +987,6 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments for a table
-///
-/// This endpoint is deprecated and will be removed in a future version.
-#[utoipa::path(
-    get,
-    tag = "permissions",
-    path = "/management/v1/permissions/table/{table_id}/assignments",
-    params(
-        GetTableAssignmentsQuery,
-        ("table_id" = Uuid, Path, description = "Table ID"),
-    ),
-    responses(
-            (status = 200, body = GetTableAssignmentsResponse),
-    )
-)]
-#[deprecated(
-    since = "0.10.0",
-    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead."
-)]
-async fn get_table_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
-    Path(_table_id): Path<TableId>,
-    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
-    Extension(_metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetTableAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
-    Err(ErrorModel::bad_request(
-        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead.",
-        "DeprecatedEndpoint",
-        None).into()
-    )
-}
-
 /// Get user and role assignments for a view
 #[utoipa::path(
     get,
@@ -1120,39 +1020,6 @@ async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments for a view
-///
-/// This endpoint is deprecated and will be removed in a future version.
-#[utoipa::path(
-    get,
-    tag = "permissions",
-    path = "/management/v1/permissions/view/{view_id}/assignments",
-    params(
-        GetViewAssignmentsQuery,
-        ("view_id" = Uuid, Path, description = "View ID"),
-    ),
-    responses(
-            (status = 200, body = GetViewAssignmentsResponse),
-    )
-)]
-#[deprecated(
-    since = "0.10.0",
-    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead."
-)]
-async fn get_view_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
-    Path(_view_id): Path<ViewId>,
-    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
-    Extension(_metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetViewAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetViewAssignmentsResponse>)> {
-    Err(ErrorModel::bad_request(
-        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead.",
-        "DeprecatedEndpoint",
-        None,
-    )
-    .into())
-}
-
 /// Update permissions for this server
 #[utoipa::path(
     post,
@@ -1169,12 +1036,13 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateServerAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let server_id = authorizer.openfga_server().to_string();
     checked_write(
         authorizer,
         metadata.actor(),
         request.writes,
         request.deletes,
-        &OPENFGA_SERVER,
+        &server_id,
     )
     .await?;
 
@@ -1341,38 +1209,6 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update permissions for a table
-///
-/// This endpoint is deprecated and will be removed in a future version.
-#[utoipa::path(
-    post,
-    tag = "permissions",
-    path = "/management/v1/permissions/table/{table_id}/assignments",
-    request_body = UpdateTableAssignmentsRequest,
-    params(
-        ("table_id" = Uuid, Path, description = "Table ID"),
-    ),
-    responses(
-            (status = 204, description = "Permissions updated successfully"),
-    )
-)]
-#[deprecated(
-    since = "0.10.0",
-    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead."
-)]
-async fn update_table_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
-    Path(_table_id): Path<TableId>,
-    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
-    Extension(_metadata): Extension<RequestMetadata>,
-    Json(_request): Json<UpdateTableAssignmentsRequest>,
-) -> Result<StatusCode> {
-    Err(ErrorModel::bad_request(
-        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead.",
-        "DeprecatedEndpoint",
-        None).into()
-    )
-}
-
 /// Update permissions for a view
 #[utoipa::path(
     post,
@@ -1406,39 +1242,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update permissions for a view
-///
-/// This endpoint is deprecated and will be removed in a future version.
-#[utoipa::path(
-    post,
-    tag = "permissions",
-    path = "/management/v1/permissions/view/{view_id}/assignments",
-    request_body = UpdateViewAssignmentsRequest,
-    params(
-        ("view_id" = Uuid, Path, description = "View ID"),
-    ),
-    responses(
-            (status = 204, description = "Permissions updated successfully"),
-    )
-)]
-#[deprecated(
-    since = "0.10.0",
-    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead."
-)]
-async fn update_view_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
-    Path(_view_id): Path<ViewId>,
-    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
-    Extension(_metadata): Extension<RequestMetadata>,
-    Json(_request): Json<UpdateViewAssignmentsRequest>,
-) -> Result<StatusCode> {
-    Err(ErrorModel::bad_request(
-        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead.",
-        "DeprecatedEndpoint",
-        None).into()
-    )
-}
-
-/// Update permissions for a role
+// Update permissions for a role
 #[utoipa::path(
     post,
     tag = "permissions",
@@ -1509,13 +1313,9 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         get_server_access,
         get_server_assignments,
         get_table_access_by_id,
-        get_table_access_by_id_deprecated,
         get_table_assignments_by_id,
-        get_table_assignments_by_id_deprecated,
         get_view_access_by_id,
-        get_view_access_by_id_deprecated,
         get_view_assignments_by_id,
-        get_view_assignments_by_id_deprecated,
         get_warehouse_access_by_id,
         get_warehouse_assignments_by_id,
         get_warehouse_by_id,
@@ -1527,9 +1327,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         update_role_assignments_by_id,
         update_server_assignments,
         update_table_assignments_by_id,
-        update_table_assignments_by_id_deprecated,
         update_view_assignments_by_id,
-        update_view_assignments_by_id_deprecated,
         update_warehouse_assignments_by_id,
     ),
     // auto-discovery seems to be broken for these
@@ -1585,18 +1383,8 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/table/{table_id}/access",
-            #[allow(deprecated)]
-            get(get_table_access_by_id_deprecated),
-        )
-        .route(
             "/permissions/warehouse/{warehouse_id}/view/{view_id}/access",
             get(get_view_access_by_id),
-        )
-        .route(
-            "/permissions/view/{view_id}/access",
-            #[allow(deprecated)]
-            get(get_view_access_by_id_deprecated),
         )
         .route(
             "/permissions/role/{role_id}/assignments",
@@ -1627,20 +1415,8 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/table/{table_id}/assignments",
-            #[allow(deprecated)]
-            get(get_table_assignments_by_id_deprecated)
-                .post(update_table_assignments_by_id_deprecated),
-        )
-        .route(
             "/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
-        )
-        .route(
-            "/permissions/view/{view_id}/assignments",
-            #[allow(deprecated)]
-            get(get_view_assignments_by_id_deprecated)
-                .post(update_view_assignments_by_id_deprecated),
         )
         .route("/permissions/check", post(check))
 }
@@ -1914,9 +1690,9 @@ mod tests {
         #[tracing_test::traced_test]
         async fn test_get_relations() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-
+            let openfga_server = authorizer.openfga_server();
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
+                get_relations(authorizer.clone(), None, openfga_server)
                     .await
                     .unwrap();
             assert!(
@@ -1930,7 +1706,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -1939,7 +1715,7 @@ mod tests {
                 .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
+                get_relations(authorizer.clone(), None, openfga_server)
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 1);
@@ -2057,8 +1833,9 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Principal(user_id.clone());
+            let openfga_server = authorizer.openfga_server();
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -2068,7 +1845,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -2077,7 +1854,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -2088,6 +1865,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_as_role() {
             let (_, authorizer) = authorizer_for_empty_store().await;
+            let openfga_server = authorizer.openfga_server();
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Role {
@@ -2095,7 +1873,7 @@ mod tests {
                 assumed_role: role_id,
             };
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -2105,7 +1883,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -2114,7 +1892,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -2125,6 +1903,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_for_other_principal() {
             let (_, authorizer) = authorizer_for_empty_store().await;
+            let openfga_server = authorizer.openfga_server();
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let role_id = RoleId::new(Uuid::now_v7());
             let actor = Actor::Principal(user_id.clone());
@@ -2134,7 +1913,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -2145,7 +1924,7 @@ mod tests {
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
                 &actor,
-                &OPENFGA_SERVER,
+                openfga_server,
                 Some(&role_id.into()),
             )
             .await
@@ -2157,7 +1936,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -2168,7 +1947,7 @@ mod tests {
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
                 &actor,
-                &OPENFGA_SERVER,
+                openfga_server,
                 Some(&role_id.into()),
             )
             .await
@@ -2185,12 +1964,14 @@ mod tests {
             let user1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user2_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
 
+            let openfga_server = authorizer.openfga_server();
+
             authorizer
                 .write(
                     Some(vec![TupleKey {
                         user: user1_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -2203,13 +1984,13 @@ mod tests {
                 &Actor::Principal(user1_id.clone()),
                 vec![ServerAssignment::Admin(user2_id.into())],
                 vec![],
-                &OPENFGA_SERVER,
+                openfga_server,
             )
             .await
             .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
+                get_relations(authorizer.clone(), None, openfga_server)
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 2);

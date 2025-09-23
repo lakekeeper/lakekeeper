@@ -25,7 +25,7 @@ use crate::{
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
             ListProjectsResponse, Result,
         },
-        NamespaceId, TableId,
+        NamespaceId, ServerId, TableId,
     },
     ProjectId, WarehouseId, CONFIG,
 };
@@ -70,7 +70,6 @@ use crate::{
     },
 };
 
-// TODO open issue that this must be configurable in case someone set lower limit on their server?
 const MAX_TUPLES_PER_WRITE: i32 = 100;
 
 static AUTH_CONFIG: LazyLock<crate::config::OpenFGAConfig> =
@@ -92,18 +91,35 @@ static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = L
     },
 );
 
-pub(crate) static OPENFGA_SERVER: LazyLock<String> =
-    LazyLock::new(|| format!("server:{}", CONFIG.server_id));
-
 #[derive(Clone, Debug)]
 pub struct OpenFGAAuthorizer {
     client: BasicOpenFgaClient,
     health: Arc<RwLock<Vec<Health>>>,
+    server_id: ServerId,
+    // Pre-formatted "server:<uuid>" for OpenFGA object ids
+    openfga_server: String,
+}
+
+impl OpenFGAAuthorizer {
+    pub fn new(client: BasicOpenFgaClient, server_id: ServerId) -> Self {
+        // TODO(1361) server_id.to_openfga()
+        let openfga_server = format!("server:{server_id}");
+        Self {
+            client,
+            health: Arc::new(RwLock::new(vec![])),
+            server_id,
+            openfga_server,
+        }
+    }
 }
 
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
+    fn server_id(&self) -> ServerId {
+        self.server_id
+    }
+
     fn api_doc() -> utoipa::openapi::OpenApi {
         api::ApiDoc::openapi()
     }
@@ -187,7 +203,7 @@ impl Authorizer for OpenFGAAuthorizer {
             Some(vec![TupleKey {
                 user: user.to_openfga(),
                 relation: relation.to_string(),
-                object: OPENFGA_SERVER.clone(),
+                object: self.openfga_server().to_string(),
                 condition: None,
             }]),
             None,
@@ -247,7 +263,7 @@ impl Authorizer for OpenFGAAuthorizer {
             };
         }
 
-        let server_id = OPENFGA_SERVER.clone();
+        let server_id = self.openfga_server().to_string();
         match action {
             // Currently, given a user-id, all information about a user can be retrieved.
             // For multi-tenant setups, we need to restrict this to a tenant.
@@ -256,7 +272,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 self.check(CheckRequestTupleKey {
                     user: actor.to_openfga(),
                     relation: CatalogServerAction::CanUpdateUsers.to_string(),
-                    object: server_id,
+                    object: server_id.clone(),
                 })
                 .await
             }
@@ -280,7 +296,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: OPENFGA_SERVER.clone(),
+            object: self.openfga_server().to_string(),
         })
         .await
         .map_err(Into::into)
@@ -479,7 +495,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(project_id).await?;
-        let server = OPENFGA_SERVER.clone();
+        let server = self.openfga_server().to_string();
         let this_id = project_id.to_openfga();
         self.write(
             Some(vec![
@@ -711,12 +727,17 @@ impl Authorizer for OpenFGAAuthorizer {
 }
 
 impl OpenFGAAuthorizer {
+    #[must_use]
+    fn openfga_server(&self) -> &str {
+        &self.openfga_server
+    }
+
     async fn list_projects_internal(&self, actor: &Actor) -> Result<ListProjectsResponse> {
         let list_all = self
             .check(CheckRequestTupleKey {
                 user: actor.to_openfga(),
                 relation: ServerRelation::CanListAllProjects.to_string(),
-                object: OPENFGA_SERVER.clone(),
+                object: self.openfga_server().to_string(),
             })
             .await?;
 
@@ -1069,10 +1090,13 @@ pub(crate) mod tests {
                 .await
                 .expect("Failed to create OpenFGA client");
 
+            let server_id = ServerId::new_random();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            migrate(&client, Some(store_name.clone())).await.unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
 
-            new_authorizer(client, Some(store_name), TEST_CONSISTENCY)
+            new_authorizer(client, Some(store_name), TEST_CONSISTENCY, server_id)
                 .await
                 .unwrap()
         }

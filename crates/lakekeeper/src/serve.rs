@@ -151,7 +151,6 @@ pub struct ServeConfiguration<
 ///
 /// # Errors
 /// - If the service cannot bind to the specified address.
-/// - If the server is bootstrapped but the server ID does not match the configuration.
 /// - If the terms of service have not been accepted during bootstrap.
 #[allow(clippy::too_many_lines)]
 pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
@@ -491,28 +490,22 @@ async fn serve_inner<
 }
 
 fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
-    match server_info {
-        ServerInfo::NotBootstrapped => {
-            tracing::info!("The catalog is not bootstrapped. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly.");
-            Ok(())
+    if server_info.is_open_for_bootstrap() {
+        tracing::info!("The catalog is open for bootstrap. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly.");
+    } else {
+        tracing::info!("The catalog is not open for bootstrap.");
+        if !server_info.terms_accepted() {
+            tracing::error!("The terms of service have not been accepted.");
+            return Err(anyhow!(
+                "Server ID {}.The terms of service have not been accepted.",
+                server_info.server_id()
+            ));
         }
-        ServerInfo::Bootstrapped {
-            server_id,
-            terms_accepted,
-        } => {
-            if !terms_accepted {
-                Err(anyhow!(
-                    "The terms of service have not been accepted on bootstrap."
-                ))
-            } else if *server_id != CONFIG.server_id {
-                Err(anyhow!(
-                    "The server ID during bootstrap {} does not match the server ID in the configuration {}.",
-                    server_id, CONFIG.server_id
-                ))
-            } else {
-                tracing::info!("The catalog is bootstrapped. Server ID: {server_id}");
-                Ok(())
-            }
-        }
+        tracing::info!(
+            "Server ID {}. The terms of service have been accepted.",
+            server_info.server_id()
+        );
     }
+
+    Ok(())
 }

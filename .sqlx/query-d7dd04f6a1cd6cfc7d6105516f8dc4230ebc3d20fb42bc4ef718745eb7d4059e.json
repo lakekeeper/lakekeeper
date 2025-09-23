@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH active_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1)\n            SELECT COUNT(task_id) as \"task_count!\", queue_name FROM active_tasks GROUP BY queue_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "queue_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "d7dd04f6a1cd6cfc7d6105516f8dc4230ebc3d20fb42bc4ef718745eb7d4059e"
+}

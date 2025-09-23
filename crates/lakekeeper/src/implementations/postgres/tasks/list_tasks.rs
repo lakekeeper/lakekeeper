@@ -26,6 +26,7 @@ struct TaskRow {
     queue_name: String,
     entity_id: uuid::Uuid,
     entity_type: EntityType,
+    entity_name: Vec<String>,
     task_status: Option<TaskStatus>,
     task_log_status: Option<TaskOutcome>,
     attempt_scheduled_for: DateTime<chrono::Utc>,
@@ -49,6 +50,7 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
                 table_id: row.entity_id.into(),
             },
         },
+        entity_name: row.entity_name,
         status: row
             .task_status
             .map(Into::into)
@@ -155,6 +157,7 @@ pub(crate) async fn list_tasks(
                 queue_name,
                 entity_id,
                 entity_type,
+                entity_name,
                 status as task_status,
                 null::task_final_status as task_log_status,
                 scheduled_for as attempt_scheduled_for,
@@ -183,6 +186,7 @@ pub(crate) async fn list_tasks(
                 queue_name,
                 entity_id,
                 entity_type,
+                entity_name,
                 null::task_intermediate_status as task_status,
                 status as task_log_status,
                 attempt_scheduled_for,
@@ -210,6 +214,7 @@ pub(crate) async fn list_tasks(
             queue_name AS "queue_name!",
             entity_id AS "entity_id!",
             entity_type as "entity_type!: EntityType",
+            entity_name as "entity_name!: Vec<String>",
             task_status as "task_status: TaskStatus",
             task_log_status as "task_log_status: TaskOutcome",
             attempt_scheduled_for as "attempt_scheduled_for!",
@@ -326,6 +331,25 @@ mod tests {
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::task_queue::TaskId, IcebergErrorResponse> {
+        queue_task_helper_with_entity_name(
+            conn,
+            queue_name,
+            entity_id,
+            vec!["ns".to_string(), "table".to_string()],
+            warehouse_id,
+            payload,
+        )
+        .await
+    }
+
+    async fn queue_task_helper_with_entity_name(
+        conn: &mut sqlx::PgConnection,
+        queue_name: &TaskQueueName,
+        entity_id: EntityId,
+        entity_name: Vec<String>,
+        warehouse_id: WarehouseId,
+        payload: Option<serde_json::Value>,
+    ) -> Result<crate::service::task_queue::TaskId, IcebergErrorResponse> {
         let result = super::super::queue_task_batch(
             conn,
             queue_name,
@@ -334,6 +358,7 @@ mod tests {
                     warehouse_id,
                     parent_task_id: None,
                     entity_id,
+                    entity_name,
                     schedule_for: None,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -364,14 +389,16 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_name = vec!["ns".to_string(), "table".to_string()];
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
 
         // Queue a task
-        let task_id = queue_task_helper(
+        let task_id = queue_task_helper_with_entity_name(
             &mut conn,
             &tq_name,
             entity_id,
+            entity_name.clone(),
             warehouse_id,
             Some(payload.clone()),
         )
@@ -384,6 +411,7 @@ mod tests {
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
         assert_eq!(task.task_id, task_id);
+        assert_eq!(task.entity_name, entity_name);
         assert_eq!(task.warehouse_id, warehouse_id);
         assert_eq!(task.queue_name.as_str(), tq_name.as_str());
         assert!(matches!(task.status, APITaskStatus::Scheduled));

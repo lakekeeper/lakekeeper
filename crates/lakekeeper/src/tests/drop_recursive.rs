@@ -600,7 +600,7 @@ async fn setup_drop_test(
         pool.clone(),
         prof,
         None,
-        AllowAllAuthorizer,
+        AllowAllAuthorizer::default(),
         delete_profile,
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         1,

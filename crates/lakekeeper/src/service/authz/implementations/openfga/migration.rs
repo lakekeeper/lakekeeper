@@ -6,7 +6,7 @@ use openfga_client::{
 };
 
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
-use crate::CONFIG;
+use crate::service::ServerId;
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| *V4_MODEL_VERSION); // <- Change this for every change in the model
@@ -119,18 +119,18 @@ pub(super) async fn get_active_auth_model_id(
 pub(crate) async fn migrate(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
+    server_id: ServerId,
 ) -> OpenFGAResult<()> {
     if let Some(configured_model) = *super::CONFIGURED_MODEL_VERSION {
         tracing::info!("Skipping OpenFGA Migration because a model version is explicitly configured. Version: {configured_model}");
         return Ok(());
     }
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
-    tracing::info!("Starting OpenFGA Migration for store {store_name}");
+    tracing::info!("Starting OpenFGA Migration for store {store_name} and server {server_id}");
     let mut manager = get_model_manager(client, Some(store_name.clone()));
     let state = MigrationState {
         store_name,
-        // TODO confirm env var LAKEKEEPER__SERVER_ID overrides this config value
-        server_id: CONFIG.server_id,
+        server_id,
     };
     manager.migrate(state).await?;
     tracing::info!("OpenFGA Migration finished");
@@ -146,20 +146,24 @@ pub(crate) mod tests {
         super::{client::new_authorizer, OpenFGAAuthorizer},
         *,
     };
-    use crate::service::authz::implementations::openfga::new_client_from_config;
+    use crate::service::{authz::implementations::openfga::new_client_from_config, ServerId};
 
     pub(crate) async fn authorizer_for_empty_store(
     ) -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
         let client = new_client_from_config().await.unwrap();
 
+        let server_id = ServerId::new_random();
         let test_uuid = uuid::Uuid::now_v7();
         let store_name = format!("test_store_{test_uuid}");
-        migrate(&client, Some(store_name.clone())).await.unwrap();
+        migrate(&client, Some(store_name.clone()), server_id)
+            .await
+            .unwrap();
 
         let authorizer = new_authorizer(
             client.clone(),
             Some(store_name),
             ConsistencyPreference::HigherConsistency,
+            server_id,
         )
         .await
         .unwrap();
@@ -176,6 +180,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_migrate() {
             let mut client = new_client_from_config().await.unwrap();
+            let server_id = ServerId::new_random();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
 
             let _model = get_active_auth_model_id(&mut client, Some(store_name.clone()))
@@ -183,9 +188,15 @@ pub(crate) mod tests {
                 .unwrap_err();
 
             // Multiple migrations should be idempotent
-            migrate(&client, Some(store_name.clone())).await.unwrap();
-            migrate(&client, Some(store_name.clone())).await.unwrap();
-            migrate(&client, Some(store_name.clone())).await.unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
+            migrate(&client, Some(store_name.clone()), server_id)
+                .await
+                .unwrap();
 
             let store_id = client
                 .get_store_by_name(&store_name)

@@ -13,13 +13,24 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId,
-        WarehouseId,
+        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, ServerId, State, TableId,
+        ViewId, WarehouseId,
     },
 };
 
-#[derive(Clone, Debug, Default)]
-pub struct AllowAllAuthorizer;
+#[derive(Clone, Debug)]
+pub struct AllowAllAuthorizer {
+    pub server_id: ServerId,
+}
+
+#[cfg(test)]
+impl std::default::Default for AllowAllAuthorizer {
+    fn default() -> Self {
+        Self {
+            server_id: ServerId::new_random(),
+        }
+    }
+}
 
 #[async_trait]
 impl HealthExt for AllowAllAuthorizer {
@@ -37,6 +48,10 @@ pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
+    fn server_id(&self) -> ServerId {
+        self.server_id
+    }
+
     fn api_doc() -> utoipa::openapi::OpenApi {
         ApiDoc::openapi()
     }

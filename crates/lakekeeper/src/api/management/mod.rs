@@ -179,7 +179,7 @@ pub mod v1 {
         secret_store: PhantomData<S>,
     }
 
-    /// `ServerInfo`
+    /// ServerInfo
     ///
     /// Returns basic information about the server configuration and status.
     #[utoipa::path(
@@ -1022,14 +1022,6 @@ pub mod v1 {
         .await
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct RecursiveDeleteQuery {
-        #[serde(default)]
-        force: bool,
-        #[serde(default)]
-        purge: bool,
-    }
-
     #[derive(Deserialize, Debug, ToSchema)]
     pub struct SetProtectionRequest {
         /// Setting this to `true` will prevent the entity from being deleted unless `force` is used.
@@ -1063,18 +1055,18 @@ pub mod v1 {
     /// Statistics are aggregated hourly when changes occur.
     ///
     /// We lazily create a new statistics entry every hour, in between hours, the existing entry is
-    /// being updated. If there's a change at `created_at` + 1 hour, a new entry is created.
+    /// being updated. If there's a change at created_at + 1 hour, a new entry is created.
     /// If there's been no change, no new entry is created, meaning there may be gaps.
     ///
     /// Example:
     /// - 00:16:32: warehouse created:
-    ///     - timestamp: 01:00:00, `created_at`: 00:16:32, `updated_at`: null, 0 tables, 0 views
+    ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: null, 0 tables, 0 views
     /// - 00:30:00: table created:
-    ///     - timestamp: 01:00:00, `created_at`: 00:16:32, `updated_at`: 00:30:00, 1 table, 0 views
+    ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:30:00, 1 table, 0 views
     /// - 00:45:00: view created:
     ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view
     /// - 01:00:36: table deleted:
-    ///     - timestamp: 02:00:00, `created_at`: 01:00:36, `updated_at`: null, 0 tables, 1 view
+    ///     - timestamp: 02:00:00, created_at: 01:00:36, updated_at: null, 0 tables, 1 view
     ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view
     #[utoipa::path(
         get,
@@ -1136,14 +1128,14 @@ pub mod v1 {
     ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]
     /// - 00:30:00: table created:
     ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
-    ///                                                  {"count": 1, "`http_route"`: "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "`status_code"`: 201, "`warehouse_id"`: "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "`warehouse_name"`: "staging", "`created_at"`: "00:30:00", "`updated_at"`: null}]]
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]
     /// - 00:45:00: table created:
     ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
     ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]
     /// - 01:00:36: table deleted:
     ///     - timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
     ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],
-    ///                                                   [{"count": 1, "`http_route"`: "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "`status_code"`: 200, "`warehouse_id"`: "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "`warehouse_name"`: "staging", "`created_at"`: "01:00:36", "`updated_at"`: "null"}]]
+    ///                                                   [{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]
     #[utoipa::path(
         post,
         tag = "project",
@@ -1665,6 +1657,7 @@ pub mod v1 {
     ///
     /// # Errors
     ///
+    #[allow(clippy::too_many_lines)]
     pub fn api_doc<A: Authorizer>(
         queue_api_configs: Vec<&QueueApiConfig>,
     ) -> utoipa::openapi::OpenApi {
@@ -1703,6 +1696,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            post.parameters = post.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             post.operation_id = Some(format!(
                 "set_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1731,6 +1730,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            get.parameters = get.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             get.operation_id = Some(format!(
                 "get_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1890,16 +1895,19 @@ pub mod v1 {
                     post(set_warehouse_protection),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
+                    ManagementV1Endpoint::SetTaskQueueConfig.path_in_management_v1(),
                     post(set_task_queue_config).get(get_task_queue_config),
                 )
-                .route(ManagementV1Endpoint::ListTasks.path(), post(list_tasks))
                 .route(
-                    ManagementV1Endpoint::GetTaskDetails.path(),
+                    ManagementV1Endpoint::ListTasks.path_in_management_v1(),
+                    post(list_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTaskDetails.path_in_management_v1(),
                     get(get_task_details),
                 )
                 .route(
-                    ManagementV1Endpoint::ControlTasks.path(),
+                    ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
                 )
                 .merge(authorizer.new_router())

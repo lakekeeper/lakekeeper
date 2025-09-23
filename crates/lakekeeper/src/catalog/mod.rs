@@ -353,7 +353,7 @@ pub(crate) mod test {
             pool.clone(),
             prof,
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             None,
         )
@@ -376,7 +376,7 @@ pub(crate) mod test {
             pool.clone(),
             prof,
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             delete_profile,
             None,
             num_warehouses,

@@ -7,10 +7,7 @@ use crate::{
     api::{management::v1::ApiServer, ApiContext},
     config,
     request_metadata::RequestMetadata,
-    service::{
-        authz::Authorizer, Actor, Catalog, Result, SecretStore, ServerInfo as CatalogServerInfo,
-        State, Transaction,
-    },
+    service::{authz::Authorizer, Actor, Catalog, Result, SecretStore, State, Transaction},
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
@@ -60,6 +57,7 @@ pub struct ServerInfo {
     /// Whether the catalog has been bootstrapped.
     pub bootstrapped: bool,
     /// ID of the server.
+    /// Returns null if the catalog has not been bootstrapped.
     pub server_id: uuid::Uuid,
     /// Default Project ID. Null if not set
     #[schema(value_type = Option::<String>)]
@@ -110,12 +108,24 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer.can_bootstrap(&request_metadata).await?;
 
         // ------------------- Business Logic -------------------
+        let server_info = C::get_server_info(state.v1_state.catalog.clone()).await?;
+        let open_for_bootstrap = server_info.is_open_for_bootstrap();
+
+        if !open_for_bootstrap {
+            return Err(ErrorModel::bad_request(
+                "Catalog is not open for bootstrap",
+                "CatalogAlreadyBootstrapped",
+                None,
+            )
+            .into());
+        }
+
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-        let success = C::bootstrap(request.accept_terms_of_use, t.transaction()).await?;
+        let success = C::bootstrap(accept_terms_of_use, t.transaction()).await?;
         if !success {
             return Err(ErrorModel::bad_request(
-                "Catalog already bootstrapped",
-                "CatalogAlreadyBootstrapped",
+                "Concurrent bootstrap detected, catalog already bootstrapped",
+                "ConcurrentBootstrap",
                 None,
             )
             .into());
@@ -192,8 +202,8 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         Ok(ServerInfo {
             version,
-            bootstrapped: server_data != CatalogServerInfo::NotBootstrapped,
-            server_id: CONFIG.server_id,
+            bootstrapped: !server_data.is_open_for_bootstrap(),
+            server_id: *server_data.server_id(),
             default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,

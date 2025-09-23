@@ -13,7 +13,7 @@ use super::{
         ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
         UserOrRole, ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
     },
-    OpenFGAAuthorizer, OpenFGAError, OPENFGA_SERVER,
+    OpenFGAAuthorizer, OpenFGAError,
 };
 use crate::{
     api::ApiContext,
@@ -183,18 +183,19 @@ async fn check_server(
     for_principal: &mut Option<UserOrRole>,
     action: &APIServerAction,
 ) -> Result<(String, String)> {
+    let openfga_server = authorizer.openfga_server().to_string();
     if for_principal.is_some() {
         authorizer
             .require_action(
                 metadata,
                 AllServerAction::CanReadAssignments,
-                &OPENFGA_SERVER,
+                &openfga_server,
             )
             .await?;
     } else {
         authorizer.check_actor(metadata.actor()).await?;
     }
-    Ok((action.to_openfga().to_string(), OPENFGA_SERVER.to_string()))
+    Ok((action.to_openfga().to_string(), openfga_server))
 }
 
 async fn check_namespace<C: Catalog, S: SecretStore>(
@@ -434,7 +435,7 @@ mod tests {
     use crate::service::UserId;
 
     #[test]
-    fn test_serde_check_action_table_id() {
+    fn test_serde_check_action_namespace_id() {
         let action = CheckOperation::Namespace {
             action: NamespaceAction::CreateTable,
             namespace: NamespaceIdentOrUuid::Id {
@@ -449,6 +450,53 @@ mod tests {
                 "namespace": {
                     "action": "create_table",
                     "namespace-id": "00000000-0000-0000-0000-000000000000"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_serde_check_action_table_id_variant() {
+        let action = CheckOperation::Table {
+            action: TableAction::GetMetadata,
+            table: TabularIdentOrUuid::IdInWarehouse {
+                table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                    .unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "table": {
+                    "action": "get_metadata",
+                    "table-id": "00000000-0000-0000-0000-000000000001",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_serde_check_action_view_id_alias() {
+        let action = CheckOperation::View {
+            action: ViewAction::GetMetadata,
+            view: TabularIdentOrUuid::IdInWarehouse {
+                table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                    .unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        // Accepts "view_id" as alias on input; on output it should be "table-id".
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "view": {
+                    "action": "get_metadata",
+                    "table-id": "00000000-0000-0000-0000-000000000002",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
                 }
             })
         );

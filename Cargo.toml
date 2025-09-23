@@ -64,7 +64,7 @@ serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"
 serde_json = { version = "^1.0", features = ["raw_value"] }
-serde_yaml = "0.9.34"
+serde_norway = "0.9.42"
 quick-xml = "0.37.4"
 url = { version = "^2.5", features = ["serde"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
@@ -80,11 +80,11 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f4e1f
 ] }
 iso8601 = "0.6.2"
 bytes = "1.10"
-openfga-client = { version = "0.3", features = ["auth-middle"] }
+openfga-client = { version = "0.4", features = ["auth-middle"] }
 typed-builder = "^0.21.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
-axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
+axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
 axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.5.0" }
 itertools = "0.14.0"
@@ -117,7 +117,6 @@ sqlx = { version = "0.8.5", default-features = false, features = [
     "uuid",
     "chrono",
 ] }
-test-log = "0.2.18"
 thiserror = "2.0.0"
 tokio = { version = "1.41", default-features = false, features = [
     "signal",
@@ -138,17 +137,14 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
-utoipa = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
+utoipa = { version = "5.4.0", features = [
     "axum_extras",
     "chrono",
     "url",
     "uuid",
     "yaml",
 ] }
-serde_yml = "0.0.12"
-utoipa-swagger-ui = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
-    "axum",
-] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"
@@ -160,10 +156,6 @@ maplit = "1.0.2"
 limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }
 fastrand = "2.3.0"
-
-[patch.crates-io]
-# TODO remove the patch once new version was released
-openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "refs/pull/16/head", features = ["auth-middle"] }
 
 [profile.dev]
 opt-level = 1

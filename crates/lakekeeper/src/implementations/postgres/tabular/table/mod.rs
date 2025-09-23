@@ -434,10 +434,9 @@ pub(crate) async fn load_storage_profile(
         SELECT w.storage_secret_id,
         w.storage_profile as "storage_profile: Json<StorageProfile>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.warehouse_id = $1
+        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1
             AND t."table_id" = $2
             AND w.status = 'active'
         "#,
@@ -516,15 +515,15 @@ pub(crate) async fn load_tables(
             tstat.key_metadatas as "table_stats_key_metadata: Vec<Option<String>>",
             tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         INNER JOIN table_current_schema tcs
-            ON tcs.warehouse_id = t.warehouse_id AND tcs.table_id = t.table_id
+            ON tcs.warehouse_id = $1 AND tcs.table_id = t.table_id
         LEFT JOIN table_default_partition_spec tdps
-            ON tdps.warehouse_id = t.warehouse_id AND tdps.table_id = t.table_id
+            ON tdps.warehouse_id = $1 AND tdps.table_id = t.table_id
         LEFT JOIN table_default_sort_order tdsort
-            ON tdsort.warehouse_id = t.warehouse_id AND tdsort.table_id = t.table_id
+            ON tdsort.warehouse_id = $1 AND tdsort.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(schema) as schemas
@@ -679,9 +678,9 @@ pub(crate) async fn get_table_metadata_by_id(
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id"
         FROM "table" t
-        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE t.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
@@ -748,9 +747,9 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              w.storage_profile as "storage_profile: Json<StorageProfile>",
              w."storage_secret_id"
          FROM "table" t
-         INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
-         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-         INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+         INNER JOIN tabular ti ON t.warehouse_id = $1 AND t.table_id = ti.tabular_id
+         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+         INNER JOIN warehouse w ON w.warehouse_id = $1
          WHERE t.warehouse_id = $1
              AND ti.fs_location = ANY($2)
              AND LENGTH(ti.fs_location) <= $3
@@ -863,7 +862,7 @@ impl From<&[TableUpdate]> for TableUpdates {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    // Desired behaviour:
+    // Desired behavior:
     // - Stage-Create => Load fails with 404
     // - No Stage-Create => Next create fails with 409, load succeeds
     // - Stage-Create => Next stage-create works & overwrites
@@ -900,7 +899,7 @@ pub(crate) mod tests {
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
                 EntityId, TaskMetadata,
             },
-            ListFlags, NamespaceId, TableCreation,
+            ListFlags, NamedEntity, NamespaceId, TableCreation,
         },
     };
 
@@ -1399,6 +1398,78 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
+    async fn test_to_ids_case_insensitivity(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace_lower =
+            NamespaceIdent::from_vec(vec!["my_namespace".to_string(), "child".to_string()])
+                .unwrap();
+        let namespace_upper =
+            NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string(), "CHILD".to_string()])
+                .unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace_lower, None).await;
+
+        let table_ident_lower = TableIdent {
+            namespace: namespace_lower.clone(),
+            name: "my_table".to_string(),
+        };
+        let table_ident_upper = TableIdent {
+            namespace: namespace_upper.clone(),
+            name: "MY_TABLE".to_string(),
+        };
+
+        let created = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace_lower.clone()),
+            None,
+            Some(table_ident_lower.name.clone()),
+        )
+        .await;
+        let _ = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace_lower.clone()),
+            None,
+            Some("a_table_not_to_be_included_in_results".to_string()),
+        )
+        .await;
+
+        // Lower idents are in db and we query upper.
+        let existing = table_idents_to_ids(
+            warehouse_id,
+            HashSet::from([&table_ident_upper]),
+            ListFlags::default(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(existing.len(), 1);
+        // The queried ident must be the key in the map.
+        assert_eq!(
+            existing.get(&table_ident_upper),
+            Some(&Some(created.table_id))
+        );
+
+        // Verify behavior of querying the same table twice with different cases.
+        let existing = table_idents_to_ids(
+            warehouse_id,
+            HashSet::from([&table_ident_lower, &table_ident_upper]),
+            ListFlags::default(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(existing.len(), 2);
+        let entry_lower = existing.get(&table_ident_lower).unwrap().unwrap();
+        let entry_upper = existing.get(&table_ident_upper).unwrap().unwrap();
+        assert_eq!(entry_lower, entry_upper);
+    }
+
+    #[sqlx::test]
     async fn test_rename_without_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1819,6 +1890,7 @@ pub(crate) mod tests {
                 warehouse_id,
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity_name: table.table_ident.into_name_parts(),
             },
             TabularExpirationPayload {
                 tabular_type: crate::api::management::v1::TabularType::Table,

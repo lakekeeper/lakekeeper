@@ -9,7 +9,7 @@ use super::{
     health::HealthExt, Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
     TabularDetails, ViewId, WarehouseId,
 };
-use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
+use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata, service::ServerId};
 
 pub mod implementations;
 
@@ -176,7 +176,7 @@ impl<T> MustUse<T> {
 }
 
 #[async_trait::async_trait]
-/// Interface to provide `AuthZ` functions to the catalog.
+/// Interface to provide AuthZ functions to the catalog.
 /// The provided `Actor` argument of all methods except `check_actor`
 /// are assumed to be valid. Please ensure to call `check_actor` before, preferably
 /// during Authentication.
@@ -196,6 +196,10 @@ pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
+    /// The server ID that was passed to the authorizer during initialization.
+    /// Must remain stable for the lifetime of the running process (typically generated at startup).
+    fn server_id(&self) -> ServerId;
+
     /// API Doc
     fn api_doc() -> utoipa::openapi::OpenApi;
 
@@ -1015,6 +1019,7 @@ pub(crate) mod tests {
         pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
+        server_id: ServerId,
     }
 
     impl HidingAuthorizer {
@@ -1022,6 +1027,7 @@ pub(crate) mod tests {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
+                server_id: ServerId::new_random(),
             }
         }
 
@@ -1070,6 +1076,10 @@ pub(crate) mod tests {
     }
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
+        fn server_id(&self) -> ServerId {
+            self.server_id
+        }
+
         fn api_doc() -> utoipa::openapi::OpenApi {
             AllowAllAuthorizer::api_doc()
         }
