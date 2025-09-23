@@ -119,7 +119,9 @@ pub(crate) async fn v4_push_down_warehouse_id(
     }
     tracing::info!(
         "Collected {} namespaces for all warehouses.",
-        namespaces_per_wh.len()
+        namespaces_per_wh
+            .iter()
+            .fold(0, |acc, (_whid, namespaces)| acc + namespaces.len())
     );
 
     let num_warehouses = namespaces_per_wh.len();
