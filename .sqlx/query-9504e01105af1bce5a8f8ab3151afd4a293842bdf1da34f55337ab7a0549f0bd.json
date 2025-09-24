@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM table_encryption_keys\n           WHERE warehouse_id = $1 AND table_id = $2 AND key_id = ANY($3::TEXT[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9504e01105af1bce5a8f8ab3151afd4a293842bdf1da34f55337ab7a0549f0bd"
+}
