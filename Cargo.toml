@@ -11,7 +11,7 @@ resolver = "2"
 edition = "2021"
 homepage = "https://github.com/lakekeeper/lakekeeper"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
-rust-version = "1.86.0"
+rust-version = "1.87.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -65,7 +65,7 @@ serde_derive = "^1.0"
 serde_with = "^3.4"
 serde_json = { version = "^1.0", features = ["raw_value"] }
 serde_norway = "0.9.42"
-quick-xml = "0.37.4"
+quick-xml = { version = "0.38.3", features = ["serialize"] }
 url = { version = "^2.5", features = ["serde"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 reqwest = { version = "^0.12", default-features = false, features = [
@@ -73,7 +73,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f4e1f87a42c75851000041a30db7a0096ae51f0b", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "01fe1ef351277199f8de30b86cb89ad82c7d7583", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",
@@ -81,8 +81,8 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f4e1f
 iso8601 = "0.6.2"
 bytes = "1.10"
 openfga-client = { version = "0.4", features = ["auth-middle"] }
-typed-builder = "^0.21.0"
-async-trait = "0.1.83"
+typed-builder = "^0.22.0"
+async-trait = "0.1.89"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
 axum-extra = { version = "0.10.0" }

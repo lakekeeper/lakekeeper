@@ -18,7 +18,7 @@ use crate::{
     WarehouseId,
 };
 
-const GET_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanCommit;
+const GET_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanGetMetadata;
 const CONTROL_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanDrop;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::CanDelete;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =

@@ -1,9 +1,6 @@
 use std::collections::HashSet;
 
-use iceberg::{
-    spec::{FormatVersion, TableMetadata},
-    ErrorKind,
-};
+use iceberg::{spec::TableMetadata, ErrorKind};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use lakekeeper_io::Location;
@@ -16,10 +13,10 @@ use crate::{
         dbutils::DBErrorHandler,
         tabular::table::{
             common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
-            DbTableFormatVersion, TableUpdates, MAX_PARAMETERS,
+            DbTableFormatVersion, TableUpdateFlags, MAX_PARAMETERS,
         },
     },
-    service::{storage::split_location, TableCommit},
+    service::{storage::split_location, TableCommit, TableId},
     WarehouseId,
 };
 
@@ -63,7 +60,7 @@ pub(crate) async fn commit_table_transaction(
         .into_iter()
         .zip(location_metadata_pairs.iter())
     {
-        let updates = TableUpdates::from(updates.as_slice());
+        let updates = TableUpdateFlags::from(updates.as_slice());
         apply_metadata_changes(transaction, warehouse_id, updates, new_metadata, diffs).await?;
     }
 
@@ -129,7 +126,8 @@ fn build_table_and_tabular_update_queries(
             last_column_id = c."last_column_id",
             last_sequence_number = c."last_sequence_number",
             last_updated_ms = c."last_updated_ms",
-            last_partition_id = c."last_partition_id"
+            last_partition_id = c."last_partition_id",
+            next_row_id = c."next_row_id"
         FROM (VALUES
         "#,
     );
@@ -154,16 +152,23 @@ fn build_table_and_tabular_update_queries(
     ) in location_metadata_pairs.into_iter().enumerate()
     {
         let (fs_protocol, fs_location) = split_location(new_metadata.location())?;
+        let next_row_id = i64::try_from(new_metadata.next_row_id()).map_err(|_| {
+            ErrorModel::bad_request(
+                format!(
+                    "next_row_id must be smaller than i64::MAX. Got: {}",
+                    new_metadata.next_row_id()
+                ),
+                "NextRowIdOverflow".to_string(),
+                None,
+            )
+        })?;
 
         query_builder_table.push("(");
         query_builder_table.push_bind(warehouse_id.to_uuid());
         query_builder_table.push(", ");
         query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");
-        query_builder_table.push_bind(match new_metadata.format_version() {
-            FormatVersion::V1 => DbTableFormatVersion::V1,
-            FormatVersion::V2 => DbTableFormatVersion::V2,
-        });
+        query_builder_table.push_bind(DbTableFormatVersion::from(new_metadata.format_version()));
         query_builder_table.push(", ");
         query_builder_table.push_bind(new_metadata.last_column_id());
         query_builder_table.push(", ");
@@ -172,6 +177,8 @@ fn build_table_and_tabular_update_queries(
         query_builder_table.push_bind(new_metadata.last_updated_ms());
         query_builder_table.push(", ");
         query_builder_table.push_bind(new_metadata.last_partition_id());
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(next_row_id);
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
@@ -195,7 +202,7 @@ fn build_table_and_tabular_update_queries(
     }
 
     query_builder_table
-        .push(") as c(warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.table_id");
+        .push(") as c(warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id, next_row_id) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.table_id");
     query_builder_tabular.push(
         ") as c(warehouse_id, table_id, new_metadata_location, fs_location, fs_protocol, old_metadata_location) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.tabular_id AND t.typ = 'table' AND t.metadata_location IS NOT DISTINCT FROM c.old_metadata_location",
     );
@@ -259,11 +266,12 @@ fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
 async fn apply_metadata_changes(
     transaction: &mut Transaction<'_, Postgres>,
     warehouse_id: WarehouseId,
-    table_updates: TableUpdates,
+    table_updates: TableUpdateFlags,
     new_metadata: &TableMetadata,
     diffs: TableMetadataDiffs,
 ) -> api::Result<()> {
-    let TableUpdates {
+    let table_id = TableId::from(new_metadata.uuid());
+    let TableUpdateFlags {
         snapshot_refs,
         properties,
     } = table_updates;
@@ -343,7 +351,22 @@ async fn apply_metadata_changes(
         .await?;
     }
 
-    // Must run after insert_schemas
+    if !diffs.added_encryption_keys.is_empty() {
+        common::insert_table_encryption_keys(
+            warehouse_id,
+            table_id,
+            diffs
+                .added_encryption_keys
+                .iter()
+                .filter_map(|k| new_metadata.encryption_key(k))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+        )
+        .await?;
+    }
+
+    // Must run after insert_schemas & after insert_encryption_keys
     if !diffs.added_snapshots.is_empty() {
         common::insert_snapshots(
             warehouse_id,
@@ -510,6 +533,17 @@ async fn apply_metadata_changes(
         .await?;
     }
 
+    // Must run after remove_snapshots
+    if !diffs.removed_encryption_keys.is_empty() {
+        common::remove_table_encryption_keys(
+            warehouse_id,
+            table_id,
+            &diffs.removed_encryption_keys,
+            transaction,
+        )
+        .await?;
+    }
+
     if properties {
         common::set_table_properties(
             warehouse_id,
@@ -519,5 +553,6 @@ async fn apply_metadata_changes(
         )
         .await?;
     }
+
     Ok(())
 }

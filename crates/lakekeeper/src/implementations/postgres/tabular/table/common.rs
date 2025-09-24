@@ -1,14 +1,22 @@
 use std::{collections::HashMap, ops::Range};
 
 use iceberg::spec::{
-    MetadataLog, PartitionSpecRef, PartitionStatisticsFile, SchemaRef, SnapshotLog, SnapshotRef,
-    SortOrderRef, StatisticsFile, TableMetadata,
+    EncryptedKey, MetadataLog, PartitionSpecRef, PartitionStatisticsFile, SchemaRef, SnapshotLog,
+    SnapshotRef, SortOrderRef, StatisticsFile, TableMetadata,
 };
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::{api, implementations::postgres::dbutils::DBErrorHandler, WarehouseId};
+use crate::{
+    api,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::table::{assigned_rows_as_i64, first_row_id_as_i64},
+    },
+    service::TableId,
+    WarehouseId,
+};
 
 pub(super) async fn remove_schemas(
     warehouse_id: WarehouseId,
@@ -39,6 +47,10 @@ pub(super) async fn insert_schemas(
     warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
+    if schema_iter.len() == 0 {
+        return Ok(());
+    }
+
     let num_schemas = schema_iter.len();
     let mut ids = Vec::with_capacity(num_schemas);
     let mut schemas = Vec::with_capacity(num_schemas);
@@ -125,6 +137,10 @@ pub(crate) async fn insert_partition_specs(
     warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
+    if partition_specs.len() == 0 {
+        return Ok(());
+    }
+
     let mut spec_ids = Vec::with_capacity(partition_specs.len());
     let mut specs = Vec::with_capacity(partition_specs.len());
 
@@ -211,6 +227,9 @@ pub(crate) async fn insert_sort_orders(
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let n_orders = sort_orders_iter.len();
+    if n_orders == 0 {
+        return Ok(());
+    }
     let mut sort_order_ids = Vec::with_capacity(n_orders);
     let mut sort_orders = Vec::with_capacity(n_orders);
 
@@ -312,6 +331,10 @@ pub(crate) async fn insert_snapshot_log(
     warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
+    if snapshots.len() == 0 {
+        return Ok(());
+    }
+
     let (snap, stamp): (Vec<_>, Vec<_>) = snapshots
         .map(|log| (log.snapshot_id, log.timestamp_ms))
         .unzip();
@@ -385,6 +408,9 @@ pub(super) async fn insert_metadata_log(
     log: impl ExactSizeIterator<Item = MetadataLog>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
+    if log.len() == 0 {
+        return Ok(());
+    }
     let mut timestamps = Vec::with_capacity(log.len());
     let mut metadata_files = Vec::with_capacity(log.len());
     let seqs: Range<i64> = 0..log.len().try_into().map_err(|e| {
@@ -426,9 +452,14 @@ pub(super) async fn insert_snapshot_refs(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
-    let mut refnames = Vec::new();
-    let mut snapshot_ids = Vec::new();
-    let mut retentions = Vec::new();
+    let n_refs = table_metadata.refs().len();
+    if n_refs == 0 {
+        return Ok(());
+    }
+
+    let mut refnames = Vec::with_capacity(n_refs);
+    let mut snapshot_ids = Vec::with_capacity(n_refs);
+    let mut retentions = Vec::with_capacity(n_refs);
 
     for (refname, snapshot_ref) in table_metadata.refs() {
         refnames.push(refname.clone());
@@ -502,6 +533,10 @@ pub(super) async fn insert_snapshots(
     snapshots: impl ExactSizeIterator<Item = &SnapshotRef>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
+    if snapshots.len() == 0 {
+        return Ok(());
+    }
+
     let snap_cnt = snapshots.len();
 
     // Column values changing for every row.
@@ -512,6 +547,9 @@ pub(super) async fn insert_snapshots(
     let mut summaries = Vec::with_capacity(snap_cnt);
     let mut schemas = Vec::with_capacity(snap_cnt);
     let mut timestamps = Vec::with_capacity(snap_cnt);
+    let mut first_row_ids = Vec::with_capacity(snap_cnt);
+    let mut assigned_rows = Vec::with_capacity(snap_cnt);
+    let mut key_ids = Vec::with_capacity(snap_cnt);
 
     for snap in snapshots {
         ids.push(snap.snapshot_id());
@@ -527,6 +565,13 @@ pub(super) async fn insert_snapshots(
         })?);
         schemas.push(snap.schema_id());
         timestamps.push(snap.timestamp_ms());
+        first_row_ids.push(snap.first_row_id().map(first_row_id_as_i64).transpose()?);
+        assigned_rows.push(
+            snap.added_rows_count()
+                .map(assigned_rows_as_i64)
+                .transpose()?,
+        );
+        key_ids.push(snap.encryption_key_id());
     }
     let _ = sqlx::query!(
         r#"INSERT INTO table_snapshot(warehouse_id,
@@ -537,7 +582,10 @@ pub(super) async fn insert_snapshots(
                                       manifest_list,
                                       summary,
                                       schema_id,
-                                      timestamp_ms)
+                                      timestamp_ms,
+                                      first_row_id,
+                                      assigned_rows,
+                                      key_id)
             SELECT $3, $2, * FROM UNNEST(
                 $1::BIGINT[],
                 $4::BIGINT[],
@@ -545,7 +593,10 @@ pub(super) async fn insert_snapshots(
                 $6::TEXT[],
                 $7::JSONB[],
                 $8::INT[],
-                $9::BIGINT[]
+                $9::BIGINT[],
+                $10::BIGINT[],
+                $11::BIGINT[],
+                $12::TEXT[]
             )"#,
         &ids,
         tabular_id,
@@ -555,7 +606,10 @@ pub(super) async fn insert_snapshots(
         &manifs,
         &summaries,
         &schemas as _,
-        &timestamps
+        &timestamps,
+        &first_row_ids as _,
+        &assigned_rows as _,
+        &key_ids as _,
     )
     .execute(&mut **transaction)
     .await
@@ -573,6 +627,9 @@ pub(crate) async fn set_table_properties(
     properties: &HashMap<String, String>,
     transaction: &mut PgConnection,
 ) -> api::Result<()> {
+    if properties.is_empty() {
+        return Ok(());
+    }
     let (keys, vals): (Vec<String>, Vec<String>) = properties
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -604,6 +661,9 @@ pub(super) async fn insert_partition_statistics(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let n_stats = partition_statistics.len();
+    if n_stats == 0 {
+        return Ok(());
+    }
     let mut snapshot_ids = Vec::with_capacity(n_stats);
     let mut paths = Vec::with_capacity(n_stats);
     let mut file_size_in_bytes = Vec::with_capacity(n_stats);
@@ -663,6 +723,9 @@ pub(super) async fn insert_table_statistics(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let n_stats = statistics.len();
+    if n_stats == 0 {
+        return Ok(());
+    }
     let mut snapshot_ids = Vec::with_capacity(n_stats);
     let mut paths = Vec::with_capacity(n_stats);
     let mut file_size_in_bytes = Vec::with_capacity(n_stats);
@@ -728,6 +791,77 @@ pub(super) async fn remove_table_statistics(
     .map_err(|err| {
         tracing::warn!("Error deleting table statistics: {}", err);
         err.into_error_model("Error deleting table statistics".to_string())
+    })?;
+
+    Ok(())
+}
+
+pub(crate) async fn insert_table_encryption_keys(
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    encrypted_keys_iter: impl ExactSizeIterator<Item = &EncryptedKey>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let n_keys = encrypted_keys_iter.len();
+    if n_keys == 0 {
+        return Ok(());
+    }
+    let mut key_ids = Vec::with_capacity(n_keys);
+    let mut key_metadatas = Vec::with_capacity(n_keys);
+    let mut encrypted_by_ids = Vec::with_capacity(n_keys);
+    let mut properties = Vec::with_capacity(n_keys);
+
+    for key in encrypted_keys_iter {
+        key_ids.push(key.key_id().to_string());
+        key_metadatas.push(key.encrypted_key_metadata().to_vec());
+        encrypted_by_ids.push(key.encrypted_by_id());
+        properties.push(serde_json::to_value(key.properties()).map_err(|er| {
+            ErrorModel::internal(
+                "Error serializing encrypted key properties",
+                "EncryptedKeyPropertiesSerializationError",
+                Some(Box::new(er)),
+            )
+        })?);
+    }
+
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_encryption_keys(warehouse_id, table_id, key_id, encrypted_key_metadata, encrypted_by_id, properties)
+           SELECT $1, $2, u.* FROM UNNEST($3::TEXT[], $4::BYTEA[], $5::TEXT[], $6::JSONB[]) u"#,
+        *warehouse_id,
+        *table_id,
+        &key_ids,
+        &key_metadatas,
+        &encrypted_by_ids as _,
+        &properties
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error inserting table encryption keys: {}", err);
+        err.into_error_model("Error inserting table encryption keys".to_string())
+    })?;
+
+    Ok(())
+}
+
+pub(crate) async fn remove_table_encryption_keys(
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    encryption_key_ids: &[String],
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_encryption_keys
+           WHERE warehouse_id = $1 AND table_id = $2 AND key_id = ANY($3::TEXT[])"#,
+        *warehouse_id,
+        *table_id,
+        encryption_key_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error deleting table encryption keys: {}", err);
+        err.into_error_model("Error deleting table encryption keys".to_string())
     })?;
 
     Ok(())
