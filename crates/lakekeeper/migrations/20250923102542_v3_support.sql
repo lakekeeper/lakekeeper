@@ -1,9 +1,5 @@
 ALTER TYPE table_format_version ADD VALUE IF NOT EXISTS '3';
 
-DROP TRIGGER IF EXISTS before_insert_check_metadata ON "table";
-
-DROP FUNCTION IF EXISTS prohibit_updates_of_metadata_blob ();
-
 ALTER TABLE "table"
 ADD COLUMN IF NOT EXISTS next_row_id BIGINT CHECK (next_row_id >= 0),
 ALTER COLUMN table_format_version
@@ -21,8 +17,6 @@ SET
 ALTER COLUMN last_partition_id
 SET
     NOT NULL,
-DROP COLUMN IF EXISTS metadata;
-
 UPDATE "table"
 SET
     next_row_id = 0
