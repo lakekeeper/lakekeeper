@@ -552,15 +552,16 @@ impl TableQueryStruct {
                 let properties = properties
                     .and_then(|p| serde_json::from_value::<HashMap<String, String>>(p).ok())
                     .unwrap_or_default();
-                (
-                    key_id.clone(),
-                    EncryptedKey::builder()
-                        .key_id(key_id)
-                        .encrypted_key_metadata(encrypted_key_metadata)
-                        .encrypted_by_id(encrypted_by_id.unwrap_or_default())
-                        .properties(properties.clone())
-                        .build(),
-                )
+                let encrypted_key = EncryptedKey::builder()
+                    .key_id(key_id.clone())
+                    .encrypted_key_metadata(encrypted_key_metadata)
+                    .properties(properties);
+                let encrypted_key = if let Some(encrypted_by_id) = encrypted_by_id {
+                    encrypted_key.encrypted_by_id(encrypted_by_id).build()
+                } else {
+                    encrypted_key.build()
+                };
+                (key_id, encrypted_key)
             },
         )
         .collect::<HashMap<_, _>>();

@@ -814,7 +814,7 @@ pub(crate) async fn insert_table_encryption_keys(
     for key in encrypted_keys_iter {
         key_ids.push(key.key_id().to_string());
         key_metadatas.push(key.encrypted_key_metadata().to_vec());
-        encrypted_by_ids.push(key.encrypted_by_id().to_string());
+        encrypted_by_ids.push(key.encrypted_by_id());
         properties.push(serde_json::to_value(key.properties()).map_err(|er| {
             ErrorModel::internal(
                 "Error serializing encrypted key properties",
@@ -831,7 +831,7 @@ pub(crate) async fn insert_table_encryption_keys(
         *table_id,
         &key_ids,
         &key_metadatas,
-        &encrypted_by_ids,
+        &encrypted_by_ids as _,
         &properties
     )
     .execute(&mut **transaction)
