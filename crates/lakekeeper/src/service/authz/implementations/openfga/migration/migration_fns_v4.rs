@@ -51,8 +51,7 @@ fn extract_id_from_full_object(full_object: &str) -> anyhow::Result<String> {
     let parts: Vec<_> = full_object.split(':').collect();
     anyhow::ensure!(
         parts.len() == 2,
-        "Expected full object (type:id), got {}",
-        full_object
+        "Expected full object (type:id), got {full_object}",
     );
     Ok(parts[1].to_string())
 }
