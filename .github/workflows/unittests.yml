@@ -101,7 +101,7 @@ jobs:
         run: just update-management-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
       - name: Build TS Client
