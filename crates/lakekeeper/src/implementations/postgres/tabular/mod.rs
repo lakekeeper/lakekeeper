@@ -461,7 +461,7 @@ where
         SELECT
             t.tabular_id,
             t.name as "tabular_name",
-            namespace_name,
+            t.namespace_name,
             t.typ as "typ: TabularType",
             t.created_at,
             t.deleted_at,
@@ -469,12 +469,11 @@ where
             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
-        INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
         WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND (namespace_name = $2 OR $2 IS NULL)
-            AND (n.namespace_id = $10 OR $10 IS NULL)
+            AND (t.namespace_name = $2 OR $2 IS NULL)
+            AND (t.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted

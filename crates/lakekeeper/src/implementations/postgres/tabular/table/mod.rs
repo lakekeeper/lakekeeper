@@ -474,7 +474,7 @@ pub(crate) async fn load_tables(
             ti.name as "table_name",
             ti.fs_location as "table_fs_location",
             ti.fs_protocol as "table_fs_protocol",
-            namespace_name,
+            ti.namespace_name,
             ti.namespace_id,
             ti."metadata_location",
             w.storage_profile as "storage_profile: Json<StorageProfile>",
@@ -515,7 +515,6 @@ pub(crate) async fn load_tables(
             tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
         FROM "table" t
         INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
         INNER JOIN warehouse w ON w.warehouse_id = $1
         INNER JOIN table_current_schema tcs
             ON tcs.warehouse_id = $1 AND tcs.table_id = t.table_id
@@ -670,7 +669,7 @@ pub(crate) async fn get_table_metadata_by_id(
             ti.name as "table_name",
             ti.fs_location as "table_fs_location",
             ti.fs_protocol as "table_fs_protocol",
-            namespace_name,
+            ti.namespace_name,
             ti.namespace_id,
             t."metadata" as "metadata: Json<TableMetadata>",
             ti."metadata_location",
@@ -678,7 +677,6 @@ pub(crate) async fn get_table_metadata_by_id(
             w."storage_secret_id"
         FROM "table" t
         INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
         INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE t.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
@@ -739,7 +737,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              t."table_id",
              ti.name as "table_name",
              ti.fs_location as "fs_location",
-             namespace_name,
+             ti.namespace_name,
              ti.namespace_id,
              t."metadata" as "metadata: Json<TableMetadata>",
              ti."metadata_location",
@@ -747,7 +745,6 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              w."storage_secret_id"
          FROM "table" t
          INNER JOIN tabular ti ON t.warehouse_id = $1 AND t.table_id = ti.tabular_id
-         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
          INNER JOIN warehouse w ON w.warehouse_id = $1
          WHERE t.warehouse_id = $1
              AND ti.fs_location = ANY($2)
