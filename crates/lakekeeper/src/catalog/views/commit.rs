@@ -97,7 +97,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     t.commit().await?;
 
     // Verify assertions (only needed once)
-    check_asserts(requirements.as_ref(), warehouse_id, view_id)?;
+    check_asserts(requirements.as_ref(), view_id)?;
 
     // Start the retry loop
     let request = Arc::new(request);
@@ -293,23 +293,11 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ))
 }
 
-fn check_asserts(
-    requirements: Option<&Vec<ViewRequirement>>,
-    warehouse_id: WarehouseId,
-    view_id: ViewId,
-) -> Result<()> {
+fn check_asserts(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {
     if let Some(requirements) = requirements {
         for assertion in requirements {
             match assertion {
                 ViewRequirement::AssertViewUuid(req) => {
-                    if req.warehouse_uuid != *warehouse_id {
-                        return Err(ErrorModel::bad_request(
-                            "View WarehouseId does not match",
-                            "ViewWarehouseIdMismatch",
-                            None,
-                        )
-                        .into());
-                    }
                     if req.uuid != *view_id {
                         return Err(ErrorModel::bad_request(
                             "View UUID does not match",
