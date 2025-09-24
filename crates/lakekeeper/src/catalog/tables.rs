@@ -2289,13 +2289,14 @@ pub(crate) mod test {
     }
 
     /// Helper to create a standard snapshot for testing
-    fn create_test_snapshot(
+    fn create_test_snapshot_v3(
         snapshot_id: i64,
         timestamp_ms: i64,
         sequence_number: i64,
         manifest_list: &str,
         row_range: Option<(u64, u64)>,
         added_records: u64,
+        key_id: &str,
     ) -> Snapshot {
         let base_builder = Snapshot::builder()
             .with_snapshot_id(snapshot_id)
@@ -2303,6 +2304,7 @@ pub(crate) mod test {
             .with_sequence_number(sequence_number)
             .with_schema_id(0)
             .with_manifest_list(manifest_list)
+            .with_encryption_key_id(Some(key_id.to_string()))
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::from_iter(vec![
@@ -2865,8 +2867,15 @@ pub(crate) mod test {
         // Add a snapshot with row_range (0, 100)
         let last_updated = table.metadata.last_updated_ms();
 
-        let snapshot1 =
-            create_test_snapshot(1, last_updated + 1, 1, "/snap-1.avro", Some((0, 100)), 100);
+        let snapshot1 = create_test_snapshot_v3(
+            1,
+            last_updated + 1,
+            1,
+            "/snap-1.avro",
+            Some((0, 100)),
+            100,
+            "key-1",
+        );
 
         // Commit using Catalog
         let encryption_key = EncryptedKey::builder()
@@ -2907,14 +2916,16 @@ pub(crate) mod test {
             loaded_table.metadata.encryption_key("key-1"),
             Some(&encryption_key)
         );
+        assert_eq!(current_snapshot.encryption_key_id(), Some("key-1"));
 
-        let snapshot2_invalid = create_test_snapshot(
+        let snapshot2_invalid = create_test_snapshot_v3(
             2,
             last_updated + 2,
             2,
             "/snap-2-invalid.avro",
             Some((50, 100)),
             100,
+            "key-1",
         );
 
         // This commit should fail due to row range overlap
@@ -2949,13 +2960,14 @@ pub(crate) mod test {
         assert_eq!(loaded_table2.metadata.next_row_id(), 100);
         assert_eq!(loaded_table2.metadata.format_version(), FormatVersion::V3);
 
-        let snapshot3_valid = create_test_snapshot(
+        let snapshot3_valid = create_test_snapshot_v3(
             3,
             last_updated + 3,
             2,
             "/snap-3-valid.avro",
             Some((100, 50)), // first_row_id: 100, added_rows_count: 50
             50,              // added_records: 50
+            "key-1",
         );
 
         // This commit should succeed

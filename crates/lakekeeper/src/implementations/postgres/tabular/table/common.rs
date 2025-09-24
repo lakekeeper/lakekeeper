@@ -596,7 +596,7 @@ pub(super) async fn insert_snapshots(
                 $9::BIGINT[],
                 $10::BIGINT[],
                 $11::BIGINT[],
-                $12::BIGINT[]
+                $12::TEXT[]
             )"#,
         &ids,
         tabular_id,

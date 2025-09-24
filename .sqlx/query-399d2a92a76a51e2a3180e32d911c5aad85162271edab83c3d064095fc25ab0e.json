@@ -157,7 +157,7 @@
       {
         "ordinal": 28,
         "name": "snapshot_key_ids: Vec<Option<String>>",
-        "type_info": "Int8Array"
+        "type_info": "TextArray"
       },
       {
         "ordinal": 29,
