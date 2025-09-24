@@ -103,7 +103,7 @@ jobs:
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
       - name: Build TS Client
         run: npx @hey-api/openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 
