@@ -1683,6 +1683,23 @@ fn calculate_diffs(
         .copied()
         .collect::<Vec<_>>();
 
+    let old_encryption_keys = previous_metadata
+        .encryption_keys_iter()
+        .map(|k| k.key_id().to_string())
+        .collect::<FxHashSet<_>>();
+    let new_encryption_keys = new_metadata
+        .encryption_keys_iter()
+        .map(|k| k.key_id().to_string())
+        .collect::<FxHashSet<_>>();
+    let removed_encryption_keys = old_encryption_keys
+        .difference(&new_encryption_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    let added_encryption_keys = new_encryption_keys
+        .difference(&old_encryption_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+
     TableMetadataDiffs {
         removed_snapshots: removed_snaps,
         added_snapshots,
@@ -1703,6 +1720,8 @@ fn calculate_diffs(
         removed_stats,
         added_partition_stats,
         removed_partition_stats,
+        removed_encryption_keys,
+        added_encryption_keys,
     }
 }
 
@@ -1727,6 +1746,8 @@ pub struct TableMetadataDiffs {
     pub removed_stats: Vec<i64>,
     pub added_partition_stats: Vec<i64>,
     pub removed_partition_stats: Vec<i64>,
+    pub added_encryption_keys: Vec<String>,
+    pub removed_encryption_keys: Vec<String>,
 }
 
 pub(crate) fn determine_table_ident(
@@ -2031,7 +2052,7 @@ pub(crate) mod test {
     use http::StatusCode;
     use iceberg::{
         spec::{
-            FormatVersion, NestedField, Operation, PrimitiveType, Schema, Snapshot,
+            EncryptedKey, FormatVersion, NestedField, Operation, PrimitiveType, Schema, Snapshot,
             SnapshotReference, SnapshotRetention, Summary, TableMetadata, Transform, Type,
             UnboundPartitionField, UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_FORMAT_VERSION,
             PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
@@ -2848,6 +2869,12 @@ pub(crate) mod test {
             create_test_snapshot(1, last_updated + 1, 1, "/snap-1.avro", Some((0, 100)), 100);
 
         // Commit using Catalog
+        let encryption_key = EncryptedKey::builder()
+            .key_id("key-1")
+            .encrypted_key_metadata("key-metadata".as_bytes().to_vec())
+            .encrypted_by_id("my-vault".to_string())
+            .build();
+
         commit_table_changes(
             &ctx,
             &ns_params,
@@ -2860,14 +2887,26 @@ pub(crate) mod test {
                     ref_name: MAIN_BRANCH.to_string(),
                     reference: create_snapshot_reference(1),
                 },
+                TableUpdate::AddEncryptionKey {
+                    encryption_key: encryption_key.clone(),
+                },
             ],
         )
         .await;
 
         // Load using Catalog and assert next_row_id = 100
         let loaded_table = load_table(&ctx, &ns_params, "my_table").await;
-
         assert_eq!(loaded_table.metadata.next_row_id(), 100);
+        let current_snapshot = loaded_table
+            .metadata
+            .current_snapshot()
+            .expect("There should be a current snapshot");
+        assert_eq!(current_snapshot.snapshot_id(), 1);
+        assert_eq!(current_snapshot.row_range(), Some((0, 100)));
+        assert_eq!(
+            loaded_table.metadata.encryption_key("key-1"),
+            Some(&encryption_key)
+        );
 
         let snapshot2_invalid = create_test_snapshot(
             2,
@@ -2934,6 +2973,17 @@ pub(crate) mod test {
         let final_table = load_table(&ctx, &ns_params, "my_table").await;
 
         assert_eq!(final_table.metadata.next_row_id(), 150);
+        println!(
+            "Available snapshot ids: {:?}",
+            final_table
+                .metadata
+                .snapshots()
+                .map(|s| s.snapshot_id())
+                .collect::<Vec<_>>()
+        );
+        let snapshot = final_table.metadata.snapshot_by_id(3).unwrap();
+        assert_eq!(snapshot.row_range(), Some((100, 50)));
+        assert_eq!(snapshot.manifest_list(), "/snap-3-valid.avro");
     }
 
     #[sqlx::test]

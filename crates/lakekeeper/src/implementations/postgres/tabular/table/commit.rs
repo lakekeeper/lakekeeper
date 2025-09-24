@@ -13,10 +13,10 @@ use crate::{
         dbutils::DBErrorHandler,
         tabular::table::{
             common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
-            DbTableFormatVersion, TableUpdates, MAX_PARAMETERS,
+            DbTableFormatVersion, TableUpdateFlags, MAX_PARAMETERS,
         },
     },
-    service::{storage::split_location, TableCommit},
+    service::{storage::split_location, TableCommit, TableId},
     WarehouseId,
 };
 
@@ -60,7 +60,7 @@ pub(crate) async fn commit_table_transaction(
         .into_iter()
         .zip(location_metadata_pairs.iter())
     {
-        let updates = TableUpdates::from(updates.as_slice());
+        let updates = TableUpdateFlags::from(updates.as_slice());
         apply_metadata_changes(transaction, warehouse_id, updates, new_metadata, diffs).await?;
     }
 
@@ -266,11 +266,12 @@ fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
 async fn apply_metadata_changes(
     transaction: &mut Transaction<'_, Postgres>,
     warehouse_id: WarehouseId,
-    table_updates: TableUpdates,
+    table_updates: TableUpdateFlags,
     new_metadata: &TableMetadata,
     diffs: TableMetadataDiffs,
 ) -> api::Result<()> {
-    let TableUpdates {
+    let table_id = TableId::from(new_metadata.uuid());
+    let TableUpdateFlags {
         snapshot_refs,
         properties,
     } = table_updates;
@@ -350,7 +351,22 @@ async fn apply_metadata_changes(
         .await?;
     }
 
-    // Must run after insert_schemas
+    if !diffs.added_encryption_keys.is_empty() {
+        common::insert_table_encryption_keys(
+            warehouse_id,
+            table_id,
+            diffs
+                .added_encryption_keys
+                .iter()
+                .filter_map(|k| new_metadata.encryption_key(k))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+        )
+        .await?;
+    }
+
+    // Must run after insert_schemas & after insert_encryption_keys
     if !diffs.added_snapshots.is_empty() {
         common::insert_snapshots(
             warehouse_id,
@@ -517,6 +533,17 @@ async fn apply_metadata_changes(
         .await?;
     }
 
+    // Must run after remove_snapshots
+    if !diffs.removed_encryption_keys.is_empty() {
+        common::remove_table_encryption_keys(
+            warehouse_id,
+            table_id,
+            &diffs.removed_encryption_keys,
+            transaction,
+        )
+        .await?;
+    }
+
     if properties {
         common::set_table_properties(
             warehouse_id,
@@ -526,5 +553,6 @@ async fn apply_metadata_changes(
         )
         .await?;
     }
+
     Ok(())
 }

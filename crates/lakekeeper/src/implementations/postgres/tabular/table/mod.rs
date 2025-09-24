@@ -15,8 +15,8 @@ pub(crate) use create::create_table;
 use http::StatusCode;
 use iceberg::{
     spec::{
-        BlobMetadata, FormatVersion, PartitionSpec, Schema, SchemaId, SnapshotRetention, SortOrder,
-        Summary, MAIN_BRANCH,
+        BlobMetadata, EncryptedKey, FormatVersion, PartitionSpec, Schema, SchemaId,
+        SnapshotRetention, SortOrder, Summary, MAIN_BRANCH,
     },
     TableUpdate,
 };
@@ -45,6 +45,66 @@ use crate::{
 };
 
 const MAX_PARAMETERS: usize = 30000;
+
+#[inline]
+pub(crate) fn next_row_id_as_i64(next_row_id: u64) -> std::result::Result<i64, ErrorModel> {
+    let next_row_id = i64::try_from(next_row_id).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Table next_row_id is {next_row_id} but must be between 0 and i64::MAX"),
+            "NextRowIdOverflow",
+            Some(Box::new(e)),
+        )
+    })?;
+    Ok(next_row_id)
+}
+
+#[inline]
+pub(crate) fn first_row_id_as_i64(first_row_id: u64) -> std::result::Result<i64, ErrorModel> {
+    let first_row_id = i64::try_from(first_row_id).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Snapshot first_row_id is {first_row_id} but must be between 0 and i64::MAX"),
+            "FirstRowIdOverflow",
+            Some(Box::new(e)),
+        )
+    })?;
+    Ok(first_row_id)
+}
+
+#[inline]
+pub(crate) fn assigned_rows_as_i64(assigned_rows: u64) -> std::result::Result<i64, ErrorModel> {
+    let assigned_rows = i64::try_from(assigned_rows).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Snapshot assigned_rows (added_rows) is {assigned_rows} but must be between 0 and i64::MAX"),
+            "AssignedRowsOverflow",
+            Some(Box::new(e)),
+        )
+    })?;
+    Ok(assigned_rows)
+}
+
+#[inline]
+pub(crate) fn first_row_id_as_u64(first_row_id: i64) -> std::result::Result<u64, ErrorModel> {
+    let first_row_id = u64::try_from(first_row_id).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Snapshot first_row_id is {first_row_id} but must be between 0 and u64::MAX"),
+            "FirstRowIdOutOfRange",
+            Some(Box::new(e)),
+        )
+    })?;
+    Ok(first_row_id)
+}
+
+#[inline]
+pub(crate) fn assigned_rows_as_u64(assigned_rows: i64) -> std::result::Result<u64, ErrorModel> {
+    let assigned_rows = u64::try_from(assigned_rows).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Snapshot assigned_rows (added_rows) is {assigned_rows} but must be between 0 and u64::MAX"),
+            "AssignedRowsOutOfRange",
+            Some(Box::new(e)),
+        )
+    })?;
+    Ok(assigned_rows)
+}
 
 pub(crate) async fn resolve_table_ident<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
@@ -204,6 +264,9 @@ struct TableQueryStruct {
     snapshot_summary: Option<Vec<Json<Summary>>>,
     snapshot_schema_id: Option<Vec<Option<i32>>>,
     snapshot_timestamp_ms: Option<Vec<i64>>,
+    snapshot_first_row_ids: Option<Vec<Option<i64>>>,
+    snapshot_assigned_rows: Option<Vec<Option<i64>>>,
+    snapshot_key_ids: Option<Vec<Option<String>>>,
     metadata_location: Option<String>,
     table_fs_location: String,
     table_fs_protocol: String,
@@ -232,6 +295,10 @@ struct TableQueryStruct {
     table_stats_file_footer_size_in_bytes: Option<Vec<i64>>,
     table_stats_key_metadata: Option<Vec<Option<String>>>,
     table_stats_blob_metadata: Option<Vec<Json<Vec<BlobMetadata>>>>,
+    encryption_key_ids: Option<Vec<String>>,
+    encryption_encrypted_key_metadatas: Option<Vec<Vec<u8>>>,
+    encryption_encrypted_by_ids: Option<Vec<Option<String>>>,
+    encryption_properties: Option<Vec<Option<serde_json::Value>>>,
 }
 
 impl TableQueryStruct {
@@ -289,10 +356,24 @@ impl TableQueryStruct {
             self.snapshot_parent_snapshot_id.unwrap_or_default(),
             self.snapshot_sequence_number.unwrap_or_default(),
             self.snapshot_timestamp_ms.unwrap_or_default(),
+            self.snapshot_first_row_ids.unwrap_or_default(),
+            self.snapshot_assigned_rows.unwrap_or_default(),
+            self.snapshot_key_ids.unwrap_or_default(),
         ))
         .map(
-            |(snap_id, schema_id, summary, manifest, parent_snap, seq, timestamp_ms)| {
-                (
+            |(
+                snap_id,
+                schema_id,
+                summary,
+                manifest,
+                parent_snap,
+                seq,
+                timestamp_ms,
+                first_row_id,
+                assigned_rows,
+                key_id,
+            )| {
+                Ok((
                     snap_id,
                     Arc::new({
                         let builder = iceberg::spec::Snapshot::builder()
@@ -301,17 +382,32 @@ impl TableQueryStruct {
                             .with_sequence_number(seq)
                             .with_snapshot_id(snap_id)
                             .with_summary(summary.0)
-                            .with_timestamp_ms(timestamp_ms);
-                        if let Some(schema_id) = schema_id {
-                            builder.with_schema_id(schema_id).build()
+                            .with_timestamp_ms(timestamp_ms)
+                            .with_encryption_key_id(key_id);
+                        let row_range = if let (Some(first_row_id), Some(assigned_rows)) =
+                            (first_row_id, assigned_rows)
+                        {
+                            let first_row_id = first_row_id_as_u64(first_row_id)?;
+                            let assigned_rows = assigned_rows_as_u64(assigned_rows)?;
+                            Some((first_row_id, assigned_rows))
                         } else {
-                            builder.build()
+                            None
+                        };
+
+                        match (schema_id, row_range) {
+                            (Some(sid), Some(rr)) => builder
+                                .with_schema_id(sid)
+                                .with_row_range(rr.0, rr.1)
+                                .build(),
+                            (Some(sid), None) => builder.with_schema_id(sid).build(),
+                            (None, Some(rr)) => builder.with_row_range(rr.0, rr.1).build(),
+                            (None, None) => builder.build(),
                         }
                     }),
-                )
+                ))
             },
         )
-        .collect::<_>();
+        .collect::<Result<HashMap<_, _>>>()?;
 
         let snapshot_log = itertools::multizip((
             self.snapshot_log_ids.unwrap_or_default(),
@@ -408,8 +504,6 @@ impl TableQueryStruct {
         )
         .collect::<HashMap<_, _>>();
 
-        let encryption_keys = HashMap::new();
-
         let current_schema_id = self.current_schema.ok_or_else(|| {
             ErrorModel::internal(
                 "Current schema not set for table",
@@ -446,6 +540,30 @@ impl TableQueryStruct {
                 Some(Box::new(e)),
             )
         })?;
+
+        let encryption_keys = itertools::multizip((
+            self.encryption_key_ids.unwrap_or_default(),
+            self.encryption_encrypted_key_metadatas.unwrap_or_default(),
+            self.encryption_encrypted_by_ids.unwrap_or_default(),
+            self.encryption_properties.unwrap_or_default(),
+        ))
+        .map(
+            |(key_id, encrypted_key_metadata, encrypted_by_id, properties)| {
+                let properties = properties
+                    .and_then(|p| serde_json::from_value::<HashMap<String, String>>(p).ok())
+                    .unwrap_or_default();
+                (
+                    key_id.clone(),
+                    EncryptedKey::builder()
+                        .key_id(key_id)
+                        .encrypted_key_metadata(encrypted_key_metadata)
+                        .encrypted_by_id(encrypted_by_id.unwrap_or_default())
+                        .properties(properties.clone())
+                        .build(),
+                )
+            },
+        )
+        .collect::<HashMap<_, _>>();
 
         let mut table_metadata = TableMetadata::builder()
             .format_version(FormatVersion::from(self.table_format_version))
@@ -557,6 +675,9 @@ pub(crate) async fn load_tables(
             tsnap.timestamp as "snapshot_timestamp_ms",
             tsnap.summaries as "snapshot_summary: Vec<Json<Summary>>",
             tsnap.schema_ids as "snapshot_schema_id: Vec<Option<i32>>",
+            tsnap.first_row_ids as "snapshot_first_row_ids: Vec<Option<i64>>",
+            tsnap.assigned_rows as "snapshot_assigned_rows: Vec<Option<i64>>",
+            tsnap.key_id as "snapshot_key_ids: Vec<Option<String>>",
             tdsort.sort_order_id as "default_sort_order_id?",
             tps.partition_spec_id as "partition_spec_ids",
             tps.partition_spec as "partition_specs: Vec<Json<PartitionSpec>>",
@@ -579,7 +700,11 @@ pub(crate) async fn load_tables(
             tstat.file_size_in_bytes_s as "table_stats_file_size_in_bytes",
             tstat.file_footer_size_in_bytes_s as "table_stats_file_footer_size_in_bytes",
             tstat.key_metadatas as "table_stats_key_metadata: Vec<Option<String>>",
-            tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
+            tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>",
+            tenc.key_ids as "encryption_key_ids",
+            tenc.encrypted_key_metadatas as "encryption_encrypted_key_metadatas",
+            tenc.encrypted_by_ids as "encryption_encrypted_by_ids: Vec<Option<String>>",
+            tenc.properties as "encryption_properties: Vec<Option<serde_json::Value>>"
         FROM "table" t
         INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
@@ -612,7 +737,10 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(manifest_list) as manifest_lists,
                           ARRAY_AGG(summary) as summaries,
                           ARRAY_AGG(schema_id) as schema_ids,
-                          ARRAY_AGG(timestamp_ms) as timestamp
+                          ARRAY_AGG(timestamp_ms) as timestamp,
+                          ARRAY_AGG(first_row_id) as first_row_ids,
+                          ARRAY_AGG(assigned_rows) as assigned_rows,
+                          ARRAY_AGG(key_id) as key_id
                    FROM table_snapshot WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
@@ -651,6 +779,16 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(blob_metadata) as blob_metadatas
                     FROM table_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)
                     GROUP BY table_id) tstat ON tstat.table_id = t.table_id
+        LEFT JOIN (
+            SELECT table_id,
+                   ARRAY_AGG(key_id) as key_ids,
+                   ARRAY_AGG(encrypted_key_metadata) as encrypted_key_metadatas,
+                   ARRAY_AGG(encrypted_by_id) as encrypted_by_ids,
+                   ARRAY_AGG(properties) as properties
+            FROM table_encryption_keys
+            WHERE warehouse_id = $1 AND table_id = ANY($2)
+            GROUP BY table_id
+        ) tenc ON tenc.table_id = t.table_id
         WHERE t.warehouse_id = $1
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
@@ -881,14 +1019,14 @@ pub(crate) async fn drop_table(
 
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
-struct TableUpdates {
+struct TableUpdateFlags {
     snapshot_refs: bool,
     properties: bool,
 }
 
-impl From<&[TableUpdate]> for TableUpdates {
+impl From<&[TableUpdate]> for TableUpdateFlags {
     fn from(value: &[TableUpdate]) -> Self {
-        let mut s = TableUpdates::default();
+        let mut s = TableUpdateFlags::default();
         for u in value {
             match u {
                 TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {

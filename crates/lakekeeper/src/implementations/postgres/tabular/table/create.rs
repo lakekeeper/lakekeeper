@@ -12,7 +12,7 @@ use crate::{
         dbutils::DBErrorHandler,
         tabular::{
             create_tabular,
-            table::{common, DbTableFormatVersion},
+            table::{common, next_row_id_as_i64, DbTableFormatVersion},
             CreateTabular, TabularType,
         },
     },
@@ -54,6 +54,7 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+    let table_id = TableId::from(tabular_id);
 
     insert_table(&table_metadata, transaction, *warehouse_id, tabular_id).await?;
 
@@ -71,7 +72,6 @@ pub(crate) async fn create_table(
         tabular_id,
     )
     .await?;
-
     common::insert_partition_specs(
         table_metadata.partition_specs_iter(),
         transaction,
@@ -86,7 +86,6 @@ pub(crate) async fn create_table(
         table_metadata.default_partition_spec().spec_id(),
     )
     .await?;
-
     common::insert_snapshots(
         warehouse_id,
         tabular_id,
@@ -148,6 +147,13 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+    common::insert_table_encryption_keys(
+        warehouse_id,
+        table_id,
+        table_metadata.encryption_keys_iter(),
+        transaction,
+    )
+    .await?;
 
     Ok(CreateTableResponse {
         table_metadata,
@@ -200,16 +206,7 @@ async fn insert_table(
     warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> Result<()> {
-    let next_row_id = i64::try_from(table_metadata.next_row_id()).map_err(|e| {
-        ErrorModel::bad_request(
-            format!(
-                "Table next_row_id {} must be between 0 and i64::MAX",
-                table_metadata.next_row_id()
-            ),
-            "NextRowIdOverflow",
-            Some(Box::new(e)),
-        )
-    })?;
+    let next_row_id = next_row_id_as_i64(table_metadata.next_row_id())?;
     let _ = sqlx::query!(
         r#"
         INSERT INTO "table" (warehouse_id,

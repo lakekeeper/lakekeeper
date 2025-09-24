@@ -202,7 +202,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     }
 
     cancellation_token.cancel();
-
+ 
     endpoint_statistics_tracker_tx
         .send(EndpointStatisticsMessage::Shutdown)
         .await?;
