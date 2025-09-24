@@ -521,9 +521,9 @@ checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
 
 [[package]]
 name = "async-trait"
-version = "0.1.88"
+version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e539d3fca749fcee5236ab05e93a52867dd549cc157c8cb7f99595f3cedffdb5"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3474,7 +3474,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tokio",
  "tracing",
- "typed-builder 0.21.0",
+ "typed-builder 0.22.0",
  "url",
  "utoipa",
  "uuid",
@@ -3980,7 +3980,7 @@ dependencies = [
  "paste",
  "percent-encoding",
  "pretty_assertions",
- "quick-xml 0.37.5",
+ "quick-xml 0.38.3",
  "rdkafka",
  "reqwest",
  "serde",
@@ -4003,7 +4003,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "tryhard",
- "typed-builder 0.21.0",
+ "typed-builder 0.22.0",
  "url",
  "urlencoding",
  "utoipa",
@@ -4081,7 +4081,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tryhard",
- "typed-builder 0.21.0",
+ "typed-builder 0.22.0",
  "url",
  "uuid",
  "veil",
@@ -5593,6 +5593,16 @@ name = "quick-xml"
 version = "0.37.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.38.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42a232e7487fc2ef313d96dde7948e7a3c05101870d8985e4fd8d26aedd27b89"
 dependencies = [
  "memchr",
  "serde",
@@ -7877,6 +7887,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-builder"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "398a3a3c918c96de527dc11e6e846cd549d4508030b8a33e1da12789c856b81a"
+dependencies = [
+ "typed-builder-macro 0.22.0",
+]
+
+[[package]]
 name = "typed-builder-macro"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7892,6 +7911,17 @@ name = "typed-builder-macro"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60d8d828da2a3d759d3519cdf29a5bac49c77d039ad36d0782edadbf9cd5415b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
+name = "typed-builder-macro"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e48cea23f68d1f78eb7bc092881b6bb88d3d6b5b7e6234f6f9c911da1ffb221"
 dependencies = [
  "proc-macro2",
  "quote",

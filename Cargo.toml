@@ -65,7 +65,7 @@ serde_derive = "^1.0"
 serde_with = "^3.4"
 serde_json = { version = "^1.0", features = ["raw_value"] }
 serde_norway = "0.9.42"
-quick-xml = "0.37.4"
+quick-xml = { version = "0.38.3", features = ["serialize"] }
 url = { version = "^2.5", features = ["serde"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 reqwest = { version = "^0.12", default-features = false, features = [
@@ -81,8 +81,8 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "cd532
 iso8601 = "0.6.2"
 bytes = "1.10"
 openfga-client = { version = "0.4", features = ["auth-middle"] }
-typed-builder = "^0.21.0"
-async-trait = "0.1.83"
+typed-builder = "^0.22.0"
+async-trait = "0.1.89"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
 axum-extra = { version = "0.10.0" }
