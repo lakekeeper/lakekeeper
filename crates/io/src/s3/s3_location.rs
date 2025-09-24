@@ -256,26 +256,26 @@ mod tests {
     #[test]
     fn test_parse_s3_location() {
         let cases = vec![
-            // (
-            //     "s3://test-bucket/test_prefix/namespace/table",
-            //     "test-bucket",
-            //     vec!["test_prefix", "namespace", "table"],
-            // ),
-            // (
-            //     "s3://test-bucket/test_prefix/namespace/table/",
-            //     "test-bucket",
-            //     vec!["test_prefix", "namespace", "table", ""],
-            // ),
-            // (
-            //     "s3://test-bucket/test_prefix",
-            //     "test-bucket",
-            //     vec!["test_prefix"],
-            // ),
-            // (
-            //     "s3://test-bucket/test_prefix/",
-            //     "test-bucket",
-            //     vec!["test_prefix", ""],
-            // ),
+            (
+                "s3://test-bucket/test_prefix/namespace/table",
+                "test-bucket",
+                vec!["test_prefix", "namespace", "table"],
+            ),
+            (
+                "s3://test-bucket/test_prefix/namespace/table/",
+                "test-bucket",
+                vec!["test_prefix", "namespace", "table", ""],
+            ),
+            (
+                "s3://test-bucket/test_prefix",
+                "test-bucket",
+                vec!["test_prefix"],
+            ),
+            (
+                "s3://test-bucket/test_prefix/",
+                "test-bucket",
+                vec!["test_prefix", ""],
+            ),
             ("s3://test-bucket/", "test-bucket", vec![""]),
             ("s3://test-bucket", "test-bucket", vec![]),
             (

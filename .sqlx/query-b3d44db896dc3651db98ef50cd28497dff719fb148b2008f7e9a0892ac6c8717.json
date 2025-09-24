@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_encryption_keys(warehouse_id, table_id, key_id, encrypted_key_metadata, encrypted_by_id, properties)\n           SELECT $1, $2, u.* FROM UNNEST($3::TEXT[], $4::BYTEA[], $5::TEXT[], $6::JSONB[]) u",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "ByteaArray",
+        "TextArray",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b3d44db896dc3651db98ef50cd28497dff719fb148b2008f7e9a0892ac6c8717"
+}

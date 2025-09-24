@@ -195,7 +195,12 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     .await;
 
     // Handle shutdown if serve_inner returned (e.g. due to error)
-    tracing::debug!("Sending shutdown signal to threads");
+    if let Some(err) = serving_result.as_ref().err() {
+        tracing::error!("Service error: {err}. Initiating shutdown of background services.");
+    } else {
+        tracing::info!("Service is shutting down gracefully.");
+    }
+
     cancellation_token.cancel();
 
     endpoint_statistics_tracker_tx

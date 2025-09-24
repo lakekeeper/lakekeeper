@@ -411,7 +411,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }))
         .await?
         .into_iter()
-        .zip(warehouses.into_iter())
+        .zip(warehouses)
         .filter_map(|(allowed, warehouse)| {
             if allowed.into_inner() {
                 Some(warehouse.into())
