@@ -7,16 +7,22 @@ use crate::{
         authz::{Authorizer, MustUse},
         TabularId,
     },
+    WarehouseId,
 };
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer>(
+    warehouse_id: &WarehouseId,
     request: &UndropTabularsRequest,
     authorizer: &A,
     request_metadata: &RequestMetadata,
 ) -> api::Result<()> {
-    let all_allowed =
-        can_undrop_all_specified_tabulars(request_metadata, authorizer, request.targets.as_slice())
-            .await?;
+    let all_allowed = can_undrop_all_specified_tabulars(
+        request_metadata,
+        authorizer,
+        warehouse_id,
+        request.targets.as_slice(),
+    )
+    .await?;
     if !all_allowed {
         return Err(ErrorModel::forbidden(
             "Not allowed to undrop at least one specified tabular.",
@@ -31,6 +37,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer>(
 async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     request_metadata: &RequestMetadata,
     authorizer: &A,
+    warehouse_id: &WarehouseId,
     tabs: &[TabularId],
 ) -> api::Result<bool> {
     let mut futs = Vec::with_capacity(tabs.len());
@@ -40,14 +47,16 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
             TabularId::View(id) => {
                 futs.push(authorizer.is_allowed_view_action(
                     request_metadata,
-                    (*id).into(),
+                    *warehouse_id,
+                    *id,
                     crate::service::authz::CatalogViewAction::CanUndrop,
                 ));
             }
             TabularId::Table(id) => {
                 futs.push(authorizer.is_allowed_table_action(
                     request_metadata,
-                    (*id).into(),
+                    *warehouse_id,
+                    *id,
                     crate::service::authz::CatalogTableAction::CanUndrop,
                 ));
             }

@@ -249,15 +249,15 @@ async fn check_table<C: Catalog, S: SecretStore>(
         AllTableRelations::CanReadAssignments
     });
     Ok(match table {
-        TabularIdentOrUuid::Id {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id,
             table_id,
-            warehouse_id: _,
         } => {
             let table_id = TableId::from(*table_id);
             authorizer
-                .require_table_action(metadata, Ok(Some(table_id)), action)
+                .require_table_action(metadata, *warehouse_id, Ok(Some(table_id)), action)
                 .await?;
-            table_id
+            (*warehouse_id, table_id).to_openfga()
         }
         TabularIdentOrUuid::Name {
             namespace,
@@ -283,10 +283,9 @@ async fn check_table<C: Catalog, S: SecretStore>(
             )
             .await?;
             t.commit().await.ok();
-            table_id
+            (*warehouse_id, table_id).to_openfga()
         }
-    }
-    .to_openfga())
+    })
 }
 
 async fn check_view<C: Catalog, S: SecretStore>(
@@ -300,15 +299,15 @@ async fn check_view<C: Catalog, S: SecretStore>(
         AllViewRelations::CanReadAssignments
     });
     Ok(match view {
-        TabularIdentOrUuid::Id {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id,
             table_id,
-            warehouse_id: _,
         } => {
             let view_id = ViewId::from(*table_id);
             authorizer
-                .require_view_action(metadata, Ok(Some(view_id)), action)
+                .require_view_action(metadata, *warehouse_id, Ok(Some(view_id)), action)
                 .await?;
-            view_id
+            (*warehouse_id, view_id).to_openfga()
         }
         TabularIdentOrUuid::Name {
             namespace,
@@ -329,10 +328,9 @@ async fn check_view<C: Catalog, S: SecretStore>(
             )
             .await?;
             t.commit().await.ok();
-            view_id
+            (*warehouse_id, view_id).to_openfga()
         }
-    }
-    .to_openfga())
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -394,11 +392,11 @@ pub(super) enum NamespaceIdentOrUuid {
 /// Identifier for a table or view, either a UUID or its name and namespace
 pub(super) enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
-    Id {
-        #[serde(alias = "view_id")]
-        table_id: uuid::Uuid,
+    IdInWarehouse {
         #[schema(value_type = uuid::Uuid)]
         warehouse_id: WarehouseId,
+        #[serde(alias = "view_id")]
+        table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
@@ -461,7 +459,7 @@ mod tests {
     fn test_serde_check_action_table_id_variant() {
         let action = CheckOperation::Table {
             action: TableAction::GetMetadata,
-            table: TabularIdentOrUuid::Id {
+            table: TabularIdentOrUuid::IdInWarehouse {
                 table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
                 warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
                     .unwrap(),
@@ -484,7 +482,7 @@ mod tests {
     fn test_serde_check_action_view_id_alias() {
         let action = CheckOperation::View {
             action: ViewAction::GetMetadata,
-            view: TabularIdentOrUuid::Id {
+            view: TabularIdentOrUuid::IdInWarehouse {
                 table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
                 warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
                     .unwrap(),

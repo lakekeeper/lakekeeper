@@ -13,21 +13,21 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId,
-        WarehouseId,
+        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, ServerId, State, TableId,
+        ViewId, WarehouseId,
     },
 };
 
 #[derive(Clone, Debug)]
 pub struct AllowAllAuthorizer {
-    pub server_id: uuid::Uuid,
+    pub server_id: ServerId,
 }
 
 #[cfg(test)]
 impl std::default::Default for AllowAllAuthorizer {
     fn default() -> Self {
         Self {
-            server_id: uuid::Uuid::now_v7(),
+            server_id: ServerId::new_random(),
         }
     }
 }
@@ -48,7 +48,7 @@ pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
-    fn server_id(&self) -> uuid::Uuid {
+    fn server_id(&self) -> ServerId {
         self.server_id
     }
 
@@ -142,6 +142,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_table_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
         _table_id: TableId,
         _action: A,
     ) -> Result<bool>
@@ -154,6 +155,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_view_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
         _view_id: ViewId,
         _action: A,
     ) -> Result<bool>
@@ -233,26 +235,28 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_table(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
         _table_id: TableId,
         _parent: NamespaceId,
     ) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_table(&self, _table_id: TableId) -> Result<()> {
+    async fn delete_table(&self, _warehouse_id: WarehouseId, _table_id: TableId) -> Result<()> {
         Ok(())
     }
 
     async fn create_view(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
         _view_id: ViewId,
         _parent: NamespaceId,
     ) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_view(&self, _view_id: ViewId) -> Result<()> {
+    async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
         Ok(())
     }
 }

@@ -134,6 +134,7 @@ mod test {
                     parent_task_id: None,
                     entity_id: EntityId::Tabular(Uuid::now_v7()),
                     schedule_for: None,
+                    entity_name: vec!["mytable".to_string()],
                 },
                 payload: serde_json::to_value(task_state).unwrap(),
             },

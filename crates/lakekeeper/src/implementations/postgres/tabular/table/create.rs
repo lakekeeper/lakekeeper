@@ -1,9 +1,6 @@
 use std::str::FromStr;
 
-use iceberg::{
-    spec::{FormatVersion, TableMetadata},
-    TableIdent,
-};
+use iceberg::{spec::TableMetadata, TableIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 use sqlx::{Postgres, Transaction};
@@ -15,7 +12,7 @@ use crate::{
         dbutils::DBErrorHandler,
         tabular::{
             create_tabular,
-            table::{common, DbTableFormatVersion},
+            table::{common, next_row_id_as_i64, DbTableFormatVersion},
             CreateTabular, TabularType,
         },
     },
@@ -57,6 +54,7 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+    let table_id = TableId::from(tabular_id);
 
     insert_table(&table_metadata, transaction, *warehouse_id, tabular_id).await?;
 
@@ -74,7 +72,6 @@ pub(crate) async fn create_table(
         tabular_id,
     )
     .await?;
-
     common::insert_partition_specs(
         table_metadata.partition_specs_iter(),
         transaction,
@@ -89,7 +86,6 @@ pub(crate) async fn create_table(
         table_metadata.default_partition_spec().spec_id(),
     )
     .await?;
-
     common::insert_snapshots(
         warehouse_id,
         tabular_id,
@@ -151,6 +147,13 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+    common::insert_table_encryption_keys(
+        warehouse_id,
+        table_id,
+        table_metadata.encryption_keys_iter(),
+        transaction,
+    )
+    .await?;
 
     Ok(CreateTableResponse {
         table_metadata,
@@ -203,6 +206,7 @@ async fn insert_table(
     warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> Result<()> {
+    let next_row_id = next_row_id_as_i64(table_metadata.next_row_id())?;
     let _ = sqlx::query!(
         r#"
         INSERT INTO "table" (warehouse_id,
@@ -211,10 +215,11 @@ async fn insert_table(
                              last_column_id,
                              last_sequence_number,
                              last_updated_ms,
-                             last_partition_id
+                             last_partition_id,
+                             next_row_id
                              )
         (
-            SELECT $1, $2, $3, $4, $5, $6, $7
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8
             WHERE EXISTS (SELECT 1
                 FROM active_tables
                 WHERE active_tables.warehouse_id = $1
@@ -223,14 +228,12 @@ async fn insert_table(
         "#,
         warehouse_id,
         tabular_id,
-        match table_metadata.format_version() {
-            FormatVersion::V1 => DbTableFormatVersion::V1,
-            FormatVersion::V2 => DbTableFormatVersion::V2,
-        } as _,
+        DbTableFormatVersion::from(table_metadata.format_version()) as _,
         table_metadata.last_column_id(),
         table_metadata.last_sequence_number(),
         table_metadata.last_updated_ms(),
-        table_metadata.last_partition_id()
+        table_metadata.last_partition_id(),
+        next_row_id
     )
     .fetch_one(&mut **transaction)
     .await

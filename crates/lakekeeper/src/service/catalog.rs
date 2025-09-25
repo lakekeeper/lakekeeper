@@ -13,8 +13,8 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    authz::TableUuid, storage::StorageProfile, NamespaceId, ProjectId, RoleId, TableId,
-    TabularDetails, ViewId, WarehouseId, WarehouseStatus,
+    storage::StorageProfile, NamespaceId, ProjectId, RoleId, TableId, TabularDetails, ViewId,
+    WarehouseId, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -39,12 +39,14 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authn::UserId,
+        authz::TableUuid,
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
+        ServerId,
     },
     SecretIdent,
 };
@@ -205,42 +207,40 @@ pub enum CreateOrUpdateUserResponse {
 
 #[derive(Debug, Clone)]
 pub struct UndropTabularResponse {
-    pub table_ident: TableId,
-    pub task_id: TaskId,
+    pub table_id: TableId,
+    pub expiration_task_id: Option<TaskId>,
     pub name: String,
     pub namespace: NamespaceIdent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerInfo {
-    /// Catalog is not bootstrapped
-    NotBootstrapped,
-    /// Catalog is bootstrapped
-    Bootstrapped {
-        /// Server ID of the catalog at the time of bootstrapping
-        server_id: uuid::Uuid,
-        /// Whether the terms have been accepted
-        terms_accepted: bool,
-        /// Whether the catalog is open for re-bootstrap,
-        /// i.e. to recover admin access.
-        open_for_bootstrap: bool,
-    },
+pub struct ServerInfo {
+    /// Server ID of the catalog at the time of bootstrapping
+    pub(crate) server_id: ServerId,
+    /// Whether the terms have been accepted
+    pub(crate) terms_accepted: bool,
+    /// Whether the catalog is open for re-bootstrap,
+    /// i.e. to recover admin access.
+    pub(crate) open_for_bootstrap: bool,
 }
 
 impl ServerInfo {
     /// Returns the server ID if the catalog is bootstrapped.
     #[must_use]
-    pub fn server_id(&self) -> Option<uuid::Uuid> {
-        match self {
-            ServerInfo::NotBootstrapped => None,
-            ServerInfo::Bootstrapped { server_id, .. } => Some(*server_id),
-        }
+    pub fn server_id(&self) -> ServerId {
+        self.server_id
     }
 
     /// Returns true if the catalog is bootstrapped.
     #[must_use]
-    pub fn is_bootstrapped(&self) -> bool {
-        matches!(self, ServerInfo::Bootstrapped { .. })
+    pub fn is_open_for_bootstrap(&self) -> bool {
+        self.open_for_bootstrap
+    }
+
+    /// Returns true if the terms have been accepted.
+    #[must_use]
+    pub fn terms_accepted(&self) -> bool {
+        self.terms_accepted
     }
 }
 
@@ -253,7 +253,8 @@ pub struct NamespaceInfo {
 #[derive(Debug)]
 pub struct NamespaceDropInfo {
     pub child_namespaces: Vec<NamespaceId>,
-    pub child_tables: Vec<(TabularId, String)>,
+    // table-id, location, table-ident
+    pub child_tables: Vec<(TabularId, String, TableIdent)>,
     pub open_tasks: Vec<TaskId>,
 }
 
@@ -305,31 +306,14 @@ where
     type Transaction: Transaction<Self::State>;
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
-    async fn determine_server_id(state: Self::State) -> anyhow::Result<uuid::Uuid> {
-        let server_info = Self::get_server_info(state.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!(e).context("Failed to determine server id"))?;
-        let previous_server_id = match server_info {
-            ServerInfo::Bootstrapped { server_id, .. } => Some(server_id),
-            ServerInfo::NotBootstrapped => None,
-        };
-
-        let server_id = previous_server_id.unwrap_or_else(uuid::Uuid::now_v7);
-        Ok(server_id)
-    }
-
     /// Get data required for startup validations and server info endpoint
-    async fn get_server_info(
-        catalog_state: Self::State,
-    ) -> std::result::Result<ServerInfo, ErrorModel>;
+    async fn get_server_info(catalog_state: Self::State) -> Result<ServerInfo, ErrorModel>;
 
     /// Bootstrap the catalog.
-    /// Use this hook to persist the provided `server_id`.
     /// Must return Ok(false) if the catalog is not open for bootstrap.
     /// If bootstrapping succeeds, return Ok(true).
     async fn bootstrap<'a>(
         terms_accepted: bool,
-        server_id: uuid::Uuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
 
@@ -340,7 +324,7 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<WarehouseId>>;
 
-    /// Wrapper around get_warehouse_by_name that returns
+    /// Wrapper around `get_warehouse_by_name` that returns
     /// not found error if the warehouse does not exist.
     async fn require_warehouse_by_name(
         warehouse_name: &str,
@@ -366,7 +350,7 @@ where
         request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>>;
 
-    /// Wrapper around get_config_for_warehouse that returns
+    /// Wrapper around `get_config_for_warehouse` that returns
     /// not found error if the warehouse does not exist.
     async fn require_config_for_warehouse(
         warehouse_id: WarehouseId,
@@ -449,7 +433,7 @@ where
     ) -> Result<PaginatedMapping<TableId, TableInfo>>;
 
     /// Return Err only on unexpected errors, not if the table does not exist.
-    /// If include_staged is true, also return staged tables.
+    /// If `include_staged` is true, also return staged tables.
     /// If the table does not exist, return Ok(None).
     ///
     /// We use this function also to handle the `table_exists` endpoint.
@@ -492,7 +476,7 @@ where
     ) -> Result<HashMap<TableId, LoadTableResponse>>;
 
     /// Get table metadata by table id.
-    /// If include_staged is true, also return staged tables,
+    /// If `include_staged` is true, also return staged tables,
     /// i.e. tables with no metadata file yet.
     /// Return Ok(None) if the table does not exist.
     async fn get_table_metadata_by_id(
@@ -533,12 +517,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
-    /// Undrop a table.
+    /// Undrop a table or view.
     ///
     /// Undrops a soft-deleted table. Does not work if the table was hard-deleted.
     /// Returns the task id of the expiration task associated with the soft-deletion.
     async fn clear_tabular_deleted_at(
-        table_id: &[TableId],
+        tabular_id: &[TabularId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>>;
@@ -656,7 +640,7 @@ where
 
     /// Return a list of all project ids in the catalog
     ///
-    /// If project_ids is None, return all projects, otherwise return only the projects in the set
+    /// If `project_ids` is None, return all projects, otherwise return only the projects in the set
     async fn list_projects(
         project_ids: Option<HashSet<ProjectId>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -665,7 +649,7 @@ where
     /// Get endpoint statistics for the project
     ///
     /// We'll return statistics for the time-frame end - interval until end.
-    /// If status_codes is None, return all status codes.
+    /// If `status_codes` is None, return all status codes.
     async fn get_endpoint_statistics(
         project_id: ProjectId,
         warehouse_id: WarehouseFilter,
@@ -691,7 +675,7 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<GetWarehouseResponse>>;
 
-    /// Wrapper around get_warehouse that returns a not-found error if the warehouse does not exist.
+    /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
     async fn require_warehouse<'a>(
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -755,7 +739,7 @@ where
     ) -> Result<()>;
 
     /// Return Err only on unexpected errors, not if the table does not exist.
-    /// If include_staged is true, also return staged tables.
+    /// If `include_staged` is true, also return staged tables.
     /// If the table does not exist, return Ok(None).
     ///
     /// We use this function also to handle the `view_exists` endpoint.
@@ -907,7 +891,10 @@ where
                         TaskEntity::Table {
                             warehouse_id: wid, ..
                         } if *wid != w => continue,
-                        TaskEntity::Table { .. } => (),
+                        TaskEntity::View {
+                            warehouse_id: wid, ..
+                        } if *wid != w => continue,
+                        TaskEntity::View { .. } | TaskEntity::Table { .. } => (),
                     }
                 }
                 cached_results.insert(*id, cached_value);
@@ -1019,7 +1006,7 @@ where
 
     /// Enqueue a batch of tasks to a task queue.
     ///
-    /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
+    /// There can only be a single task running or pending for a (`entity_id`, `queue_name`) tuple.
     /// Any resubmitted pending/running task will be omitted from the returned task ids.
     ///
     /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`.
@@ -1031,7 +1018,7 @@ where
 
     /// Enqueue a single task to a task queue.
     ///
-    /// There can only be a single active task for a (entity_id, queue_name) tuple.
+    /// There can only be a single active task for a (`entity_id`, `queue_name`) tuple.
     /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
     async fn enqueue_task(
         queue_name: &'static TaskQueueName,

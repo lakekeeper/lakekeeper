@@ -31,6 +31,7 @@ where
         let view_id: ViewId = authorizer
             .require_view_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(view_id)),
                 CatalogViewAction::CanDrop,
             )
@@ -40,7 +41,7 @@ where
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let status = C::set_tabular_protected(
             warehouse_id,
-            TabularId::View(*view_id),
+            TabularId::View(view_id),
             protected,
             t.transaction(),
         )
@@ -62,6 +63,7 @@ where
         authorizer
             .require_view_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(view_id)),
                 CatalogViewAction::CanGetMetadata,
             )

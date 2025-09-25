@@ -491,7 +491,6 @@ impl StorageProfile {
         );
         let mut test_file_write = metadata_location.parent();
         test_file_write.push("test");
-        println!("Test file write location: {test_file_write}");
         let mut test_file_write = test_file_write.parent();
         test_file_write.push("test");
         tracing::debug!("Validating access to: {}", test_file_write);
@@ -966,7 +965,7 @@ mod tests {
 
         let namespace_id: NamespaceId = uuid::uuid!("00000000-0000-0000-0000-000000000001").into();
         let namespace_location = profile.default_namespace_location(namespace_id).unwrap();
-        let table_id = TabularId::View(uuid::uuid!("00000000-0000-0000-0000-000000000002"));
+        let table_id = TabularId::View(uuid::uuid!("00000000-0000-0000-0000-000000000002").into());
         let table_location = profile.default_tabular_location(&namespace_location, table_id);
         assert_eq!(table_location.to_string(), target_location);
 

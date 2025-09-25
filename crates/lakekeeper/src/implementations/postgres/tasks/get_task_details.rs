@@ -17,6 +17,7 @@ struct TaskDetailsRow {
     pub queue_name: String,
     pub entity_id: uuid::Uuid,
     pub entity_type: EntityType,
+    pub entity_name: Vec<String>,
     pub task_status: Option<TaskStatus>,
     pub task_log_status: Option<TaskOutcome>,
     pub attempt_scheduled_for: DateTime<chrono::Utc>,
@@ -93,6 +94,7 @@ fn parse_task_details(
                 table_id: most_recent.entity_id.into(),
             },
         },
+        entity_name: most_recent.entity_name,
         status: most_recent
             .task_status
             .map(Into::into)
@@ -158,6 +160,7 @@ where
             queue_name AS "queue_name!",
             entity_id AS "entity_id!",
             entity_type as "entity_type!: EntityType",
+            entity_name as "entity_name!: Vec<String>",
             task_status as "task_status: TaskStatus",
             task_log_status as "task_log_status: TaskOutcome",
             attempt_scheduled_for as "attempt_scheduled_for!",
@@ -178,6 +181,7 @@ where
             queue_name,
             entity_id,
             entity_type,
+            entity_name,
             status as task_status,
             null as task_log_status,
             scheduled_for as attempt_scheduled_for,
@@ -203,6 +207,7 @@ where
             queue_name,
             entity_id,
             entity_type,
+            entity_name,
             null as task_status,
             status as task_log_status,
             attempt_scheduled_for,
@@ -280,6 +285,7 @@ mod tests {
             queue_name: queue_name.to_string(),
             entity_id,
             entity_type: EntityType::Tabular,
+            entity_name: vec!["ns1".to_string(), "table1".to_string()],
             task_status,
             task_log_status,
             attempt_scheduled_for: scheduled_for,
@@ -348,13 +354,16 @@ mod tests {
         assert!((result.task.progress - 0.5).abs() < f32::EPSILON);
         assert!(matches!(result.task.status, APITaskStatus::Running));
 
-        // Verify entity
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = result.task.entity;
-        assert_eq!(*table_id, entity_id);
-        assert_eq!(entity_warehouse_id, warehouse_id);
+        match result.task.entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id);
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify task data
         assert_eq!(result.task_data, serde_json::json!({"test": "data"}));
@@ -543,11 +552,13 @@ mod tests {
         assert!(matches!(attempt1.status, APITaskStatus::Failed));
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn queue_task_helper(
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
         entity_id: EntityId,
+        entity_name: Vec<String>,
         warehouse_id: WarehouseId,
         schedule_for: Option<chrono::DateTime<chrono::Utc>>,
         payload: Option<serde_json::Value>,
@@ -560,6 +571,7 @@ mod tests {
                     warehouse_id,
                     parent_task_id,
                     entity_id,
+                    entity_name,
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -591,6 +603,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_name = vec!["ns".to_string(), "table".to_string()];
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
         let scheduled_for = Utc::now() - chrono::Duration::minutes(1);
@@ -604,6 +617,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            entity_name.clone(),
             warehouse_id,
             Some(scheduled_for),
             Some(payload.clone()),
@@ -619,6 +633,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(task.task_id(), task_id);
+        assert_eq!(&task.task_metadata.entity_name, &entity_name);
 
         // Update progress and execution details
         let execution_details = serde_json::json!({"progress": "in progress"});
@@ -650,13 +665,16 @@ mod tests {
         assert!(result.task.created_at <= now + chrono::Duration::seconds(10));
         assert!(result.task.created_at >= now - chrono::Duration::seconds(10));
 
-        // Verify entity
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = result.task.entity;
-        assert_eq!(*table_id, entity_id.to_uuid());
-        assert_eq!(entity_warehouse_id, warehouse_id);
+        match result.task.entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id.to_uuid());
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify task data and execution details
         assert_eq!(result.task_data, payload);
@@ -680,6 +698,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -734,6 +753,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -815,6 +835,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -881,6 +902,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"many_attempts": "test"})),
@@ -942,6 +964,7 @@ mod tests {
             &tq_name,
             None,
             parent_entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "parent"})),
@@ -956,6 +979,7 @@ mod tests {
             &tq_name,
             Some(parent_task_id),
             child_entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "child"})),
@@ -996,6 +1020,7 @@ mod tests {
             &tq_name,
             None,
             entity_id,
+            vec!["ns".to_string(), "table".to_string()],
             warehouse_id,
             None,
             Some(serde_json::json!({"test": "data"})),

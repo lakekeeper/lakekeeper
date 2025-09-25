@@ -12,7 +12,7 @@ use http::StatusCode;
 use iceberg::ErrorKind;
 use iceberg_ext::NamespaceIdent;
 use lakekeeper_io::Location;
-use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
+use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
@@ -31,8 +31,6 @@ use crate::{
     },
     WarehouseId, CONFIG,
 };
-
-const MAX_PARAMETERS: usize = 30000;
 
 #[derive(Debug, sqlx::Type, Copy, Clone, strum::Display)]
 #[sqlx(type_name = "tabular_type", rename_all = "kebab-case")]
@@ -169,8 +167,8 @@ where
     .map(|r| {
         let location = join_location(&r.fs_protocol, &r.fs_location);
         Some(match r.typ {
-            TabularType::Table => (TabularId::Table(r.tabular_id), location),
-            TabularType::View => (TabularId::View(r.tabular_id), location),
+            TabularType::Table => (TabularId::Table(r.tabular_id.into()), location),
+            TabularType::View => (TabularId::View(r.tabular_id.into()), location),
         })
     });
 
@@ -188,14 +186,28 @@ where
 #[derive(Debug, FromRow)]
 struct TabularRow {
     tabular_id: Uuid,
-    namespace: Vec<String>,
-    tabular_name: String,
+    // Despite `IS NOT NULL` filter sqlx thinks column selected from input is nullable.
+    namespace: Option<Vec<String>>,
+    // Despite `IS NOT NULL` filter sqlx thinks column selected from input is nullable.
+    tabular_name: Option<String>,
     // apparently this is needed, we need 'as "typ: TabularType"' in the query else the select won't
     // work, but that apparently aliases the whole column to "typ: TabularType"
     #[sqlx(rename = "typ: TabularType")]
     typ: TabularType,
 }
 
+/// The keys in the returned map correspond to the input identifiers in the `tables` parameter.
+///
+/// These may differ in case from identifiers stored in the db, since case insensitivity is achieved
+/// by collation. For example:
+///
+/// - Table name in the db is `table1`
+/// - The input parameter is `TABLE1`
+/// - `table1` and `TABLE1` match due to collation and the key in the returned map is `TABLE1`
+///
+/// In line with that, querying both `table1` and `TABLE1` returns a map with two entries,
+/// both mapping to the same table id.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     tables: HashSet<TabularIdentBorrowed<'_>>,
@@ -205,139 +217,120 @@ pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
-    let batch_tables = tables
-        .iter()
-        .map(|t| {
-            let TableIdent { namespace, name } = t.to_table_ident_tuple();
-            let typ: TabularType = t.into();
-            (namespace, name, typ)
-        })
-        .collect::<Vec<_>>();
-
-    if batch_tables.is_empty() {
+    if tables.is_empty() {
         return Ok(HashMap::new());
     }
+    let (ns_names, t_names, t_typs) = tables.iter().fold(
+        (
+            Vec::with_capacity(tables.len()),
+            Vec::with_capacity(tables.len()),
+            Vec::with_capacity(tables.len()),
+        ),
+        |(mut ns_names, mut t_names, mut t_typs), t| {
+            let TableIdent { namespace, name } = t.to_table_ident_tuple();
+            let typ: TabularType = t.into();
+            ns_names.push(namespace.as_ref());
+            t_names.push(name);
+            t_typs.push(typ);
+            (ns_names, t_names, t_typs)
+        },
+    );
 
-    if batch_tables.len() > (MAX_PARAMETERS / 3) {
-        return Err(ErrorModel::bad_request(
-            "Too many tables or views to fetch",
-            "TooManyTablesOrViews",
-            None,
+    // Encoding `ns_names` as json is a workaround for `sqlx` not supporting `Vec<Vec<String>>`.
+    let ns_names_json = serde_json::to_value(&ns_names).map_err(|e| {
+        ErrorModel::internal(
+            "Error json encoding namespace names",
+            "EncodingError",
+            Some(Box::new(e)),
         )
-        .into());
-    }
+    })?;
 
-    // This query is statically verified against our DB, we then take it apart to do some dynamic
-    // extension further down before reconstructing it.
-    let mut statically_checked_query = sqlx::query_as!(
+    // For columns with collation, the query must return the value as in input `tables`.
+    let rows = sqlx::query_as!(
         TabularRow,
         r#"
         SELECT t.tabular_id,
-               n.namespace_name as "namespace",
-               t.name as tabular_name,
-               t.typ as "typ: TabularType"
-        FROM tabular t
-        INNER JOIN namespace n
-            ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+            in_ns.name as "namespace",
+            in_t.name as tabular_name,
+            t.typ as "typ: TabularType"
+        FROM LATERAL (
+            SELECT (
+                SELECT array_agg(val ORDER BY ord)
+                FROM jsonb_array_elements_text(x.name) WITH ORDINALITY AS e(val, ord)
+            ) AS name, x.idx
+            FROM jsonb_array_elements($2) WITH ORDINALITY AS x(name, idx)
+        ) in_ns
+        INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])
+            WITH ORDINALITY AS in_t(name, typ, idx)
+            ON in_ns.idx = in_t.idx
+        INNER JOIN tabular t ON t.warehouse_id = $1 AND
+            t.name = in_t.name AND t.typ = in_t.typ
+        INNER JOIN namespace n ON n.warehouse_id = $1
+            AND t.namespace_id = n.namespace_id AND n.namespace_name = in_ns.name
         INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE t.warehouse_id = $1 AND w.status = 'active'
-            AND (t.deleted_at is NULL OR $2)
-            AND (t.metadata_location is not NULL OR $3) "#,
+        WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
+            AND w.status = 'active'
+            AND (t.deleted_at is NULL OR $5)
+            AND (t.metadata_location is not NULL OR $6) "#,
         *warehouse_id,
+        ns_names_json as _,
+        t_names.as_slice() as _,
+        t_typs.as_slice() as _,
         list_flags.include_deleted,
         list_flags.include_staged
-    );
-    let checked_sql = statically_checked_query.sql();
-
-    let mut query_builder: QueryBuilder<'_, Postgres> = sqlx::QueryBuilder::new(checked_sql);
-
-    let mut args = statically_checked_query
-        .take_arguments()
-        .map_err(|e| {
-            ErrorModel::internal("Failed to build dynamic query", "DatabaseError", Some(e))
-        })?
-        .unwrap_or_default();
-
-    append_dynamic_filters(batch_tables.as_slice(), &mut query_builder, &mut args)?;
-
-    let query = query_builder.build();
-
-    let rows: Vec<TabularRow> = sqlx::query_as_with(query.sql(), args)
-        .fetch_all(catalog_state)
-        .await
-        .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
+    )
+    .fetch_all(catalog_state)
+    .await
+    .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
 
     let mut table_map = HashMap::with_capacity(tables.len());
     for TabularRow {
         tabular_id,
-        namespace,
-        tabular_name: name,
+        namespace: in_namespace,
+        tabular_name: in_tabular_name,
         typ,
     } in rows
     {
+        let namespace = in_namespace.ok_or_else(|| {
+            ErrorModel::internal(
+                "Namespace name should not be null",
+                "InternalDatabaseError",
+                None,
+            )
+        })?;
+        let name = in_tabular_name.ok_or_else(|| {
+            ErrorModel::internal(
+                "Tabular name should not be null",
+                "InternalDatabaseError",
+                None,
+            )
+        })?;
         let namespace = try_parse_namespace_ident(namespace)?;
+
         match typ {
             TabularType::Table => {
                 table_map.insert(
                     TabularIdentOwned::Table(TableIdent { namespace, name }),
-                    Some(TabularId::Table(tabular_id)),
+                    Some(TabularId::Table(tabular_id.into())),
                 );
             }
             TabularType::View => {
                 table_map.insert(
                     TabularIdentOwned::View(TableIdent { namespace, name }),
-                    Some(TabularId::View(tabular_id)),
+                    Some(TabularId::View(tabular_id.into())),
                 );
             }
         }
     }
 
     // Missing tables are added with None
-    for table in tables {
-        table_map.entry(table.into()).or_insert(None);
+    if table_map.len() < tables.len() {
+        for table in tables {
+            table_map.entry(table.into()).or_insert(None);
+        }
     }
 
     Ok(table_map)
-}
-
-fn append_dynamic_filters(
-    batch_tables: &[(&NamespaceIdent, &String, TabularType)],
-    query_builder: &mut QueryBuilder<'_, Postgres>,
-    args: &mut PgArguments,
-) -> Result<()> {
-    query_builder.push(r" AND (n.namespace_name, t.name, t.typ) IN ");
-    query_builder.push("(");
-
-    let mut arg_idx = args.len() + 1;
-    for (i, (ns_ident, name, typ)) in batch_tables.iter().enumerate() {
-        query_builder.push(format!("(${arg_idx}"));
-        arg_idx += 1;
-        args.add(ns_ident.as_ref()).map_err(|e| {
-            ErrorModel::internal("Failed to add namespace to query", "DatabaseError", Some(e))
-        })?;
-
-        query_builder.push(", ");
-
-        query_builder.push(format!("${arg_idx}"));
-        arg_idx += 1;
-        args.add(name).map_err(|e| {
-            ErrorModel::internal("Failed to add name to query", "DatabaseError", Some(e))
-        })?;
-        query_builder.push(", ");
-
-        query_builder.push(format!("${arg_idx}"));
-        arg_idx += 1;
-        args.add(*typ).map_err(|e| {
-            ErrorModel::internal("Failed to add type to query", "DatabaseError", Some(e))
-        })?;
-
-        query_builder.push(")");
-        if i != batch_tables.len() - 1 {
-            query_builder.push(", ");
-        }
-    }
-    query_builder.push(")");
-    Ok(())
 }
 
 pub(crate) struct CreateTabular<'a> {
@@ -534,7 +527,7 @@ where
         match table.typ {
             TabularType::Table => {
                 tabulars.insert(
-                    TabularId::Table(table.tabular_id),
+                    TabularId::Table(table.tabular_id.into()),
                     TabularInfo {
                         table_ident: TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
@@ -549,7 +542,7 @@ where
             }
             TabularType::View => {
                 tabulars.insert(
-                    TabularId::View(table.tabular_id),
+                    TabularId::View(table.tabular_id.into()),
                     TabularInfo {
                         table_ident: TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
@@ -569,6 +562,7 @@ where
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_tabular(
     warehouse_id: WarehouseId,
     source_id: TabularId,
@@ -576,6 +570,10 @@ pub(crate) async fn rename_tabular(
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
+    if source == destination {
+        return Ok(());
+    }
+
     let TableIdent {
         namespace: source_namespace,
         name: source_name,
@@ -588,16 +586,44 @@ pub(crate) async fn rename_tabular(
     if source_namespace == dest_namespace {
         let _ = sqlx::query_scalar!(
             r#"
-            UPDATE tabular ti
-            SET name = $1
-            WHERE warehouse_id = $4 AND tabular_id = $2 AND typ = $3
-                AND metadata_location IS NOT NULL
-                AND ti.deleted_at IS NULL
-                AND $4 IN (
-                    SELECT warehouse_id FROM warehouse WHERE status = 'active'
+            WITH locked_tabular AS (
+                SELECT tabular_id, name, namespace_id
+                FROM tabular
+                WHERE tabular_id = $2
                     AND warehouse_id = $4
-                )
-            RETURNING tabular_id
+                    AND typ = $3
+                    AND metadata_location IS NOT NULL
+                    AND deleted_at IS NULL
+                FOR UPDATE
+            ),
+            locked_source_namespace AS ( -- source namespace of the tabular
+                SELECT n.namespace_id
+                FROM namespace n
+                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
+                WHERE n.warehouse_id = $4
+                FOR UPDATE
+            ),
+            warehouse_check AS (
+                SELECT warehouse_id
+                FROM warehouse
+                WHERE warehouse_id = $4 AND status = 'active'
+            ),
+            conflict_check AS (
+                SELECT 1
+                FROM tabular t
+                JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
+                WHERE t.name = $1
+                FOR UPDATE
+            )
+            UPDATE tabular
+            SET name = $1
+            FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn
+            WHERE tabular.tabular_id = lt.tabular_id
+                AND tabular.warehouse_id = $4
+                AND wc.warehouse_id = $4
+                AND lsn.namespace_id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM conflict_check)
+            RETURNING tabular.tabular_id
             "#,
             &**dest_name,
             *source_id,
@@ -617,24 +643,51 @@ pub(crate) async fn rename_tabular(
     } else {
         let _ = sqlx::query_scalar!(
             r#"
-            WITH ns_id AS (
+            WITH locked_tabular AS (
+                SELECT tabular_id, name, namespace_id
+                FROM tabular
+                WHERE tabular_id = $4
+                    AND warehouse_id = $2
+                    AND typ = $5
+                    AND metadata_location IS NOT NULL
+                    AND name = $6
+                    AND deleted_at IS NULL
+                FOR UPDATE
+            ),
+            locked_namespace AS ( -- target namespace
                 SELECT namespace_id
                 FROM namespace
                 WHERE warehouse_id = $2 AND namespace_name = $3
+                FOR UPDATE
+            ),
+            locked_source_namespace AS ( -- source namespace of the tabular
+                SELECT n.namespace_id
+                FROM namespace n
+                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
+                WHERE n.warehouse_id = $2
+                FOR UPDATE
+            ),
+            warehouse_check AS (
+                SELECT warehouse_id FROM warehouse
+                WHERE warehouse_id = $2 AND status = 'active'
+            ),
+            conflict_check AS (
+                SELECT 1
+                FROM tabular t
+                JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $2
+                WHERE t.name = $1
+                FOR UPDATE
             )
-            UPDATE tabular ti
-            SET name = $1, namespace_id = ns_id.namespace_id
-            FROM ns_id
-            WHERE warehouse_id = $2 AND tabular_id = $4 AND typ = $5
-                AND metadata_location IS NOT NULL
-                AND ti.name = $6
-                AND ti.deleted_at IS NULL
-                AND ns_id.namespace_id IS NOT NULL
-                AND $2 IN (
-                    SELECT warehouse_id FROM warehouse WHERE status = 'active'
-                    AND warehouse_id = $2
-                )
-            RETURNING tabular_id
+            UPDATE tabular t
+            SET name = $1, namespace_id = ln.namespace_id
+            FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
+            WHERE t.tabular_id = lt.tabular_id
+            AND t.warehouse_id = $2
+            AND ln.namespace_id IS NOT NULL
+            AND wc.warehouse_id = $2
+            AND lsn.namespace_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM conflict_check)
+            RETURNING t.tabular_id;
             "#,
             &**dest_name,
             *warehouse_id,
@@ -690,37 +743,48 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 }
 
 pub(crate) async fn clear_tabular_deleted_at(
-    tabular_ids: &[Uuid],
+    tabular_ids: &[TabularId],
     warehouse_id: WarehouseId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Vec<UndropTabularResponse>> {
+    let tabular_ids: Vec<Uuid> = tabular_ids.iter().map(|id| **id).collect();
     let undrop_tabular_informations = sqlx::query!(
-        r#"WITH validation AS (
-                SELECT NOT EXISTS (
-                    SELECT 1 FROM unnest($1::uuid[]) AS id
-                    WHERE id NOT IN
-                        (SELECT tabular_id FROM tabular WHERE warehouse_id = $2)
-                ) AS all_found
-            )
-            UPDATE tabular
-            SET deleted_at = NULL
-            FROM tabular t
+        r#"WITH locked_tabulars AS (
+            SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name
+            FROM tabular t 
             JOIN namespace n ON t.namespace_id = n.namespace_id
-            LEFT JOIN task ta ON t.tabular_id = ta.entity_id
-                AND ta.entity_type = 'tabular'
-                AND ta.warehouse_id = $2
-            WHERE t.warehouse_id = $2
-                AND tabular.warehouse_id = t.warehouse_id
-                AND tabular.tabular_id = t.tabular_id
+            WHERE n.warehouse_id = $2
+                AND t.warehouse_id = $2
                 AND t.tabular_id = ANY($1::uuid[])
+            FOR UPDATE OF t
+        ),
+        validation AS (
+            SELECT NOT EXISTS (
+                SELECT 1 FROM unnest($1::uuid[]) AS id
+                WHERE id NOT IN (SELECT tabular_id FROM locked_tabulars)
+            ) AS all_found
+        ),
+        locked_tasks AS (
+            SELECT ta.task_id, ta.entity_id
+            FROM task ta
+            JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
+            WHERE ta.entity_type = 'tabular' 
+                AND ta.warehouse_id = $2
                 AND ta.queue_name = 'tabular_expiration'
-            RETURNING
-                tabular.name,
-                tabular.tabular_id,
-                ta.task_id,
-                n.namespace_name,
-                (SELECT all_found FROM validation) as "all_found!";"#,
-        tabular_ids,
+            FOR UPDATE OF ta
+        )
+        UPDATE tabular
+        SET deleted_at = NULL
+        FROM locked_tabulars lt
+        LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id
+        WHERE tabular.tabular_id = lt.tabular_id AND tabular.warehouse_id = $2
+        RETURNING
+            tabular.name,
+            tabular.tabular_id,
+            lta.task_id as "task_id?",
+            lt.namespace_name,
+            (SELECT all_found FROM validation) as "all_found!";"#,
+        &tabular_ids,
         *warehouse_id,
     )
     .fetch_all(&mut **transaction)
@@ -740,13 +804,13 @@ pub(crate) async fn clear_tabular_deleted_at(
         }
     })?;
 
-    if undrop_tabular_informations
+    let all_found = undrop_tabular_informations
         .first()
-        .is_some_and(|r| !r.all_found)
-    {
-        return Err(ErrorModel::forbidden(
-            "Not allowed to undrop at least one specified tabular.",
-            "NotAuthorized",
+        .map_or(tabular_ids.is_empty(), |r| r.all_found);
+    if !all_found {
+        return Err(ErrorModel::not_found(
+            "One or more tabular IDs to undrop not found",
+            "NoSuchTabularError",
             None,
         )
         .into());
@@ -755,8 +819,8 @@ pub(crate) async fn clear_tabular_deleted_at(
     let undrop_tabular_informations = undrop_tabular_informations
         .into_iter()
         .map(|undrop_tabular_information| UndropTabularResponse {
-            table_ident: TableId::from(undrop_tabular_information.tabular_id),
-            task_id: TaskId::from(undrop_tabular_information.task_id),
+            table_id: TableId::from(undrop_tabular_information.tabular_id),
+            expiration_task_id: undrop_tabular_information.task_id.map(TaskId::from),
             name: undrop_tabular_information.name,
             namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
                 .unwrap_or(NamespaceIdent::new("unknown".into())),
@@ -775,18 +839,25 @@ pub(crate) async fn mark_tabular_as_deleted(
 ) -> Result<()> {
     let r = sqlx::query!(
         r#"
-        WITH update_info as (
-            SELECT protected
+        WITH locked_tabular AS (
+            SELECT tabular_id, protected
             FROM tabular
-            WHERE warehouse_id = $1 AND tabular_id = $2
-        ), update as (
+            WHERE tabular_id = $2 AND warehouse_id = $1
+            FOR UPDATE
+        ),
+        marked AS (
             UPDATE tabular
             SET deleted_at = $3
-            WHERE warehouse_id = $1 AND tabular_id = $2
-                AND ((NOT protected) OR $4)
-            RETURNING tabular_id
+            FROM locked_tabular lt
+            WHERE tabular.tabular_id = lt.tabular_id
+                AND tabular.warehouse_id = $1
+                AND ((NOT lt.protected) OR $4)
+            RETURNING tabular.tabular_id
         )
-        SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
+        SELECT 
+            lt.protected as "protected!",
+            (SELECT tabular_id FROM marked) IS NOT NULL as "was_marked!"
+        FROM locked_tabular lt
         "#,
         *warehouse_id,
         *tabular_id,
@@ -798,7 +869,7 @@ pub(crate) async fn mark_tabular_as_deleted(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found", tabular_id.typ_str()),
+                format!("Table with id {} not found", tabular_id.typ_str()),
                 "NoSuchTabularError".to_string(),
                 Some(Box::new(e)),
             )
@@ -834,37 +905,37 @@ pub(crate) async fn drop_tabular(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
-        r#"WITH delete_info as (
-               SELECT
-                   protected
-               FROM tabular
-               WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = $3
-                   AND EXISTS (
-                       SELECT 1 FROM active_tabulars at
-                       WHERE at.warehouse_id = $1
-                       AND at.tabular_id = $2
-                   )
-           ),
-           deleted as (
-           DELETE FROM tabular
-               WHERE warehouse_id = $1
-                   AND tabular_id = $2
-                   AND typ = $3
-                   AND EXISTS (
-                       SELECT 1 FROM active_tabulars at
-                       WHERE at.warehouse_id = $1
-                       AND at.tabular_id = $2
-                   )
-                   AND ((NOT protected) OR $4)
-              RETURNING metadata_location, fs_location, fs_protocol)
-              SELECT protected as "protected!",
-                     (SELECT metadata_location from deleted),
-                     (SELECT fs_protocol from deleted),
-                     (SELECT fs_location from deleted) from delete_info"#,
+        r#"WITH locked_tabular AS (
+            SELECT tabular_id, protected, metadata_location, fs_location, fs_protocol
+            FROM tabular
+            WHERE tabular_id = $2
+                AND warehouse_id = $1
+                AND typ = $3
+                AND tabular_id in (SELECT tabular_id FROM active_tabulars WHERE warehouse_id = $1 AND tabular_id = $2)
+            FOR UPDATE
+        ),
+        deleted AS (
+            DELETE FROM tabular
+            WHERE tabular_id IN (
+                SELECT tabular_id FROM locked_tabular 
+                WHERE ((NOT protected) OR $4)
+                AND ($5::text IS NULL OR metadata_location = $5)
+            )
+            AND warehouse_id = $1
+            RETURNING tabular_id
+        )
+        SELECT 
+            lt.protected as "protected!",
+            lt.metadata_location,
+            lt.fs_protocol,
+            lt.fs_location,
+            (SELECT tabular_id FROM deleted) IS NOT NULL as "was_deleted!"
+        FROM locked_tabular lt"#,
         *warehouse_id,
         *tabular_id,
         TabularType::from(tabular_id) as _,
-        force
+        force,
+        required_metadata_location.map(ToString::to_string)
     )
     .fetch_one(&mut **transaction)
     .await
@@ -915,16 +986,12 @@ pub(crate) async fn drop_tabular(
         }
     }
 
-    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
-        Ok(join_location(&fs_protocol, &fs_location))
-    } else {
-        Err(ErrorModel::internal(
-            format!("{} has no location", tabular_id.typ_str()),
-            "InternalDatabaseError",
-            None,
-        )
-        .into())
-    }
+    debug_assert!(
+        location.was_deleted,
+        "If we didn't delete anything, we should have errored out earlier"
+    );
+
+    Ok(join_location(&location.fs_protocol, &location.fs_location))
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {
@@ -962,5 +1029,279 @@ impl From<TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr as _;
+
+    use iceberg::ErrorKind;
+    use lakekeeper_io::Location;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
+        implementations::postgres::{
+            namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
+            CatalogState,
+        },
+        service::NamespaceId,
+    };
+
+    async fn setup_test_table(
+        pool: &sqlx::PgPool,
+        protected: bool,
+    ) -> (WarehouseId, TabularId, Location, NamespaceId) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let table_name = format!("test_table_{}", Uuid::now_v7());
+        let location = Location::from_str(&format!("s3://test-bucket/{table_name}/")).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("s3://test-bucket/{table_name}/metadata/v1.json")).unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let table_id = Uuid::now_v7();
+        let tabular_id = create_tabular(
+            CreateTabular {
+                id: table_id,
+                name: &table_name,
+                namespace_id: *namespace_id,
+                warehouse_id: *warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+
+        // Set protection status if needed
+        if protected {
+            set_tabular_protected(
+                warehouse_id,
+                TabularId::Table(tabular_id.into()),
+                true,
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+        }
+
+        transaction.commit().await.unwrap();
+
+        (
+            warehouse_id,
+            TabularId::Table(tabular_id.into()),
+            metadata_location,
+            namespace_id,
+        )
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_table_not_found_returns_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let nonexistent_table_id = TabularId::Table(Uuid::now_v7().into());
+
+        let result = drop_tabular(
+            warehouse_id,
+            nonexistent_table_id,
+            false,
+            None,
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+        assert!(error.error.message.contains("Table with ID"));
+        assert!(error.error.message.contains("not found"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_protected_table_without_force_returns_protected_error(
+        pool: sqlx::PgPool,
+    ) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false, // force = false
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 409);
+        assert_eq!(error.error.r#type, "ProtectedTabularError");
+        assert!(error
+            .error
+            .message
+            .contains("is protected and cannot be dropped"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_protected_table_with_force_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            true, // force = true
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_concurrent_update_error_wrong_metadata_location(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, _actual_metadata_location, _) =
+            setup_test_table(&pool, false).await;
+
+        let wrong_metadata_location =
+            Location::from_str("s3://wrong-bucket/wrong/metadata/v1.json").unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&wrong_metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 400);
+        assert_eq!(error.error.r#type, CONCURRENT_UPDATE_ERROR_TYPE);
+        assert!(error
+            .error
+            .message
+            .contains("Concurrent update on tabular with id"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_with_correct_metadata_location_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, false).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_without_metadata_location_check_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, _metadata_location, _) =
+            setup_test_table(&pool, false).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            None, // No metadata location check
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_view_not_found_returns_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let nonexistent_view_id = TabularId::View(Uuid::now_v7().into());
+
+        let result = drop_tabular(
+            warehouse_id,
+            nonexistent_view_id,
+            false,
+            None,
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+        assert!(error.error.message.contains("View with ID"));
+        assert!(error.error.message.contains("not found"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_inactive_warehouse_returns_404(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, false).await;
+
+        // Deactivate the warehouse
+        let mut transaction = pool.begin().await.unwrap();
+        crate::implementations::postgres::warehouse::set_warehouse_status(
+            warehouse_id,
+            crate::api::management::v1::warehouse::WarehouseStatus::Inactive,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
     }
 }

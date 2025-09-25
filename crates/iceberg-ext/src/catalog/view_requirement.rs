@@ -19,7 +19,7 @@ mod test {
     fn test_assert_view_uuid() {
         let j = serde_json::json!({
             "type": "assert-view-uuid",
-            "uuid": "550e8400-e29b-41d4-a716-446655440000"
+            "uuid": "550e8400-e29b-41d4-a716-446655440001"
         });
 
         let r: ViewRequirement = serde_json::from_value(j.clone()).unwrap();
@@ -27,7 +27,7 @@ mod test {
             ViewRequirement::AssertViewUuid(x) => {
                 assert_eq!(
                     x.uuid,
-                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
                 );
             }
         }

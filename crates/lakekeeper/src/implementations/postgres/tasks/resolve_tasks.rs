@@ -138,6 +138,7 @@ mod tests {
                     warehouse_id,
                     parent_task_id,
                     entity_id,
+                    entity_name: vec!["ns".to_string(), format!("table{}", entity_id.to_uuid())],
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -239,21 +240,30 @@ mod tests {
 
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
-        let TaskEntity::Table {
-            table_id: table_id1,
-            warehouse_id: wh_id1,
-        } = entity_result1;
-        assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
-        assert_eq!(*wh_id1, warehouse_id);
+        match entity_result1 {
+            TaskEntity::Table {
+                table_id: table_id1,
+                warehouse_id: wh_id1,
+            } => {
+                assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
+                assert_eq!(*wh_id1, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
-        let TaskEntity::Table {
-            table_id: table_id2,
-            warehouse_id: wh_id2,
-        } = entity_result2;
-        assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
-        assert_eq!(*wh_id2, warehouse_id);
+
+        match entity_result2 {
+            TaskEntity::Table {
+                table_id: table_id2,
+                warehouse_id: wh_id2,
+            } => {
+                assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
+                assert_eq!(*wh_id2, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -323,21 +333,29 @@ mod tests {
 
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
-        let TaskEntity::Table {
-            table_id: table_id1,
-            warehouse_id: wh_id1,
-        } = entity_result1;
-        assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
-        assert_eq!(*wh_id1, warehouse_id);
+        match entity_result1 {
+            TaskEntity::Table {
+                table_id: table_id1,
+                warehouse_id: wh_id1,
+            } => {
+                assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
+                assert_eq!(*wh_id1, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
-        let TaskEntity::Table {
-            table_id: table_id2,
-            warehouse_id: wh_id2,
-        } = entity_result2;
-        assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
-        assert_eq!(*wh_id2, warehouse_id);
+        match entity_result2 {
+            TaskEntity::Table {
+                table_id: table_id2,
+                warehouse_id: wh_id2,
+            } => {
+                assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
+                assert_eq!(*wh_id2, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -473,11 +491,16 @@ mod tests {
 
         // Verify the found task has correct warehouse_id
         let (entity_result, _) = &result[&task_id1];
-        let TaskEntity::Table {
-            warehouse_id: wh_id,
-            ..
-        } = entity_result;
-        assert_eq!(*wh_id, warehouse_id1);
+        match entity_result {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: wh_id,
+            } => {
+                assert_eq!(*table_id, TableId::from(entity1.to_uuid()));
+                assert_eq!(*wh_id, warehouse_id1);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -528,17 +551,27 @@ mod tests {
         let (entity_result1, _) = &result[&task_id1];
         let (entity_result2, _) = &result[&task_id2];
 
-        let TaskEntity::Table {
-            warehouse_id: wh_id1,
-            ..
-        } = entity_result1;
-        let TaskEntity::Table {
-            warehouse_id: wh_id2,
-            ..
-        } = entity_result2;
+        match entity_result1 {
+            TaskEntity::Table {
+                table_id: table_id1,
+                warehouse_id: wh_id1,
+            } => {
+                assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
+                assert_eq!(*wh_id1, warehouse_id1);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
-        assert_eq!(*wh_id1, warehouse_id1);
-        assert_eq!(*wh_id2, warehouse_id2);
+        match entity_result2 {
+            TaskEntity::Table {
+                table_id: table_id2,
+                warehouse_id: wh_id2,
+            } => {
+                assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
+                assert_eq!(*wh_id2, warehouse_id2);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -579,12 +612,16 @@ mod tests {
         // Verify the existing task details
         let (entity_result, queue_name_result) = &result[&existing_task_id];
         assert_eq!(queue_name_result, &tq_name);
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: wh_id,
-        } = entity_result;
-        assert_eq!(*table_id, TableId::from(entity.to_uuid()));
-        assert_eq!(*wh_id, warehouse_id);
+        match entity_result {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: wh_id,
+            } => {
+                assert_eq!(*table_id, TableId::from(entity.to_uuid()));
+                assert_eq!(*wh_id, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -635,12 +672,16 @@ mod tests {
 
         let (entity_result, queue_name_result) = &result[&task_id];
         assert_eq!(queue_name_result, &tq_name);
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: wh_id,
-        } = entity_result;
-        assert_eq!(*table_id, TableId::from(entity.to_uuid()));
-        assert_eq!(*wh_id, warehouse_id);
+        match entity_result {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: wh_id,
+            } => {
+                assert_eq!(*table_id, TableId::from(entity.to_uuid()));
+                assert_eq!(*wh_id, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]

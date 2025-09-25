@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
 use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
-use itertools::Itertools;
 use lakekeeper_io::Location;
 
 use super::{
@@ -91,10 +90,9 @@ impl Catalog for super::PostgresCatalog {
     // ---------------- Bootstrap ----------------
     async fn bootstrap<'a>(
         terms_accepted: bool,
-        server_id: uuid::Uuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool> {
-        bootstrap(terms_accepted, server_id, &mut **transaction).await
+        bootstrap(terms_accepted, &mut **transaction).await
     }
 
     async fn get_warehouse_by_name(
@@ -254,16 +252,11 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn clear_tabular_deleted_at(
-        tabular_ids: &[TableId],
+        tabular_ids: &[TabularId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>> {
-        clear_tabular_deleted_at(
-            &tabular_ids.iter().map(|i| **i).collect_vec(),
-            warehouse_id,
-            transaction,
-        )
-        .await
+        clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction).await
     }
 
     async fn mark_tabular_as_deleted(

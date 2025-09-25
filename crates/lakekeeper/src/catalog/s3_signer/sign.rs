@@ -143,6 +143,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer
                     .require_table_action(
                         &request_metadata,
+                        warehouse_id,
                         metadata_by_id,
                         CatalogTableAction::CanGetMetadata,
                     )
@@ -163,7 +164,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        authorize_operation::<A>(operation, &request_metadata, table_id, authorizer).await?;
+        authorize_operation::<A>(
+            operation,
+            &request_metadata,
+            warehouse_id,
+            table_id,
+            authorizer,
+        )
+        .await?;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -408,6 +416,7 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn authorize_operation<A: Authorizer>(
     method: Operation,
     metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
     table_id: TableId,
     authorizer: A,
 ) -> Result<()> {
@@ -418,6 +427,7 @@ async fn authorize_operation<A: Authorizer>(
             authorizer
                 .require_table_action(
                     metadata,
+                    warehouse_id,
                     Ok(Some(table_id)),
                     CatalogTableAction::CanReadData,
                 )
@@ -427,6 +437,7 @@ async fn authorize_operation<A: Authorizer>(
             authorizer
                 .require_table_action(
                     metadata,
+                    warehouse_id,
                     Ok(Some(table_id)),
                     CatalogTableAction::CanWriteData,
                 )
@@ -501,6 +512,7 @@ async fn get_table_metadata_by_location<C: Catalog, A: Authorizer + Clone, S: Se
     authorizer
         .require_table_action(
             request_metadata,
+            warehouse_id,
             metadata,
             CatalogTableAction::CanGetMetadata,
         )

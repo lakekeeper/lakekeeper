@@ -16,7 +16,7 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        Catalog, NamedEntity, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
@@ -48,7 +48,12 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
 
     let view_id: ViewId = authorizer
-        .require_view_action(&request_metadata, view_id, CatalogViewAction::CanDrop)
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view_id,
+            CatalogViewAction::CanDrop,
+        )
         .await
         .map_err(set_not_found_status_code)?;
 
@@ -59,7 +64,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     state
         .v1_state
         .contract_verifiers
-        .check_drop(TabularId::View(*view_id))
+        .check_drop(TabularId::View(view_id))
         .await?
         .into_result()?;
 
@@ -76,6 +81,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         entity_id: EntityId::Tabular(*view_id),
                         parent_task_id: None,
                         schedule_for: None,
+                        entity_name: view.clone().into_name_parts(),
                     },
                     TabularPurgePayload {
                         tabular_location: location,
@@ -84,12 +90,14 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     t.transaction(),
                 )
                 .await?;
-                tracing::debug!("Queued purge task for dropped view '{view_id}'.");
+                tracing::debug!(
+                    "Queued purge task for dropped view '{view_id}' in warehouse {warehouse_id}."
+                );
             }
             t.commit().await?;
 
             authorizer
-                .delete_view(view_id)
+                .delete_view(warehouse_id, view_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
@@ -103,6 +111,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     warehouse_id,
                     parent_task_id: None,
                     schedule_for: Some(chrono::Utc::now() + expiration_seconds),
+                    entity_name: view.clone().into_name_parts(),
                 },
                 TabularExpirationPayload {
                     tabular_type: TabularType::View,
@@ -117,13 +126,15 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
             C::mark_tabular_as_deleted(
                 warehouse_id,
-                TabularId::View(*view_id),
+                TabularId::View(view_id),
                 force,
                 t.transaction(),
             )
             .await?;
 
-            tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
+            tracing::debug!(
+                "Queued expiration task for dropped view '{view_id}' in warehouse {warehouse_id}."
+            );
             t.commit().await?;
         }
     }

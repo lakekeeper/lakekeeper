@@ -32,12 +32,12 @@ use crate::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
         task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
+        Catalog, ListFlags, NamespaceId, State, TabularId, Transaction,
     },
     ProjectId, WarehouseId,
 };
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ListDeletedTabularsQuery {
     /// Filter by Namespace ID
@@ -411,7 +411,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }))
         .await?
         .into_iter()
-        .zip(warehouses.into_iter())
+        .zip(warehouses)
         .filter_map(|(allowed, warehouse)| {
             if allowed.into_inner() {
                 Some(warehouse.into())
@@ -801,22 +801,35 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
-        undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
-            .await?;
+        undrop::require_undrop_permissions(
+            &warehouse_id,
+            &request,
+            &context.v1_state.authz,
+            &request_metadata,
+        )
+        .await?;
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
         let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
-        let tabs = request
-            .targets
-            .clone()
-            .into_iter()
-            .map(|i| TableId::from(*i))
-            .collect::<Vec<_>>();
+        let tabular_ids = &request.targets;
         let undrop_tabular_responses =
-            C::clear_tabular_deleted_at(&tabs, warehouse_id, transaction.transaction()).await?;
+            C::clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction.transaction())
+                .await?;
         TabularExpirationTask::cancel_scheduled_tasks::<C>(
-            TaskFilter::TaskIds(undrop_tabular_responses.iter().map(|r| r.task_id).collect()),
+            TaskFilter::TaskIds(
+                undrop_tabular_responses
+                    .iter()
+                    .filter_map(|r| {
+                        if r.expiration_task_id.is_none() {
+                            tracing::warn!(
+                                "No expiration task found for tabular with soft deletion marker set {:?}",
+                                r.table_id
+                            );
+                        }
+                        r.expiration_task_id})
+                    .collect(),
+            ),
             transaction.transaction(),
             false,
         )
@@ -891,12 +904,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                         ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
                             TabularId::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
-                                (*id).into(),
+                                warehouse_id,
+                                *id,
                                 crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularId::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
-                                (*id).into(),
+                                warehouse_id,
+                                *id,
                                 crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
                         }))
@@ -1254,7 +1269,11 @@ mod test {
                 .iter()
                 .any(|(start, end)| i >= *start && i < *end)
             {
-                authz.hide(&format!("view:{}", v.metadata.uuid()));
+                authz.hide(&format!(
+                    "view:{}/{}",
+                    warehouse.warehouse_id,
+                    v.metadata.uuid()
+                ));
             }
         }
 
@@ -1434,7 +1453,7 @@ mod test {
         let mut ids = all.tabulars;
         ids.sort_by_key(|e| e.id);
         for t in ids.iter().take(6).skip(4) {
-            authz.hide(&format!("view:{}", t.id));
+            authz.hide(&format!("view:{}/{}", warehouse.warehouse_id, t.id));
         }
 
         let page = ApiServer::list_soft_deleted_tabulars(

@@ -54,12 +54,56 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}
 
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> State<A, C, S> {
-    pub fn server_id(&self) -> uuid::Uuid {
+    pub fn server_id(&self) -> ServerId {
         self.authz.server_id()
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+pub trait NamedEntity {
+    fn into_name_parts(self) -> Vec<String>;
+}
+
+impl NamedEntity for TableIdent {
+    fn into_name_parts(self) -> Vec<String> {
+        self.namespace
+            .inner()
+            .into_iter()
+            .chain(std::iter::once(self.name))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+pub struct ServerId(uuid::Uuid);
+
+impl ServerId {
+    #[must_use]
+    pub fn new_random() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl Deref for ServerId {
+    type Target = uuid::Uuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<uuid::Uuid> for ServerId {
+    fn from(value: uuid::Uuid) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for ServerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
@@ -128,6 +172,7 @@ impl ViewId {
     PartialOrd,
     Ord,
     strum_macros::Display,
+    strum_macros::EnumIter,
     serde::Serialize,
     serde::Deserialize,
     utoipa::ToSchema,
@@ -398,7 +443,7 @@ impl TryFrom<TabularId> for TableId {
 
     fn try_from(value: TabularId) -> Result<Self, Self::Error> {
         match value {
-            TabularId::Table(value) => Ok(value.into()),
+            TabularId::Table(value) => Ok(value),
             TabularId::View(_) => Err(ErrorModel::internal(
                 "Provided identifier is not a table id",
                 "IdentifierIsNotTableID",
@@ -497,23 +542,13 @@ impl TryFrom<Prefix> for WarehouseId {
 }
 
 #[derive(Debug, Clone)]
-/// Metadata for a tabular dataset, including its unique `table_id` and
-/// the storage `location` where its data lives.
+/// Metadata for a tabular dataset, including its `warehouse_id`, `table_id` and the storage
+/// `location` where its data lives.
+///
+/// Note that `table_id`s can be reused across warehouses. So `table_id` may not be unique, but
+/// `(warehouse_id, table_id)` is.
 pub struct TabularDetails {
+    pub warehouse_id: WarehouseId,
     pub table_id: TableId,
     pub location: String,
-}
-
-impl Deref for TabularDetails {
-    type Target = TableId;
-
-    fn deref(&self) -> &Self::Target {
-        &self.table_id
-    }
-}
-
-impl AsRef<TableId> for TabularDetails {
-    fn as_ref(&self) -> &TableId {
-        &self.table_id
-    }
 }

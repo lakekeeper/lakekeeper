@@ -32,6 +32,7 @@ where
         authorizer
             .require_table_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(table_id)),
                 CatalogTableAction::CanDrop,
             )
@@ -39,7 +40,7 @@ where
 
         let status = C::set_tabular_protected(
             warehouse_id,
-            TabularId::Table(*table_id),
+            TabularId::Table(table_id),
             protected,
             t.transaction(),
         )
@@ -61,6 +62,7 @@ where
         authorizer
             .require_table_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(table_id)),
                 CatalogTableAction::CanGetMetadata,
             )
