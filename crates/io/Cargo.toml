@@ -55,7 +55,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
-google-cloud-storage = { version = "0.24.0", features = [], optional = true }
+google-cloud-storage = { version = "1.0.0", features = [], optional = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 reqwest-middleware = { version = "0.4", optional = true }
