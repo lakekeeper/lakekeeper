@@ -4550,6 +4550,8 @@ components:
         - grant_select
         - grant_modify
         - change_ownership
+        - get_tasks
+        - control_tasks
     TableAssignment:
       oneOf:
         - allOf:
@@ -5170,6 +5172,8 @@ components:
         - grant_describe
         - grant_modify
         - change_ownership
+        - get_tasks
+        - control_tasks
     ViewAssignment:
       oneOf:
         - allOf:
@@ -5258,6 +5262,8 @@ components:
         - grant_pass_grants
         - grant_manage_grants
         - change_ownership
+        - get_all_tasks
+        - control_all_tasks
     WarehouseAssignment:
       oneOf:
         - allOf:

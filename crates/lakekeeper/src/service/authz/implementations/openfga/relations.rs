@@ -653,6 +653,8 @@ pub(super) enum WarehouseRelation {
     CanSetManagedAccess,
     CanGetTaskQueueConfig,
     CanModifyTaskQueueConfig,
+    CanGetAllTasks,
+    CanControlAllTasks,
 }
 
 impl OpenFgaRelation for WarehouseRelation {}
@@ -781,6 +783,8 @@ pub(super) enum APIWarehouseAction {
     GrantPassGrants,
     GrantManageGrants,
     ChangeOwnership,
+    GetAllTasks,
+    ControlAllTasks,
 }
 
 impl ReducedRelation for APIWarehouseRelation {
@@ -826,6 +830,8 @@ impl ReducedRelation for APIWarehouseAction {
             APIWarehouseAction::GrantPassGrants => WarehouseRelation::CanGrantPassGrants,
             APIWarehouseAction::GrantManageGrants => WarehouseRelation::CanGrantManageGrants,
             APIWarehouseAction::ChangeOwnership => WarehouseRelation::CanChangeOwnership,
+            APIWarehouseAction::GetAllTasks => WarehouseRelation::CanGetAllTasks,
+            APIWarehouseAction::ControlAllTasks => WarehouseRelation::CanControlAllTasks,
         }
     }
 }
@@ -862,6 +868,8 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::CanModifyTaskQueueConfig => {
                 WarehouseRelation::CanModifyTaskQueueConfig
             }
+            CatalogWarehouseAction::CanGetAllTasks => WarehouseRelation::CanGetAllTasks,
+            CatalogWarehouseAction::CanControlAllTasks => WarehouseRelation::CanControlAllTasks,
         }
     }
 }
@@ -1124,6 +1132,8 @@ pub(super) enum TableRelation {
     CanGrantModify,
     CanChangeOwnership,
     CanUndrop,
+    CanGetTasks,
+    CanControlTasks,
 }
 
 impl OpenFgaRelation for TableRelation {}
@@ -1248,6 +1258,8 @@ pub(super) enum APITableAction {
     GrantSelect,
     GrantModify,
     ChangeOwnership,
+    GetTasks,
+    ControlTasks,
 }
 
 impl ReducedRelation for APITableRelation {
@@ -1283,6 +1295,8 @@ impl ReducedRelation for APITableAction {
             APITableAction::GrantSelect => TableRelation::CanGrantSelect,
             APITableAction::GrantModify => TableRelation::CanGrantModify,
             APITableAction::ChangeOwnership => TableRelation::CanChangeOwnership,
+            APITableAction::GetTasks => TableRelation::CanGetTasks,
+            APITableAction::ControlTasks => TableRelation::CanControlTasks,
         }
     }
 }
@@ -1300,6 +1314,8 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::CanRename => TableRelation::CanRename,
             CatalogTableAction::CanIncludeInList => TableRelation::CanIncludeInList,
             CatalogTableAction::CanUndrop => TableRelation::CanUndrop,
+            CatalogTableAction::CanGetTasks => TableRelation::CanGetTasks,
+            CatalogTableAction::CanControlTasks => TableRelation::CanControlTasks,
         }
     }
 }
@@ -1328,6 +1344,8 @@ pub(super) enum ViewRelation {
     CanGrantModify,
     CanChangeOwnership,
     CanUndrop,
+    CanGetTasks,
+    CanControlTasks,
 }
 
 impl OpenFgaRelation for ViewRelation {}
@@ -1440,6 +1458,8 @@ pub(super) enum APIViewAction {
     GrantDescribe,
     GrantModify,
     ChangeOwnership,
+    GetTasks,
+    ControlTasks,
 }
 
 impl ReducedRelation for APIViewRelation {
@@ -1471,6 +1491,8 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
             APIViewAction::GrantModify => ViewRelation::CanGrantModify,
             APIViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
+            APIViewAction::GetTasks => ViewRelation::CanGetTasks,
+            APIViewAction::ControlTasks => ViewRelation::CanControlTasks,
         }
     }
 }
@@ -1486,6 +1508,8 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::CanRename => ViewRelation::CanRename,
             CatalogViewAction::CanIncludeInList => ViewRelation::CanIncludeInList,
             CatalogViewAction::CanUndrop => ViewRelation::CanUndrop,
+            CatalogViewAction::CanGetTasks => ViewRelation::CanGetTasks,
+            CatalogViewAction::CanControlTasks => ViewRelation::CanControlTasks,
         }
     }
 }

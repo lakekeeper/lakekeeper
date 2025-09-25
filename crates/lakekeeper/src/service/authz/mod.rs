@@ -86,6 +86,8 @@ pub enum CatalogWarehouseAction {
     CanModifySoftDeletion,
     CanGetTaskQueueConfig,
     CanModifyTaskQueueConfig,
+    CanGetAllTasks,
+    CanControlAllTasks,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
@@ -114,6 +116,8 @@ pub enum CatalogTableAction {
     CanRename,
     CanIncludeInList,
     CanUndrop,
+    CanGetTasks,
+    CanControlTasks,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
@@ -125,6 +129,8 @@ pub enum CatalogViewAction {
     CanIncludeInList,
     CanRename,
     CanUndrop,
+    CanGetTasks,
+    CanControlTasks,
 }
 
 pub trait TableUuid {

@@ -18,13 +18,14 @@ use crate::{
     WarehouseId,
 };
 
-const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanGetMetadata;
-const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanGetMetadata;
-const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanDrop;
-const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanDrop;
-const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::CanDelete;
+const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanGetTasks;
+const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanGetTasks;
+const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanControlTasks;
+const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanControlTasks;
+const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
+    CatalogWarehouseAction::CanControlAllTasks;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
-    CatalogWarehouseAction::CanListEverything;
+    CatalogWarehouseAction::CanGetAllTasks;
 const DEFAULT_ATTEMPTS: u16 = 5;
 
 // -------------------- REQUEST/RESPONSE TYPES --------------------

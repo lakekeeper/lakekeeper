@@ -494,7 +494,9 @@ mod openfga_integration_tests {
         service::{
             authz::{
                 implementations::openfga::{
-                    migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION, V4_MODEL_VERSION},
+                    migration::{
+                        add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION,
+                    },
                     new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation,
                     AUTH_CONFIG,
                 },
@@ -572,7 +574,7 @@ mod openfga_integration_tests {
             &store_name,
             &AUTH_CONFIG.authorization_model_prefix,
         );
-        let mut model_manager = add_model_v4(model_manager);
+        let mut model_manager = add_model_v4_0(model_manager);
         let migration_state = MigrationState {
             store_name: store_name.clone(),
             server_id,
@@ -582,7 +584,7 @@ mod openfga_integration_tests {
         // Construct a new client to interact with v4.
         let store_id = client.store_id();
         let auth_model_id_v4 = model_manager
-            .get_authorization_model_id(*V4_MODEL_VERSION)
+            .get_authorization_model_id(*V4_0_MODEL_VERSION)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Auth model should be set after migration"))?;
         let client_v4 = BasicOpenFgaClient::new(client.client(), store_id, &auth_model_id_v4)
