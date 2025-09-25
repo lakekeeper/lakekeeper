@@ -242,7 +242,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .into_inner()
                 .authorization_models;
-            assert_eq!(models.len(), 1);
+            assert_eq!(models.len(), 2);
         }
     }
 }
