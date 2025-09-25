@@ -4,7 +4,7 @@ type namespace
   relations
     # ------------------ Relation Hierarchies ------------------
     define parent: [namespace, warehouse]
-    define child: [namespace, table, lakekeeper_table, view, lakekeeper_view]
+    define child: [namespace, lakekeeper_table, lakekeeper_view]
 
     # ------------------ Special roles ------------------
     define ownership: [user, role#assignee]

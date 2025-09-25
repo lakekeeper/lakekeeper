@@ -22,6 +22,9 @@ type lakekeeper_view
     define can_rename: modify
     define can_include_in_list: can_get_metadata
     define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_modify or can_change_ownership
+    # Task permissions
+    define can_get_tasks: describe
+    define can_control_tasks: modify
 
     # GRANT Permissions
     define can_grant_pass_grants: manage_grants
