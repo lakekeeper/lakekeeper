@@ -32,7 +32,7 @@ use crate::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
         task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
+        Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -411,7 +411,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }))
         .await?
         .into_iter()
-        .zip(warehouses.into_iter())
+        .zip(warehouses)
         .filter_map(|(allowed, warehouse)| {
             if allowed.into_inner() {
                 Some(warehouse.into())
@@ -801,8 +801,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
-        undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
-            .await?;
+        undrop::require_undrop_permissions(
+            &warehouse_id,
+            &request,
+            &context.v1_state.authz,
+            &request_metadata,
+        )
+        .await?;
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
@@ -903,12 +908,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                         ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
                             TabularId::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
-                                (*id).into(),
+                                warehouse_id,
+                                ViewId::from(*id),
                                 crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularId::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
-                                (*id).into(),
+                                warehouse_id,
+                                TableId::from(*id),
                                 crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
                         }))
@@ -1266,7 +1273,11 @@ mod test {
                 .iter()
                 .any(|(start, end)| i >= *start && i < *end)
             {
-                authz.hide(&format!("view:{}", v.metadata.uuid()));
+                authz.hide(&format!(
+                    "view:{}/{}",
+                    warehouse.warehouse_id,
+                    v.metadata.uuid()
+                ));
             }
         }
 
@@ -1446,7 +1457,7 @@ mod test {
         let mut ids = all.tabulars;
         ids.sort_by_key(|e| e.id);
         for t in ids.iter().take(6).skip(4) {
-            authz.hide(&format!("view:{}", t.id));
+            authz.hide(&format!("view:{}/{}", warehouse.warehouse_id, t.id));
         }
 
         let page = ApiServer::list_soft_deleted_tabulars(

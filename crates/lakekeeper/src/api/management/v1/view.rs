@@ -31,6 +31,7 @@ where
         let view_id: ViewId = authorizer
             .require_view_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(view_id)),
                 CatalogViewAction::CanDrop,
             )
@@ -62,6 +63,7 @@ where
         authorizer
             .require_view_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(view_id)),
                 CatalogViewAction::CanGetMetadata,
             )

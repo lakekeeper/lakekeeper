@@ -278,7 +278,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         authorizer
-            .create_table(&request_metadata, table_id, namespace_id)
+            .create_table(&request_metadata, warehouse_id, table_id, namespace_id)
             .await?;
 
         // Metadata file written, now we can commit the transaction
@@ -286,7 +286,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // If a staged table was overwritten, delete it from authorizer
         if let Some(staged_table_id) = staged_table_id {
-            authorizer.delete_table(staged_table_id).await.ok();
+            authorizer
+                .delete_table(warehouse_id, staged_table_id)
+                .await
+                .ok();
         }
 
         state
@@ -349,12 +352,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
 
         // Check if we need to handle overwrite
-        let mut previous_table_id = None;
+        let mut previous_table = None;
 
         let mut t_write = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if request.overwrite {
             // Check if table exists
-            previous_table_id = C::table_to_id(
+            previous_table = C::table_to_id(
                 warehouse_id,
                 &table,
                 ListFlags {
@@ -366,28 +369,25 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-            if let Some(previous_table_id) = previous_table_id {
+            if let Some(previous_table) = previous_table {
                 tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table_id} for overwrite operation",
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table} for overwrite operation",
                     table.name, table.namespace, warehouse.name
                 );
                 // Verify authorization to drop the table first
                 authorizer
                     .require_table_action(
                         &request_metadata,
-                        Ok(Some(previous_table_id)),
+                        warehouse_id,
+                        Ok(Some(previous_table)),
                         CatalogTableAction::CanDrop,
                     )
                     .await?;
 
                 // Drop the existing table to overwrite it
-                let _previous_table_location = C::drop_table(
-                    warehouse_id,
-                    previous_table_id,
-                    false,
-                    t_write.transaction(),
-                )
-                .await?;
+                let _previous_table_location =
+                    C::drop_table(warehouse_id, previous_table, false, t_write.transaction())
+                        .await?;
                 // We don't drop the files for the previous table on overwrite
             }
         }
@@ -427,18 +427,18 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let mut auth_needs_delete = false;
         // Delete the previous table from authorizer if it exists and differs from the new one
-        if let Some(previous_table_id) = previous_table_id {
-            if previous_table_id != tabular_id {
+        if let Some(previous_table) = previous_table {
+            if previous_table != tabular_id {
                 auth_needs_delete = true;
                 // Only create authorization for the new table if it's different
                 authorizer
-                    .create_table(&request_metadata, tabular_id, namespace_id)
+                    .create_table(&request_metadata, warehouse_id, tabular_id, namespace_id)
                     .await?;
             }
         } else {
             // No previous table, need to create authorization
             authorizer
-                .create_table(&request_metadata, tabular_id, namespace_id)
+                .create_table(&request_metadata, warehouse_id, tabular_id, namespace_id)
                 .await?;
         }
 
@@ -447,11 +447,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete {
-            if let Some(previous_table_id) = previous_table_id {
-                authorizer.delete_table(previous_table_id).await.map_err({
+            if let Some(previous_table) = previous_table {
+                authorizer.delete_table(warehouse_id, previous_table).await.map_err({
                     |e| {
                         tracing::warn!(
-                            "Failed to delete previous table {previous_table_id} from authorizer on overwrite via table register endpoint: {}",
+                            "Failed to delete previous table {previous_table} from authorizer on overwrite via table register endpoint: {}",
                             e.error
                         );
                     }
@@ -461,7 +461,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // If a staged table was overwritten, delete it from authorizer
         if let Some(staged_table_id) = staged_table_id {
-            authorizer.delete_table(staged_table_id).await.ok();
+            authorizer
+                .delete_table(warehouse_id, staged_table_id)
+                .await
+                .ok();
         }
 
         // Fire hooks
@@ -730,7 +733,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let include_active = true;
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let table_id = C::table_to_id(
+        let table_details = C::table_to_id(
             warehouse_id,
             table,
             ListFlags {
@@ -743,7 +746,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await; // We can't fail before AuthZ
 
         let table_id = authorizer
-            .require_table_action(&request_metadata, table_id, CatalogTableAction::CanDrop)
+            .require_table_action(
+                &request_metadata,
+                warehouse_id,
+                table_details,
+                CatalogTableAction::CanDrop,
+            )
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -789,7 +797,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 }
                 t.commit().await?;
                 authorizer
-                    .delete_table(table_id)
+                    .delete_table(warehouse_id, table_id)
                     .await
                     .inspect_err(|e| {
                         tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
@@ -1015,6 +1023,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let tabular_details = authorizer
             .require_table_action(
                 request_metadata,
+                warehouse_id,
                 tabular_details,
                 CatalogTableAction::CanGetMetadata,
             )
@@ -1024,11 +1033,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
+                warehouse_id,
                 tabular_details.table_id,
                 CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
+                warehouse_id,
                 tabular_details.table_id,
                 CatalogTableAction::CanWriteData,
             ),
@@ -1262,12 +1273,13 @@ async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretSt
     // Build futures alongside their idents to preserve pairing
     let authz_checks = table_ids
         .iter()
-        .map(|(ident, table_id)| {
+        .map(|(ident, id)| {
             (
                 ident.clone(),
                 authorizer.require_table_action(
                     &request_metadata,
-                    Ok(*table_id),
+                    warehouse_id,
+                    Ok(*id),
                     CatalogTableAction::CanCommit,
                 ),
             )
@@ -1499,9 +1511,9 @@ pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer
         .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
-    let table_id = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
+    let table_details = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
     authorizer
-        .require_table_action(metadata, table_id, action)
+        .require_table_action(metadata, warehouse_id, table_details, action)
         .await
         .map_err(set_not_found_status_code)
 }
@@ -1683,6 +1695,23 @@ fn calculate_diffs(
         .copied()
         .collect::<Vec<_>>();
 
+    let old_encryption_keys = previous_metadata
+        .encryption_keys_iter()
+        .map(|k| k.key_id().to_string())
+        .collect::<FxHashSet<_>>();
+    let new_encryption_keys = new_metadata
+        .encryption_keys_iter()
+        .map(|k| k.key_id().to_string())
+        .collect::<FxHashSet<_>>();
+    let removed_encryption_keys = old_encryption_keys
+        .difference(&new_encryption_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    let added_encryption_keys = new_encryption_keys
+        .difference(&old_encryption_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+
     TableMetadataDiffs {
         removed_snapshots: removed_snaps,
         added_snapshots,
@@ -1703,6 +1732,8 @@ fn calculate_diffs(
         removed_stats,
         added_partition_stats,
         removed_partition_stats,
+        removed_encryption_keys,
+        added_encryption_keys,
     }
 }
 
@@ -1727,6 +1758,8 @@ pub struct TableMetadataDiffs {
     pub removed_stats: Vec<i64>,
     pub added_partition_stats: Vec<i64>,
     pub removed_partition_stats: Vec<i64>,
+    pub added_encryption_keys: Vec<String>,
+    pub removed_encryption_keys: Vec<String>,
 }
 
 pub(crate) fn determine_table_ident(
@@ -1991,6 +2024,7 @@ pub(crate) fn create_table_request_into_table_metadata(
         .map(|s| match s.as_str() {
             "v1" | "1" => Ok(FormatVersion::V1),
             "v2" | "2" => Ok(FormatVersion::V2),
+            "v3" | "3" => Ok(FormatVersion::V3),
             _ => Err(ErrorModel::bad_request(
                 format!("Invalid format version specified in table_properties: {s}"),
                 "InvalidFormatVersion",
@@ -2030,11 +2064,12 @@ pub(crate) mod test {
     use http::StatusCode;
     use iceberg::{
         spec::{
-            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-            SnapshotRetention, Summary, TableMetadata, Transform, Type, UnboundPartitionField,
-            UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+            EncryptedKey, FormatVersion, NestedField, Operation, PrimitiveType, Schema, Snapshot,
+            SnapshotReference, SnapshotRetention, Summary, TableMetadata, Transform, Type,
+            UnboundPartitionField, UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_FORMAT_VERSION,
+            PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
         },
-        NamespaceIdent, TableIdent,
+        NamespaceIdent, TableIdent, TableUpdate,
     };
     use iceberg_ext::catalog::rest::{
         CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
@@ -2074,7 +2109,7 @@ pub(crate) mod test {
                 tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
                 CatalogTableAction,
             },
-            ListFlags, State, TableId, UserId,
+            ListFlags, SecretStore, State, TableId, UserId,
         },
         tests::random_request_metadata,
         WarehouseId,
@@ -2162,6 +2197,153 @@ pub(crate) mod test {
             .add_partition_field(2, "y", Transform::Identity)
             .unwrap()
             .build()
+    }
+
+    // Helper functions to reduce repetitive code in tests
+
+    /// Creates a standard test schema with id and name fields
+    fn create_test_schema() -> Schema {
+        Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                    .into(),
+                NestedField::required(
+                    2,
+                    "name",
+                    iceberg::spec::Type::Primitive(PrimitiveType::String),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    /// Creates a `CreateTableRequest` with the given name and format version
+    fn create_table_request(
+        name: &str,
+        format_version: Option<FormatVersion>,
+    ) -> CreateTableRequest {
+        let mut properties = None;
+        if let Some(version) = format_version {
+            properties = Some(HashMap::from([(
+                PROPERTY_FORMAT_VERSION.to_string(),
+                match version {
+                    FormatVersion::V1 => "1".to_string(),
+                    FormatVersion::V2 => "2".to_string(),
+                    FormatVersion::V3 => "3".to_string(),
+                },
+            )]));
+        }
+
+        CreateTableRequest {
+            name: name.to_string(),
+            location: None,
+            schema: create_test_schema(),
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties,
+        }
+    }
+
+    /// Helper to load a table using `CatalogServer`
+    async fn load_table(
+        ctx: &ApiContext<
+            State<impl crate::service::authz::Authorizer, impl Catalog, impl SecretStore>,
+        >,
+        ns_params: &NamespaceParameters,
+        table_name: &str,
+    ) -> LoadTableResult {
+        let table_ident = TableIdent {
+            namespace: ns_params.namespace.clone(),
+            name: table_name.to_string(),
+        };
+
+        CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident,
+            },
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Helper to commit table changes
+    async fn commit_table_changes(
+        ctx: &ApiContext<
+            State<impl crate::service::authz::Authorizer, impl Catalog, impl SecretStore>,
+        >,
+        ns_params: &NamespaceParameters,
+        table_ident: &TableIdent,
+        updates: Vec<TableUpdate>,
+    ) -> super::CommitContext {
+        super::commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+    }
+
+    /// Helper to create a standard snapshot for testing
+    fn create_test_snapshot_v3(
+        snapshot_id: i64,
+        timestamp_ms: i64,
+        sequence_number: i64,
+        manifest_list: &str,
+        row_range: Option<(u64, u64)>,
+        added_records: u64,
+        key_id: &str,
+    ) -> Snapshot {
+        let base_builder = Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_timestamp_ms(timestamp_ms)
+            .with_sequence_number(sequence_number)
+            .with_schema_id(0)
+            .with_manifest_list(manifest_list)
+            .with_encryption_key_id(Some(key_id.to_string()))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::from_iter(vec![
+                    ("added-data-files".to_string(), "1".to_string()),
+                    ("added-records".to_string(), added_records.to_string()),
+                ]),
+            });
+
+        if let Some((first_row_id, added_rows_count)) = row_range {
+            base_builder
+                .with_row_range(first_row_id, added_rows_count)
+                .build()
+        } else {
+            base_builder.build()
+        }
+    }
+
+    /// Helper to create a snapshot reference
+    fn create_snapshot_reference(snapshot_id: i64) -> SnapshotReference {
+        SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Branch {
+                min_snapshots_to_keep: Some(10),
+                max_snapshot_age_ms: None,
+                max_ref_age_ms: None,
+            },
+        }
     }
 
     #[sqlx::test]
@@ -2328,6 +2510,7 @@ pub(crate) mod test {
             .metadata
             .into_builder(table.metadata_location)
             .add_schema(schema())
+            .unwrap()
             .set_current_schema(-1)
             .unwrap()
             .add_partition_spec(partition_spec())
@@ -2644,6 +2827,395 @@ pub(crate) mod test {
         .unwrap();
 
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
+    }
+
+    #[sqlx::test]
+    async fn test_default_format_version_is_v2(pg_pool: PgPool) {
+        let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
+        let create_request = create_table_request("my_table", None);
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request,
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+    }
+
+    #[sqlx::test]
+    #[allow(clippy::too_many_lines)]
+    async fn test_table_v3(pg_pool: PgPool) {
+        let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+        let create_request = create_table_request("my_table", Some(FormatVersion::V3));
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request,
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(table.metadata.format_version(), FormatVersion::V3);
+        assert_eq!(table.metadata.next_row_id(), 0);
+
+        // Create table identifier for commits
+        let table_ident = TableIdent {
+            namespace: ns.namespace.clone(),
+            name: "my_table".to_string(),
+        };
+
+        // Add a snapshot with row_range (0, 100)
+        let last_updated = table.metadata.last_updated_ms();
+
+        let snapshot1 = create_test_snapshot_v3(
+            1,
+            last_updated + 1,
+            1,
+            "/snap-1.avro",
+            Some((0, 100)),
+            100,
+            "key-1",
+        );
+
+        // Commit using Catalog
+        let encryption_key = EncryptedKey::builder()
+            .key_id("key-1")
+            .encrypted_key_metadata("key-metadata".as_bytes().to_vec())
+            .encrypted_by_id("my-vault".to_string())
+            .build();
+
+        commit_table_changes(
+            &ctx,
+            &ns_params,
+            &table_ident,
+            vec![
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot1,
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: create_snapshot_reference(1),
+                },
+                TableUpdate::AddEncryptionKey {
+                    encryption_key: encryption_key.clone(),
+                },
+            ],
+        )
+        .await;
+
+        // Load using Catalog and assert next_row_id = 100
+        let loaded_table = load_table(&ctx, &ns_params, "my_table").await;
+        assert_eq!(loaded_table.metadata.next_row_id(), 100);
+        let current_snapshot = loaded_table
+            .metadata
+            .current_snapshot()
+            .expect("There should be a current snapshot");
+        assert_eq!(current_snapshot.snapshot_id(), 1);
+        assert_eq!(current_snapshot.row_range(), Some((0, 100)));
+        assert_eq!(
+            loaded_table.metadata.encryption_key("key-1"),
+            Some(&encryption_key)
+        );
+        assert_eq!(current_snapshot.encryption_key_id(), Some("key-1"));
+
+        let snapshot2_invalid = create_test_snapshot_v3(
+            2,
+            last_updated + 2,
+            2,
+            "/snap-2-invalid.avro",
+            Some((50, 100)),
+            100,
+            "key-1",
+        );
+
+        // This commit should fail due to row range overlap
+        let invalid_commit_result = super::commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: vec![TableUpdate::AddSnapshot {
+                        snapshot: snapshot2_invalid,
+                    }],
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await;
+
+        // Assert that the commit fails
+        assert!(invalid_commit_result.is_err());
+        let err_string = invalid_commit_result.as_ref().unwrap_err().to_string();
+        assert!(
+            err_string.contains("first-row-id is behind table next-row-id"),
+            "The error message `{err_string}` did not contain the expected text",
+        );
+
+        // Add another snapshot with row_range (100, 50) - this should succeed
+        // because it doesn't overlap (rows 100-149)
+        let loaded_table2 = load_table(&ctx, &ns_params, "my_table").await;
+
+        assert_eq!(loaded_table2.metadata.next_row_id(), 100);
+        assert_eq!(loaded_table2.metadata.format_version(), FormatVersion::V3);
+
+        let snapshot3_valid = create_test_snapshot_v3(
+            3,
+            last_updated + 3,
+            2,
+            "/snap-3-valid.avro",
+            Some((100, 50)), // first_row_id: 100, added_rows_count: 50
+            50,              // added_records: 50
+            "key-1",
+        );
+
+        // This commit should succeed
+        commit_table_changes(
+            &ctx,
+            &ns_params,
+            &table_ident,
+            vec![TableUpdate::AddSnapshot {
+                snapshot: snapshot3_valid,
+            }],
+        )
+        .await;
+
+        // Load again and check next_row_id should now be 150
+        let final_table = load_table(&ctx, &ns_params, "my_table").await;
+
+        assert_eq!(final_table.metadata.next_row_id(), 150);
+        println!(
+            "Available snapshot ids: {:?}",
+            final_table
+                .metadata
+                .snapshots()
+                .map(|s| s.snapshot_id())
+                .collect::<Vec<_>>()
+        );
+        let snapshot = final_table.metadata.snapshot_by_id(3).unwrap();
+        assert_eq!(snapshot.row_range(), Some((100, 50)));
+        assert_eq!(snapshot.manifest_list(), "/snap-3-valid.avro");
+    }
+
+    #[sqlx::test]
+    async fn test_v2_to_v3_migration(pg_pool: PgPool) {
+        let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+
+        // Create a v2 table (default version)
+        let create_request = CreateTableRequest {
+            name: "my_migration_table".to_string(),
+            location: None,
+            schema: Schema::builder()
+                .with_fields(vec![
+                    NestedField::required(
+                        1,
+                        "id",
+                        iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                    )
+                    .into(),
+                    NestedField::required(
+                        2,
+                        "name",
+                        iceberg::spec::Type::Primitive(PrimitiveType::String),
+                    )
+                    .into(),
+                ])
+                .build()
+                .unwrap(),
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties: None, // No format version specified, should default to V2
+        };
+
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request,
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Verify it's a V2 table
+        assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+
+        // Create table identifier for commits
+        let table_ident = TableIdent {
+            namespace: ns.namespace.clone(),
+            name: "my_migration_table".to_string(),
+        };
+
+        // Add a snapshot to the V2 table (without row_range)
+        let last_updated = table.metadata.last_updated_ms();
+        let builder = table.metadata.into_builder(table.metadata_location);
+
+        let snapshot1 = Snapshot::builder()
+            .with_snapshot_id(1)
+            .with_timestamp_ms(last_updated + 1)
+            .with_sequence_number(1)
+            .with_schema_id(0)
+            .with_manifest_list("/snap-1.avro")
+            // No row_range for V2 table
+            .with_row_range(0, 50) // row_range is ignored in V2
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::from_iter(vec![
+                    ("added-data-files".to_string(), "1".to_string()),
+                    ("added-records".to_string(), "100".to_string()),
+                ]),
+            })
+            .build();
+
+        let builder = builder
+            .add_snapshot(snapshot1)
+            .unwrap()
+            .set_ref(
+                MAIN_BRANCH,
+                SnapshotReference {
+                    snapshot_id: 1,
+                    retention: SnapshotRetention::Branch {
+                        min_snapshots_to_keep: Some(10),
+                        max_snapshot_age_ms: None,
+                        max_ref_age_ms: None,
+                    },
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Commit the snapshot
+        super::commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Load table and verify it's still V2
+        let loaded_table_v2 = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(loaded_table_v2.metadata.format_version(), FormatVersion::V2);
+
+        // Upgrade to V3 using TableUpdate::UpgradeFormatVersion
+        super::commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: vec![TableUpdate::UpgradeFormatVersion {
+                        format_version: FormatVersion::V3,
+                    }],
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Load table again -> should be V3 and next_row_id should be 0 (NULL equivalent)
+        let loaded_table_v3 = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(loaded_table_v3.metadata.format_version(), FormatVersion::V3);
+        assert_eq!(loaded_table_v3.metadata.next_row_id(), 0); // Should be 0 after migration
+
+        // Add a snapshot with row_range to the V3 table
+        let snapshot2 = Snapshot::builder()
+            .with_snapshot_id(2)
+            .with_timestamp_ms(last_updated + 2)
+            .with_sequence_number(2)
+            .with_schema_id(0)
+            .with_manifest_list("/snap-2.avro")
+            .with_row_range(0, 50) // first_row_id: 0, added_rows_count: 50
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::from_iter(vec![
+                    ("added-data-files".to_string(), "1".to_string()),
+                    ("added-records".to_string(), "50".to_string()),
+                ]),
+            })
+            .build();
+
+        super::commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: vec![TableUpdate::AddSnapshot {
+                        snapshot: snapshot2,
+                    }],
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Load table -> next_row_id should now be increased to 50
+        let final_table = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(final_table.metadata.format_version(), FormatVersion::V3);
+        assert_eq!(final_table.metadata.next_row_id(), 50);
     }
 
     #[sqlx::test]
@@ -3185,7 +3757,11 @@ pub(crate) mod test {
             .unwrap();
             for (start, end) in hidden_ranges.iter().copied() {
                 if i >= start && i < end {
-                    authz.hide(&format!("table:{}", tab.metadata.uuid()));
+                    authz.hide(&format!(
+                        "table:{}/{}",
+                        warehouse.warehouse_id,
+                        tab.metadata.uuid()
+                    ));
                 }
             }
         }
@@ -3352,7 +3928,7 @@ pub(crate) mod test {
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
-            authz.hide(&format!("table:{t}"));
+            authz.hide(&format!("table:{}/{t}", warehouse.warehouse_id));
         }
 
         let page = CatalogServer::list_tables(

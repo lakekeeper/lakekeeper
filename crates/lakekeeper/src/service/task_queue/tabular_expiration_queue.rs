@@ -185,7 +185,7 @@ where
             };
 
             authorizer
-                .delete_table(table_id)
+                .delete_table(task.task_metadata.warehouse_id, table_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
@@ -221,7 +221,7 @@ where
             };
 
             authorizer
-                .delete_view(view_id)
+                .delete_view(task.task_metadata.warehouse_id, view_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(

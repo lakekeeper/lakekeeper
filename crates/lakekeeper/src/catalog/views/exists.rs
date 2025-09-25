@@ -52,7 +52,7 @@ pub(crate) async fn authorized_view_ident_to_id<C: Catalog, A: Authorizer>(
         .await?;
     let view_id = C::view_to_id(warehouse_id, view_ident, transaction).await; // We can't fail before AuthZ
     authorizer
-        .require_view_action(metadata, view_id, action)
+        .require_view_action(metadata, warehouse_id, view_id, action)
         .await
         .map_err(set_not_found_status_code)
 }

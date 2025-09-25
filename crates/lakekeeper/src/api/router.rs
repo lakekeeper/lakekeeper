@@ -143,6 +143,9 @@ pub async fn new_full_router<
                         .make_span_with(RestMakeSpan::new(tracing::Level::INFO))
                         .on_response(trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)),
                 )
+                // Uncomment the following lines and the functions below to
+                // print the full request body for debugging.
+                // .layer(axum::middleware::from_fn(print_request_body))
                 .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
                 .layer(CatchPanicLayer::new())
                 .layer(maybe_cors_layer)
@@ -156,6 +159,44 @@ pub async fn new_full_router<
         router
     })
 }
+
+// // middleware that shows how to consume the request body upfront
+// async fn print_request_body(
+//     request: axum::extract::Request,
+//     next: axum::middleware::Next,
+// ) -> Result<impl IntoResponse, axum::response::Response> {
+//     let request = buffer_request_body(request).await?;
+
+//     Ok(next.run(request).await)
+// }
+
+// // the trick is to take the request apart, buffer the body, do what you need to do, then put
+// // the request back together
+// async fn buffer_request_body(
+//     request: axum::extract::Request,
+// ) -> Result<axum::extract::Request, axum::response::Response> {
+//     let (parts, body) = request.into_parts();
+
+//     // this won't work if the body is an long running stream
+//     let bytes = http_body_util::BodyExt::collect(body)
+//         .await
+//         .map_err(|err| {
+//             (
+//                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+//                 err.to_string(),
+//             )
+//                 .into_response()
+//         })?
+//         .to_bytes();
+
+//     let s = String::from_utf8_lossy(&bytes).to_string();
+//     tracing::info!(body = s);
+
+//     Ok(axum::extract::Request::from_parts(
+//         parts,
+//         axum::body::Body::from(bytes),
+//     ))
+// }
 
 fn get_cors_layer(
     cors_origins: Option<&'static [HeaderValue]>,

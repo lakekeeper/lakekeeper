@@ -372,6 +372,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         table_id: TableId,
         action: A,
     ) -> Result<bool>
@@ -381,7 +382,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: table_id.to_openfga(),
+            object: (warehouse_id, table_id).to_openfga(),
         })
         .await
         .map_err(Into::into)
@@ -390,6 +391,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<Vec<bool>>
     where
@@ -397,10 +399,10 @@ impl Authorizer for OpenFGAAuthorizer {
     {
         let items: Vec<_> = tables_with_actions
             .into_iter()
-            .map(|(id, a)| CheckRequestTupleKey {
+            .map(|(table_id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
-                object: id.to_openfga(),
+                object: (warehouse_id, table_id).to_openfga(),
             })
             .collect();
         self.batch_check(items).await
@@ -409,6 +411,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_view_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         action: A,
     ) -> Result<bool>
@@ -418,7 +421,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: view_id.to_openfga(),
+            object: (warehouse_id, view_id).to_openfga(),
         })
         .await
         .map_err(Into::into)
@@ -427,6 +430,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<Vec<bool>>
     where
@@ -434,10 +438,10 @@ impl Authorizer for OpenFGAAuthorizer {
     {
         let items: Vec<_> = views_with_actions
             .into_iter()
-            .map(|(id, a)| CheckRequestTupleKey {
+            .map(|(view_id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
-                object: id.to_openfga(),
+                object: (warehouse_id, view_id).to_openfga(),
             })
             .collect();
         self.batch_check(items).await
@@ -634,16 +638,17 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         table_id: TableId,
         parent: NamespaceId,
     ) -> Result<()> {
         let actor = metadata.actor();
         let parent_id = parent.to_openfga();
-        let this_id = table_id.to_openfga();
+        let this_id = (warehouse_id, table_id).to_openfga();
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
-        self.require_no_relations(&table_id).await?;
+        self.require_no_relations(&(warehouse_id, table_id)).await?;
 
         self.write(
             Some(vec![
@@ -672,21 +677,22 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn delete_table(&self, table_id: TableId) -> Result<()> {
-        self.delete_all_relations(&table_id).await
+    async fn delete_table(&self, warehouse_id: WarehouseId, table_id: TableId) -> Result<()> {
+        self.delete_all_relations(&(warehouse_id, table_id)).await
     }
 
     async fn create_view(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         parent: NamespaceId,
     ) -> Result<()> {
         let actor = metadata.actor();
         let parent_id = parent.to_openfga();
-        let this_id = view_id.to_openfga();
+        let this_id = (warehouse_id, view_id).to_openfga();
 
-        self.require_no_relations(&view_id).await?;
+        self.require_no_relations(&(warehouse_id, view_id)).await?;
 
         self.write(
             Some(vec![
@@ -715,8 +721,8 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn delete_view(&self, view_id: ViewId) -> Result<()> {
-        self.delete_all_relations(&view_id).await
+    async fn delete_view(&self, warehouse_id: WarehouseId, view_id: ViewId) -> Result<()> {
+        self.delete_all_relations(&(warehouse_id, view_id)).await
     }
 }
 

@@ -435,6 +435,7 @@ where
     async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         table_id: TableId,
         action: A,
     ) -> Result<bool>
@@ -444,6 +445,7 @@ where
     async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         table_id: TableId,
         action: A,
     ) -> Result<MustUse<bool>>
@@ -453,7 +455,7 @@ where
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_table_action_impl(metadata, table_id, action)
+            self.is_allowed_table_action_impl(metadata, warehouse_id, table_id, action)
                 .await
         }
         .map(MustUse::from)
@@ -470,22 +472,28 @@ where
     async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
-        try_join_all(tables_with_actions.into_iter().map(|(id, a)| async move {
-            self.is_allowed_table_action(metadata, id, a)
-                .await
-                .map(MustUse::into_inner)
-        }))
+        try_join_all(
+            tables_with_actions
+                .into_iter()
+                .map(|(table_id, a)| async move {
+                    self.is_allowed_table_action(metadata, warehouse_id, table_id, a)
+                        .await
+                        .map(MustUse::into_inner)
+                }),
+        )
         .await
     }
 
     async fn are_allowed_table_actions<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<MustUse<Vec<bool>>>
     where
@@ -494,7 +502,7 @@ where
         if metadata.has_admin_privileges() {
             Ok(vec![true; tables_with_actions.len()])
         } else {
-            self.are_allowed_table_actions_impl(metadata, tables_with_actions)
+            self.are_allowed_table_actions_impl(metadata, warehouse_id, tables_with_actions)
                 .await
         }
         .map(MustUse::from)
@@ -505,6 +513,7 @@ where
     async fn is_allowed_view_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         action: A,
     ) -> Result<bool>
@@ -514,6 +523,7 @@ where
     async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         action: A,
     ) -> Result<MustUse<bool>>
@@ -523,7 +533,7 @@ where
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_view_action_impl(metadata, view_id, action)
+            self.is_allowed_view_action_impl(metadata, warehouse_id, view_id, action)
                 .await
         }
         .map(MustUse::from)
@@ -540,22 +550,28 @@ where
     async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
-        try_join_all(views_with_actions.into_iter().map(|(id, a)| async move {
-            self.is_allowed_view_action(metadata, id, a)
-                .await
-                .map(MustUse::into_inner)
-        }))
+        try_join_all(
+            views_with_actions
+                .into_iter()
+                .map(|(view_id, a)| async move {
+                    self.is_allowed_view_action(metadata, warehouse_id, view_id, a)
+                        .await
+                        .map(MustUse::into_inner)
+                }),
+        )
         .await
     }
 
     async fn are_allowed_view_actions<A>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<MustUse<Vec<bool>>>
     where
@@ -564,7 +580,7 @@ where
         if metadata.has_admin_privileges() {
             Ok(vec![true; views_with_actions.len()])
         } else {
-            self.are_allowed_view_actions_impl(metadata, views_with_actions)
+            self.are_allowed_view_actions_impl(metadata, warehouse_id, views_with_actions)
                 .await
         }
         .map(MustUse::from)
@@ -638,26 +654,28 @@ where
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         table_id: TableId,
         parent: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a table is deleted.
     /// This is used to clean up permissions for the table.
-    async fn delete_table(&self, table_id: TableId) -> Result<()>;
+    async fn delete_table(&self, warehouse_id: WarehouseId, table_id: TableId) -> Result<()>;
 
     /// Hook that is called when a new view is created.
     /// This is used to set up the initial permissions for the view.
     async fn create_view(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         parent: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a view is deleted.
     /// This is used to clean up permissions for the view.
-    async fn delete_view(&self, view_id: ViewId) -> Result<()>;
+    async fn delete_view(&self, warehouse_id: WarehouseId, view_id: ViewId) -> Result<()>;
 
     async fn require_search_users(&self, metadata: &RequestMetadata) -> Result<()> {
         if self.can_search_users(metadata).await?.into_inner() {
@@ -827,25 +845,31 @@ where
     async fn require_table_action<T: TableUuid + Send>(
         &self,
         metadata: &RequestMetadata,
-        table_id: Result<Option<T>>,
+        warehouse_id: WarehouseId,
+        table_details: Result<Option<T>>,
         action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
         let actor = metadata.actor();
         let msg = format!("Table not found or action {action} forbidden for {actor}");
         let typ = "TableActionForbidden";
 
-        match table_id {
+        match table_details {
             Ok(None) => {
                 tracing::debug!("Table not found, returning forbidden.");
                 Err(ErrorModel::forbidden(msg, typ, None).into())
             }
-            Ok(Some(table_id)) => {
+            Ok(Some(table_details)) => {
                 if self
-                    .is_allowed_table_action(metadata, table_id.table_uuid(), action)
+                    .is_allowed_table_action(
+                        metadata,
+                        warehouse_id,
+                        table_details.table_uuid(),
+                        action,
+                    )
                     .await?
                     .into_inner()
                 {
-                    Ok(table_id)
+                    Ok(table_details)
                 } else {
                     tracing::trace!("Table action forbidden.");
                     Err(ErrorModel::forbidden(msg, typ, None).into())
@@ -862,6 +886,7 @@ where
     async fn require_view_action(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         view_id: Result<Option<ViewId>>,
         action: impl From<CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<ViewId> {
@@ -876,7 +901,7 @@ where
             }
             Ok(Some(view_id)) => {
                 if self
-                    .is_allowed_view_action(metadata, view_id, action)
+                    .is_allowed_view_action(metadata, warehouse_id, view_id, action)
                     .await?
                     .into_inner()
                 {
@@ -1157,6 +1182,7 @@ pub(crate) mod tests {
         async fn is_allowed_table_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
+            warehouse_id: WarehouseId,
             table_id: TableId,
             action: A,
         ) -> Result<bool>
@@ -1166,12 +1192,14 @@ pub(crate) mod tests {
             if self.action_is_blocked(format!("table:{action}").as_str()) {
                 return Ok(false);
             }
-            Ok(self.check_available(format!("table:{table_id}").as_str()))
+            Ok(self.check_available(format!("table:{warehouse_id}/{table_id}").as_str()))
         }
 
         async fn is_allowed_view_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
+
+            warehouse_id: WarehouseId,
             view_id: ViewId,
             action: A,
         ) -> Result<bool>
@@ -1181,7 +1209,7 @@ pub(crate) mod tests {
             if self.action_is_blocked(format!("view:{action}").as_str()) {
                 return Ok(false);
             }
-            Ok(self.check_available(format!("view:{view_id}").as_str()))
+            Ok(self.check_available(format!("view:{warehouse_id}/{view_id}").as_str()))
         }
 
         async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {
@@ -1254,26 +1282,28 @@ pub(crate) mod tests {
         async fn create_table(
             &self,
             _metadata: &RequestMetadata,
+            _warehouse_id: WarehouseId,
             _table_id: TableId,
             _parent: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn delete_table(&self, _table_id: TableId) -> Result<()> {
+        async fn delete_table(&self, _warehouse_id: WarehouseId, _table_id: TableId) -> Result<()> {
             Ok(())
         }
 
         async fn create_view(
             &self,
             _metadata: &RequestMetadata,
+            _warehouse_id: WarehouseId,
             _view_id: ViewId,
             _parent: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn delete_view(&self, _view_id: ViewId) -> Result<()> {
+        async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
             Ok(())
         }
     }
@@ -1315,6 +1345,45 @@ pub(crate) mod tests {
         };
     }
 
+    // Tabular actions require a warehouse id.
+    macro_rules! test_block_tabular_action {
+        ($entity:ident, $action:path, $warehouse_id:expr, $object_id:expr) => {
+            paste! {
+                #[tokio::test]
+                async fn [<test_block_ $entity _action>]() {
+                    let authz = HidingAuthorizer::new();
+
+                    // Nothing is hidden, so the action is allowed.
+                    assert!(authz
+                        .[<is_allowed_ $entity _action>](
+                            &RequestMetadata::new_unauthenticated(),
+                            $warehouse_id,
+                            $object_id,
+                            $action
+                        )
+                        .await
+                        .unwrap()
+                        .into_inner());
+
+                    // Generates "namespace:can_list_everything" for macro invoked with
+                    // (namespace, CatalogNamespaceAction::CanListEverything)
+                    authz.block_action(format!("{}:{}", stringify!($entity), $action).as_str());
+
+                    // After blocking the action it must not be allowed anymore.
+                    assert!(!authz
+                        .[<is_allowed_ $entity _action>](
+                            &RequestMetadata::new_unauthenticated(),
+                            $warehouse_id,
+                            $object_id,
+                            $action
+                        )
+                        .await
+                        .unwrap()
+                        .into_inner());
+                }
+            }
+        };
+    }
     test_block_action!(role, CatalogRoleAction::CanDelete, RoleId::new_random());
     test_block_action!(
         project,
@@ -1331,6 +1400,16 @@ pub(crate) mod tests {
         CatalogNamespaceAction::CanListViews,
         NamespaceId::new_random()
     );
-    test_block_action!(table, CatalogTableAction::CanDrop, TableId::new_random());
-    test_block_action!(view, CatalogViewAction::CanDrop, ViewId::new_random());
+    test_block_tabular_action!(
+        table,
+        CatalogTableAction::CanDrop,
+        WarehouseId::new_random(),
+        TableId::new_random()
+    );
+    test_block_tabular_action!(
+        view,
+        CatalogViewAction::CanDrop,
+        WarehouseId::new_random(),
+        ViewId::new_random()
+    );
 }

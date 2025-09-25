@@ -48,7 +48,12 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
 
     let view_id: ViewId = authorizer
-        .require_view_action(&request_metadata, view_id, CatalogViewAction::CanDrop)
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view_id,
+            CatalogViewAction::CanDrop,
+        )
         .await
         .map_err(set_not_found_status_code)?;
 
@@ -85,12 +90,14 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     t.transaction(),
                 )
                 .await?;
-                tracing::debug!("Queued purge task for dropped view '{view_id}'.");
+                tracing::debug!(
+                    "Queued purge task for dropped view '{view_id}' in warehouse {warehouse_id}."
+                );
             }
             t.commit().await?;
 
             authorizer
-                .delete_view(view_id)
+                .delete_view(warehouse_id, view_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
@@ -125,7 +132,9 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-            tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
+            tracing::debug!(
+                "Queued expiration task for dropped view '{view_id}' in warehouse {warehouse_id}."
+            );
             t.commit().await?;
         }
     }

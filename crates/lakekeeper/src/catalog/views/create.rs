@@ -167,6 +167,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     authorizer
         .create_view(
             &request_metadata,
+            warehouse_id,
             ViewId::from(metadata.metadata.uuid()),
             namespace_id,
         )

@@ -18,7 +18,7 @@ use crate::{
     WarehouseId,
 };
 
-const GET_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanCommit;
+const GET_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanGetMetadata;
 const CONTROL_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanDrop;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::CanDelete;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
@@ -375,8 +375,13 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }
 
         if !authz_warehouse {
-            authorize_get_task_details_for_table_id(&authorizer, &request_metadata, *table_id)
-                .await?;
+            authorize_get_task_details_for_table_id(
+                &authorizer,
+                &request_metadata,
+                warehouse_id,
+                *table_id,
+            )
+            .await?;
         }
 
         Ok(task_details)
@@ -516,8 +521,10 @@ async fn authorize_list_tasks<A: Authorizer>(
         .map_err(|e| e.append_detail("Not authorized to see all objects in the Warehouse. Add the `entity` filter to query tasks for specific entities."));
 
     // If warehouse_id is specified, check permission for that warehouse
+    // TODO this needs further migration? as warehouse_id is now always given.
     if let Some(entities) = entities {
         if can_list_everything.is_err() {
+            // TODO check all warehouse_ids here equal the warehouse_id fn param?
             let table_ids: Vec<(WarehouseId, TableId)> = entities
                 .iter()
                 .map(|entity| match entity {
@@ -530,6 +537,7 @@ async fn authorize_list_tasks<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_table_actions(
                     request_metadata,
+                    warehouse_id,
                     table_ids
                         .iter()
                         .map(|(_warehouse_id, table_id)| (*table_id, GET_TASK_PERMISSION))
@@ -558,10 +566,16 @@ async fn authorize_list_tasks<A: Authorizer>(
 async fn authorize_get_task_details_for_table_id<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
     table_id: TableId,
 ) -> Result<()> {
     if !authorizer
-        .is_allowed_table_action(request_metadata, table_id, GET_TASK_PERMISSION)
+        .is_allowed_table_action(
+            request_metadata,
+            warehouse_id,
+            table_id,
+            GET_TASK_PERMISSION,
+        )
         .await?
         .into_inner()
     {
@@ -579,11 +593,15 @@ async fn authorize_get_task_details_for_table_id<A: Authorizer>(
 async fn authorize_control_tasks_for_table_ids<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
-    _warehouse_id: WarehouseId,
+    warehouse_id: WarehouseId,
     tasks: &[(TaskId, TableId, CatalogTableAction)],
 ) -> Result<()> {
     let allowed = authorizer
-        .are_allowed_table_actions(request_metadata, tasks.iter().map(|t| (t.1, t.2)).collect())
+        .are_allowed_table_actions(
+            request_metadata,
+            warehouse_id,
+            tasks.iter().map(|t| (t.1, t.2)).collect(),
+        )
         .await?
         .into_inner();
     let all_allowed = allowed.iter().all(|t| *t);
