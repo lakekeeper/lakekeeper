@@ -103,7 +103,7 @@ impl std::fmt::Display for ServerId {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
@@ -443,7 +443,7 @@ impl TryFrom<TabularId> for TableId {
 
     fn try_from(value: TabularId) -> Result<Self, Self::Error> {
         match value {
-            TabularId::Table(value) => Ok(value.into()),
+            TabularId::Table(value) => Ok(value),
             TabularId::View(_) => Err(ErrorModel::internal(
                 "Provided identifier is not a table id",
                 "IdentifierIsNotTableID",

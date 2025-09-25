@@ -167,8 +167,8 @@ where
     .map(|r| {
         let location = join_location(&r.fs_protocol, &r.fs_location);
         Some(match r.typ {
-            TabularType::Table => (TabularId::Table(r.tabular_id), location),
-            TabularType::View => (TabularId::View(r.tabular_id), location),
+            TabularType::Table => (TabularId::Table(r.tabular_id.into()), location),
+            TabularType::View => (TabularId::View(r.tabular_id.into()), location),
         })
     });
 
@@ -311,13 +311,13 @@ where
             TabularType::Table => {
                 table_map.insert(
                     TabularIdentOwned::Table(TableIdent { namespace, name }),
-                    Some(TabularId::Table(tabular_id)),
+                    Some(TabularId::Table(tabular_id.into())),
                 );
             }
             TabularType::View => {
                 table_map.insert(
                     TabularIdentOwned::View(TableIdent { namespace, name }),
-                    Some(TabularId::View(tabular_id)),
+                    Some(TabularId::View(tabular_id.into())),
                 );
             }
         }
@@ -527,7 +527,7 @@ where
         match table.typ {
             TabularType::Table => {
                 tabulars.insert(
-                    TabularId::Table(table.tabular_id),
+                    TabularId::Table(table.tabular_id.into()),
                     TabularInfo {
                         table_ident: TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
@@ -542,7 +542,7 @@ where
             }
             TabularType::View => {
                 tabulars.insert(
-                    TabularId::View(table.tabular_id),
+                    TabularId::View(table.tabular_id.into()),
                     TabularInfo {
                         table_ident: TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
@@ -743,10 +743,11 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 }
 
 pub(crate) async fn clear_tabular_deleted_at(
-    tabular_ids: &[Uuid],
+    tabular_ids: &[TabularId],
     warehouse_id: WarehouseId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Vec<UndropTabularResponse>> {
+    let tabular_ids: Vec<Uuid> = tabular_ids.iter().map(|id| **id).collect();
     let undrop_tabular_informations = sqlx::query!(
         r#"WITH locked_tabulars AS (
             SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name
@@ -783,7 +784,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             lta.task_id as "task_id?",
             lt.namespace_name,
             (SELECT all_found FROM validation) as "all_found!";"#,
-        tabular_ids,
+        &tabular_ids,
         *warehouse_id,
     )
     .fetch_all(&mut **transaction)
@@ -1087,7 +1088,7 @@ mod tests {
         if protected {
             set_tabular_protected(
                 warehouse_id,
-                TabularId::Table(tabular_id),
+                TabularId::Table(tabular_id.into()),
                 true,
                 &mut transaction,
             )
@@ -1099,7 +1100,7 @@ mod tests {
 
         (
             warehouse_id,
-            TabularId::Table(tabular_id),
+            TabularId::Table(tabular_id.into()),
             metadata_location,
             namespace_id,
         )
@@ -1111,7 +1112,7 @@ mod tests {
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let mut transaction = pool.begin().await.unwrap();
-        let nonexistent_table_id = TabularId::Table(Uuid::now_v7());
+        let nonexistent_table_id = TabularId::Table(Uuid::now_v7().into());
 
         let result = drop_tabular(
             warehouse_id,
@@ -1253,7 +1254,7 @@ mod tests {
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let mut transaction = pool.begin().await.unwrap();
-        let nonexistent_view_id = TabularId::View(Uuid::now_v7());
+        let nonexistent_view_id = TabularId::View(Uuid::now_v7().into());
 
         let result = drop_tabular(
             warehouse_id,

@@ -202,7 +202,8 @@ async fn test_soft_deletion(pool: PgPool) {
 
     // Un-delete one of the deleted tables
     let undrop_table_name = "table_4";
-    let undrop_table_id = TabularId::Table(*table_name_to_uuid.get(undrop_table_name).unwrap());
+    let undrop_table_id =
+        TabularId::Table((*table_name_to_uuid.get(undrop_table_name).unwrap()).into());
 
     ApiServer::undrop_tabulars(
         warehouse.warehouse_id,

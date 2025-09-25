@@ -64,7 +64,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     state
         .v1_state
         .contract_verifiers
-        .check_drop(TabularId::View(*view_id))
+        .check_drop(TabularId::View(view_id))
         .await?
         .into_result()?;
 
@@ -126,7 +126,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
             C::mark_tabular_as_deleted(
                 warehouse_id,
-                TabularId::View(*view_id),
+                TabularId::View(view_id),
                 force,
                 t.transaction(),
             )

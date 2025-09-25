@@ -171,7 +171,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let id = Uuid::now_v7();
-        let tabular_id = TabularId::Table(id);
+        let tabular_id = TabularId::Table(id.into());
         let table_id = TableId::from(id);
 
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
@@ -761,7 +761,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_drop(TabularId::Table(*table_id))
+            .check_drop(TabularId::Table(table_id))
             .await?
             .into_result()?;
 
@@ -827,7 +827,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
                 C::mark_tabular_as_deleted(
                     warehouse_id,
-                    TabularId::Table(*table_id),
+                    TabularId::Table(table_id),
                     force,
                     t.transaction(),
                 )
@@ -965,7 +965,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_rename(TabularId::Table(*source_table_id), destination)
+            .check_rename(TabularId::Table(source_table_id), destination)
             .await?
             .into_result()?;
 

@@ -5,7 +5,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, MustUse},
-        TableId, TabularId, ViewId,
+        TabularId,
     },
     WarehouseId,
 };
@@ -48,7 +48,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
                 futs.push(authorizer.is_allowed_view_action(
                     request_metadata,
                     *warehouse_id,
-                    ViewId::from(*id),
+                    *id,
                     crate::service::authz::CatalogViewAction::CanUndrop,
                 ));
             }
@@ -56,7 +56,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
                 futs.push(authorizer.is_allowed_table_action(
                     request_metadata,
                     *warehouse_id,
-                    TableId::from(*id),
+                    *id,
                     crate::service::authz::CatalogTableAction::CanUndrop,
                 ));
             }

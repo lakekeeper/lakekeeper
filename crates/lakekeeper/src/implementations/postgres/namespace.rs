@@ -494,8 +494,8 @@ pub(crate) async fn drop_namespace(
             let table_ident = TableIdent::new(json_value_to_namespace_ident(ns_name)?, t_name);
             Ok::<_, ErrorModel>((
                 match typ {
-                    TabularType::Table => TabularId::Table(id),
-                    TabularType::View => TabularId::View(id),
+                    TabularType::Table => TabularId::Table(id.into()),
+                    TabularType::View => TabularId::View(id.into()),
                 },
                 join_location(protocol.as_str(), fs_location.as_str()),
                 table_ident,
@@ -1026,7 +1026,7 @@ pub(crate) mod tests {
         assert_eq!(drop_info.child_tables.len(), 1);
         assert_eq!(drop_info.open_tasks.len(), 0);
         let r0 = &drop_info.child_tables[0];
-        assert_eq!(r0.0, TabularId::Table(*table.table_id));
+        assert_eq!(r0.0, TabularId::Table(table.table_id));
         assert_eq!(r0.2, table.table_ident);
 
         transaction.commit().await.unwrap();
@@ -1347,7 +1347,7 @@ pub(crate) mod tests {
             .unwrap();
         set_tabular_protected(
             warehouse_id,
-            TabularId::Table(*tab.table_id),
+            TabularId::Table(tab.table_id),
             true,
             transaction.transaction(),
         )

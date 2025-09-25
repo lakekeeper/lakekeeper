@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{Catalog, TableId};
+use crate::service::{Catalog, TableId, ViewId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -73,7 +73,7 @@ impl TaskQueueName {
     }
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TaskEntity {
     #[serde(rename_all = "kebab-case")]
@@ -83,6 +83,23 @@ pub enum TaskEntity {
         #[schema(value_type = uuid::Uuid)]
         warehouse_id: WarehouseId,
     },
+    #[serde(rename_all = "kebab-case")]
+    View {
+        #[schema(value_type = uuid::Uuid)]
+        view_id: ViewId,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
+    },
+}
+
+impl TaskEntity {
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        match self {
+            TaskEntity::Table { warehouse_id, .. } => *warehouse_id,
+            TaskEntity::View { warehouse_id, .. } => *warehouse_id,
+        }
+    }
 }
 
 /// Warehouse specific configuration for a task queue.
@@ -887,7 +904,7 @@ mod test {
             }
         );
 
-        let serialized = serde_json::to_value(&deserialized).unwrap();
+        let serialized = serde_json::to_value(deserialized).unwrap();
         assert_eq!(serialized, json);
     }
 }

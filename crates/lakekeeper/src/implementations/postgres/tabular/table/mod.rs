@@ -125,7 +125,7 @@ where
     .map(|(id, location)| match id {
         TabularId::Table(tab) => Ok(TabularDetails {
             warehouse_id,
-            table_id: tab.into(),
+            table_id: tab,
             location,
         }),
         TabularId::View(_) => Err(ErrorModel::builder()
@@ -227,7 +227,7 @@ where
     tabulars.map::<TableId, TableInfo>(
         |k| match k {
             TabularId::Table(t) => {
-                let r: Result<TableId> = Ok(TableId::from(t));
+                let r: Result<TableId> = Ok(t);
                 r
             }
             TabularId::View(_) => Err(ErrorModel::internal(
@@ -993,7 +993,7 @@ pub(crate) async fn rename_table(
 ) -> Result<()> {
     crate::implementations::postgres::tabular::rename_tabular(
         warehouse_id,
-        TabularId::Table(*source_id),
+        TabularId::Table(source_id),
         source,
         destination,
         transaction,
@@ -1011,7 +1011,7 @@ pub(crate) async fn drop_table(
 ) -> Result<String> {
     drop_tabular(
         warehouse_id,
-        TabularId::Table(*table_id),
+        TabularId::Table(table_id),
         force,
         None,
         transaction,
@@ -2087,7 +2087,7 @@ pub(crate) mod tests {
 
         mark_tabular_as_deleted(
             warehouse_id,
-            TabularId::Table(*table.table_id),
+            TabularId::Table(table.table_id),
             false,
             None,
             &mut transaction,

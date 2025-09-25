@@ -140,6 +140,10 @@ pub(crate) async fn list_tasks(
                 table_id,
                 warehouse_id: entity_warehouse_id,
             } => (entity_warehouse_id == warehouse_id).then_some((*table_id, EntityType::Tabular)),
+            TaskEntity::View {
+                view_id,
+                warehouse_id,
+            } => (warehouse_id == warehouse_id).then_some((*view_id, EntityType::Tabular)),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -419,13 +423,16 @@ mod tests {
         assert!(task.picked_up_at.is_none());
         assert!(result.next_page_token.is_some());
 
-        // Verify entity
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = task.entity;
-        assert_eq!(*table_id, entity_id.to_uuid());
-        assert_eq!(entity_warehouse_id, warehouse_id);
+        match task.entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id.to_uuid());
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            _ => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -557,12 +564,17 @@ mod tests {
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = result.tasks[0].entity;
-        assert_eq!(*table_id, entity_id1.to_uuid());
-        assert_eq!(entity_warehouse_id, warehouse_id);
+
+        match result.tasks[0].entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id1.to_uuid());
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            _ => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -1335,11 +1347,15 @@ mod tests {
         assert_eq!(result.tasks[0].task_id, task_id1);
         assert_eq!(result.tasks[0].queue_name.as_str(), tq_name1.as_str());
 
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = result.tasks[0].entity;
-        assert_eq!(*table_id, entity_id1.to_uuid());
-        assert_eq!(entity_warehouse_id, warehouse_id);
+        match result.tasks[0].entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id1.to_uuid());
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            _ => panic!("Expected TaskEntity::Table"),
+        }
     }
 }

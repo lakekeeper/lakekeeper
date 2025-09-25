@@ -57,7 +57,7 @@ where
             .r#type("InternalDatabaseError".to_string())
             .build()
             .into()),
-        TabularId::View(view) => Ok(view.into()),
+        TabularId::View(view) => Ok(view),
     })
     .transpose()
 }
@@ -188,7 +188,7 @@ pub(crate) async fn drop_view(
 ) -> Result<String> {
     drop_tabular(
         warehouse_id,
-        TabularId::View(*view_id),
+        TabularId::View(view_id),
         force,
         required_metadata_location,
         transaction,
@@ -206,7 +206,7 @@ pub(crate) async fn rename_view(
 ) -> Result<()> {
     tabular::rename_tabular(
         warehouse_id,
-        TabularId::View(*source_id),
+        TabularId::View(source_id),
         source,
         destination,
         transaction,
@@ -508,7 +508,7 @@ where
                 None,
             )
             .into()),
-            TabularId::View(t) => Ok(t.into()),
+            TabularId::View(t) => Ok(t),
         },
         TabularInfo::into_view_info,
     )?;
@@ -890,7 +890,7 @@ pub(crate) mod tests {
         .unwrap();
         mark_tabular_as_deleted(
             warehouse_id,
-            TabularId::View(created_meta.uuid()),
+            TabularId::View(created_meta.uuid().into()),
             false,
             None,
             &mut tx,

@@ -1,25 +1,27 @@
 use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
-use itertools::Itertools as _;
+use itertools::{Either, Itertools as _};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{management::v1::ApiServer, ApiContext},
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
+        authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
         task_queue::{
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME, TaskEntity,
             TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
             TaskStatus as TQTaskStatus,
         },
-        Catalog, Result, SecretStore, State, TableId, Transaction,
+        Catalog, Result, SecretStore, State, TableId, TabularId, Transaction, ViewId,
     },
     WarehouseId,
 };
 
-const GET_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanGetMetadata;
-const CONTROL_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanDrop;
+const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanGetMetadata;
+const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanGetMetadata;
+const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanDrop;
+const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanDrop;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::CanDelete;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::CanListEverything;
@@ -359,13 +361,9 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             )
         })?;
 
-        let entity = &task_details.task.entity;
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = entity;
+        let entity = task_details.task.entity;
 
-        if *entity_warehouse_id != warehouse_id {
+        if entity.warehouse_id() != warehouse_id {
             return Err(ErrorModel::internal(
                 "The specified task does not belong to the specified warehouse.",
                 "TaskWarehouseMismatch",
@@ -375,11 +373,11 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }
 
         if !authz_warehouse {
-            authorize_get_task_details_for_table_id(
+            authorize_get_task_details_for_entity(
                 &authorizer,
                 &request_metadata,
                 warehouse_id,
-                *table_id,
+                entity,
             )
             .await?;
         }
@@ -433,41 +431,52 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         )
         .await?;
 
-        let expire_snapshots_table_ids = entities
+        let tabular_expiration_entities = entities
             .iter()
             .filter_map(|(_, (entity, queue_name))| {
                 if queue_name == &*TABULAR_EXPIRATION_QUEUE_NAME {
-                    match entity {
-                        TaskEntity::Table { table_id, .. } => Some(*table_id),
-                    }
+                    Some(match entity {
+                        TaskEntity::Table { table_id, .. } => TabularId::from(*table_id),
+                        TaskEntity::View { view_id, .. } => TabularId::from(*view_id),
+                    })
                 } else {
                     None
                 }
             })
-            .collect::<Vec<TableId>>();
+            .collect_vec();
         if !authz_warehouse {
-            let task_to_table_map = entities
-                .into_iter()
-                .map(|(task_id, (entity, queue_name))| match entity {
-                    TaskEntity::Table {
-                        table_id,
-                        warehouse_id: _,
-                    } => (
-                        task_id,
-                        table_id,
-                        if queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
-                            CatalogTableAction::CanUndrop
-                        } else {
-                            CONTROL_TASK_PERMISSION
-                        },
-                    ),
-                })
-                .collect::<Vec<_>>();
-            authorize_control_tasks_for_table_ids(
+            let (table_tasks, view_tasks): (Vec<_>, Vec<_>) =
+                entities
+                    .into_iter()
+                    .partition_map(|(task_id, (entity, queue_name))| {
+                        let is_expiration = queue_name == *TABULAR_EXPIRATION_QUEUE_NAME;
+                        match entity {
+                            TaskEntity::Table { table_id, .. } => Either::Left((
+                                task_id,
+                                table_id,
+                                if is_expiration {
+                                    CatalogTableAction::CanUndrop
+                                } else {
+                                    CONTROL_TASK_PERMISSION_TABLE
+                                },
+                            )),
+                            TaskEntity::View { view_id, .. } => Either::Right((
+                                task_id,
+                                view_id,
+                                if is_expiration {
+                                    CatalogViewAction::CanUndrop
+                                } else {
+                                    CONTROL_TASK_PERMISSION_VIEW
+                                },
+                            )),
+                        }
+                    });
+            authorize_control_tasks(
                 &authorizer,
                 &request_metadata,
                 warehouse_id,
-                &task_to_table_map,
+                &table_tasks,
+                &view_tasks,
             )
             .await?;
         }
@@ -478,9 +487,9 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         match query.action {
             ControlTaskAction::Stop => C::stop_tasks(&task_ids, t.transaction()).await?,
             ControlTaskAction::Cancel => {
-                if !expire_snapshots_table_ids.is_empty() {
+                if !tabular_expiration_entities.is_empty() {
                     C::clear_tabular_deleted_at(
-                        &expire_snapshots_table_ids,
+                        &tabular_expiration_entities,
                         warehouse_id,
                         t.transaction(),
                     )
@@ -524,28 +533,62 @@ async fn authorize_list_tasks<A: Authorizer>(
     // TODO this needs further migration? as warehouse_id is now always given.
     if let Some(entities) = entities {
         if can_list_everything.is_err() {
-            // TODO check all warehouse_ids here equal the warehouse_id fn param?
-            let table_ids: Vec<(WarehouseId, TableId)> = entities
+            let tabular_ids = entities
                 .iter()
                 .map(|entity| match entity {
                     TaskEntity::Table {
                         table_id,
                         warehouse_id,
-                    } => (*warehouse_id, *table_id),
+                    } => (*warehouse_id, TabularId::from(*table_id)),
+                    TaskEntity::View {
+                        view_id,
+                        warehouse_id,
+                    } => (*warehouse_id, TabularId::from(*view_id)),
                 })
-                .collect();
-            let allowed = authorizer
-                .are_allowed_table_actions(
-                    request_metadata,
-                    warehouse_id,
-                    table_ids
-                        .iter()
-                        .map(|(_warehouse_id, table_id)| (*table_id, GET_TASK_PERMISSION))
-                        .collect(),
-                )
-                .await?
-                .into_inner();
-            let all_allowed = allowed.iter().all(|t| *t);
+                .map(|(w, t)| {
+                    if w == warehouse_id {
+                        Ok((w, t))
+                    } else {
+                        Err(ErrorModel::bad_request(
+                            "All entities must belong to the specified warehouse.",
+                            "MismatchedWarehouse",
+                            None,
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let tables_with_actions = tabular_ids
+                .iter()
+                .filter_map(|(_, t)| match t {
+                    TabularId::Table(t) => Some((*t, GET_TASK_PERMISSION_TABLE)),
+                    _ => None,
+                })
+                .collect_vec();
+            let views_with_actions = tabular_ids
+                .iter()
+                .filter_map(|(_, t)| match t {
+                    TabularId::View(v) => Some((*v, GET_TASK_PERMISSION_VIEW)),
+                    _ => None,
+                })
+                .collect_vec();
+            let allowed_table_actions = authorizer.are_allowed_table_actions(
+                request_metadata,
+                warehouse_id,
+                tables_with_actions,
+            );
+            let allowed_view_actions = authorizer.are_allowed_view_actions(
+                request_metadata,
+                warehouse_id,
+                views_with_actions,
+            );
+            let (allowed_tables, allowed_views) =
+                tokio::try_join!(allowed_table_actions, allowed_view_actions)?;
+            let allowed_tables = allowed_tables.into_inner();
+            let allowed_views = allowed_views.into_inner();
+            let all_allowed = allowed_tables
+                .iter()
+                .chain(allowed_views.iter())
+                .all(|t| *t);
             if !all_allowed {
                 return Err(ErrorModel::forbidden(
                     "Not allowed to get tasks for at least one of the specified entities.",
@@ -563,22 +606,30 @@ async fn authorize_list_tasks<A: Authorizer>(
     Ok(())
 }
 
-async fn authorize_get_task_details_for_table_id<A: Authorizer>(
+async fn authorize_get_task_details_for_entity<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
-    table_id: TableId,
+    entity: TaskEntity,
 ) -> Result<()> {
-    if !authorizer
-        .is_allowed_table_action(
+    let allowed = match entity {
+        TaskEntity::Table { table_id, .. } => authorizer.is_allowed_table_action(
             request_metadata,
             warehouse_id,
             table_id,
-            GET_TASK_PERMISSION,
-        )
-        .await?
-        .into_inner()
-    {
+            GET_TASK_PERMISSION_TABLE,
+        ),
+        TaskEntity::View { view_id, .. } => authorizer.is_allowed_view_action(
+            request_metadata,
+            warehouse_id,
+            view_id,
+            GET_TASK_PERMISSION_VIEW,
+        ),
+    }
+    .await?
+    .into_inner();
+
+    if !allowed {
         return Err(ErrorModel::forbidden(
             "Not authorized to get tasks for the entity associated with the task.",
             "NotAuthorized",
@@ -590,42 +641,70 @@ async fn authorize_get_task_details_for_table_id<A: Authorizer>(
     Ok(())
 }
 
-async fn authorize_control_tasks_for_table_ids<A: Authorizer>(
+async fn authorize_control_tasks<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
-    tasks: &[(TaskId, TableId, CatalogTableAction)],
+    table_tasks: &[(TaskId, TableId, CatalogTableAction)],
+    view_tasks: &[(TaskId, ViewId, CatalogViewAction)],
 ) -> Result<()> {
-    let allowed = authorizer
-        .are_allowed_table_actions(
-            request_metadata,
-            warehouse_id,
-            tasks.iter().map(|t| (t.1, t.2)).collect(),
-        )
-        .await?
-        .into_inner();
-    let all_allowed = allowed.iter().all(|t| *t);
-    let forbidden_tasks = tasks
+    let allowed_table = authorizer.are_allowed_table_actions(
+        request_metadata,
+        warehouse_id,
+        table_tasks.iter().map(|t| (t.1, t.2)).collect(),
+    );
+    let allowed_view = authorizer.are_allowed_view_actions(
+        request_metadata,
+        warehouse_id,
+        view_tasks.iter().map(|t| (t.1, t.2)).collect(),
+    );
+    let (allowed_tables, allowed_views) = tokio::try_join!(allowed_table, allowed_view)?;
+    let allowed_tables = allowed_tables.into_inner();
+    let allowed_views = allowed_views.into_inner();
+
+    let all_allowed = allowed_tables
         .iter()
-        .zip(allowed.iter())
-        .filter_map(|((task_id, table_id, action), is_allowed)| {
-            if *is_allowed {
-                None
-            } else {
-                Some(format!(
-                    "`{action}` on task `{task_id}` with table `{table_id}`"
-                ))
-            }
-        })
-        .take(5)
-        .join(", ");
+        .chain(allowed_views.iter())
+        .all(|t| *t);
+
     if !all_allowed {
+        let forbidden_table_tasks = table_tasks
+            .iter()
+            .zip(allowed_tables.iter())
+            .filter_map(|((task_id, table_id, action), is_allowed)| {
+                if *is_allowed {
+                    None
+                } else {
+                    Some(format!(
+                        "`{action}` on task `{task_id}` with table `{table_id}`"
+                    ))
+                }
+            })
+            .take(5)
+            .join(", ");
+
+        let forbidden_view_tasks = view_tasks
+            .iter()
+            .zip(allowed_views.iter())
+            .filter_map(|((task_id, view_id, action), is_allowed)| {
+                if *is_allowed {
+                    None
+                } else {
+                    Some(format!(
+                        "`{action}` on task `{task_id}` with view `{view_id}`"
+                    ))
+                }
+            })
+            .take(5)
+            .join(", ");
+
         return Err(ErrorModel::forbidden(
             "Not authorized to perform actions on some entities.".to_string(),
             "NotAuthorized",
             None,
         )
-        .append_detail(format!("Forbidden actions: {forbidden_tasks}"))
+        .append_detail(format!("Forbidden table actions: {forbidden_table_tasks}"))
+        .append_detail(format!("Forbidden view actions: {forbidden_view_tasks}"))
         .into());
     }
     Ok(())

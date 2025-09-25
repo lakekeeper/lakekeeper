@@ -78,7 +78,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
-    let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7());
+    let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
 
     let view_location = determine_tabular_location(
         &namespace,

@@ -689,7 +689,7 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.clone().into();
 
         let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7());
+        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
         let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, table_id);

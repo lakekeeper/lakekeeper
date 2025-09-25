@@ -492,8 +492,8 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in drop_info.child_tables {
                 let (tabular_id, tabular_type) = match tabular_id {
-                    TabularId::Table(id) => (id, TabularType::Table),
-                    TabularId::View(id) => (id, TabularType::View),
+                    TabularId::Table(id) => (*id, TabularType::Table),
+                    TabularId::View(id) => (*id, TabularType::View),
                 };
                 TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {

@@ -517,12 +517,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
-    /// Undrop a table.
+    /// Undrop a table or view.
     ///
     /// Undrops a soft-deleted table. Does not work if the table was hard-deleted.
     /// Returns the task id of the expiration task associated with the soft-deletion.
     async fn clear_tabular_deleted_at(
-        table_id: &[TableId],
+        tabular_id: &[TabularId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>>;
@@ -892,6 +892,10 @@ where
                             warehouse_id: wid, ..
                         } if *wid != w => continue,
                         TaskEntity::Table { .. } => (),
+                        TaskEntity::View {
+                            warehouse_id: wid, ..
+                        } if *wid != w => continue,
+                        TaskEntity::View { .. } => (),
                     }
                 }
                 cached_results.insert(*id, cached_value);

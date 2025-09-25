@@ -354,13 +354,16 @@ mod tests {
         assert!((result.task.progress - 0.5).abs() < f32::EPSILON);
         assert!(matches!(result.task.status, APITaskStatus::Running));
 
-        // Verify entity
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = result.task.entity;
-        assert_eq!(*table_id, entity_id);
-        assert_eq!(entity_warehouse_id, warehouse_id);
+        match result.task.entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id);
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            _ => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify task data
         assert_eq!(result.task_data, serde_json::json!({"test": "data"}));
@@ -662,13 +665,16 @@ mod tests {
         assert!(result.task.created_at <= now + chrono::Duration::seconds(10));
         assert!(result.task.created_at >= now - chrono::Duration::seconds(10));
 
-        // Verify entity
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: entity_warehouse_id,
-        } = result.task.entity;
-        assert_eq!(*table_id, entity_id.to_uuid());
-        assert_eq!(entity_warehouse_id, warehouse_id);
+        match result.task.entity {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: entity_warehouse_id,
+            } => {
+                assert_eq!(*table_id, entity_id.to_uuid());
+                assert_eq!(entity_warehouse_id, warehouse_id);
+            }
+            _ => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify task data and execution details
         assert_eq!(result.task_data, payload);
