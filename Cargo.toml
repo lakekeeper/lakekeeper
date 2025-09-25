@@ -27,7 +27,7 @@ rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd3
 async-channel = { version = "2.3.1" }
 async-nats = "0.43.0"
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-azure_core = { version = "0.21.0", default-features = false, features = [
+azure_core = { version = "0.24.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
 ] }
@@ -37,7 +37,7 @@ azure_storage = { version = "0.21.0", default-features = false, features = [
 azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
-azure_identity = { version = "0.21.0", default-features = false, features = [
+azure_identity = { version = "0.24.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
 azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
