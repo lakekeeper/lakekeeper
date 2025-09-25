@@ -15,7 +15,7 @@ rust-version = "1.87.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd38d", default-features = false, features = [
+rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "0b35424129f394e746c2e40519169595d8ac240c", default-features = false, features = [
     "tokio",
     "zstd",
     "gssapi-vendored",
