@@ -373,8 +373,10 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO tabular (tabular_id, name, namespace_id, namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+        SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
+        FROM namespace n
+        WHERE n.namespace_id = $3
         RETURNING tabular_id
         "#,
         id,
