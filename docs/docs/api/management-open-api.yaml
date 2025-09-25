@@ -4860,6 +4860,22 @@ components:
             warehouse-id:
               type: string
               format: uuid
+        - type: object
+          required:
+            - view-id
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+            warehouse-id:
+              type: string
+              format: uuid
     TaskStatus:
       type: string
       enum:
