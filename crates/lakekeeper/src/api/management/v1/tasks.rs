@@ -386,6 +386,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     /// Control a task (stop or cancel)
+    #[allow(clippy::too_many_lines)]
     async fn control_tasks(
         warehouse_id: WarehouseId,
         query: ControlTasksRequest,
@@ -561,14 +562,14 @@ async fn authorize_list_tasks<A: Authorizer>(
                 .iter()
                 .filter_map(|(_, t)| match t {
                     TabularId::Table(t) => Some((*t, GET_TASK_PERMISSION_TABLE)),
-                    _ => None,
+                    TabularId::View(_) => None,
                 })
                 .collect_vec();
             let views_with_actions = tabular_ids
                 .iter()
                 .filter_map(|(_, t)| match t {
                     TabularId::View(v) => Some((*v, GET_TASK_PERMISSION_VIEW)),
-                    _ => None,
+                    TabularId::Table(_) => None,
                 })
                 .collect_vec();
             let allowed_table_actions = authorizer.are_allowed_table_actions(

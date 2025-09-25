@@ -248,7 +248,7 @@ mod tests {
                 assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
                 assert_eq!(*wh_id1, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
@@ -262,7 +262,7 @@ mod tests {
                 assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
                 assert_eq!(*wh_id2, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -341,7 +341,7 @@ mod tests {
                 assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
                 assert_eq!(*wh_id1, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
@@ -354,7 +354,7 @@ mod tests {
                 assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
                 assert_eq!(*wh_id2, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -499,7 +499,7 @@ mod tests {
                 assert_eq!(*table_id, TableId::from(entity1.to_uuid()));
                 assert_eq!(*wh_id, warehouse_id1);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -559,7 +559,7 @@ mod tests {
                 assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
                 assert_eq!(*wh_id1, warehouse_id1);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         match entity_result2 {
@@ -570,7 +570,7 @@ mod tests {
                 assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
                 assert_eq!(*wh_id2, warehouse_id2);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -620,7 +620,7 @@ mod tests {
                 assert_eq!(*table_id, TableId::from(entity.to_uuid()));
                 assert_eq!(*wh_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -680,7 +680,7 @@ mod tests {
                 assert_eq!(*table_id, TableId::from(entity.to_uuid()));
                 assert_eq!(*wh_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 

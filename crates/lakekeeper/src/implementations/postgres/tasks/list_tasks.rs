@@ -142,8 +142,8 @@ pub(crate) async fn list_tasks(
             } => (entity_warehouse_id == warehouse_id).then_some((*table_id, EntityType::Tabular)),
             TaskEntity::View {
                 view_id,
-                warehouse_id,
-            } => (warehouse_id == warehouse_id).then_some((*view_id, EntityType::Tabular)),
+                warehouse_id: entity_warehouse_id,
+            } => (entity_warehouse_id == warehouse_id).then_some((*view_id, EntityType::Tabular)),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -431,7 +431,7 @@ mod tests {
                 assert_eq!(*table_id, entity_id.to_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -573,7 +573,7 @@ mod tests {
                 assert_eq!(*table_id, entity_id1.to_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -1355,7 +1355,7 @@ mod tests {
                 assert_eq!(*table_id, entity_id1.to_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 }

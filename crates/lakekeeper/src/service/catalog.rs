@@ -891,11 +891,10 @@ where
                         TaskEntity::Table {
                             warehouse_id: wid, ..
                         } if *wid != w => continue,
-                        TaskEntity::Table { .. } => (),
                         TaskEntity::View {
                             warehouse_id: wid, ..
                         } if *wid != w => continue,
-                        TaskEntity::View { .. } => (),
+                        TaskEntity::View { .. } | TaskEntity::Table { .. } => (),
                     }
                 }
                 cached_results.insert(*id, cached_value);

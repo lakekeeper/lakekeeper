@@ -362,7 +362,7 @@ mod tests {
                 assert_eq!(*table_id, entity_id);
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify task data
@@ -673,7 +673,7 @@ mod tests {
                 assert_eq!(*table_id, entity_id.to_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
-            _ => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify task data and execution details

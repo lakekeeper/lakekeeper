@@ -96,8 +96,9 @@ impl TaskEntity {
     #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
         match self {
-            TaskEntity::Table { warehouse_id, .. } => *warehouse_id,
-            TaskEntity::View { warehouse_id, .. } => *warehouse_id,
+            TaskEntity::Table { warehouse_id, .. } | TaskEntity::View { warehouse_id, .. } => {
+                *warehouse_id
+            }
         }
     }
 }
