@@ -42,7 +42,7 @@ use crate::{
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         set_not_found_status_code,
     },
     catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
@@ -780,14 +780,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     TabularPurgeTask::schedule_task::<C>(
                         TaskMetadata {
                             warehouse_id,
-                            entity_id: EntityId::Tabular(*table_id),
+                            entity_id: EntityId::from(table_id),
                             parent_task_id: None,
                             schedule_for: None,
                             entity_name: table.clone().into_name_parts(),
                         },
                         TabularPurgePayload {
                             tabular_location: location,
-                            tabular_type: TabularType::Table,
                         },
                         t.transaction(),
                     )
@@ -807,14 +806,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
                     TaskMetadata {
-                        entity_id: EntityId::Tabular(*table_id),
+                        entity_id: EntityId::from(table_id),
                         warehouse_id,
                         parent_task_id: None,
                         schedule_for: Some(chrono::Utc::now() + expiration_seconds),
                         entity_name: table.clone().into_name_parts(),
                     },
                     TabularExpirationPayload {
-                        tabular_type: TabularType::Table,
                         deletion_kind: if purge_requested {
                             DeleteKind::Purge
                         } else {

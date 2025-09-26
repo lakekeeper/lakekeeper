@@ -45,9 +45,13 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
         warehouse_id: row.warehouse_id.into(),
         queue_name: row.queue_name.into(),
         entity: match row.entity_type {
-            EntityType::Tabular => TaskEntity::Table {
+            EntityType::Table => TaskEntity::Table {
                 warehouse_id: row.warehouse_id.into(),
                 table_id: row.entity_id.into(),
+            },
+            EntityType::View => TaskEntity::View {
+                warehouse_id: row.warehouse_id.into(),
+                view_id: row.entity_id.into(),
             },
         },
         entity_name: row.entity_name,
@@ -139,11 +143,11 @@ pub(crate) async fn list_tasks(
             TaskEntity::Table {
                 table_id,
                 warehouse_id: entity_warehouse_id,
-            } => (entity_warehouse_id == warehouse_id).then_some((*table_id, EntityType::Tabular)),
+            } => (entity_warehouse_id == warehouse_id).then_some((*table_id, EntityType::Table)),
             TaskEntity::View {
                 view_id,
                 warehouse_id: entity_warehouse_id,
-            } => (entity_warehouse_id == warehouse_id).then_some((*view_id, EntityType::Tabular)),
+            } => (entity_warehouse_id == warehouse_id).then_some((*view_id, EntityType::View)),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -392,7 +396,7 @@ mod tests {
     async fn test_list_tasks_single_active_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let entity_name = vec!["ns".to_string(), "table".to_string()];
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
@@ -428,7 +432,7 @@ mod tests {
                 table_id,
                 warehouse_id: entity_warehouse_id,
             } => {
-                assert_eq!(*table_id, entity_id.to_uuid());
+                assert_eq!(*table_id, entity_id.as_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
@@ -439,8 +443,8 @@ mod tests {
     async fn test_list_tasks_multiple_tasks_different_queues(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
+        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
@@ -468,8 +472,8 @@ mod tests {
     async fn test_list_tasks_filter_by_queue_name(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
+        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
@@ -497,8 +501,8 @@ mod tests {
     async fn test_list_tasks_filter_by_status(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
+        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue two tasks
@@ -540,8 +544,8 @@ mod tests {
     async fn test_list_tasks_filter_by_entity(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
+        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue tasks for different entities
@@ -556,7 +560,7 @@ mod tests {
         let request = ListTasksRequest {
             entities: Some(vec![TaskEntity::Table {
                 warehouse_id,
-                table_id: entity_id1.to_uuid().into(),
+                table_id: entity_id1.as_uuid().into(),
             }]),
             ..Default::default()
         };
@@ -570,7 +574,7 @@ mod tests {
                 table_id,
                 warehouse_id: entity_warehouse_id,
             } => {
-                assert_eq!(*table_id, entity_id1.to_uuid());
+                assert_eq!(*table_id, entity_id1.as_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
@@ -581,7 +585,7 @@ mod tests {
     async fn test_list_tasks_filter_by_created_date_range(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Create a reference time
@@ -639,7 +643,7 @@ mod tests {
         let mut task_ids = Vec::new();
         let mut seen_ids = HashSet::new();
         for _ in 0..5 {
-            let entity_id = EntityId::Tabular(Uuid::now_v7());
+            let entity_id = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, warehouse_id, None)
                 .await
                 .unwrap();
@@ -726,7 +730,7 @@ mod tests {
         let mut seen_ids = HashSet::new();
 
         for i in 0..10 {
-            let entity_id = EntityId::Tabular(Uuid::now_v7());
+            let entity_id = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name,
@@ -844,7 +848,7 @@ mod tests {
         let mut seen_ids = HashSet::new();
 
         for i in 0..6 {
-            let entity_id = EntityId::Tabular(Uuid::now_v7());
+            let entity_id = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name,
@@ -924,7 +928,7 @@ mod tests {
         let mut seen_ids = HashSet::new();
 
         for i in 0..8 {
-            let entity_id = EntityId::Tabular(Uuid::now_v7());
+            let entity_id = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name,
@@ -1061,7 +1065,7 @@ mod tests {
 
         // Queue 1: 3 tasks
         for i in 0..3 {
-            let entity_id = EntityId::Tabular(Uuid::now_v7());
+            let entity_id = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name1,
@@ -1076,7 +1080,7 @@ mod tests {
 
         // Queue 2: 4 tasks
         for i in 0..4 {
-            let entity_id = EntityId::Tabular(Uuid::now_v7());
+            let entity_id = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name2,
@@ -1153,7 +1157,7 @@ mod tests {
     async fn test_list_tasks_completed_tasks_from_log(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue and complete a task
@@ -1187,9 +1191,9 @@ mod tests {
     async fn test_list_tasks_mixed_active_and_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id3 = EntityId::Tabular(Uuid::now_v7());
+        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id3 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue three tasks
@@ -1251,7 +1255,7 @@ mod tests {
     async fn test_list_tasks_with_retries(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue a task
@@ -1293,7 +1297,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let wrong_warehouse_id = WarehouseId::from(Uuid::now_v7());
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue a task in the correct warehouse
@@ -1316,8 +1320,8 @@ mod tests {
     async fn test_list_tasks_complex_filters(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
-        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
+        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
@@ -1337,7 +1341,7 @@ mod tests {
             queue_name: Some(vec![tq_name1.clone()]),
             entities: Some(vec![TaskEntity::Table {
                 warehouse_id,
-                table_id: entity_id1.to_uuid().into(),
+                table_id: entity_id1.as_uuid().into(),
             }]),
             ..Default::default()
         };
@@ -1352,7 +1356,7 @@ mod tests {
                 table_id,
                 warehouse_id: entity_warehouse_id,
             } => {
-                assert_eq!(*table_id, entity_id1.to_uuid());
+                assert_eq!(*table_id, entity_id1.as_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),

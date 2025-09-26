@@ -362,7 +362,7 @@ pub(crate) async fn drop_namespace(
         ),
         tasks AS (
             SELECT t.task_id, t.queue_name, t.status as task_status from task t
-            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type = 'tabular'
+            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view')
         )
         SELECT
             ni.protected AS "is_protected!",

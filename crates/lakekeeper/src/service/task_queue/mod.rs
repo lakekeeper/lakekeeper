@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{Catalog, TableId, ViewId};
+use crate::service::{Catalog, TableId, TabularId, ViewId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -194,16 +194,53 @@ pub struct TaskMetadata {
     pub schedule_for: Option<chrono::DateTime<Utc>>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, strum_macros::Display)]
+#[strum(serialize_all = "kebab-case")]
+pub enum EntityType {
+    Table,
+    View,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, derive_more::From)]
 pub enum EntityId {
-    Tabular(Uuid),
+    Table(TableId),
+    View(ViewId),
+}
+
+impl std::fmt::Display for EntityId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntityId::Table(id) => write!(f, "Table({id})"),
+            EntityId::View(id) => write!(f, "View({id})"),
+        }
+    }
 }
 
 impl EntityId {
     #[must_use]
-    pub fn to_uuid(&self) -> Uuid {
+    pub fn entity_type(&self) -> EntityType {
         match self {
-            EntityId::Tabular(id) => *id,
+            EntityId::Table(_) => EntityType::Table,
+            EntityId::View(_) => EntityType::View,
+        }
+    }
+}
+
+impl EntityId {
+    #[must_use]
+    pub fn as_uuid(&self) -> Uuid {
+        match self {
+            EntityId::Table(id) => **id,
+            EntityId::View(id) => **id,
+        }
+    }
+}
+
+impl From<TabularId> for EntityId {
+    fn from(id: TabularId) -> Self {
+        match id {
+            TabularId::Table(table_id) => EntityId::Table(table_id),
+            TabularId::View(view_id) => EntityId::View(view_id),
         }
     }
 }

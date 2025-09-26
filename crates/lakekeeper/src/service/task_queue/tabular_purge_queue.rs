@@ -8,7 +8,7 @@ use utoipa::{PartialSchema, ToSchema};
 
 use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
-    api::{management::v1::TabularType, Result},
+    api::Result,
     catalog::{io::remove_all, maybe_get_secret},
     service::{task_queue::TaskQueueName, Catalog, SecretStore, Transaction},
 };
@@ -27,14 +27,12 @@ pub type TabularPurgeTask =
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabularPurgePayload {
     pub(crate) tabular_location: String,
-    pub(crate) tabular_type: TabularType,
 }
 
 impl TabularPurgePayload {
-    pub fn new(tabular_location: impl Into<String>, tabular_type: TabularType) -> Self {
+    pub fn new(tabular_location: impl Into<String>) -> Self {
         Self {
             tabular_location: tabular_location.into(),
-            tabular_type,
         }
     }
 }
@@ -82,7 +80,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
             QN_STR,
             location = %task.data.tabular_location,
             warehouse_id = %task.task_metadata.warehouse_id,
-            tabular_type = %task.data.tabular_type,
+            entity_type = %task.task_metadata.entity_id.entity_type().to_string(),
             attempt = %task.attempt(),
             task_id = %task.task_id(),
         );

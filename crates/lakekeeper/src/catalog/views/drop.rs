@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     api::{
         iceberg::{types::DropParams, v1::ViewParameters},
-        management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         set_not_found_status_code, ApiContext,
     },
     catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
@@ -78,14 +78,13 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
                         warehouse_id,
-                        entity_id: EntityId::Tabular(*view_id),
+                        entity_id: EntityId::View(view_id),
                         parent_task_id: None,
                         schedule_for: None,
                         entity_name: view.clone().into_name_parts(),
                     },
                     TabularPurgePayload {
                         tabular_location: location,
-                        tabular_type: TabularType::View,
                     },
                     t.transaction(),
                 )
@@ -107,14 +106,13 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
                 TaskMetadata {
-                    entity_id: EntityId::Tabular(*view_id),
+                    entity_id: EntityId::View(view_id),
                     warehouse_id,
                     parent_task_id: None,
                     schedule_for: Some(chrono::Utc::now() + expiration_seconds),
                     entity_name: view.clone().into_name_parts(),
                 },
                 TabularExpirationPayload {
-                    tabular_type: TabularType::View,
                     deletion_kind: if purge_requested {
                         DeleteKind::Purge
                     } else {
@@ -172,12 +170,17 @@ mod test {
                 types::{DropParams, Prefix},
                 v1::ViewParameters,
             },
-            management::v1::{view::ViewManagementService, ApiServer as ManagementApiServer},
+            management::v1::{
+                tasks::{ListTasksRequest, Service},
+                view::ViewManagementService,
+                ApiServer as ManagementApiServer,
+            },
         },
         catalog::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
         request_metadata::RequestMetadata,
+        service::task_queue::TaskEntity,
         tests::random_request_metadata,
         WarehouseId,
     };
@@ -228,7 +231,7 @@ mod test {
         .expect("View should be droppable");
 
         let error = load_view(
-            api_context,
+            api_context.clone(),
             ViewParameters {
                 prefix: Some(Prefix(prefix.to_string())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
@@ -238,6 +241,28 @@ mod test {
         .expect_err("View should no longer exist");
 
         assert_eq!(error.error.code, StatusCode::NOT_FOUND);
+
+        // Load expiration task
+        let entity = TaskEntity::View {
+            view_id: loaded_view.metadata.uuid().into(),
+            warehouse_id: whi,
+        };
+        let expiration_tasks = ManagementApiServer::list_tasks(
+            whi,
+            ListTasksRequest::builder()
+                .entities(Some(vec![TaskEntity::View {
+                    view_id: loaded_view.metadata.uuid().into(),
+                    warehouse_id: whi,
+                }]))
+                .build(),
+            api_context,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(expiration_tasks.tasks.len(), 1);
+        let task = &expiration_tasks.tasks[0];
+        assert_eq!(task.entity, entity);
     }
 
     #[sqlx::test]

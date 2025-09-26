@@ -2070,14 +2070,13 @@ pub(crate) mod tests {
 
         let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
-                entity_id: EntityId::Tabular(*table.table_id),
+                entity_id: EntityId::Table(table.table_id),
                 warehouse_id,
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
                 entity_name: table.table_ident.into_name_parts(),
             },
             TabularExpirationPayload {
-                tabular_type: crate::api::management::v1::TabularType::Table,
                 deletion_kind: DeleteKind::Purge,
             },
             &mut transaction,

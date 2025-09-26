@@ -89,9 +89,13 @@ fn parse_task_details(
         warehouse_id,
         queue_name: most_recent.queue_name.into(),
         entity: match most_recent.entity_type {
-            EntityType::Tabular => TaskEntity::Table {
+            EntityType::Table => TaskEntity::Table {
                 warehouse_id,
                 table_id: most_recent.entity_id.into(),
+            },
+            EntityType::View => TaskEntity::View {
+                warehouse_id,
+                view_id: most_recent.entity_id.into(),
             },
         },
         entity_name: most_recent.entity_name,
@@ -284,7 +288,7 @@ mod tests {
         TaskDetailsRow {
             queue_name: queue_name.to_string(),
             entity_id,
-            entity_type: EntityType::Tabular,
+            entity_type: EntityType::Table,
             entity_name: vec!["ns1".to_string(), "table1".to_string()],
             task_status,
             task_log_status,
@@ -602,7 +606,7 @@ mod tests {
     async fn test_get_task_details_active_task_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let entity_name = vec!["ns".to_string(), "table".to_string()];
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
@@ -670,7 +674,7 @@ mod tests {
                 table_id,
                 warehouse_id: entity_warehouse_id,
             } => {
-                assert_eq!(*table_id, entity_id.to_uuid());
+                assert_eq!(*table_id, entity_id.as_uuid());
                 assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
@@ -688,7 +692,7 @@ mod tests {
     async fn test_get_task_details_completed_task_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"cleanup": "data"});
 
@@ -743,7 +747,7 @@ mod tests {
     async fn test_get_task_details_with_retry_history(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"retry": "test"});
 
@@ -825,7 +829,7 @@ mod tests {
     async fn test_get_task_details_active_with_history(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"active_with_history": "test"});
 
@@ -893,7 +897,7 @@ mod tests {
     async fn test_get_task_details_limit_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue a task
@@ -954,8 +958,8 @@ mod tests {
     async fn test_get_task_details_with_parent_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let parent_entity_id = EntityId::Tabular(Uuid::now_v7());
-        let child_entity_id = EntityId::Tabular(Uuid::now_v7());
+        let parent_entity_id = EntityId::Table(Uuid::now_v7().into());
+        let child_entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue parent task
@@ -1011,7 +1015,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let wrong_warehouse_id = WarehouseId::from(Uuid::now_v7());
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
+        let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue a task in the correct warehouse

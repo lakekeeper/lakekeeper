@@ -471,7 +471,7 @@ where
         FROM tabular t
         INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON w.warehouse_id = $1
-        LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
+        LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
         WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
             AND (namespace_name = $2 OR $2 IS NULL)
             AND (n.namespace_id = $10 OR $10 IS NULL)
@@ -768,7 +768,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             SELECT ta.task_id, ta.entity_id
             FROM task ta
             JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
-            WHERE ta.entity_type = 'tabular' 
+            WHERE ta.entity_type in ('table', 'view')
                 AND ta.warehouse_id = $2
                 AND ta.queue_name = 'tabular_expiration'
             FOR UPDATE OF ta
