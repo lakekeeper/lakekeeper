@@ -24,6 +24,8 @@ use lakekeeper_io::{InvalidLocationError, Location};
 use serde::Serialize;
 use uuid::Uuid;
 
+mod load_table;
+
 use super::{
     commit_tables::apply_commit,
     io::{delete_file, read_metadata_file, write_file},
@@ -58,9 +60,9 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
-        LoadTableResponse as CatalogLoadTableResult, NamedEntity, State, TableCommit,
-        TableCreation, TableId, TabularDetails, TabularId, Transaction, WarehouseStatus,
+        Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags, NamedEntity, State,
+        TableCommit, TableCreation, TableId, TabularDetails, TabularId, Transaction,
+        WarehouseStatus,
     },
     WarehouseId,
 };
@@ -499,101 +501,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
-        // ------------------- VALIDATIONS -------------------
-        let TableParameters { prefix, table } = parameters;
-        let warehouse_id = require_warehouse_id(prefix)?;
-        // It is important to throw a 404 if a table cannot be found,
-        // because spark might check if `table`.`branch` exists, which should return 404.
-        // Only then will it treat it as a branch.
-        if let Err(mut e) = validate_table_or_view_ident(&table) {
-            if e.error.r#type == *"NamespaceDepthExceeded" {
-                e.error.code = StatusCode::NOT_FOUND.into();
-            }
-            return Err(e);
-        }
-
-        let list_flags = ListFlags {
-            include_active: true,
-            include_staged: false,
-            include_deleted: false,
-        };
-
-        // ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
-        let catalog = state.v1_state.catalog;
-        let mut t = C::Transaction::begin_read(catalog).await?;
-
-        let (tabular_details, storage_permissions) = Self::resolve_and_authorize_table_access(
-            &request_metadata,
-            &table,
-            warehouse_id,
-            list_flags,
-            authorizer,
-            t.transaction(),
-        )
-        .await?;
-
-        // ------------------- BUSINESS LOGIC -------------------
-        let CatalogLoadTableResult {
-            table_id,
-            namespace_id: _,
-            table_metadata,
-            metadata_location,
-            storage_secret_ident,
-            storage_profile,
-        } = load_table_inner::<C>(
-            warehouse_id,
-            tabular_details.table_id,
-            &table,
-            list_flags.include_deleted,
-            &filters,
-            &mut t,
-        )
-        .await?;
-        t.commit().await?;
-
-        let table_location =
-            parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        // ToDo: This is a small inefficiency: We fetch the secret even if it might
-        // not be required based on the `data_access` parameter.
-        let storage_config = if let Some(storage_permissions) = storage_permissions {
-            let storage_secret =
-                maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
-            Some(
-                storage_profile
-                    .generate_table_config(
-                        data_access.into(),
-                        storage_secret.as_ref(),
-                        &table_location,
-                        storage_permissions,
-                        &request_metadata,
-                        warehouse_id,
-                        table_id.into(),
-                    )
-                    .await?,
-            )
-        } else {
-            None
-        };
-
-        let storage_credentials = storage_config.as_ref().and_then(|c| {
-            (!c.creds.inner().is_empty()).then(|| {
-                vec![StorageCredential {
-                    prefix: table_location.to_string(),
-                    config: c.creds.clone().into(),
-                }]
-            })
-        });
-
-        let load_table_result = LoadTableResult {
-            metadata_location: metadata_location.as_ref().map(ToString::to_string),
-            metadata: table_metadata,
-            config: storage_config.map(|c| c.config.into()),
-            storage_credentials,
-        };
-
-        Ok(load_table_result)
+        load_table::load_table(parameters, data_access, filters, state, request_metadata).await
     }
 
     async fn load_table_credentials(
@@ -607,7 +515,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let warehouse_id = require_warehouse_id(prefix)?;
 
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let (tabular_details, storage_permissions) = Self::resolve_and_authorize_table_access(
+        let (tabular_details, storage_permissions) = resolve_and_authorize_table_access::<C, A>(
             &request_metadata,
             &table,
             warehouse_id,
@@ -1000,88 +908,61 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
-    async fn resolve_and_authorize_table_access(
-        request_metadata: &RequestMetadata,
-        table: &TableIdent,
-        warehouse_id: WarehouseId,
-        list_flags: ListFlags,
-        authorizer: A,
-        transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-    ) -> Result<(TabularDetails, Option<StoragePermissions>)> {
-        authorizer
-            .require_warehouse_action(
-                request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            )
-            .await?;
-
-        // We can't fail before AuthZ.
-        let tabular_details =
-            C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
-
-        let tabular_details = authorizer
-            .require_table_action(
-                request_metadata,
-                warehouse_id,
-                tabular_details,
-                CatalogTableAction::CanGetMetadata,
-            )
-            .await
-            .map_err(set_not_found_status_code)?;
-
-        let (read_access, write_access) = futures::try_join!(
-            authorizer.is_allowed_table_action(
-                request_metadata,
-                warehouse_id,
-                tabular_details.table_id,
-                CatalogTableAction::CanReadData,
-            ),
-            authorizer.is_allowed_table_action(
-                request_metadata,
-                warehouse_id,
-                tabular_details.table_id,
-                CatalogTableAction::CanWriteData,
-            ),
-        )?;
-        let can_read = read_access.into_inner();
-        let can_write = write_access.into_inner();
-
-        let storage_permissions = if can_write {
-            Some(StoragePermissions::ReadWriteDelete)
-        } else if can_read {
-            Some(StoragePermissions::Read)
-        } else {
-            None
-        };
-        Ok((tabular_details, storage_permissions))
-    }
-}
-
-/// Load a table from the catalog, ensuring that it is not staged
-///
-/// # Errors
-/// Returns an error if the table is staged, if it cannot be found, or if a DB error occurs.
-async fn load_table_inner<C: Catalog>(
+async fn resolve_and_authorize_table_access<C: Catalog, A: Authorizer + Clone>(
+    request_metadata: &RequestMetadata,
+    table: &TableIdent,
     warehouse_id: WarehouseId,
-    table_id: TableId,
-    table_ident: &TableIdent,
-    include_deleted: bool,
-    load_table_filters: &LoadTableFilters,
-    t: &mut C::Transaction,
-) -> Result<CatalogLoadTableResult> {
-    let mut metadatas = C::load_tables(
-        warehouse_id,
-        [table_id],
-        include_deleted,
-        load_table_filters,
-        t.transaction(),
-    )
-    .await?;
-    let result = take_table_metadata(&table_id, table_ident, &mut metadatas)?;
-    require_not_staged(result.metadata_location.as_ref())?;
-    Ok(result)
+    list_flags: ListFlags,
+    authorizer: A,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<(TabularDetails, Option<StoragePermissions>)> {
+    authorizer
+        .require_warehouse_action(
+            request_metadata,
+            warehouse_id,
+            CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+
+    // We can't fail before AuthZ.
+    let tabular_details =
+        C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
+
+    let tabular_details = authorizer
+        .require_table_action(
+            request_metadata,
+            warehouse_id,
+            tabular_details,
+            CatalogTableAction::CanGetMetadata,
+        )
+        .await
+        .map_err(set_not_found_status_code)?;
+
+    let (read_access, write_access) = futures::try_join!(
+        authorizer.is_allowed_table_action(
+            request_metadata,
+            warehouse_id,
+            tabular_details.table_id,
+            CatalogTableAction::CanReadData,
+        ),
+        authorizer.is_allowed_table_action(
+            request_metadata,
+            warehouse_id,
+            tabular_details.table_id,
+            CatalogTableAction::CanWriteData,
+        ),
+    )?;
+    let can_read = read_access.into_inner();
+    let can_write = write_access.into_inner();
+
+    let storage_permissions = if can_write {
+        Some(StoragePermissions::ReadWriteDelete)
+    } else if can_read {
+        Some(StoragePermissions::Read)
+    } else {
+        None
+    };
+    Ok((tabular_details, storage_permissions))
 }
 
 /// Validate commit table requests
