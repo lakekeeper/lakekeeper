@@ -19,7 +19,10 @@ use super::dbutils::DBErrorHandler as _;
 use crate::{
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
-        management::v1::ProtectionResponse,
+        management::v1::{
+            tabular::{SearchTabular, SearchTabularResponse},
+            ProtectionResponse,
+        },
     },
     catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
@@ -560,6 +563,42 @@ where
     }
 
     Ok(tabulars)
+}
+
+pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    warehouse_id: WarehouseId,
+    search_term: &str,
+    connection: E,
+) -> Result<SearchTabularResponse> {
+    // TODO(mooori) check if search_term is id, if yes then try get that table by id
+    let tabulars = sqlx::query!(
+        r#"
+        SELECT tabular_id,
+            namespace_name,
+            name,
+            typ as "typ: TabularType",
+            concat_namespace_name_tabular_name(namespace_name, name) <-> $2 AS dist
+        FROM tabular
+        WHERE warehouse_id = $1
+        ORDER BY dist ASC
+        LIMIT 10
+        "#,
+        *warehouse_id,
+        search_term,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error searching tabular".to_string()))?
+    .into_iter()
+    .map(|row| SearchTabular {
+        namespace_name: row.namespace_name,
+        tabular_name: row.name,
+        id: row.tabular_id,
+        tabular_type: row.typ.into(),
+    })
+    .collect::<Vec<_>>();
+
+    Ok(SearchTabularResponse { tabulars })
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
@@ -1303,5 +1342,66 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.error.code, 404);
         assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+    }
+
+    #[sqlx::test]
+    async fn test_search_tabular(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace1 =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
+        let (namespace1_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace1, None).await;
+        let namespace2 =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["another_ns".to_string()]).unwrap();
+        let (namespace2_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace2, None).await;
+
+        let table_names = (0..20)
+            .into_iter()
+            .map(|i| format!("test_table_{i}"))
+            .collect::<Vec<_>>();
+
+        for nsid in [namespace1_id, namespace2_id] {
+            for tn in table_names.iter() {
+                let mut transaction = pool.begin().await.unwrap();
+                let table_id = Uuid::now_v7();
+                let location =
+                    Location::from_str(&format!("s3://test-bucket/{nsid}/{tn}/")).unwrap();
+                let metadata_location =
+                    Location::from_str(&format!("s3://test-bucket/{nsid}/{tn}/metadata/v1.json"))
+                        .unwrap();
+                let x = create_tabular(
+                    CreateTabular {
+                        id: table_id,
+                        name: tn.as_ref(),
+                        namespace_id: *nsid,
+                        warehouse_id: *warehouse_id,
+                        typ: TabularType::Table,
+                        metadata_location: Some(&metadata_location),
+                        location: &location,
+                    },
+                    &mut transaction,
+                )
+                .await
+                .unwrap();
+                transaction.commit().await.unwrap();
+            }
+        }
+        // let names = sqlx::query!(
+        //     r#"
+        //     SELECT name
+        //     FROM tabular
+        // "#
+        // )
+        // .fetch_all(&state.read_write.read_pool)
+        // .await
+        // .unwrap();
+        // println!("{:?}", names);
+        let res = search_tabular(warehouse_id, "another.table_1", &state.read_write.read_pool)
+            .await
+            .unwrap();
+
+        println!("{:?}", res);
     }
 }

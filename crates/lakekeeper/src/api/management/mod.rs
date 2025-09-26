@@ -6,6 +6,7 @@ pub mod v1 {
     pub mod project;
     pub mod role;
     pub mod table;
+    pub mod tabular;
     pub mod tasks;
     pub mod user;
     pub mod view;
@@ -33,6 +34,7 @@ pub mod v1 {
     };
     use serde::{Deserialize, Serialize};
     use table::TableManagementService as _;
+    use tabular::TabularManagementService as _;
     use typed_builder::TypedBuilder;
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
@@ -57,6 +59,7 @@ pub mod v1 {
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
+                tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
                     ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
                     ListTasksRequest, ListTasksResponse, Service,
@@ -1154,6 +1157,32 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_endpoint_statistics(api_context, query, metadata)
             .await
             .map(Json)
+    }
+
+    /// Search tabular
+    ///
+    /// Performs a fuzzy search for tabulars based on the provided criteria. If the search string
+    /// can be parsed as uuid, it searches for that uuid. Returns results that are visible to the
+    /// current user.
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SearchTabular.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = SearchTabularRequest,
+        responses(
+            (status = 200, description = "List of tabulars", body = SearchTabularResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn search_tabular<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SearchTabularRequest>,
+    ) -> Result<SearchTabularResponse> {
+        ApiServer::<C, A, S>::search_tabular(warehouse_id.into(), api_context, metadata, request)
+            .await
     }
 
     /// List Soft-Deleted Tabulars

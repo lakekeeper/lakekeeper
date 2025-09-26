@@ -209,6 +209,7 @@ generate_endpoints! {
         UpdateStorageCredential(POST, "/management/v1/warehouse/{warehouse_id}/storage-credential"),
         GetWarehouseStatistics(GET, "/management/v1/warehouse/{warehouse_id}/statistics"),
         LoadEndpointStatistics(POST, "/management/v1/endpoint-statistics"),
+        SearchTabular(POST, "/management/v1/warehouse/{warehouse_id}/search-tabular"),
         ListDeletedTabulars(GET, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars"),
         UndropTabularsDeprecated(POST, "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop"),
         UndropTabulars(POST, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"),
