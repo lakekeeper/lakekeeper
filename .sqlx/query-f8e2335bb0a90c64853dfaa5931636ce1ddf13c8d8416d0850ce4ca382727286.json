@@ -31,7 +31,8 @@
             "name": "entity_type",
             "kind": {
               "Enum": [
-                "tabular"
+                "table",
+                "view"
               ]
             }
           }
@@ -172,7 +173,8 @@
                   "name": "entity_type",
                   "kind": {
                     "Enum": [
-                      "tabular"
+                      "table",
+                      "view"
                     ]
                   }
                 }

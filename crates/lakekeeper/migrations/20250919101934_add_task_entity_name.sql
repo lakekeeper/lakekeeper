@@ -16,7 +16,7 @@ UPDATE task SET
         ELSE ARRAY['unknown']
     END,
     entity_type = CASE 
-        WHEN task_alias.task_data ->> 'tabular_type' IN ('table', 'view') THEN (task_alias.task_data ->> 'typ')::entity_type
+        WHEN task_alias.task_data ->> 'tabular_type' IN ('table', 'view') THEN (task_alias.task_data ->> 'tabular_type')::entity_type
         ELSE 'table'
     END
 FROM task task_alias
@@ -34,7 +34,7 @@ UPDATE task_log SET
         ELSE ARRAY['unknown']
     END,
     entity_type = CASE 
-        WHEN task_alias.task_data ->> 'tabular_type' IN ('table', 'view') THEN (task_alias.task_data ->> 'typ')::entity_type
+        WHEN task_alias.task_data ->> 'tabular_type' IN ('table', 'view') THEN (task_alias.task_data ->> 'tabular_type')::entity_type
         ELSE 'table'
     END
 FROM task_log task_alias
@@ -60,5 +60,7 @@ CREATE INDEX IF NOT EXISTS task_log_warehouse_id_entity_type_entity_id_idx ON ta
     task_created_at DESC
 );
 
-ALTER TABLE task ADD CONSTRAINT task_unique_warehouse_id_entity_type_entity_id_queue_name
+ALTER TABLE task 
+    DROP CONSTRAINT IF EXISTS task_unique_warehouse_id_entity_type_entity_id_queue_name, 
+    ADD CONSTRAINT task_unique_warehouse_id_entity_type_entity_id_queue_name
     UNIQUE (warehouse_id, entity_type, entity_id, queue_name);
