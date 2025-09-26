@@ -263,6 +263,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
             request_metadata,
             ctx.warehouse_id,
             ctx.view_id.into(),
+            None,
         )
         .await?;
 

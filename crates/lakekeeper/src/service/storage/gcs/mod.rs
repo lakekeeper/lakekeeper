@@ -10,6 +10,7 @@ use google_cloud_auth::{
     token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
+use iceberg::TableIdent;
 use iceberg_ext::configs::table::{gcs, TableProperties};
 use lakekeeper_io::{
     gcs::{validate_bucket_name, CredentialsFile, GCSSettings, GcsAuth, GcsStorage},
@@ -24,6 +25,7 @@ use crate::{
         iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig,
     },
+    request_metadata::refresh_credentials_endpoint,
     service::storage::{
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
@@ -312,12 +314,15 @@ impl GcsProfile {
     }
 
     /// Generate the table configuration for GCS.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
         cred: &GcsCredential,
         table_location: &Location,
         storage_permissions: StoragePermissions,
+        warehouse_id: WarehouseId,
+        table: Option<&TableIdent>,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
@@ -340,6 +345,17 @@ impl GcsProfile {
         table_properties.insert(&gcs::Token(token.access_token));
         if let Some(ref project_id) = project_id {
             table_properties.insert(&gcs::ProjectId(project_id.clone()));
+        }
+
+        if let Some(table) = table {
+            if CONFIG.enable_refresh_credentials {
+                table_properties.insert(&gcs::RefreshCredentialsEnabled(
+                    CONFIG.enable_refresh_credentials,
+                ));
+                table_properties.insert(&gcs::RefreshCredentialsEndpoint(
+                    refresh_credentials_endpoint(warehouse_id, table),
+                ));
+            }
         }
 
         if let Some(expiry) = token.expires_in {
