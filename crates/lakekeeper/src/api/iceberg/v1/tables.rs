@@ -40,6 +40,27 @@ pub struct ListTablesQuery {
     pub return_protection_status: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapshotsQuery {
+    /// Load all snapshots
+    #[default]
+    All,
+    /// load all snapshots referenced by branches or tags
+    Refs,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadTableQuery {
+    pub snapshots: Option<SnapshotsQuery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LoadTableFilters {
+    pub snapshots: SnapshotsQuery,
+}
+
 impl From<ListTablesQuery> for PaginationQuery {
     fn from(query: ListTablesQuery) -> Self {
         PaginationQuery {
@@ -83,6 +104,7 @@ where
     async fn load_table(
         parameters: TableParameters,
         data_access: impl Into<DataAccessMode> + Send,
+        filters: LoadTableFilters,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult>;
@@ -205,9 +227,13 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 Query(load_table_query): Query<LoadTableQuery>,
                  State(api_context): State<ApiContext<S>>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
+                    let filters = LoadTableFilters {
+                        snapshots: load_table_query.snapshots.unwrap_or_default(),
+                    };
                     I::load_table(
                         TableParameters {
                             prefix: Some(prefix),
@@ -217,6 +243,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             },
                         },
                         parse_data_access(&headers),
+                        filters,
                         api_context,
                         metadata,
                     )

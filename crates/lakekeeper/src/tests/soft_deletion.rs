@@ -11,8 +11,9 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::NamespaceService, tables::TablesService, DataAccessMode, DropParams,
-                ListTablesQuery, NamespaceParameters, TableParameters,
+                namespace::NamespaceService,
+                tables::{LoadTableFilters, TablesService},
+                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
@@ -223,6 +224,7 @@ async fn test_soft_deletion(pool: PgPool) {
             table: TableIdent::new(ns_ident.clone(), undrop_table_name.to_string()),
         },
         DataAccessMode::ClientManaged,
+        LoadTableFilters::default(),
         api_context.clone(),
         random_request_metadata(),
     )

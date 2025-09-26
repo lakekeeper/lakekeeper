@@ -22,7 +22,10 @@ pub use crate::api::iceberg::v1::{
 };
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
+        iceberg::v1::{
+            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
+            PaginationQuery,
+        },
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
@@ -472,6 +475,7 @@ where
         warehouse_id: WarehouseId,
         tables: impl IntoIterator<Item = TableId> + Send,
         include_deleted: bool,
+        filters: &LoadTableFilters,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<HashMap<TableId, LoadTableResponse>>;
 

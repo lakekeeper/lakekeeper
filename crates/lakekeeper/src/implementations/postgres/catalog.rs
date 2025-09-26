@@ -26,7 +26,10 @@ use super::{
 };
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
+        iceberg::v1::{
+            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
+            PaginationQuery,
+        },
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
@@ -209,9 +212,10 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseId,
         tables: impl IntoIterator<Item = TableId> + Send,
         include_deleted: bool,
+        filters: &LoadTableFilters,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<HashMap<TableId, LoadTableResponse>> {
-        load_tables(warehouse_id, tables, include_deleted, transaction).await
+        load_tables(warehouse_id, tables, include_deleted, filters, transaction).await
     }
 
     async fn get_table_metadata_by_id(

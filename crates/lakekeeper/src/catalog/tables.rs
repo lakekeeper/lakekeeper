@@ -36,10 +36,11 @@ use crate::{
         iceberg::{
             types::DropParams,
             v1::{
-                tables::DataAccessMode, ApiContext, CommitTableRequest, CommitTableResponse,
-                CommitTransactionRequest, CreateTableRequest, DataAccess, ErrorModel,
-                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters, Prefix,
-                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
+                tables::{DataAccessMode, LoadTableFilters},
+                ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
+                CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
+                LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest,
+                RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
@@ -494,6 +495,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     async fn load_table(
         parameters: TableParameters,
         data_access: impl Into<DataAccessMode> + Send,
+        filters: LoadTableFilters,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
@@ -544,6 +546,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             tabular_details.table_id,
             &table,
             list_flags.include_deleted,
+            &filters,
             &mut t,
         )
         .await?;
@@ -1065,10 +1068,17 @@ async fn load_table_inner<C: Catalog>(
     table_id: TableId,
     table_ident: &TableIdent,
     include_deleted: bool,
+    load_table_filters: &LoadTableFilters,
     t: &mut C::Transaction,
 ) -> Result<CatalogLoadTableResult> {
-    let mut metadatas =
-        C::load_tables(warehouse_id, [table_id], include_deleted, t.transaction()).await?;
+    let mut metadatas = C::load_tables(
+        warehouse_id,
+        [table_id],
+        include_deleted,
+        load_table_filters,
+        t.transaction(),
+    )
+    .await?;
     let result = take_table_metadata(&table_id, table_ident, &mut metadatas)?;
     require_not_staged(result.metadata_location.as_ref())?;
     Ok(result)
@@ -1318,6 +1328,7 @@ async fn try_commit_tables<
         warehouse_id,
         table_ids.values().copied(),
         include_deleted,
+        &LoadTableFilters::default(),
         transaction.transaction(),
     )
     .await?;
@@ -2083,8 +2094,8 @@ pub(crate) mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    tables::TablesService as _, DataAccess, DropParams, ListTablesQuery,
-                    NamespaceParameters, TableParameters,
+                    tables::{LoadTableFilters, TablesService as _},
+                    DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
                 },
             },
             management::v1::{
@@ -2263,6 +2274,7 @@ pub(crate) mod test {
                 table: table_ident,
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2390,6 +2402,7 @@ pub(crate) mod test {
                 },
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2546,6 +2559,7 @@ pub(crate) mod test {
                 },
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2607,6 +2621,7 @@ pub(crate) mod test {
                 },
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2687,6 +2702,7 @@ pub(crate) mod test {
                 },
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2733,6 +2749,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2775,6 +2792,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2818,6 +2836,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3123,6 +3142,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3156,6 +3176,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3206,6 +3227,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3285,6 +3307,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3347,6 +3370,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3404,6 +3428,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3442,6 +3467,7 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -4512,6 +4538,7 @@ pub(crate) mod test {
                 table: table_ident,
             },
             DataAccess::not_specified(),
+            LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )

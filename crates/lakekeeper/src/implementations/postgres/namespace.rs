@@ -663,7 +663,7 @@ pub(crate) mod tests {
         *,
     };
     use crate::{
-        api::iceberg::types::PageToken,
+        api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         implementations::postgres::{
             tabular::{
                 set_tabular_protected,
@@ -1038,6 +1038,7 @@ pub(crate) mod tests {
             warehouse_id,
             [table.table_id].into_iter(),
             true,
+            &LoadTableFilters::default(),
             transaction.transaction(),
         )
         .await
