@@ -54,7 +54,8 @@ where
     /// List all namespaces at a certain level, optionally starting from a given parent namespace.
     /// If table accounting.tax.paid.info exists, using 'SELECT NAMESPACE IN accounting'
     /// would translate into `GET /namespaces?parent=accounting` and must return a namespace,
-    /// ["accounting", "tax"] only. Using 'SELECT NAMESPACE IN accounting.tax' would translate into `GET /namespaces?parent=accounting%1Ftax` and must return a namespace, ["accounting", "tax", "paid"]. If `parent` is not provided, all top-level namespaces should be listed.
+    /// `["accounting", "tax"]` only.
+    /// Using 'SELECT NAMESPACE IN accounting.tax' would translate into `GET /namespaces?parent=accounting%1Ftax` and must return a namespace, `["accounting", "tax", "paid"]`. If `parent` is not provided, all top-level namespaces should be listed.
     async fn list_namespaces(
         prefix: Option<Prefix>,
         query: ListNamespacesQuery,

@@ -1,4 +1,4 @@
-FROM rust:1.87-slim-bookworm AS chef
+FROM rust:1.89-slim-trixie AS chef
 
 ARG NO_CHEF=false
 ENV NO_CHEF=${NO_CHEF}
@@ -38,7 +38,7 @@ ENV SQLX_OFFLINE=true
 RUN cargo build --release --all-features --bin lakekeeper
 
 # our final base
-FROM gcr.io/distroless/cc-debian12:nonroot AS base
+FROM gcr.io/distroless/cc-debian13:nonroot AS base
 
 
 FROM busybox:1.37.0 AS cleaner

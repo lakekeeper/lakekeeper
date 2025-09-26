@@ -1,3 +1,5 @@
+#![allow(clippy::needless_for_each)]
+
 use async_trait::async_trait;
 use axum::Router;
 use utoipa::OpenApi;

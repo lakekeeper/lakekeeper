@@ -1,3 +1,5 @@
+#![allow(clippy::needless_for_each)]
+
 use std::collections::HashSet;
 
 use axum::{

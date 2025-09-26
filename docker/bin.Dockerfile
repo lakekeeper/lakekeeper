@@ -1,6 +1,6 @@
 ARG ARCH
 
-FROM gcr.io/distroless/cc-debian12:nonroot-${ARCH} AS base
+FROM gcr.io/distroless/cc-debian13:nonroot-${ARCH} AS base
 
 FROM busybox:1.37.0 AS cleaner
 # small diversion through busybox to remove some files
