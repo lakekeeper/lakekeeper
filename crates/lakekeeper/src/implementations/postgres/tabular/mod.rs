@@ -595,6 +595,7 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
         tabular_name: row.name,
         id: row.tabular_id,
         tabular_type: row.typ.into(),
+        dist: row.dist,
     })
     .collect::<Vec<_>>();
 
@@ -1348,20 +1349,20 @@ mod tests {
     async fn test_search_tabular(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let namespace1 =
-            iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
+        let namespace1 = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
         let (namespace1_id, _) =
             initialize_namespace(state.clone(), warehouse_id, &namespace1, None).await;
         let namespace2 =
-            iceberg_ext::NamespaceIdent::from_vec(vec!["another_ns".to_string()]).unwrap();
+            iceberg_ext::NamespaceIdent::from_vec(vec!["finance_ns".to_string()]).unwrap();
         let (namespace2_id, _) =
             initialize_namespace(state.clone(), warehouse_id, &namespace2, None).await;
 
-        let table_names = (0..20)
+        let table_names = [10, 101, 1011, 42, 420]
             .into_iter()
-            .map(|i| format!("test_table_{i}"))
+            .map(|i| format!("test_region_{i}"))
             .collect::<Vec<_>>();
 
+        let mut best_match_id = None; // will store id of the tabular we'll search for
         for nsid in [namespace1_id, namespace2_id] {
             for tn in table_names.iter() {
                 let mut transaction = pool.begin().await.unwrap();
@@ -1371,7 +1372,7 @@ mod tests {
                 let metadata_location =
                     Location::from_str(&format!("s3://test-bucket/{nsid}/{tn}/metadata/v1.json"))
                         .unwrap();
-                let x = create_tabular(
+                let tabular_id = create_tabular(
                     CreateTabular {
                         id: table_id,
                         name: tn.as_ref(),
@@ -1386,22 +1387,22 @@ mod tests {
                 .await
                 .unwrap();
                 transaction.commit().await.unwrap();
+                if nsid == namespace2_id && tn == "test_region_42" {
+                    best_match_id = Some(tabular_id);
+                }
             }
         }
-        // let names = sqlx::query!(
-        //     r#"
-        //     SELECT name
-        //     FROM tabular
-        // "#
-        // )
-        // .fetch_all(&state.read_write.read_pool)
-        // .await
-        // .unwrap();
-        // println!("{:?}", names);
-        let res = search_tabular(warehouse_id, "another.table_1", &state.read_write.read_pool)
-            .await
-            .unwrap();
 
-        println!("{:?}", res);
+        let res = search_tabular(warehouse_id, "finance.table42", &state.read_write.read_pool)
+            .await
+            .unwrap()
+            .tabulars[0]
+            .clone();
+
+        // Assert the best match is returned as first result.
+        assert_eq!(res.id, best_match_id.unwrap());
+        assert_eq!(res.namespace_name, vec!["finance_ns".to_string()]);
+        assert_eq!(res.tabular_name, "test_region_42");
+        assert_eq!(res.tabular_type, TabularType::Table.into());
     }
 }
