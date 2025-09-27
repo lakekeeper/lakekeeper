@@ -1437,4 +1437,65 @@ mod tests {
         assert_eq!(res.tabular_name, "test_region_42");
         assert_eq!(res.tabular_type, TabularType::Table.into());
     }
+
+    #[sqlx::test]
+    async fn test_search_tabular_by_uuid(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let table_names = [10, 101, 1011, 42, 420]
+            .into_iter()
+            .map(|i| format!("test_region_{i}"))
+            .collect::<Vec<_>>();
+
+        let mut id_to_search = None; // will store id of the tabular we'll search for
+        for tn in &table_names {
+            let mut transaction = pool.begin().await.unwrap();
+            let table_id = Uuid::now_v7();
+            let location =
+                Location::from_str(&format!("s3://test-bucket/{namespace_id}/{tn}/")).unwrap();
+            let metadata_location = Location::from_str(&format!(
+                "s3://test-bucket/{namespace_id}/{tn}/metadata/v1.json"
+            ))
+            .unwrap();
+            let tabular_id = create_tabular(
+                CreateTabular {
+                    id: table_id,
+                    name: tn.as_ref(),
+                    namespace_id: *namespace_id,
+                    warehouse_id: *warehouse_id,
+                    typ: TabularType::Table,
+                    metadata_location: Some(&metadata_location),
+                    location: &location,
+                },
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+            if tn == "test_region_42" {
+                id_to_search = Some(tabular_id);
+            }
+        }
+
+        let results = search_tabular(
+            warehouse_id,
+            id_to_search.unwrap().to_string().as_str(),
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap()
+        .tabulars;
+        assert_eq!(results.len(), 1);
+
+        // Assert the tabular with matching uuid is returned
+        let res = results[0].clone();
+        assert_eq!(res.id, id_to_search.unwrap());
+        assert_eq!(res.namespace_name, vec!["hr_ns".to_string()]);
+        assert_eq!(res.tabular_name, "test_region_42");
+        assert_eq!(res.tabular_type, TabularType::Table.into());
+    }
 }
