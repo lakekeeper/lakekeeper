@@ -54,6 +54,8 @@ where
                 .tabulars;
 
         // Untangle tables and views as they must be checked for authz separately.
+        // `search_tabular` returns only a small number of results, so we're rather trying
+        // to keep this simple + readable instead of maximizing efficiency.
         let tables = all_matches
             .iter()
             .filter_map(|res| match res.tabular_type {

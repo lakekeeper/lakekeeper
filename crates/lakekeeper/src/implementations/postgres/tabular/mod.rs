@@ -565,39 +565,70 @@ where
     Ok(tabulars)
 }
 
+/// If search term corresponds to an uuid, it searches for the corresponding `TabularId`. Otherwise
+/// it searches for similarly named tables, taking namespace name and table name into account.
 pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     warehouse_id: WarehouseId,
     search_term: &str,
     connection: E,
 ) -> Result<SearchTabularResponse> {
-    // TODO(mooori) check if search_term is id, if yes then try get that table by id
-    let tabulars = sqlx::query!(
-        r#"
-        SELECT tabular_id,
-            namespace_name,
-            name,
-            typ as "typ: TabularType",
-            concat_namespace_name_tabular_name(namespace_name, name) <-> $2 AS dist
-        FROM tabular
-        WHERE warehouse_id = $1
-        ORDER BY dist ASC
-        LIMIT 10
-        "#,
-        *warehouse_id,
-        search_term,
-    )
-    .fetch_all(connection)
-    .await
-    .map_err(|e| e.into_error_model("Error searching tabular".to_string()))?
-    .into_iter()
-    .map(|row| SearchTabular {
-        namespace_name: row.namespace_name,
-        tabular_name: row.name,
-        id: row.tabular_id,
-        tabular_type: row.typ.into(),
-        dist: row.dist,
-    })
-    .collect::<Vec<_>>();
+    let tabulars = match Uuid::try_parse(search_term) {
+        // Search string corresponds to uuid.
+        Ok(id) => sqlx::query!(
+            r#"
+                SELECT tabular_id,
+                    namespace_name,
+                    name,
+                    typ as "typ: TabularType"
+                FROM tabular
+                WHERE warehouse_id = $1 AND tabular_id = $2
+                LIMIT 1
+                "#,
+            *warehouse_id,
+            id,
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(|e| e.into_error_model("Error searching tabular by uuid".to_string()))?
+        .map(|row| SearchTabular {
+            namespace_name: row.namespace_name,
+            tabular_name: row.name,
+            id: row.tabular_id,
+            tabular_type: row.typ.into(),
+            dist: Some(0f32), // ids match so it's a perfect match
+        })
+        .into_iter()
+        .collect::<Vec<_>>(),
+
+        // Search string is not an uuid
+        Err(_) => sqlx::query!(
+            r#"
+                SELECT tabular_id,
+                    namespace_name,
+                    name,
+                    typ as "typ: TabularType",
+                    concat_namespace_name_tabular_name(namespace_name, name) <-> $2 AS dist
+                FROM tabular
+                WHERE warehouse_id = $1
+                ORDER BY dist ASC
+                LIMIT 10
+                "#,
+            *warehouse_id,
+            search_term,
+        )
+        .fetch_all(connection)
+        .await
+        .map_err(|e| e.into_error_model("Error searching tabular by search term".to_string()))?
+        .into_iter()
+        .map(|row| SearchTabular {
+            namespace_name: row.namespace_name,
+            tabular_name: row.name,
+            id: row.tabular_id,
+            tabular_type: row.typ.into(),
+            dist: row.dist,
+        })
+        .collect::<Vec<_>>(),
+    };
 
     Ok(SearchTabularResponse { tabulars })
 }
