@@ -32,7 +32,7 @@ use crate::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
         task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction, ViewId,
+        Catalog, ListFlags, NamespaceId, State, TabularId, Transaction,
     },
     ProjectId, WarehouseId,
 };
@@ -812,14 +812,10 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
         let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
-        let tabs = request
-            .targets
-            .clone()
-            .into_iter()
-            .map(|i| TableId::from(*i))
-            .collect::<Vec<_>>();
+        let tabular_ids = &request.targets;
         let undrop_tabular_responses =
-            C::clear_tabular_deleted_at(&tabs, warehouse_id, transaction.transaction()).await?;
+            C::clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction.transaction())
+                .await?;
         TabularExpirationTask::cancel_scheduled_tasks::<C>(
             TaskFilter::TaskIds(
                 undrop_tabular_responses
@@ -909,13 +905,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             TabularId::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
                                 warehouse_id,
-                                ViewId::from(*id),
+                                *id,
                                 crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularId::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
                                 warehouse_id,
-                                TableId::from(*id),
+                                *id,
                                 crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
                         }))

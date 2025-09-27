@@ -4,6 +4,16 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.1`
+
+```
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+- Add `can_get_tasks` and `can_control_tasks` permissions to `table` and `view`.
+- Add `can_get_all_tasks` and `can_control_all_tasks` permission to `warehouse`.
+
 ## `v4.0`
 
 ```

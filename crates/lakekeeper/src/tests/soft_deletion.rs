@@ -11,8 +11,9 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::NamespaceService, tables::TablesService, DataAccessMode, DropParams,
-                ListTablesQuery, NamespaceParameters, TableParameters,
+                namespace::NamespaceService,
+                tables::{LoadTableFilters, TablesService},
+                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
@@ -202,7 +203,8 @@ async fn test_soft_deletion(pool: PgPool) {
 
     // Un-delete one of the deleted tables
     let undrop_table_name = "table_4";
-    let undrop_table_id = TabularId::Table(*table_name_to_uuid.get(undrop_table_name).unwrap());
+    let undrop_table_id =
+        TabularId::Table((*table_name_to_uuid.get(undrop_table_name).unwrap()).into());
 
     ApiServer::undrop_tabulars(
         warehouse.warehouse_id,
@@ -222,6 +224,7 @@ async fn test_soft_deletion(pool: PgPool) {
             table: TableIdent::new(ns_ident.clone(), undrop_table_name.to_string()),
         },
         DataAccessMode::ClientManaged,
+        LoadTableFilters::default(),
         api_context.clone(),
         random_request_metadata(),
     )

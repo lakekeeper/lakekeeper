@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
 use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
-use itertools::Itertools;
 use lakekeeper_io::Location;
 
 use super::{
@@ -27,7 +26,10 @@ use super::{
 };
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
+        iceberg::v1::{
+            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
+            PaginationQuery,
+        },
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
@@ -211,9 +213,10 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseId,
         tables: impl IntoIterator<Item = TableId> + Send,
         include_deleted: bool,
+        filters: &LoadTableFilters,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<HashMap<TableId, LoadTableResponse>> {
-        load_tables(warehouse_id, tables, include_deleted, transaction).await
+        load_tables(warehouse_id, tables, include_deleted, filters, transaction).await
     }
 
     async fn get_table_metadata_by_id(
@@ -254,16 +257,11 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn clear_tabular_deleted_at(
-        tabular_ids: &[TableId],
+        tabular_ids: &[TabularId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>> {
-        clear_tabular_deleted_at(
-            &tabular_ids.iter().map(|i| **i).collect_vec(),
-            warehouse_id,
-            transaction,
-        )
-        .await
+        clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction).await
     }
 
     async fn mark_tabular_as_deleted(

@@ -55,7 +55,9 @@ pub enum FgaType {
     Project,
     Warehouse,
     Namespace,
+    #[strum(serialize = "lakekeeper_table")]
     Table,
+    #[strum(serialize = "lakekeeper_view")]
     View,
     ModelVersion,
     AuthModelId,

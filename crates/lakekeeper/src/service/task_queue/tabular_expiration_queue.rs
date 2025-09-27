@@ -4,20 +4,16 @@ use iceberg::ErrorKind;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
-use uuid::Uuid;
 
 use super::{EntityId, QueueApiConfig, TaskConfig, TaskExecutionDetails, TaskMetadata};
 use crate::{
-    api::{
-        management::v1::{DeleteKind, TabularType},
-        Result,
-    },
+    api::{management::v1::DeleteKind, Result},
     service::{
         authz::Authorizer,
         task_queue::{
             tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData, TaskQueueName,
         },
-        Catalog, TableId, Transaction, ViewId,
+        Catalog, Transaction,
     },
     CancellationToken,
 };
@@ -39,17 +35,13 @@ pub type TabularExpirationTask = SpecializedTask<
 #[derive(Debug, Clone, Deserialize, Serialize)]
 /// State stored for a tabular expiration in postgres as `payload` along with the task metadata.
 pub struct TabularExpirationPayload {
-    pub(crate) tabular_type: TabularType,
     pub(crate) deletion_kind: DeleteKind,
 }
 
 impl TabularExpirationPayload {
     #[must_use]
-    pub fn new(tabular_type: TabularType, deletion_kind: DeleteKind) -> Self {
-        Self {
-            tabular_type,
-            deletion_kind,
-        }
+    pub fn new(deletion_kind: DeleteKind) -> Self {
+        Self { deletion_kind }
     }
 }
 
@@ -93,19 +85,20 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
             return;
         };
 
-        let EntityId::Tabular(tabular_id) = task.task_metadata.entity_id;
+        let entity_id = task.task_metadata.entity_id;
+        let entity_id_uuid = entity_id.as_uuid();
 
         let span = tracing::debug_span!(
             QN_STR,
-            tabular_id = %tabular_id,
             warehouse_id = %task.task_metadata.warehouse_id,
-            tabular_type = %task.data.tabular_type,
+            entity_type = %entity_id.entity_type().to_string(),
+            entity_id = %entity_id_uuid,
             deletion_kind = ?task.data.deletion_kind,
             attempt = %task.attempt(),
             task_id = %task.task_id(),
         );
 
-        instrumented_expire::<C, A>(catalog_state.clone(), authorizer.clone(), tabular_id, &task)
+        instrumented_expire::<C, A>(catalog_state.clone(), authorizer.clone(), &task)
             .instrument(span.or_current())
             .await;
     }
@@ -114,27 +107,20 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
 async fn instrumented_expire<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
-    tabular_id: Uuid,
     task: &TabularExpirationTask,
 ) {
-    match handle_table::<C, A>(catalog_state.clone(), authorizer, tabular_id, task).await {
+    let entity_id = task.task_metadata.entity_id;
+    match handle_table::<C, A>(catalog_state.clone(), authorizer, task).await {
         Ok(()) => {
-            tracing::debug!(
-                "Task of `{QN_STR}` worker exited successfully. {} with id {tabular_id} deleted.",
-                task.data.tabular_type
-            );
+            tracing::debug!("Task of `{QN_STR}` worker exited successfully. {entity_id} deleted.");
         }
         Err(err) => {
             tracing::error!(
-                "Error in `{QN_STR}` worker. Expiration of {} with id {tabular_id} failed. Error: {err}",
-                task.data.tabular_type
+                "Error in `{QN_STR}` worker. Expiration of {entity_id} failed. Error: {err}"
             );
             task.record_failure::<C>(
                 catalog_state,
-                &format!(
-                    "Failed to expire soft-deleted {} with id `{tabular_id}`.\n{err}",
-                    task.data.tabular_type
-                ),
+                &format!("Failed to expire soft-deleted {entity_id}.\n{err}"),
             )
             .await;
         }
@@ -145,22 +131,21 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
 async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
-    tabular_id: Uuid,
     task: &TabularExpirationTask,
 ) -> Result<()>
 where
     C: Catalog,
     A: Authorizer,
 {
+    let entity_id = task.task_metadata.entity_id;
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
             e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue.",))
         })?;
 
-    let tabular_location = match task.data.tabular_type {
-        TabularType::Table => {
-            let table_id = TableId::from(tabular_id);
+    let tabular_location = match entity_id {
+        EntityId::Table(table_id) => {
             let drop_result = C::drop_table(
                 task.task_metadata.warehouse_id,
                 table_id,
@@ -195,9 +180,7 @@ where
                 .ok();
             location
         }
-        TabularType::View => {
-            let view_id = ViewId::from(tabular_id);
-
+        EntityId::View(view_id) => {
             let location = match C::drop_view(
                 task.task_metadata.warehouse_id,
                 view_id,
@@ -243,7 +226,7 @@ where
                     schedule_for: None,
                     entity_name: task.task_metadata.entity_name.clone(),
                 },
-                TabularPurgePayload::new(tabular_location, task.data.tabular_type),
+                TabularPurgePayload::new(tabular_location),
                 trx.transaction(),
             )
             .await
@@ -278,10 +261,7 @@ mod test {
 
     use super::*;
     use crate::{
-        api::{
-            iceberg::v1::PaginationQuery,
-            management::v1::{DeleteKind, TabularType},
-        },
+        api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
             CatalogState, PostgresCatalog, PostgresTransaction, SecretsState,
@@ -359,13 +339,12 @@ mod test {
         TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
                 warehouse_id: warehouse,
-                entity_id: EntityId::Tabular(table.table_id.0),
+                entity_id: EntityId::Table(table.table_id),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
                 entity_name: table.table_ident.into_name_parts(),
             },
             TabularExpirationPayload {
-                tabular_type: TabularType::Table,
                 deletion_kind: DeleteKind::Purge,
             },
             trx.transaction(),

@@ -9,10 +9,13 @@ use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use crate::service::ServerId;
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| *V4_MODEL_VERSION); // <- Change this for every change in the model
+    LazyLock::new(|| *V4_CURRENT_MODEL_VERSION); // <- Change this for every change in the model
 
-pub(super) static V4_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+pub(super) static V4_0_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(4, 0));
+
+pub(super) static V4_CURRENT_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+    LazyLock::new(|| AuthorizationModelVersion::new(4, 1));
 
 #[cfg(test)]
 pub(super) static V3_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
@@ -32,7 +35,8 @@ fn get_model_manager(
     );
     // Assume vX.Y has a migration function. Then vX.Y must remain here as long as migrations from
     // versions < vX.Y are supported.
-    add_model_v4(manager)
+    let manager = add_model_v4_0(manager);
+    add_model_v4_current(manager)
 }
 
 /// Has no migration hooks.
@@ -56,7 +60,7 @@ pub(crate) fn add_model_v3(
 }
 
 /// Does have a migration hook which may add tuples to the store.
-pub(crate) fn add_model_v4(
+pub(crate) fn add_model_v4_0(
     manager: TupleModelManager<BasicAuthLayer, MigrationState>,
 ) -> TupleModelManager<BasicAuthLayer, MigrationState> {
     manager.add_model(
@@ -67,10 +71,29 @@ pub(crate) fn add_model_v4(
         ))
         // Change also the model version in this string:
         .expect("Model v4.0 is a valid AuthorizationModel in JSON format."),
-        *V4_MODEL_VERSION,
+        *V4_0_MODEL_VERSION,
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_, _>>,
         Some(v4_push_down_warehouse_id),
+    )
+}
+
+/// Does not have a migration hook
+pub(crate) fn add_model_v4_current(
+    manager: TupleModelManager<BasicAuthLayer, MigrationState>,
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
+    manager.add_model(
+        serde_json::from_str(include_str!(
+            // Change this for backward compatible changes.
+            // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
+            "../../../../../../../authz/openfga/v4.1/schema.json"
+        ))
+        // Change also the model version in this string:
+        .expect("Model v4.1 is a valid AuthorizationModel in JSON format."),
+        *V4_CURRENT_MODEL_VERSION,
+        // For major version upgrades, this is where tuple migrations go.
+        None::<MigrationFn<_, _>>,
+        None::<MigrationFn<_, _>>,
     )
 }
 
@@ -219,7 +242,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .into_inner()
                 .authorization_models;
-            assert_eq!(models.len(), 1);
+            assert_eq!(models.len(), 2);
         }
     }
 }

@@ -40,6 +40,27 @@ pub struct ListTablesQuery {
     pub return_protection_status: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapshotsQuery {
+    /// Load all snapshots
+    #[default]
+    All,
+    /// load all snapshots referenced by branches or tags
+    Refs,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadTableQuery {
+    pub snapshots: Option<SnapshotsQuery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LoadTableFilters {
+    pub snapshots: SnapshotsQuery,
+}
+
 impl From<ListTablesQuery> for PaginationQuery {
     fn from(query: ListTablesQuery) -> Self {
         PaginationQuery {
@@ -83,6 +104,7 @@ where
     async fn load_table(
         parameters: TableParameters,
         data_access: impl Into<DataAccessMode> + Send,
+        filters: LoadTableFilters,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult>;
@@ -205,9 +227,13 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 Query(load_table_query): Query<LoadTableQuery>,
                  State(api_context): State<ApiContext<S>>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
+                    let filters = LoadTableFilters {
+                        snapshots: load_table_query.snapshots.unwrap_or_default(),
+                    };
                     I::load_table(
                         TableParameters {
                             prefix: Some(prefix),
@@ -217,6 +243,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             },
                         },
                         parse_data_access(&headers),
+                        filters,
                         api_context,
                         metadata,
                     )
@@ -437,5 +464,199 @@ mod test {
         let data_access = super::parse_data_access(&headers);
         assert!(data_access.vended_credentials);
         assert!(!data_access.remote_signing);
+    }
+
+    #[test]
+    fn test_load_table_query_defaults() {
+        let query = super::LoadTableQuery::default();
+        assert_eq!(query.snapshots, None);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn test_load_table_query_snapshots_deserialization() {
+        use async_trait::async_trait;
+        use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+        use tower::ServiceExt;
+
+        use crate::{
+            api::{ApiContext, LoadTableResult},
+            request_metadata::RequestMetadata,
+        };
+
+        #[derive(Debug, Clone)]
+        struct TestService;
+
+        #[derive(Debug, Clone)]
+        struct ThisState;
+
+        impl crate::api::ThreadSafe for ThisState {}
+
+        #[async_trait]
+        impl super::TablesService<ThisState> for TestService {
+            async fn list_tables(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _query: super::ListTablesQuery,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::ListTablesResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn create_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::CreateTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn register_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::RegisterTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn load_table(
+                _parameters: super::TableParameters,
+                _data_access: impl Into<super::DataAccessMode> + Send,
+                filters: super::LoadTableFilters,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                // Return the snapshots filter in the error message for testing
+                let snapshots_str = match filters.snapshots {
+                    super::SnapshotsQuery::All => "all",
+                    super::SnapshotsQuery::Refs => "refs",
+                };
+
+                Err(ErrorModel::builder()
+                    .message(format!("snapshots={snapshots_str}"))
+                    .r#type("UnsupportedOperationException".to_string())
+                    .code(406)
+                    .build()
+                    .into())
+            }
+
+            async fn load_table_credentials(
+                _parameters: super::TableParameters,
+                _data_access: super::DataAccess,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<iceberg_ext::catalog::rest::LoadCredentialsResponse>
+            {
+                panic!("Should not be called");
+            }
+
+            async fn commit_table(
+                _parameters: super::TableParameters,
+                _request: crate::api::CommitTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::CommitTableResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn drop_table(
+                _parameters: super::TableParameters,
+                _drop_params: crate::api::iceberg::types::DropParams,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn table_exists(
+                _parameters: super::TableParameters,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn rename_table(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::RenameTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn commit_transaction(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::CommitTransactionRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+        }
+
+        let api_context = ApiContext {
+            v1_state: ThisState,
+        };
+
+        let app = super::router::<TestService, ThisState>();
+        let router = axum::Router::new().merge(app).with_state(api_context);
+
+        // Test 1: Default snapshots (should be "all")
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        assert_eq!(error.error.message, "snapshots=all");
+
+        // Test 2: Explicit snapshots=all
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table?snapshots=all")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        assert_eq!(error.error.message, "snapshots=all");
+
+        // Test 3: snapshots=refs
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table?snapshots=refs")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+
+        let r = router.oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        assert_eq!(error.error.message, "snapshots=refs");
     }
 }

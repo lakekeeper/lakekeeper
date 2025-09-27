@@ -1255,7 +1255,7 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.clone().into();
 
         let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7());
+        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
         let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, table_id);
@@ -1299,7 +1299,7 @@ pub(crate) mod test {
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
-        let table_id = TabularId::Table(uuid::Uuid::now_v7());
+        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
         // Prefix should be ignored as we specify the namespace_location explicitly.
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
         let expected = format!("s3://test-bucket/foo/{table_id}");

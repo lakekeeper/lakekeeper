@@ -86,6 +86,8 @@ pub enum CatalogWarehouseAction {
     CanModifySoftDeletion,
     CanGetTaskQueueConfig,
     CanModifyTaskQueueConfig,
+    CanGetAllTasks,
+    CanControlAllTasks,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
@@ -114,6 +116,8 @@ pub enum CatalogTableAction {
     CanRename,
     CanIncludeInList,
     CanUndrop,
+    CanGetTasks,
+    CanControlTasks,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
@@ -125,6 +129,8 @@ pub enum CatalogViewAction {
     CanIncludeInList,
     CanRename,
     CanUndrop,
+    CanGetTasks,
+    CanControlTasks,
 }
 
 pub trait TableUuid {
@@ -176,7 +182,7 @@ impl<T> MustUse<T> {
 }
 
 #[async_trait::async_trait]
-/// Interface to provide AuthZ functions to the catalog.
+/// Interface to provide Authorization functions to the catalog.
 /// The provided `Actor` argument of all methods except `check_actor`
 /// are assumed to be valid. Please ensure to call `check_actor` before, preferably
 /// during Authentication.

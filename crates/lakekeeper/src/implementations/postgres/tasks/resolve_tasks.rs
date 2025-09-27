@@ -87,8 +87,12 @@ where
         .map(|record| {
             let task_id = TaskId::from(record.task_id);
             let entity = match record.entity_type {
-                EntityType::Tabular => TaskEntity::Table {
+                EntityType::Table => TaskEntity::Table {
                     table_id: record.entity_id.into(),
+                    warehouse_id: record.warehouse_id.into(),
+                },
+                EntityType::View => TaskEntity::View {
+                    view_id: record.entity_id.into(),
                     warehouse_id: record.warehouse_id.into(),
                 },
             };
@@ -138,7 +142,7 @@ mod tests {
                     warehouse_id,
                     parent_task_id,
                     entity_id,
-                    entity_name: vec!["ns".to_string(), format!("table{}", entity_id.to_uuid())],
+                    entity_name: vec!["ns".to_string(), format!("table{}", entity_id.as_uuid())],
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -184,8 +188,8 @@ mod tests {
     async fn test_resolve_tasks_active_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity1 = EntityId::Tabular(Uuid::now_v7());
-        let entity2 = EntityId::Tabular(Uuid::now_v7());
+        let entity1 = EntityId::Table(Uuid::now_v7().into());
+        let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_test_queue_name();
         let tq_name2 = generate_test_queue_name();
 
@@ -240,29 +244,38 @@ mod tests {
 
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
-        let TaskEntity::Table {
-            table_id: table_id1,
-            warehouse_id: wh_id1,
-        } = entity_result1;
-        assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
-        assert_eq!(*wh_id1, warehouse_id);
+        match entity_result1 {
+            TaskEntity::Table {
+                table_id: table_id1,
+                warehouse_id: wh_id1,
+            } => {
+                assert_eq!(*table_id1, TableId::from(entity1.as_uuid()));
+                assert_eq!(*wh_id1, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
-        let TaskEntity::Table {
-            table_id: table_id2,
-            warehouse_id: wh_id2,
-        } = entity_result2;
-        assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
-        assert_eq!(*wh_id2, warehouse_id);
+
+        match entity_result2 {
+            TaskEntity::Table {
+                table_id: table_id2,
+                warehouse_id: wh_id2,
+            } => {
+                assert_eq!(*table_id2, TableId::from(entity2.as_uuid()));
+                assert_eq!(*wh_id2, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_completed_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity1 = EntityId::Tabular(Uuid::now_v7());
-        let entity2 = EntityId::Tabular(Uuid::now_v7());
+        let entity1 = EntityId::Table(Uuid::now_v7().into());
+        let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_test_queue_name();
         let tq_name2 = generate_test_queue_name();
 
@@ -324,30 +337,38 @@ mod tests {
 
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
-        let TaskEntity::Table {
-            table_id: table_id1,
-            warehouse_id: wh_id1,
-        } = entity_result1;
-        assert_eq!(*table_id1, TableId::from(entity1.to_uuid()));
-        assert_eq!(*wh_id1, warehouse_id);
+        match entity_result1 {
+            TaskEntity::Table {
+                table_id: table_id1,
+                warehouse_id: wh_id1,
+            } => {
+                assert_eq!(*table_id1, TableId::from(entity1.as_uuid()));
+                assert_eq!(*wh_id1, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
-        let TaskEntity::Table {
-            table_id: table_id2,
-            warehouse_id: wh_id2,
-        } = entity_result2;
-        assert_eq!(*table_id2, TableId::from(entity2.to_uuid()));
-        assert_eq!(*wh_id2, warehouse_id);
+        match entity_result2 {
+            TaskEntity::Table {
+                table_id: table_id2,
+                warehouse_id: wh_id2,
+            } => {
+                assert_eq!(*table_id2, TableId::from(entity2.as_uuid()));
+                assert_eq!(*wh_id2, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_mixed_active_and_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity1 = EntityId::Tabular(Uuid::now_v7());
-        let entity2 = EntityId::Tabular(Uuid::now_v7());
-        let entity3 = EntityId::Tabular(Uuid::now_v7());
+        let entity1 = EntityId::Table(Uuid::now_v7().into());
+        let entity2 = EntityId::Table(Uuid::now_v7().into());
+        let entity3 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
         // Queue three tasks
@@ -430,8 +451,8 @@ mod tests {
     async fn test_resolve_tasks_with_specific_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
-        let entity1 = EntityId::Tabular(Uuid::now_v7());
-        let entity2 = EntityId::Tabular(Uuid::now_v7());
+        let entity1 = EntityId::Table(Uuid::now_v7().into());
+        let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
         // Queue tasks in different warehouses
@@ -474,19 +495,24 @@ mod tests {
 
         // Verify the found task has correct warehouse_id
         let (entity_result, _) = &result[&task_id1];
-        let TaskEntity::Table {
-            warehouse_id: wh_id,
-            ..
-        } = entity_result;
-        assert_eq!(*wh_id, warehouse_id1);
+        match entity_result {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: wh_id,
+            } => {
+                assert_eq!(*table_id, TableId::from(entity1.as_uuid()));
+                assert_eq!(*wh_id, warehouse_id1);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_without_warehouse_filter(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
-        let entity1 = EntityId::Tabular(Uuid::now_v7());
-        let entity2 = EntityId::Tabular(Uuid::now_v7());
+        let entity1 = EntityId::Table(Uuid::now_v7().into());
+        let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
         // Queue tasks in different warehouses
@@ -529,24 +555,34 @@ mod tests {
         let (entity_result1, _) = &result[&task_id1];
         let (entity_result2, _) = &result[&task_id2];
 
-        let TaskEntity::Table {
-            warehouse_id: wh_id1,
-            ..
-        } = entity_result1;
-        let TaskEntity::Table {
-            warehouse_id: wh_id2,
-            ..
-        } = entity_result2;
+        match entity_result1 {
+            TaskEntity::Table {
+                table_id: table_id1,
+                warehouse_id: wh_id1,
+            } => {
+                assert_eq!(*table_id1, TableId::from(entity1.as_uuid()));
+                assert_eq!(*wh_id1, warehouse_id1);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
 
-        assert_eq!(*wh_id1, warehouse_id1);
-        assert_eq!(*wh_id2, warehouse_id2);
+        match entity_result2 {
+            TaskEntity::Table {
+                table_id: table_id2,
+                warehouse_id: wh_id2,
+            } => {
+                assert_eq!(*table_id2, TableId::from(entity2.as_uuid()));
+                assert_eq!(*wh_id2, warehouse_id2);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_partial_match(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Tabular(Uuid::now_v7());
+        let entity = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
         // Queue one task
@@ -580,19 +616,23 @@ mod tests {
         // Verify the existing task details
         let (entity_result, queue_name_result) = &result[&existing_task_id];
         assert_eq!(queue_name_result, &tq_name);
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: wh_id,
-        } = entity_result;
-        assert_eq!(*table_id, TableId::from(entity.to_uuid()));
-        assert_eq!(*wh_id, warehouse_id);
+        match entity_result {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: wh_id,
+            } => {
+                assert_eq!(*table_id, TableId::from(entity.as_uuid()));
+                assert_eq!(*wh_id, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_with_retried_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Tabular(Uuid::now_v7());
+        let entity = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
         // Queue a task that will be retried
@@ -636,12 +676,16 @@ mod tests {
 
         let (entity_result, queue_name_result) = &result[&task_id];
         assert_eq!(queue_name_result, &tq_name);
-        let TaskEntity::Table {
-            table_id,
-            warehouse_id: wh_id,
-        } = entity_result;
-        assert_eq!(*table_id, TableId::from(entity.to_uuid()));
-        assert_eq!(*wh_id, warehouse_id);
+        match entity_result {
+            TaskEntity::Table {
+                table_id,
+                warehouse_id: wh_id,
+            } => {
+                assert_eq!(*table_id, TableId::from(entity.as_uuid()));
+                assert_eq!(*wh_id, warehouse_id);
+            }
+            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+        }
     }
 
     #[sqlx::test]
@@ -653,7 +697,7 @@ mod tests {
         // Create a moderate number of tasks for performance testing
         let mut task_ids = Vec::new();
         for i in 0..20 {
-            let entity = EntityId::Tabular(Uuid::now_v7());
+            let entity = EntityId::Table(Uuid::now_v7().into());
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name,

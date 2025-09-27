@@ -107,7 +107,7 @@ impl EndpointHook for CloudEventsPublisher {
                     "updateTable",
                     body,
                     EventMetadata {
-                        tabular_id: TabularId::Table(*table_id),
+                        tabular_id: TabularId::Table(table_id),
                         warehouse_id,
                         name: table_ident.name,
                         namespace: table_ident.namespace.to_url_string(),
@@ -140,7 +140,7 @@ impl EndpointHook for CloudEventsPublisher {
             "dropTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::Table(*table_ident_uuid),
+                tabular_id: TabularId::Table(table_ident_uuid),
                 warehouse_id,
                 name: table.name,
                 namespace: table.namespace.to_url_string(),
@@ -170,7 +170,7 @@ impl EndpointHook for CloudEventsPublisher {
             "registerTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::Table(metadata.uuid()),
+                tabular_id: TabularId::Table(metadata.uuid().into()),
                 warehouse_id,
                 name: request.name.clone(),
                 namespace: namespace.to_url_string(),
@@ -202,7 +202,7 @@ impl EndpointHook for CloudEventsPublisher {
             "createTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::Table(metadata.uuid()),
+                tabular_id: TabularId::Table(metadata.uuid().into()),
                 warehouse_id,
                 name: request.name.clone(),
                 namespace: namespace.to_url_string(),
@@ -231,7 +231,7 @@ impl EndpointHook for CloudEventsPublisher {
             "renameTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::Table(*table_ident_uuid),
+                tabular_id: TabularId::Table(table_ident_uuid),
                 warehouse_id,
                 name: request.source.name.clone(),
                 namespace: request.source.namespace.to_url_string(),
@@ -263,7 +263,7 @@ impl EndpointHook for CloudEventsPublisher {
             "createView",
             maybe_body_to_json(&request),
             EventMetadata {
-                tabular_id: TabularId::View(metadata.uuid()),
+                tabular_id: TabularId::View(metadata.uuid().into()),
                 warehouse_id,
                 name: request.name.clone(),
                 namespace: parameters.namespace.to_url_string(),
@@ -297,7 +297,7 @@ impl EndpointHook for CloudEventsPublisher {
             "updateView",
             maybe_body_to_json(request),
             EventMetadata {
-                tabular_id: TabularId::View(metadata.new_metadata.uuid()),
+                tabular_id: TabularId::View(metadata.new_metadata.uuid().into()),
                 warehouse_id,
                 name: parameters.view.name,
                 namespace: parameters.view.namespace.to_url_string(),
@@ -330,7 +330,7 @@ impl EndpointHook for CloudEventsPublisher {
             "dropView",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::View(*view_ident_uuid),
+                tabular_id: TabularId::View(view_ident_uuid),
                 warehouse_id,
                 name: parameters.view.name,
                 namespace: parameters.view.namespace.to_url_string(),
@@ -362,7 +362,7 @@ impl EndpointHook for CloudEventsPublisher {
             "renameView",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::View(*view_ident_uuid),
+                tabular_id: TabularId::View(view_ident_uuid),
                 warehouse_id,
                 name: request.source.name.clone(),
                 namespace: request.source.namespace.to_url_string(),

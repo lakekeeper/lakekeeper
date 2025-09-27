@@ -15,8 +15,10 @@ use super::{TableId, ViewId};
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 #[schema(as=TabularIdentUuid)]
 pub enum TabularId {
-    Table(Uuid),
-    View(Uuid),
+    #[schema(value_type = Uuid)]
+    Table(TableId),
+    #[schema(value_type = Uuid)]
+    View(ViewId),
 }
 
 impl TabularId {
@@ -31,20 +33,21 @@ impl TabularId {
 
 impl From<TableId> for TabularId {
     fn from(ident: TableId) -> Self {
-        TabularId::Table(ident.0)
+        TabularId::Table(ident)
     }
 }
 
 impl From<ViewId> for TabularId {
     fn from(ident: ViewId) -> Self {
-        TabularId::View(ident.0)
+        TabularId::View(ident)
     }
 }
 
 impl AsRef<Uuid> for TabularId {
     fn as_ref(&self) -> &Uuid {
         match self {
-            TabularId::Table(id) | TabularId::View(id) => id,
+            TabularId::Table(id) => &id.0,
+            TabularId::View(id) => &id.0,
         }
     }
 }
@@ -134,7 +137,8 @@ impl Deref for TabularId {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            TabularId::Table(id) | TabularId::View(id) => id,
+            TabularId::Table(id) => &id.0,
+            TabularId::View(id) => &id.0,
         }
     }
 }

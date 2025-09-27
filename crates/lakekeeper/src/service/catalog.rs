@@ -22,7 +22,10 @@ pub use crate::api::iceberg::v1::{
 };
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
+        iceberg::v1::{
+            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
+            PaginationQuery,
+        },
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
@@ -473,6 +476,7 @@ where
         warehouse_id: WarehouseId,
         tables: impl IntoIterator<Item = TableId> + Send,
         include_deleted: bool,
+        filters: &LoadTableFilters,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<HashMap<TableId, LoadTableResponse>>;
 
@@ -518,12 +522,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
-    /// Undrop a table.
+    /// Undrop a table or view.
     ///
     /// Undrops a soft-deleted table. Does not work if the table was hard-deleted.
     /// Returns the task id of the expiration task associated with the soft-deletion.
     async fn clear_tabular_deleted_at(
-        table_id: &[TableId],
+        tabular_id: &[TabularId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>>;
@@ -871,7 +875,7 @@ where
     }
 
     /// Resolve tasks among all known active and historical tasks.
-    /// Returns a map of task_id to (TaskEntity, queue_name).
+    /// Returns a map of `task_id` to `(TaskEntity, queue_name)`.
     /// If `warehouse_id` is `Some`, only resolve tasks for that warehouse.
     async fn resolve_tasks_impl(
         warehouse_id: Option<WarehouseId>,
@@ -880,7 +884,7 @@ where
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>>;
 
     /// Resolve tasks among all known active and historical tasks.
-    /// Returns a map of task_id to (TaskEntity, queue_name).
+    /// Returns a map of `task_id` to `(TaskEntity, queue_name)`.
     /// If a task does not exist, it is not included in the map.
     async fn resolve_tasks(
         warehouse_id: Option<WarehouseId>,
@@ -898,7 +902,10 @@ where
                         TaskEntity::Table {
                             warehouse_id: wid, ..
                         } if *wid != w => continue,
-                        TaskEntity::Table { .. } => (),
+                        TaskEntity::View {
+                            warehouse_id: wid, ..
+                        } if *wid != w => continue,
+                        TaskEntity::View { .. } | TaskEntity::Table { .. } => (),
                     }
                 }
                 cached_results.insert(*id, cached_value);

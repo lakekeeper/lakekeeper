@@ -40,7 +40,7 @@ where
 
         let status = C::set_tabular_protected(
             warehouse_id,
-            TabularId::Table(*table_id),
+            TabularId::Table(table_id),
             protected,
             t.transaction(),
         )

@@ -27,7 +27,10 @@ use uuid::Uuid;
 
 use super::get_partial_fs_locations;
 use crate::{
-    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
+    api::iceberg::v1::{
+        tables::{LoadTableFilters, SnapshotsQuery},
+        PaginatedMapping, PaginationQuery,
+    },
     implementations::postgres::{
         dbutils::DBErrorHandler as _,
         tabular::{
@@ -125,7 +128,7 @@ where
     .map(|(id, location)| match id {
         TabularId::Table(tab) => Ok(TabularDetails {
             warehouse_id,
-            table_id: tab.into(),
+            table_id: tab,
             location,
         }),
         TabularId::View(_) => Err(ErrorModel::builder()
@@ -227,7 +230,7 @@ where
     tabulars.map::<TableId, TableInfo>(
         |k| match k {
             TabularId::Table(t) => {
-                let r: Result<TableId> = Ok(TableId::from(t));
+                let r: Result<TableId> = Ok(t);
                 r
             }
             TabularId::View(_) => Err(ErrorModel::internal(
@@ -643,13 +646,22 @@ pub(crate) async fn load_tables(
     warehouse_id: WarehouseId,
     tables: impl IntoIterator<Item = TableId>,
     include_deleted: bool,
+    filters: &LoadTableFilters,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<HashMap<TableId, LoadTableResponse>> {
     let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
+    let LoadTableFilters {
+        snapshots: snapshots_filter,
+    } = filters;
 
     let table = sqlx::query_as!(
         TableQueryStruct,
         r#"
+        WITH filtered_table_refs AS (
+            SELECT warehouse_id, table_id, snapshot_id, table_ref_name, retention
+            FROM table_refs 
+            WHERE warehouse_id = $1 AND table_id = ANY($2)
+        )
         SELECT
             t."table_id",
             t.last_sequence_number,
@@ -731,19 +743,26 @@ pub(crate) async fn load_tables(
                             ARRAY_AGG(value) as values
                      FROM table_properties WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tp ON tp.table_id = t.table_id
-        LEFT JOIN (SELECT table_id,
-                          ARRAY_AGG(snapshot_id) as snapshot_ids,
-                          ARRAY_AGG(parent_snapshot_id) as parent_snapshot_ids,
-                          ARRAY_AGG(sequence_number) as sequence_numbers,
-                          ARRAY_AGG(manifest_list) as manifest_lists,
-                          ARRAY_AGG(summary) as summaries,
-                          ARRAY_AGG(schema_id) as schema_ids,
-                          ARRAY_AGG(timestamp_ms) as timestamp,
-                          ARRAY_AGG(first_row_id) as first_row_ids,
-                          ARRAY_AGG(assigned_rows) as assigned_rows,
-                          ARRAY_AGG(key_id) as key_id
-                   FROM table_snapshot WHERE warehouse_id = $1 AND table_id = ANY($2)
-                   GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
+        LEFT JOIN (SELECT ts.table_id,
+                          ARRAY_AGG(ts.snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(ts.parent_snapshot_id) as parent_snapshot_ids,
+                          ARRAY_AGG(ts.sequence_number) as sequence_numbers,
+                          ARRAY_AGG(ts.manifest_list) as manifest_lists,
+                          ARRAY_AGG(ts.summary) as summaries,
+                          ARRAY_AGG(ts.schema_id) as schema_ids,
+                          ARRAY_AGG(ts.timestamp_ms) as timestamp,
+                          ARRAY_AGG(ts.first_row_id) as first_row_ids,
+                          ARRAY_AGG(ts.assigned_rows) as assigned_rows,
+                          ARRAY_AGG(ts.key_id) as key_id
+                   FROM table_snapshot ts
+                   WHERE ts.warehouse_id = $1 AND ts.table_id = ANY($2)
+                   AND ($4 = 'all' OR EXISTS (
+                       SELECT 1 FROM filtered_table_refs ftr 
+                       WHERE ftr.warehouse_id = ts.warehouse_id 
+                         AND ftr.table_id = ts.table_id 
+                         AND ftr.snapshot_id = ts.snapshot_id
+                   ))
+                   GROUP BY ts.table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
@@ -763,7 +782,7 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(table_ref_name) as table_ref_names,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(retention) as retentions
-                   FROM table_refs WHERE warehouse_id = $1 AND table_id = ANY($2)
+                   FROM filtered_table_refs
                    GROUP BY table_id) tr ON tr.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -797,7 +816,11 @@ pub(crate) async fn load_tables(
         "#,
         *warehouse_id,
         &table_ids,
-        include_deleted
+        include_deleted,
+        match snapshots_filter {
+            SnapshotsQuery::All => "all",
+            SnapshotsQuery::Refs => "refs",
+        }
     )
     .fetch_all(&mut **transaction)
     .await
@@ -990,7 +1013,7 @@ pub(crate) async fn rename_table(
 ) -> Result<()> {
     crate::implementations::postgres::tabular::rename_tabular(
         warehouse_id,
-        TabularId::Table(*source_id),
+        TabularId::Table(source_id),
         source,
         destination,
         transaction,
@@ -1008,7 +1031,7 @@ pub(crate) async fn drop_table(
 ) -> Result<String> {
     drop_tabular(
         warehouse_id,
-        TabularId::Table(*table_id),
+        TabularId::Table(table_id),
         force,
         None,
         transaction,
@@ -1065,7 +1088,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         api::{
-            iceberg::types::PageToken,
+            iceberg::{types::PageToken, v1::tables::LoadTableFilters},
             management::v1::{warehouse::WarehouseStatus, DeleteKind},
         },
         catalog::tables::create_table_request_into_table_metadata,
@@ -1317,9 +1340,15 @@ pub(crate) mod tests {
 
         // Load should succeed
         let mut t = pool.begin().await.unwrap();
-        let load_result = load_tables(warehouse_id, vec![table_id], false, &mut t)
-            .await
-            .unwrap();
+        let load_result = load_tables(
+            warehouse_id,
+            vec![table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
         assert_eq!(load_result.len(), 1);
         assert_eq!(
             load_result.get(&table_id).unwrap().table_metadata,
@@ -1364,6 +1393,7 @@ pub(crate) mod tests {
             warehouse_id,
             [table_id],
             false,
+            &LoadTableFilters::default(),
             &mut pool.begin().await.unwrap(),
         )
         .await
@@ -1406,6 +1436,7 @@ pub(crate) mod tests {
             warehouse_id,
             [table_id],
             false,
+            &LoadTableFilters::default(),
             &mut pool.begin().await.unwrap(),
         )
         .await
@@ -2067,14 +2098,13 @@ pub(crate) mod tests {
 
         let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
-                entity_id: EntityId::Tabular(*table.table_id),
+                entity_id: EntityId::Table(table.table_id),
                 warehouse_id,
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
                 entity_name: table.table_ident.into_name_parts(),
             },
             TabularExpirationPayload {
-                tabular_type: crate::api::management::v1::TabularType::Table,
                 deletion_kind: DeleteKind::Purge,
             },
             &mut transaction,
@@ -2084,7 +2114,7 @@ pub(crate) mod tests {
 
         mark_tabular_as_deleted(
             warehouse_id,
-            TabularId::Table(*table.table_id),
+            TabularId::Table(table.table_id),
             false,
             None,
             &mut transaction,

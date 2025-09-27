@@ -132,7 +132,7 @@ mod test {
                 task_metadata: TaskMetadata {
                     warehouse_id: setup.warehouse.warehouse_id,
                     parent_task_id: None,
-                    entity_id: EntityId::Tabular(Uuid::now_v7()),
+                    entity_id: EntityId::Table(Uuid::now_v7().into()),
                     schedule_for: None,
                     entity_name: vec!["mytable".to_string()],
                 },
