@@ -1,16 +1,15 @@
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
 use super::ApiServer;
 use crate::{
-    api::{ApiContext, RequestMetadata, Result},
+    api::{management::v1::TabularType, ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
         Catalog, SecretStore, State, TableId, ViewId,
     },
     WarehouseId,
 };
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
-use crate::api::management::v1::TabularType;
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> TabularManagementService<C, A, S>
     for ApiServer<C, A, S>

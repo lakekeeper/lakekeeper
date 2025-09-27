@@ -118,6 +118,11 @@ vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
 veil = { workspace = true }
 
+[build-dependencies]
+openssl-src = { version = "300.4.2", features = [
+    "force-engine",
+], default-features = false, optional = true }
+
 [dev-dependencies]
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
@@ -133,8 +138,3 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = "0.2.5"
-
-[build-dependencies]
-openssl-src = { version = "300.4.2", features = [
-    "force-engine",
-], default-features = false, optional = true }
