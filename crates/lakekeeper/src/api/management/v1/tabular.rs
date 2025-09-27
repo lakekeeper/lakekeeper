@@ -1,9 +1,9 @@
-use super::{ApiServer, ProtectionResponse};
+use super::ApiServer;
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
-        Catalog, SecretStore, State, TableId, TabularId, Transaction, ViewId,
+        Catalog, SecretStore, State, TableId, ViewId,
     },
     WarehouseId,
 };

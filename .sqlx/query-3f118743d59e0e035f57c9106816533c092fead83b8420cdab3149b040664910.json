@@ -100,7 +100,8 @@
                 "management-v1-get-task-queue-config",
                 "management-v1-control-tasks",
                 "management-v1-get-task-details",
-                "management-v1-list-tasks"
+                "management-v1-list-tasks",
+                "management-v1-search-tabular"
               ]
             }
           }
