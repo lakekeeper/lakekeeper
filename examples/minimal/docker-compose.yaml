@@ -156,7 +156,7 @@ services:
       /bin/sh -c "
       sleep 5;
       /usr/bin/mc alias set dockerminio http://minio:9000 minio-root-user minio-root-password;
-      /usr/bin/mc mb dockerminio/examples;
+      /usr/bin/mc mb --ignore-existing dockerminio/examples;
       exit 0;
       "
     networks:
