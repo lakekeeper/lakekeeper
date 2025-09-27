@@ -1396,7 +1396,7 @@ mod tests {
 
         let mut best_match_id = None; // will store id of the tabular we'll search for
         for nsid in [namespace1_id, namespace2_id] {
-            for tn in table_names.iter() {
+            for tn in &table_names {
                 let mut transaction = pool.begin().await.unwrap();
                 let table_id = Uuid::now_v7();
                 let location =
