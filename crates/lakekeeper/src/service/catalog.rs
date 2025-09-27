@@ -29,6 +29,7 @@ use crate::{
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
+            tabular::SearchTabularResponse,
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{
@@ -808,6 +809,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<TabularId, TabularInfo>>;
+
+    async fn search_tabular(
+        warehouse_id: WarehouseId,
+        search_term: &str,
+        catalog_state: Self::State,
+    ) -> Result<SearchTabularResponse>;
 
     async fn load_storage_profile(
         warehouse_id: WarehouseId,

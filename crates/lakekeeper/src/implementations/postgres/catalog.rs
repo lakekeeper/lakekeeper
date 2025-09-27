@@ -33,6 +33,7 @@ use crate::{
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
+            tabular::SearchTabularResponse,
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{
@@ -48,7 +49,7 @@ use crate::{
         role::search_role,
         tabular::{
             clear_tabular_deleted_at, get_tabular_protected, list_tabulars,
-            mark_tabular_as_deleted, set_tabular_protected,
+            mark_tabular_as_deleted, search_tabular, set_tabular_protected,
             table::{commit_table_transaction, create_table, load_storage_profile},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
@@ -639,6 +640,14 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         rename_view(warehouse_id, source_id, source, destination, transaction).await
+    }
+
+    async fn search_tabular(
+        warehouse_id: WarehouseId,
+        search_term: &str,
+        catalog_state: Self::State,
+    ) -> Result<SearchTabularResponse> {
+        search_tabular(warehouse_id, search_term, &catalog_state.read_pool()).await
     }
 
     async fn list_tabulars(

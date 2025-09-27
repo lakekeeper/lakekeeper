@@ -15,6 +15,83 @@ rust-version = "1.87.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+anyhow = "^1.0"
+assert-json-diff = "2.0.2"
+async-channel = { version = "2.3.1" }
+async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
+async-nats = "0.43.0"
+async-stream = "0.3.6"
+async-trait = "0.1.89"
+aws-config = { version = "1.8.5", features = ["behavior-version-latest"] }
+aws-sdk-sts = "1.82.0"
+aws-smithy-async = { version = "1.2.5" }
+aws-smithy-http = "0.62.3"
+aws-smithy-http-client = { version = "1.0.6" }
+aws-smithy-runtime-api = { version = "1.8.7" }
+axum = { version = "0.8.1" }
+axum-extra = { version = "0.10.0" }
+axum-macros = { version = "0.5.0" }
+axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
+azure_core = { version = "0.21.0", default-features = false, features = [
+    "hmac_rust",
+    "enable_reqwest_rustls",
+] }
+azure_identity = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
+azure_storage = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
+azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
+azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
+base64 = "0.22.1"
+bytes = "1.10"
+chrono = "^0.4"
+cloudevents-sdk = { version = "0.8.0" }
+derive_more = { version = "^2.0.0", features = ["from", "debug"] }
+fastrand = "2.3.0"
+figment = { version = "^0.10", features = ["env"] }
+figment_file_provider_adapter = "0.1.1"
+flate2 = "^1.0"
+futures = "^0.3"
+fxhash = "0.2.1"
+gcloud-token = "1.0.0"
+google-cloud-auth = { package = "gcloud-auth", version = "1.1.0", features = [
+    "rustls-tls",
+    "external-account",
+], default-features = false }
+google-cloud-token = { package = "token-source", version = "1.0" }
+headers = { version = "^0.4" }
+heck = "0.5.0"
+hostname = "0.4.0"
+http = "^1.1"
+http-body-util = "^0.1"
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "01fe1ef351277199f8de30b86cb89ad82c7d7583", features = [
+    "storage-gcs",
+    "storage-azdls",
+    "storage-s3",
+] }
+iso8601 = "0.6.2"
+itertools = "0.14.0"
+jwks_client_rs = { version = "0.5.1", default-features = false, features = [
+    "rustls-tls",
+] }
+lazy-regex = { version = "3.2.0", features = ["lite"] }
+lazy_static = "^1.4"
+limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
+maplit = "1.0.2"
+middle = { version = "0.3", features = ["tonic"] }
+mockall = "0.13.0"
+moka = { version = "^0.12", features = ["sync"] }
+openfga-client = { version = "0.4", features = ["auth-middle"] }
+paste = "1.0.15"
+percent-encoding = "2.3.1"
+pretty_assertions = "~1.4"
+quick-xml = { version = "0.38.3", features = ["serialize"] }
 rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd38d", default-features = false, features = [
     "tokio",
     "zstd",
@@ -24,89 +101,17 @@ rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd3
     "libz-static",
     "cmake-build",
 ] }
-async-channel = { version = "2.3.1" }
-async-nats = "0.43.0"
-async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-azure_core = { version = "0.21.0", default-features = false, features = [
-    "hmac_rust",
-    "enable_reqwest_rustls",
-] }
-azure_storage = { version = "0.21.0", default-features = false, features = [
-    "enable_reqwest_rustls",
-] }
-azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
-    "enable_reqwest_rustls",
-] }
-azure_identity = { version = "0.21.0", default-features = false, features = [
-    "enable_reqwest_rustls",
-] }
-azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
-    "enable_reqwest_rustls",
-] }
-aws-config = { version = "1.8.5", features = ["behavior-version-latest"] }
-aws-sdk-sts = "1.82.0"
-aws-smithy-http = "0.62.3"
-aws-smithy-http-client = { version = "1.0.6" }
-aws-smithy-runtime-api = { version = "1.8.7" }
-aws-smithy-async = { version = "1.2.5" }
-base64 = "0.22.1"
-cloudevents-sdk = { version = "0.8.0" }
-fxhash = "0.2.1"
-google-cloud-auth = { package = "gcloud-auth", version = "1.1.0", features = [
-    "rustls-tls",
-    "external-account",
-], default-features = false }
-google-cloud-token = { package = "token-source", version = "1.0" }
-gcloud-token = "1.0.0"
-figment = { version = "^0.10", features = ["env"] }
-figment_file_provider_adapter = "0.1.1"
-serde = { version = "^1.0", features = ["rc"] }
-serde_derive = "^1.0"
-serde_with = "^3.4"
-serde_json = { version = "^1.0", features = ["raw_value"] }
-serde_norway = "0.9.42"
-quick-xml = { version = "0.38.3", features = ["serialize"] }
-url = { version = "^2.5", features = ["serde"] }
-uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 reqwest = { version = "^0.12", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "01fe1ef351277199f8de30b86cb89ad82c7d7583", features = [
-    "storage-gcs",
-    "storage-azdls",
-    "storage-s3",
-] }
-iso8601 = "0.6.2"
-bytes = "1.10"
-openfga-client = { version = "0.4", features = ["auth-middle"] }
-typed-builder = "^0.22.0"
-async-trait = "0.1.89"
-axum = { version = "0.8.1" }
-axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
-axum-extra = { version = "0.10.0" }
-axum-macros = { version = "0.5.0" }
-itertools = "0.14.0"
-mockall = "0.13.0"
-http = "^1.1"
-derive_more = { version = "^2.0.0", features = ["from", "debug"] }
-flate2 = "^1.0"
-lazy_static = "^1.4"
-futures = "^0.3"
-anyhow = "^1.0"
-chrono = "^0.4"
-headers = { version = "^0.4" }
-hostname = "0.4.0"
-http-body-util = "^0.1"
-jwks_client_rs = { version = "0.5.1", default-features = false, features = [
-    "rustls-tls",
-] }
-lazy-regex = { version = "3.2.0", features = ["lite"] }
-moka = { version = "^0.12", features = ["sync"] }
-percent-encoding = "2.3.1"
-strum = { version = "0.27.0", features = ["derive"] }
-strum_macros = "0.27.0"
+serde = { version = "^1.0", features = ["rc"] }
+serde_derive = "^1.0"
+serde_json = { version = "^1.0", features = ["raw_value"] }
+serde_norway = "0.9.42"
+serde_with = "^3.4"
+similar = "2.6.0"
 sqlx = { version = "0.8.5", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -117,7 +122,10 @@ sqlx = { version = "0.8.5", default-features = false, features = [
     "uuid",
     "chrono",
 ] }
+strum = { version = "0.27.0", features = ["derive"] }
+strum_macros = "0.27.0"
 thiserror = "2.0.0"
+time = "0.3.36"
 tokio = { version = "1.41", default-features = false, features = [
     "signal",
     "rt-multi-thread",
@@ -135,8 +143,9 @@ tower-http = { version = "^0.6", features = [
 tracing = { version = "^0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
+typed-builder = "^0.22.0"
+url = { version = "^2.5", features = ["serde"] }
 urlencoding = "^2.1"
-async-stream = "0.3.6"
 utoipa = { version = "5.4.0", features = [
     "axum_extras",
     "chrono",
@@ -145,17 +154,8 @@ utoipa = { version = "5.4.0", features = [
     "yaml",
 ] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 veil = "0.2.0"
-paste = "1.0.15"
-heck = "0.5.0"
-time = "0.3.36"
-pretty_assertions = "~1.4"
-similar = "2.6.0"
-assert-json-diff = "2.0.2"
-maplit = "1.0.2"
-limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
-middle = { version = "0.3", features = ["tonic"] }
-fastrand = "2.3.0"
 
 [profile.dev]
 opt-level = 1

@@ -19,7 +19,10 @@ use super::dbutils::DBErrorHandler as _;
 use crate::{
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
-        management::v1::ProtectionResponse,
+        management::v1::{
+            tabular::{SearchTabular, SearchTabularResponse},
+            ProtectionResponse,
+        },
     },
     catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
@@ -373,8 +376,10 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO tabular (tabular_id, name, namespace_id, namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+        SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
+        FROM namespace n
+        WHERE n.namespace_id = $3
         RETURNING tabular_id
         "#,
         id,
@@ -461,7 +466,7 @@ where
         SELECT
             t.tabular_id,
             t.name as "tabular_name",
-            namespace_name,
+            t.namespace_name,
             t.typ as "typ: TabularType",
             t.created_at,
             t.deleted_at,
@@ -469,12 +474,11 @@ where
             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
-        INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
         WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND (namespace_name = $2 OR $2 IS NULL)
-            AND (n.namespace_id = $10 OR $10 IS NULL)
+            AND (t.namespace_name = $2 OR $2 IS NULL)
+            AND (t.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted
@@ -559,6 +563,74 @@ where
     }
 
     Ok(tabulars)
+}
+
+/// If search term corresponds to an uuid, it searches for the corresponding `TabularId`. Otherwise
+/// it searches for similarly named tables, taking namespace name and table name into account.
+pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    warehouse_id: WarehouseId,
+    search_term: &str,
+    connection: E,
+) -> Result<SearchTabularResponse> {
+    let tabulars = match Uuid::try_parse(search_term) {
+        // Search string corresponds to uuid.
+        Ok(id) => sqlx::query!(
+            r#"
+                SELECT tabular_id,
+                    namespace_name,
+                    name,
+                    typ as "typ: TabularType"
+                FROM tabular
+                WHERE warehouse_id = $1 AND tabular_id = $2
+                LIMIT 1
+                "#,
+            *warehouse_id,
+            id,
+        )
+        .fetch_optional(connection)
+        .await
+        .map_err(|e| e.into_error_model("Error searching tabular by uuid".to_string()))?
+        .map(|row| SearchTabular {
+            namespace_name: row.namespace_name,
+            tabular_name: row.name,
+            id: row.tabular_id,
+            tabular_type: row.typ.into(),
+            dist: Some(0f32), // ids match so it's a perfect match
+        })
+        .into_iter()
+        .collect::<Vec<_>>(),
+
+        // Search string is not an uuid
+        Err(_) => sqlx::query!(
+            r#"
+                SELECT tabular_id,
+                    namespace_name,
+                    name,
+                    typ as "typ: TabularType",
+                    concat_namespace_name_tabular_name(namespace_name, name) <-> $2 AS dist
+                FROM tabular
+                WHERE warehouse_id = $1
+                ORDER BY dist ASC
+                LIMIT 10
+                "#,
+            *warehouse_id,
+            search_term,
+        )
+        .fetch_all(connection)
+        .await
+        .map_err(|e| e.into_error_model("Error searching tabular by search term".to_string()))?
+        .into_iter()
+        .map(|row| SearchTabular {
+            namespace_name: row.namespace_name,
+            tabular_name: row.name,
+            id: row.tabular_id,
+            tabular_type: row.typ.into(),
+            dist: row.dist,
+        })
+        .collect::<Vec<_>>(),
+    };
+
+    Ok(SearchTabularResponse { tabulars })
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
@@ -1303,5 +1375,127 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.error.code, 404);
         assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+    }
+
+    #[sqlx::test]
+    async fn test_search_tabular(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace1 = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
+        let (namespace1_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace1, None).await;
+        let namespace2 =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["finance_ns".to_string()]).unwrap();
+        let (namespace2_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace2, None).await;
+
+        let table_names = [10, 101, 1011, 42, 420]
+            .into_iter()
+            .map(|i| format!("test_region_{i}"))
+            .collect::<Vec<_>>();
+
+        let mut best_match_id = None; // will store id of the tabular we'll search for
+        for nsid in [namespace1_id, namespace2_id] {
+            for tn in &table_names {
+                let mut transaction = pool.begin().await.unwrap();
+                let table_id = Uuid::now_v7();
+                let location =
+                    Location::from_str(&format!("s3://test-bucket/{nsid}/{tn}/")).unwrap();
+                let metadata_location =
+                    Location::from_str(&format!("s3://test-bucket/{nsid}/{tn}/metadata/v1.json"))
+                        .unwrap();
+                let tabular_id = create_tabular(
+                    CreateTabular {
+                        id: table_id,
+                        name: tn.as_ref(),
+                        namespace_id: *nsid,
+                        warehouse_id: *warehouse_id,
+                        typ: TabularType::Table,
+                        metadata_location: Some(&metadata_location),
+                        location: &location,
+                    },
+                    &mut transaction,
+                )
+                .await
+                .unwrap();
+                transaction.commit().await.unwrap();
+                if nsid == namespace2_id && tn == "test_region_42" {
+                    best_match_id = Some(tabular_id);
+                }
+            }
+        }
+
+        let res = search_tabular(warehouse_id, "finance.table42", &state.read_write.read_pool)
+            .await
+            .unwrap()
+            .tabulars[0]
+            .clone();
+
+        // Assert the best match is returned as first result.
+        assert_eq!(res.id, best_match_id.unwrap());
+        assert_eq!(res.namespace_name, vec!["finance_ns".to_string()]);
+        assert_eq!(res.tabular_name, "test_region_42");
+        assert_eq!(res.tabular_type, TabularType::Table.into());
+    }
+
+    #[sqlx::test]
+    async fn test_search_tabular_by_uuid(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let table_names = [10, 101, 1011, 42, 420]
+            .into_iter()
+            .map(|i| format!("test_region_{i}"))
+            .collect::<Vec<_>>();
+
+        let mut id_to_search = None; // will store id of the tabular we'll search for
+        for tn in &table_names {
+            let mut transaction = pool.begin().await.unwrap();
+            let table_id = Uuid::now_v7();
+            let location =
+                Location::from_str(&format!("s3://test-bucket/{namespace_id}/{tn}/")).unwrap();
+            let metadata_location = Location::from_str(&format!(
+                "s3://test-bucket/{namespace_id}/{tn}/metadata/v1.json"
+            ))
+            .unwrap();
+            let tabular_id = create_tabular(
+                CreateTabular {
+                    id: table_id,
+                    name: tn.as_ref(),
+                    namespace_id: *namespace_id,
+                    warehouse_id: *warehouse_id,
+                    typ: TabularType::Table,
+                    metadata_location: Some(&metadata_location),
+                    location: &location,
+                },
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+            if tn == "test_region_42" {
+                id_to_search = Some(tabular_id);
+            }
+        }
+
+        let results = search_tabular(
+            warehouse_id,
+            id_to_search.unwrap().to_string().as_str(),
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap()
+        .tabulars;
+        assert_eq!(results.len(), 1);
+
+        // Assert the tabular with matching uuid is returned
+        let res = results[0].clone();
+        assert_eq!(res.id, id_to_search.unwrap());
+        assert_eq!(res.namespace_name, vec!["hr_ns".to_string()]);
+        assert_eq!(res.tabular_name, "test_region_42");
+        assert_eq!(res.tabular_type, TabularType::Table.into());
     }
 }

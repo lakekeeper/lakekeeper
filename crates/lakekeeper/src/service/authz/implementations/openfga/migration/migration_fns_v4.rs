@@ -8,6 +8,7 @@ use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
     TupleKey,
 };
+use serde::Serialize;
 use strum::IntoEnumIterator;
 use tokio::{sync::Semaphore, task::JoinSet};
 
@@ -307,7 +308,7 @@ async fn get_all_namespaces(
     Ok(namespaces)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumIter)]
 enum TabularType {
     Table,
     View,
