@@ -1997,6 +1997,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/search-tabular:
+    post:
+      tags:
+        - warehouse
+      summary: Search tabular
+      description: |-
+        Performs a fuzzy search for tabulars based on the provided criteria. If the search string
+        can be parsed as uuid, it searches for that uuid. Returns results that are visible to the
+        current user.
+      operationId: search_tabular
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTabularRequest'
+        required: true
+      responses:
+        '200':
+          description: List of tabulars
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTabularResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/statistics:
     get:
       tags:
@@ -4189,6 +4225,55 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+          description: List of users matching the search criteria
+    SearchTabular:
+      type: object
+      required:
+        - namespace-name
+        - tabular-name
+        - id
+        - tabular-type
+      properties:
+        dist:
+          type:
+            - number
+            - 'null'
+          format: float
+          description: Better matches have a lower distanc
+        id:
+          type: string
+          description: ID of the user
+        namespace-name:
+          type: array
+          items:
+            type: string
+          description: Namespace name
+        tabular-name:
+          type: string
+          description: Tabular name
+        tabular-type:
+          $ref: '#/components/schemas/TabularType'
+          description: Type of the tabular
+    SearchTabularRequest:
+      type: object
+      required:
+        - search
+      properties:
+        search:
+          type: string
+          description: |-
+            Search string for fuzzy search.
+            Length is truncated to 64 characters.
+    SearchTabularResponse:
+      type: object
+      description: Search result for users
+      required:
+        - tabulars
+      properties:
+        tabulars:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchTabular'
           description: List of users matching the search criteria
     SearchUser:
       type: object

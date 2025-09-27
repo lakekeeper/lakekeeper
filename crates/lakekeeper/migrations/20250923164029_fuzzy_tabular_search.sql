@@ -63,6 +63,7 @@ USING GIST (
     gist_trgm_ops(siglen=256)
 );
 
+ALTER TYPE api_endpoints ADD VALUE 'management-v1-search-tabular';
 
 -- -- Covered by the new fk added above.
 -- ALTER TABLE tabular

@@ -138,6 +138,7 @@ pub mod v1 {
             rename_warehouse,
             search_role,
             search_user,
+            search_tabular,
             set_namespace_protection,
             set_table_protection,
             set_task_queue_config,
@@ -1178,9 +1179,10 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchTabularRequest>,
-    ) -> Result<SearchTabularResponse> {
+    ) -> Result<Json<SearchTabularResponse>> {
         ApiServer::<C, A, S>::search_tabular(warehouse_id.into(), api_context, metadata, request)
             .await
+            .map(Json)
     }
 
     /// List Soft-Deleted Tabulars
@@ -1887,6 +1889,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/statistics",
                     get(get_warehouse_statistics),
+                )
+                .route(
+                    "/management/v1/warehouse/{warehouse_id}/search-tabular",
+                    post(search_tabular),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars",
