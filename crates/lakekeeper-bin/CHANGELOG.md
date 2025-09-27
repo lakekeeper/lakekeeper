@@ -2,6 +2,21 @@
 
 
 
+## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **authz:** add OpenFGA schema v4 and v3->v4 migration ([#1314](https://github.com/lakekeeper/lakekeeper/issues/1314))
+
+### Features
+
+* Add support for tasks affecting views ([#1378](https://github.com/lakekeeper/lakekeeper/issues/1378)) ([62d9f5b](https://github.com/lakekeeper/lakekeeper/commit/62d9f5bbc835e9132dabd57ed5f5ba03320ddc14))
+* **authz:** add OpenFGA schema v4 and v3-&gt;v4 migration ([#1314](https://github.com/lakekeeper/lakekeeper/issues/1314)) ([f35c910](https://github.com/lakekeeper/lakekeeper/commit/f35c91014d1a04bda229366221356053dca2ae25))
+* **authz:** Add specific Task Actions ([#1379](https://github.com/lakekeeper/lakekeeper/issues/1379)) ([34993e4](https://github.com/lakekeeper/lakekeeper/commit/34993e47505c0e0463357ba24c90a60624377e80))
+* Random Server IDs ([#1328](https://github.com/lakekeeper/lakekeeper/issues/1328)) ([4a84ce5](https://github.com/lakekeeper/lakekeeper/commit/4a84ce518936494938a3b523ffc2c3e4f7abc304))
+* Set ServerID during migration ([#1348](https://github.com/lakekeeper/lakekeeper/issues/1348)) ([ce3ad5b](https://github.com/lakekeeper/lakekeeper/commit/ce3ad5b43172498f23669676bb24fbe74ce6443d))
+
 ## [0.9.5](https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5) (2025-08-14)
 
 
