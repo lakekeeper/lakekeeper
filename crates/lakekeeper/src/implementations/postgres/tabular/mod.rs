@@ -610,19 +610,23 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
         // Search string is not an uuid
         Err(_) => sqlx::query!(
             r#"
-            SELECT tabular_id,
-                tabular_namespace_name as namespace_name,
-                name,
-                typ as "typ: TabularType",
-                concat_namespace_name_tabular_name(tabular_namespace_name, name) <-> $2 AS dist
-            FROM tabular t
-            INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
-            WHERE t.warehouse_id = $1
-                AND w.status = 'active'
-                AND t.deleted_at IS NULL
-                AND t.metadata_location IS NOT NULL
-            ORDER BY dist ASC
-            LIMIT 10
+            with data as (
+                SELECT tabular_id,
+                    tabular_namespace_name as namespace_name,
+                    name,
+                    typ as "typ: TabularType",
+                    concat_namespace_name_tabular_name(tabular_namespace_name, name) <-> $2 AS dist
+                FROM tabular t
+                INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
+                WHERE t.warehouse_id = $1
+                    AND w.status = 'active'
+                    AND t.deleted_at IS NULL
+                    AND t.metadata_location IS NOT NULL
+                ORDER BY dist ASC
+                LIMIT 10
+            )
+            SELECT * FROM data
+            WHERE dist < 1.0
             "#,
             *warehouse_id,
             search_term,
