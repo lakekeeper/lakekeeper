@@ -2001,11 +2001,10 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Search tabular
+      summary: Search Tabulars
       description: |-
         Performs a fuzzy search for tabulars based on the provided criteria. If the search string
-        can be parsed as uuid, it searches for that uuid. Returns results that are visible to the
-        current user.
+        can be parsed as uuid, Namespaces or Tables with this UUID are returned.
       operationId: search_tabular
       parameters:
         - name: warehouse_id

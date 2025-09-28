@@ -41,7 +41,10 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 AS $$
-    SELECT array_to_string(nsn, '.') || '.' || tn;
+    SELECT CASE
+             WHEN array_length(nsn, 1) IS NULL THEN tn
+             ELSE array_to_string(nsn, '.') || '.' || tn
+           END;
 $$;
 
 -- The trigram index bypasses collation. If case (in)sensitivity turns out to be a problem,
