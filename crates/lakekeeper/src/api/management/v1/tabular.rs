@@ -85,7 +85,7 @@ where
                 .await?
                 .into_inner()
                 .into_iter()
-                .zip(table_checks.into_iter())
+                .zip(table_checks)
                 .filter_map(|(is_allowed, (_, _, sr))| is_allowed.then_some(sr))
                 .collect_vec()
         };
@@ -102,7 +102,7 @@ where
                 .await?
                 .into_inner()
                 .into_iter()
-                .zip(view_checks.into_iter())
+                .zip(view_checks)
                 .filter_map(|(is_allowed, (_, _, sr))| is_allowed.then_some(sr))
                 .collect_vec()
         };
