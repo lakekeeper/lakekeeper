@@ -1891,7 +1891,7 @@ pub mod v1 {
                     get(get_warehouse_statistics),
                 )
                 .route(
-                    "/management/v1/warehouse/{warehouse_id}/search-tabular",
+                    ManagementV1Endpoint::SearchTabular.path_in_management_v1(),
                     post(search_tabular),
                 )
                 .route(

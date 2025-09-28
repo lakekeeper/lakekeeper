@@ -1,12 +1,12 @@
+use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::ApiServer;
 use crate::{
-    api::{management::v1::TabularType, ApiContext, RequestMetadata, Result},
+    api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
-        Catalog, SecretStore, State, TableId, ViewId,
+        Catalog, SecretStore, State, TabularId,
     },
     WarehouseId,
 };
@@ -46,66 +46,66 @@ where
             .map_err(|e| e.append_detail("Not authorized to search tabulars in the Warehouse."))?;
         let authz_list_all = authz_list_all?.into_inner();
 
-        // -------------------- Business Logic --------------------
-        let all_matches =
-            C::search_tabular(warehouse_id, &request.search, context.v1_state.catalog)
-                .await?
-                .tabulars;
+        // -------------------- Business Logic & Tabular level AuthZ filters --------------------
+        let mut search = request.search;
+        if search.len() > 64 {
+            search.truncate(64);
+        }
+        let all_matches = C::search_tabular(warehouse_id, &search, context.v1_state.catalog)
+            .await?
+            .tabulars;
 
         // Untangle tables and views as they must be checked for authz separately.
         // `search_tabular` returns only a small number of results, so we're rather trying
         // to keep this simple + readable instead of maximizing efficiency.
-        let tables = all_matches
-            .iter()
-            .filter_map(|res| match res.tabular_type {
-                TabularType::Table => Some(res.clone()),
-                TabularType::View => None,
-            })
-            .collect::<Vec<_>>();
-        let table_checks = tables
-            .iter()
-            .map(|res| (TableId::from(res.id), CatalogTableAction::CanIncludeInList))
-            .collect::<Vec<_>>();
-        let table_masks = if authz_list_all {
-            vec![true; tables.len()]
+        let (table_checks, view_checks): (Vec<_>, Vec<_>) =
+            all_matches
+                .into_iter()
+                .partition_map(|search_result| match search_result.tabular_id {
+                    TabularId::Table(id) => itertools::Either::Left((
+                        id,
+                        CatalogTableAction::CanIncludeInList,
+                        search_result,
+                    )),
+                    TabularId::View(id) => itertools::Either::Right((
+                        id,
+                        CatalogViewAction::CanIncludeInList,
+                        search_result,
+                    )),
+                });
+        let authorized_tables = if authz_list_all {
+            table_checks.into_iter().map(|(_, _, sr)| sr).collect()
         } else {
+            let table_checks_authz = table_checks
+                .iter()
+                .map(|(id, action, _)| (*id, *action))
+                .collect_vec();
             authorizer
-                .are_allowed_table_actions(&request_metadata, warehouse_id, table_checks)
+                .are_allowed_table_actions(&request_metadata, warehouse_id, table_checks_authz)
                 .await?
                 .into_inner()
+                .into_iter()
+                .zip(table_checks.into_iter())
+                .filter_map(|(is_allowed, (_, _, sr))| is_allowed.then_some(sr))
+                .collect_vec()
         };
-        let mut authorized_tables = Vec::with_capacity(tables.len());
-        for (i, t) in tables.into_iter().enumerate() {
-            if table_masks.get(i).copied().unwrap_or(false) {
-                authorized_tables.push(t);
-            }
-        }
 
-        let views = all_matches
-            .iter()
-            .filter_map(|res| match res.tabular_type {
-                TabularType::Table => None,
-                TabularType::View => Some(res.clone()),
-            })
-            .collect::<Vec<_>>();
-        let view_checks = views
-            .iter()
-            .map(|res| (ViewId::from(res.id), CatalogViewAction::CanIncludeInList))
-            .collect::<Vec<_>>();
-        let view_masks = if authz_list_all {
-            vec![true; views.len()]
+        let authorized_views = if authz_list_all {
+            view_checks.into_iter().map(|(_, _, sr)| sr).collect()
         } else {
+            let view_checks_authz = view_checks
+                .iter()
+                .map(|(id, action, _)| (*id, *action))
+                .collect_vec();
             authorizer
-                .are_allowed_view_actions(&request_metadata, warehouse_id, view_checks)
+                .are_allowed_view_actions(&request_metadata, warehouse_id, view_checks_authz)
                 .await?
                 .into_inner()
+                .into_iter()
+                .zip(view_checks.into_iter())
+                .filter_map(|(is_allowed, (_, _, sr))| is_allowed.then_some(sr))
+                .collect_vec()
         };
-        let mut authorized_views = Vec::with_capacity(views.len());
-        for (i, v) in views.into_iter().enumerate() {
-            if view_masks.get(i).copied().unwrap_or(false) {
-                authorized_views.push(v);
-            }
-        }
 
         // Merge authorized tables and views and show best matches first.
         let mut authorized_tabulars = authorized_tables
@@ -114,16 +114,14 @@ where
             .collect::<Vec<_>>();
         // sort `f32` by treating NaN as greater than any number
         authorized_tabulars.sort_by(|a, b| {
-            a.dist
-                .partial_cmp(&b.dist)
+            a.distance
+                .partial_cmp(&b.distance)
                 .unwrap_or(std::cmp::Ordering::Greater)
         });
 
         Ok(SearchTabularResponse {
             tabulars: authorized_tabulars,
         })
-
-        // TODO(mooori) handle search_term is uuid
     }
 }
 
@@ -134,10 +132,10 @@ pub struct SearchTabularRequest {
     pub search: String,
 }
 
-/// Search result for users
+/// Search result for tabulars
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SearchTabularResponse {
-    /// List of users matching the search criteria
+    /// List of tabulars matching the search criteria
     pub tabulars: Vec<SearchTabular>,
 }
 
@@ -148,11 +146,8 @@ pub struct SearchTabular {
     pub namespace_name: Vec<String>,
     /// Tabular name
     pub tabular_name: String,
-    /// ID of the user
-    #[schema(value_type=String)]
-    pub id: Uuid,
-    /// Type of the tabular
-    pub tabular_type: TabularType,
-    /// Better matches have a lower distanc
-    pub dist: Option<f32>,
+    /// ID of the tabular
+    pub tabular_id: TabularId,
+    /// Better matches have a lower distance
+    pub distance: Option<f32>,
 }

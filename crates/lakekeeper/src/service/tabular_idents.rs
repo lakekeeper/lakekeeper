@@ -5,13 +5,13 @@ use std::{
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{TableId, ViewId};
 
-#[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, ToSchema)]
+#[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 #[schema(as=TabularIdentUuid)]
 pub enum TabularId {

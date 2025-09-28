@@ -4231,29 +4231,25 @@ components:
       required:
         - namespace-name
         - tabular-name
-        - id
-        - tabular-type
+        - tabular-id
       properties:
-        dist:
+        distance:
           type:
             - number
             - 'null'
           format: float
-          description: Better matches have a lower distanc
-        id:
-          type: string
-          description: ID of the user
+          description: Better matches have a lower distance
         namespace-name:
           type: array
           items:
             type: string
           description: Namespace name
+        tabular-id:
+          $ref: '#/components/schemas/TabularIdentUuid'
+          description: ID of the tabular
         tabular-name:
           type: string
           description: Tabular name
-        tabular-type:
-          $ref: '#/components/schemas/TabularType'
-          description: Type of the tabular
     SearchTabularRequest:
       type: object
       required:
@@ -4264,9 +4260,10 @@ components:
           description: |-
             Search string for fuzzy search.
             Length is truncated to 64 characters.
+          maxLength: 64
     SearchTabularResponse:
       type: object
-      description: Search result for users
+      description: Search result for tabulars
       required:
         - tabulars
       properties:
@@ -4274,7 +4271,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SearchTabular'
-          description: List of users matching the search criteria
+          description: List of tabulars matching the search criteria
     SearchUser:
       type: object
       required:

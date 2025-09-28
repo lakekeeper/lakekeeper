@@ -376,7 +376,7 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+        INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
         SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
         FROM namespace n
         WHERE n.namespace_id = $3
@@ -466,7 +466,7 @@ where
         SELECT
             t.tabular_id,
             t.name as "tabular_name",
-            t.namespace_name,
+            t.tabular_namespace_name as namespace_name,
             t.typ as "typ: TabularType",
             t.created_at,
             t.deleted_at,
@@ -477,7 +477,7 @@ where
         INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
         WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND (t.namespace_name = $2 OR $2 IS NULL)
+            AND (t.tabular_namespace_name = $2 OR $2 IS NULL)
             AND (t.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
@@ -576,43 +576,54 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
         // Search string corresponds to uuid.
         Ok(id) => sqlx::query!(
             r#"
-                SELECT tabular_id,
-                    namespace_name,
-                    name,
-                    typ as "typ: TabularType"
-                FROM tabular
-                WHERE warehouse_id = $1 AND tabular_id = $2
-                LIMIT 1
-                "#,
+            SELECT tabular_id,
+                tabular_namespace_name as namespace_name,
+                name,
+                typ as "typ: TabularType"
+            FROM tabular t
+            INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
+            WHERE t.warehouse_id = $1
+                AND w.status = 'active'
+                AND t.deleted_at IS NULL
+                AND t.metadata_location IS NOT NULL
+                AND (tabular_id = $2 OR namespace_id = $2)
+            LIMIT 10
+            "#,
             *warehouse_id,
             id,
         )
-        .fetch_optional(connection)
+        .fetch_all(connection)
         .await
         .map_err(|e| e.into_error_model("Error searching tabular by uuid".to_string()))?
+        .into_iter()
         .map(|row| SearchTabular {
             namespace_name: row.namespace_name,
             tabular_name: row.name,
-            id: row.tabular_id,
-            tabular_type: row.typ.into(),
-            dist: Some(0f32), // ids match so it's a perfect match
+            tabular_id: match row.typ {
+                TabularType::Table => TabularId::Table(row.tabular_id.into()),
+                TabularType::View => TabularId::View(row.tabular_id.into()),
+            },
+            distance: Some(0f32), // ids match so it's a perfect match
         })
-        .into_iter()
         .collect::<Vec<_>>(),
 
         // Search string is not an uuid
         Err(_) => sqlx::query!(
             r#"
-                SELECT tabular_id,
-                    namespace_name,
-                    name,
-                    typ as "typ: TabularType",
-                    concat_namespace_name_tabular_name(namespace_name, name) <-> $2 AS dist
-                FROM tabular
-                WHERE warehouse_id = $1
-                ORDER BY dist ASC
-                LIMIT 10
-                "#,
+            SELECT tabular_id,
+                tabular_namespace_name as namespace_name,
+                name,
+                typ as "typ: TabularType",
+                concat_namespace_name_tabular_name(tabular_namespace_name, name) <-> $2 AS dist
+            FROM tabular t
+            INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
+            WHERE t.warehouse_id = $1
+                AND w.status = 'active'
+                AND t.deleted_at IS NULL
+                AND t.metadata_location IS NOT NULL
+            ORDER BY dist ASC
+            LIMIT 10
+            "#,
             *warehouse_id,
             search_term,
         )
@@ -623,9 +634,11 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
         .map(|row| SearchTabular {
             namespace_name: row.namespace_name,
             tabular_name: row.name,
-            id: row.tabular_id,
-            tabular_type: row.typ.into(),
-            dist: row.dist,
+            tabular_id: match row.typ {
+                TabularType::Table => TabularId::Table(row.tabular_id.into()),
+                TabularType::View => TabularId::View(row.tabular_id.into()),
+            },
+            distance: row.dist,
         })
         .collect::<Vec<_>>(),
     };
@@ -751,7 +764,7 @@ pub(crate) async fn rename_tabular(
                 FOR UPDATE
             )
             UPDATE tabular t
-            SET name = $1, namespace_id = ln.namespace_id
+            SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
             FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
             WHERE t.tabular_id = lt.tabular_id
             AND t.warehouse_id = $2
@@ -1432,10 +1445,12 @@ mod tests {
             .clone();
 
         // Assert the best match is returned as first result.
-        assert_eq!(res.id, best_match_id.unwrap());
+        assert_eq!(
+            res.tabular_id,
+            TabularId::Table(TableId::from(best_match_id.unwrap()))
+        );
         assert_eq!(res.namespace_name, vec!["finance_ns".to_string()]);
         assert_eq!(res.tabular_name, "test_region_42");
-        assert_eq!(res.tabular_type, TabularType::Table.into());
     }
 
     #[sqlx::test]
@@ -1493,9 +1508,11 @@ mod tests {
 
         // Assert the tabular with matching uuid is returned
         let res = results[0].clone();
-        assert_eq!(res.id, id_to_search.unwrap());
+        assert_eq!(
+            res.tabular_id,
+            TabularId::from(TableId::from(id_to_search.unwrap()))
+        );
         assert_eq!(res.namespace_name, vec!["hr_ns".to_string()]);
         assert_eq!(res.tabular_name, "test_region_42");
-        assert_eq!(res.tabular_type, TabularType::Table.into());
     }
 }
