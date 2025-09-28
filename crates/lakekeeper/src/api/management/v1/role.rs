@@ -269,7 +269,9 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        search.truncate(64);
+        if search.chars().count() > 64 {
+            search = search.chars().take(64).collect();
+        }
         C::search_role(&search, context.v1_state.catalog).await
     }
 

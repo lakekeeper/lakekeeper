@@ -48,8 +48,8 @@ where
 
         // -------------------- Business Logic & Tabular level AuthZ filters --------------------
         let mut search = request.search;
-        if search.len() > 64 {
-            search.truncate(64);
+        if search.chars().count() > 64 {
+            search = search.chars().take(64).collect();
         }
         let all_matches = C::search_tabular(warehouse_id, &search, context.v1_state.catalog)
             .await?

@@ -1,4 +1,4 @@
-CREATE EXTENSION btree_gist;
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- The purpose is enabling fuzzy search on `<namespace_name>.<tabular_name>`.
 --
