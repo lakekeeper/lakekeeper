@@ -129,6 +129,7 @@ where
 pub struct SearchTabularRequest {
     /// Search string for fuzzy search.
     /// Length is truncated to 64 characters.
+    #[schema(max_length = 64)]
     pub search: String,
 }
 
