@@ -1,26 +1,25 @@
-use lakekeeper::axum;
-use lakekeeper::tower;
-use lakekeeper::tracing;
 use std::{default::Default, env::VarError, sync::LazyLock};
 
-use lakekeeper::axum::{
-    http::{header, HeaderMap, StatusCode, Uri},
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
-};
-use lakekeeper::tower_http::{
-    catch_panic::CatchPanicLayer,
-    compression::CompressionLayer,
-    sensitive_headers::SetSensitiveHeadersLayer,
-    timeout::TimeoutLayer,
-    trace::{self, TraceLayer},
-    ServiceBuilderExt,
-};
 use lakekeeper::{
+    axum,
+    axum::{
+        http::{header, HeaderMap, StatusCode, Uri},
+        response::{IntoResponse, Response},
+        routing::get,
+        Router,
+    },
     determine_base_uri,
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
-    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
+    tower,
+    tower_http::{
+        catch_panic::CatchPanicLayer,
+        compression::CompressionLayer,
+        sensitive_headers::SetSensitiveHeadersLayer,
+        timeout::TimeoutLayer,
+        trace::{self, TraceLayer},
+        ServiceBuilderExt,
+    },
+    tracing, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
 };
 use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
 
@@ -172,8 +171,9 @@ async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redir
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use lakekeeper::tokio;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_index_found() {

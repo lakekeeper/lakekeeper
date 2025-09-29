@@ -1,8 +1,8 @@
 use std::{sync::Arc, vec};
 
-use lakekeeper::limes::{Authenticator, AuthenticatorEnum};
 use lakekeeper::{
     implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
+    limes::{Authenticator, AuthenticatorEnum},
     serve::{serve, ServeConfiguration},
     service::{
         authn::{get_default_authenticator_from_config, BuiltInAuthenticators},
