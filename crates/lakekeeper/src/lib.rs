@@ -47,7 +47,9 @@ pub use utoipa;
 pub mod metrics;
 #[cfg(feature = "router")]
 #[cfg_attr(docsrs, doc(cfg(feature = "router")))]
-pub mod tracing;
+pub mod request_tracing;
+
+pub use tracing;
 
 #[cfg(test)]
 pub mod tests;

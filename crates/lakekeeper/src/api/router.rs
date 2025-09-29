@@ -30,7 +30,7 @@ use crate::{
         task_queue::QueueApiConfig,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
-    tracing::{MakeRequestUuid7, RestMakeSpan},
+    request_tracing::{MakeRequestUuid7, RestMakeSpan},
     CancellationToken, CONFIG,
 };
 
