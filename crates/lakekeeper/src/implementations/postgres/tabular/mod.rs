@@ -590,6 +590,7 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 AND t.deleted_at IS NULL
                 AND t.metadata_location IS NOT NULL
                 AND (tabular_id = $2 OR namespace_id = $2)
+            ORDER BY (tabular_id = $2) DESC
             LIMIT 10
             "#,
             *warehouse_id,
