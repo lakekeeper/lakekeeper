@@ -11,7 +11,7 @@ use crate::{
         },
         Catalog, SecretStore,
     },
-    CancellationToken,
+    CancellationToken, CONFIG,
 };
 
 pub type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
@@ -201,7 +201,7 @@ impl TaskQueueRegistry {
                         }
                     })
                 }),
-                num_workers: 2,
+                num_workers: CONFIG.task_tabular_expiration_workers,
             },
         )
         .await;
@@ -221,7 +221,7 @@ impl TaskQueueRegistry {
                     .await;
                 })
             }),
-            num_workers: 2,
+            num_workers: CONFIG.task_tabular_purge_workers,
         })
         .await;
 
