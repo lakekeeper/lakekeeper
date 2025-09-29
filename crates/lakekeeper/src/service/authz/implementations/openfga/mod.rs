@@ -96,19 +96,14 @@ pub struct OpenFGAAuthorizer {
     client: BasicOpenFgaClient,
     health: Arc<RwLock<Vec<Health>>>,
     server_id: ServerId,
-    // Pre-formatted "server:<uuid>" for OpenFGA object ids
-    openfga_server: String,
 }
 
 impl OpenFGAAuthorizer {
     pub fn new(client: BasicOpenFgaClient, server_id: ServerId) -> Self {
-        // TODO(1361) server_id.to_openfga()
-        let openfga_server = format!("server:{server_id}");
         Self {
             client,
             health: Arc::new(RwLock::new(vec![])),
             server_id,
-            openfga_server,
         }
     }
 }
@@ -728,8 +723,8 @@ impl Authorizer for OpenFGAAuthorizer {
 
 impl OpenFGAAuthorizer {
     #[must_use]
-    fn openfga_server(&self) -> &str {
-        &self.openfga_server
+    fn openfga_server(&self) -> String {
+        self.server_id.to_openfga()
     }
 
     async fn list_projects_internal(&self, actor: &Actor) -> Result<ListProjectsResponse> {
