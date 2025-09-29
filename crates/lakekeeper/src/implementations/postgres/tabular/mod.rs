@@ -565,8 +565,11 @@ where
     Ok(tabulars)
 }
 
-/// If search term corresponds to an uuid, it searches for the corresponding `TabularId`. Otherwise
-/// it searches for similarly named tables, taking namespace name and table name into account.
+/// Searches for similarly named tables, taking namespace name and table name into account.
+///
+/// If the search term corresponds to an uuid, it instead searches for a table or namespace
+/// with that uuid. If a namespace with that uuid exists, the response contains tabulars inside the
+/// namespace.
 pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     warehouse_id: WarehouseId,
     search_term: &str,
@@ -603,7 +606,11 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 TabularType::Table => TabularId::Table(row.tabular_id.into()),
                 TabularType::View => TabularId::View(row.tabular_id.into()),
             },
-            distance: Some(0f32), // ids match so it's a perfect match
+            distance: if id == row.tabular_id {
+                Some(0f32) // ids match so it's a perfect match
+            } else {
+                None // showing random tables in namespace, dist has no meaning
+            },
         })
         .collect::<Vec<_>>(),
 
