@@ -10,7 +10,7 @@ use crate::{
             openfga::{OpenFGAError, OpenFGAResult},
             FgaType,
         },
-        NamespaceId, RoleId, TableId, ViewId,
+        NamespaceId, RoleId, ServerId, TableId, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -161,6 +161,16 @@ impl OpenFgaEntity for Actor {
     }
 }
 
+impl OpenFgaEntity for ServerId {
+    fn to_openfga(&self) -> String {
+        format!("{}:{self}", self.openfga_type())
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Server
+    }
+}
+
 impl OpenFgaEntity for ProjectId {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
@@ -258,5 +268,15 @@ mod test {
         assert_eq!(parsed.to_openfga(), openfga_id);
         assert_eq!(parsed.openfga_type(), FgaType::User);
         assert_eq!(parsed.to_string(), user_id);
+    }
+
+    /// The `OpenFgaEntity` implementation for `ServerId` was added after `ServerId` itself.
+    /// This test verifies that `ServerId::to_openfga` is backwards compatible.
+    #[test]
+    fn test_server_id_openfga_backwards_compatibility() {
+        let id = ServerId::new_random();
+        let entity = id.to_openfga();
+        let previous_entity = format!("server:{id}");
+        assert_eq!(entity, previous_entity);
     }
 }
