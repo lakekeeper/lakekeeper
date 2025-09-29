@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **authz:** extend OpenFGA tabular entities with WarehouseId ([#1329](https://github.com/lakekeeper/lakekeeper/issues/1329))
+* Move to Lakekeeper IO based on hyperscaler SDKs ([#1285](https://github.com/lakekeeper/lakekeeper/issues/1285))
+
+### Features
+
+* **authz:** extend OpenFGA tabular entities with WarehouseId ([#1329](https://github.com/lakekeeper/lakekeeper/issues/1329)) ([8805030](https://github.com/lakekeeper/lakekeeper/commit/880503079d7cd2c47383c4d92e90cb82fce3a422))
+* Enable write.metadata.delete-after-commit.enabled by default ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Move to Lakekeeper IO based on hyperscaler SDKs ([#1285](https://github.com/lakekeeper/lakekeeper/issues/1285)) ([1658ae6](https://github.com/lakekeeper/lakekeeper/commit/1658ae612e0d218431b16fcb160b95fb7da2660c))
+* Return Error Stacks for non-internal errors ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Simplify task interface, re-exports ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+
 ## [0.9.5](https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5) (2025-08-14)
 
 
