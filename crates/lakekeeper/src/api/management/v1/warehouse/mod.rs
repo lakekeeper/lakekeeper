@@ -1040,15 +1040,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let config = C::get_task_queue_config(warehouse_id, queue_name, transaction.transaction())
+        let config = C::get_task_queue_config(warehouse_id, queue_name, context.v1_state.catalog)
             .await?
             .ok_or(ErrorModel::not_found(
                 "Task queue config not found",
                 "TaskQueueConfigNotFound",
                 None,
             ))?;
-        transaction.commit().await?;
         Ok(config)
     }
 }

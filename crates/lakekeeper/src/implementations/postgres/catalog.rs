@@ -833,8 +833,8 @@ impl Catalog for super::PostgresCatalog {
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
-        get_task_queue_config(transaction, warehouse_id, queue_name).await
+        get_task_queue_config(&state.read_pool(), warehouse_id, queue_name).await
     }
 }
