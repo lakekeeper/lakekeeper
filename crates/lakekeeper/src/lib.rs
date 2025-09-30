@@ -61,7 +61,6 @@ pub mod test {
 
     use tokio::runtime::Runtime;
 
-    #[allow(dead_code)]
     static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -70,7 +69,6 @@ pub mod test {
     });
 
     #[track_caller]
-    #[allow(dead_code)]
     pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
         {
             if common_runtime {

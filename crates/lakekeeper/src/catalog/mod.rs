@@ -237,7 +237,6 @@ where
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
@@ -271,6 +270,7 @@ pub(crate) mod test {
         WarehouseId,
     };
 
+    #[allow(dead_code)]
     pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
         let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
         let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();

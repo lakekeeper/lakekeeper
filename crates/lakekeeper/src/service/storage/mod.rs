@@ -1259,7 +1259,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
     fn generate_table_metadata() -> TableMetadata {
         TableMetadataBuilder::new(
             Schema::builder().build().expect("Failed to build schema"),
@@ -1275,7 +1274,7 @@ mod tests {
         .metadata
     }
 
-    #[allow(dead_code, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     async fn test_profile_io(cred: &StorageCredential, profile: &mut StorageProfile) {
         profile
             .normalize(Some(cred))
@@ -1310,7 +1309,7 @@ mod tests {
         );
     }
 
-    #[allow(dead_code, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     async fn test_profile_vended_creds(cred: &StorageCredential, profile: &mut StorageProfile) {
         profile
             .normalize(Some(cred))

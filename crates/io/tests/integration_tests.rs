@@ -305,8 +305,8 @@ test_all_storages!(
 //     })
 // }
 
-#[allow(dead_code)]
 /// Performance test implementation for storage backend initialization
+#[allow(dead_code)]
 async fn test_initialization_performance_impl<F, Fut>(create_storage: F) -> anyhow::Result<()>
 where
     F: Fn() -> Fut + Clone,
