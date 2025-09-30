@@ -2,7 +2,7 @@ use anyhow::Context;
 use lakekeeper::{
     implementations::postgres::{get_reader_pool, get_writer_pool, ReadWrite},
     service::health::{HealthExt, HealthState, HealthStatus},
-    CONFIG,
+    tracing, CONFIG,
 };
 
 pub(crate) async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {

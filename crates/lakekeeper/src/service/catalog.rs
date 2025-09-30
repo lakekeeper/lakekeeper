@@ -1109,7 +1109,7 @@ where
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;
 }
 

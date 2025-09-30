@@ -2,6 +2,7 @@ use std::{sync::Arc, vec};
 
 use lakekeeper::{
     implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
+    limes::{Authenticator, AuthenticatorEnum},
     serve::{serve, ServeConfiguration},
     service::{
         authn::{get_default_authenticator_from_config, BuiltInAuthenticators},
@@ -14,7 +15,6 @@ use lakekeeper::{
         Catalog, SecretStore,
     },
 };
-use limes::{Authenticator, AuthenticatorEnum};
 
 #[cfg(feature = "ui")]
 use crate::ui;
@@ -86,7 +86,7 @@ async fn serve_inner<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator
     serve(config).await
 }
 
-fn add_ui_routes(router: axum::Router) -> axum::Router {
+fn add_ui_routes(router: lakekeeper::axum::Router) -> lakekeeper::axum::Router {
     #[cfg(feature = "ui")]
     {
         let ui_router = ui::get_ui_router();

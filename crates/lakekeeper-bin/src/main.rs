@@ -14,7 +14,7 @@ use lakekeeper::{
         authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
         task_queue::BUILT_IN_API_CONFIGS,
     },
-    AuthZBackend, CONFIG,
+    tokio, tracing, AuthZBackend, CONFIG,
 };
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 

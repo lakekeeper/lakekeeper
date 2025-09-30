@@ -90,9 +90,11 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                         | Example    | Description                  |
-|----------------------------------|------------|------------------------------|
-| `LAKEKEEPER__TASK_POLL_INTERVAL` | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| Variable                                      | Example    | Description     |
+|-----------------------------------------------|------------|-----------------|
+| <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`<nobr>  | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` | 2          | Number of workers spawned to expire soft-deleted tables and views. |
+| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`      | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
 
 ### NATS
 

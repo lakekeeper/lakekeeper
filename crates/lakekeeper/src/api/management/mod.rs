@@ -1161,7 +1161,9 @@ pub mod v1 {
     /// Search Tabulars
     ///
     /// Performs a fuzzy search for tabulars based on the provided criteria. If the search string
-    /// can be parsed as uuid, Namespaces or Tables with this UUID are returned.
+    /// can be parsed as uuid:
+    /// - if there is tabular with that uuid, the tabular is in the response
+    /// - if there is a namespace with that uuid, tables in that namespace are in the response
     #[utoipa::path(
         post,
         tag = "warehouse",

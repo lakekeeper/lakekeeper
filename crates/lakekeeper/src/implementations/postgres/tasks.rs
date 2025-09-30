@@ -616,8 +616,12 @@ pub(crate) async fn record_failure(
     Ok(())
 }
 
-pub(crate) async fn get_task_queue_config(
-    transaction: &mut PgConnection,
+pub(crate) async fn get_task_queue_config<
+    'e,
+    'c: 'e,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    connection: E,
     warehouse_id: WarehouseId,
     queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
@@ -630,7 +634,7 @@ pub(crate) async fn get_task_queue_config(
         *warehouse_id,
         queue_name.as_str()
     )
-    .fetch_optional(transaction)
+    .fetch_optional(connection)
     .await
     .map_err(|e| {
         tracing::error!(?e, "Failed to get task queue config");
@@ -1777,7 +1781,7 @@ mod test {
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
-        assert!(get_task_queue_config(&mut conn, warehouse_id, &tq_name)
+        assert!(get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
             .await
             .unwrap()
             .is_none());
@@ -1791,7 +1795,7 @@ mod test {
             .await
             .unwrap();
 
-        let response = get_task_queue_config(&mut conn, warehouse_id, &tq_name)
+        let response = get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
             .await
             .unwrap()
             .unwrap();

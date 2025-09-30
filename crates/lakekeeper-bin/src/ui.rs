@@ -1,24 +1,27 @@
 use std::{default::Default, env::VarError, sync::LazyLock};
 
-use axum::{
-    http::{header, HeaderMap, StatusCode, Uri},
-    response::{IntoResponse, Response},
-    routing::get,
-};
 use lakekeeper::{
+    axum,
+    axum::{
+        http::{header, HeaderMap, StatusCode, Uri},
+        response::{IntoResponse, Response},
+        routing::get,
+        Router,
+    },
     determine_base_uri,
-    tracing::{MakeRequestUuid7, RestMakeSpan},
-    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
+    request_tracing::{MakeRequestUuid7, RestMakeSpan},
+    tower,
+    tower_http::{
+        catch_panic::CatchPanicLayer,
+        compression::CompressionLayer,
+        sensitive_headers::SetSensitiveHeadersLayer,
+        timeout::TimeoutLayer,
+        trace::{self, TraceLayer},
+        ServiceBuilderExt,
+    },
+    tracing, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
 };
 use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
-use tower_http::{
-    catch_panic::CatchPanicLayer,
-    compression::CompressionLayer,
-    sensitive_headers::SetSensitiveHeadersLayer,
-    timeout::TimeoutLayer,
-    trace::{self, TraceLayer},
-    ServiceBuilderExt,
-};
 
 // Static configuration for UI
 static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
@@ -130,8 +133,8 @@ fn cache_item_to_response(item: CacheItem) -> Response {
     }
 }
 
-pub(crate) fn get_ui_router() -> axum::Router {
-    axum::Router::new()
+pub(crate) fn get_ui_router() -> Router {
+    Router::new()
         .route("/ui", get(redirect_to_ui))
         .route("/", get(redirect_to_ui))
         .route("/ui/index.html", get(redirect_to_ui))
@@ -168,6 +171,8 @@ async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redir
 
 #[cfg(test)]
 mod test {
+    use lakekeeper::tokio;
+
     use super::*;
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use lakekeeper::{
     implementations::postgres::{get_reader_pool, migrations::MigrationState},
-    CONFIG,
+    tokio, tracing, CONFIG,
 };
 
 use crate::healthcheck::db_health_check;

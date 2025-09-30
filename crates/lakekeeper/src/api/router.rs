@@ -23,6 +23,7 @@ use crate::{
         ApiContext,
     },
     request_metadata::{create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER},
+    request_tracing::{MakeRequestUuid7, RestMakeSpan},
     service::{
         authn::{auth_middleware_fn, AuthMiddlewareState},
         authz::Authorizer,
@@ -30,7 +31,6 @@ use crate::{
         task_queue::QueueApiConfig,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
-    tracing::{MakeRequestUuid7, RestMakeSpan},
     CancellationToken, CONFIG,
 };
 
