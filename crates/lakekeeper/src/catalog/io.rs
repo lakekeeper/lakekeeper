@@ -181,7 +181,6 @@ mod tests {
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
 
-    #[allow(dead_code)]
     async fn test_list_and_remove_all(cred: StorageCredential, profile: StorageProfile) {
         async fn list_simple(io: &impl LakekeeperStorage, location: &Location) -> Vec<Location> {
             let list = list_location(io, location, Some(10)).await.unwrap();

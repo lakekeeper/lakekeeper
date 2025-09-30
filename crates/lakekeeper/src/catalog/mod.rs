@@ -237,7 +237,6 @@ where
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
