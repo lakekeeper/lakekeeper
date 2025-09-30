@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
 use iceberg::{
-    spec::{TableMetadata, ViewMetadata},
+    spec::{TableMetadata, TableMetadataRef, ViewMetadata},
     TableUpdate,
 };
 use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
@@ -175,10 +175,10 @@ pub struct GetProjectResponse {
 
 #[derive(Debug, Clone)]
 pub struct TableCommit {
-    pub new_metadata: TableMetadata,
+    pub new_metadata: TableMetadataRef,
     pub new_metadata_location: Location,
     pub previous_metadata_location: Option<Location>,
-    pub updates: Vec<TableUpdate>,
+    pub updates: Arc<Vec<TableUpdate>>,
     pub diffs: TableMetadataDiffs,
 }
 
