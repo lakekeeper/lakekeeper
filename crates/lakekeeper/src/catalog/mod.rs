@@ -270,6 +270,7 @@ pub(crate) mod test {
         WarehouseId,
     };
 
+    #[allow(dead_code)]
     pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
         let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
         let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
