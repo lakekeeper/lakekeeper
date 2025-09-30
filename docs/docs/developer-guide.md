@@ -89,10 +89,30 @@ cd ../..
 
 # If you changed any of the SQL statements embedded in Rust code, run this before pushing to GitHub.
 just sqlx-prepare
-
 ```
 This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
 Be careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on GitHub so there's no way of really breaking things.
+
+### Inspecting the db
+
+The db schema is the result of all migrations applied in order. To inspect it you can:
+
+```shell
+# Assumes you set up the db as described above
+
+# Get a shell in the db's container
+docker exec -it postgres-16 /bin/bash
+
+# Then you can connect to the db
+psql "postgresql://postgres:postgres@localhost:5432/postgres"
+# And inspect it, for instance by describing views or tables
+\d+ active_tabulars
+
+# Or you can dump the entire schema
+pg_dump --schema-only "postgresql://postgres:postgres@localhost:5432/postgres" > /home/lakekeeper_schema.sql
+# Copy it out of the container and then inspect it or pass it as context to LLMs
+docker cp postgres-16:/home/lakekeeper_schema.sql .
+```
 
 ## KV2 / Vault
 
