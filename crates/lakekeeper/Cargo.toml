@@ -71,7 +71,7 @@ iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
-jsonwebtoken = "9.3.0"
+jsonwebtoken = "10.0.0"
 jwks_client_rs = { workspace = true }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
