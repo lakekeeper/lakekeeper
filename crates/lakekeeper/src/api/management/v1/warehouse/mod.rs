@@ -1042,11 +1042,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let config = C::get_task_queue_config(warehouse_id, queue_name, context.v1_state.catalog)
             .await?
-            .ok_or(ErrorModel::not_found(
-                "Task queue config not found",
-                "TaskQueueConfigNotFound",
-                None,
-            ))?;
+            .unwrap_or_else(|| GetTaskQueueConfigResponse {
+                queue_config: QueueConfigResponse {
+                    config: serde_json::json!({}),
+                    queue_name: queue_name.clone(),
+                },
+                max_seconds_since_last_heartbeat: None,
+            });
         Ok(config)
     }
 }
