@@ -2250,7 +2250,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TabularExpirationQueueConfig'
+                $ref: '#/components/schemas/GetTabularExpirationQueueConfig'
         4XX:
           description: ''
           content:
@@ -2274,7 +2274,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TabularExpirationQueueConfig'
+              $ref: '#/components/schemas/SetTabularExpirationQueueConfig'
         required: true
       responses:
         '204':
@@ -2311,7 +2311,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PurgeQueueConfig'
+                $ref: '#/components/schemas/GetPurgeQueueConfig'
         4XX:
           description: ''
           content:
@@ -2335,7 +2335,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PurgeQueueConfig'
+              $ref: '#/components/schemas/SetPurgeQueueConfig'
         required: true
       responses:
         '204':
@@ -3324,6 +3324,18 @@ components:
         project-name:
           type: string
           description: Name of the project
+    GetPurgeQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/PurgeQueueConfig'
     GetRoleAccessResponse:
       type: object
       required:
@@ -3378,6 +3390,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTabularExpirationQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/TabularExpirationQueueConfig'
     GetTaskDetailsResponse:
       allOf:
         - $ref: '#/components/schemas/Task'
@@ -3400,18 +3424,6 @@ components:
             task-data:
               type: object
               description: Task-specific data
-    GetTaskQueueConfigResponse:
-      type: object
-      required:
-        - queue-config
-      properties:
-        max-seconds-since-last-heartbeat:
-          type:
-            - integer
-            - 'null'
-          format: int64
-        queue-config:
-          $ref: '#/components/schemas/QueueConfigResponse'
     GetViewAccessResponse:
       type: object
       required:
@@ -4417,7 +4429,7 @@ components:
         protected:
           type: boolean
           description: Setting this to `true` will prevent the entity from being deleted unless `force` is used.
-    SetTaskQueueConfigRequest:
+    SetPurgeQueueConfig:
       type: object
       required:
         - queue-config
@@ -4428,7 +4440,19 @@ components:
             - 'null'
           format: int64
         queue-config:
-          $ref: '#/components/schemas/QueueConfig'
+          $ref: '#/components/schemas/PurgeQueueConfig'
+    SetTabularExpirationQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/TabularExpirationQueueConfig'
     StorageCredential:
       oneOf:
         - allOf:

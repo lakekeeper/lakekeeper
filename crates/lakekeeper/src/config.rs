@@ -447,19 +447,11 @@ pub enum SecretBackend {
     Postgres,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
 pub struct DebugConfig {
     /// If true, log all request bodies to the debug log for debugging purposes.
     /// This is expensive and should only be used for debugging.
     pub log_request_bodies: bool,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            log_request_bodies: false,
-        }
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Redact)]
