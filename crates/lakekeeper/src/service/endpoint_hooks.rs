@@ -6,7 +6,7 @@ use std::{
 
 use futures::TryFutureExt;
 use iceberg::{
-    spec::{TableMetadata, ViewMetadata},
+    spec::{TableMetadata, TableMetadataRef, ViewMetadata},
     TableIdent,
 };
 use iceberg_ext::catalog::rest::{
@@ -393,7 +393,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<RegisterTableRequest>,
-        _metadata: Arc<TableMetadata>,
+        _metadata: TableMetadataRef,
         _metadata_location: Arc<Location>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
@@ -406,7 +406,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<CreateTableRequest>,
-        _metadata: Arc<TableMetadata>,
+        _metadata: TableMetadataRef,
         _metadata_location: Option<Arc<Location>>,
         _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
