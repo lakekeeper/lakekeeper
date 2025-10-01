@@ -253,6 +253,15 @@ Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeepe
 
 You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. Minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
 
+### Debug
+
+Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.
+
+| Variable                                             | Example | Description |
+|------------------------------------------------------|---------|-------------|
+| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr> | `true`  | If set to `true`, Lakekeeper will log all incoming request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
+
+**Warning**: Debug options can expose sensitive information in logs and should only be used in secure development environments.
 
 ### Test Configurations
 | Variable                                          | Example | Description    |

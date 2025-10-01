@@ -110,9 +110,16 @@ pub async fn new_full_router<
         option_layer(None)
     };
 
-    let router = Router::new()
+    let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
-        .nest("/management/v1", management_routes)
+        .nest("/management/v1", management_routes);
+
+    // Apply request body logging middleware FIRST, before any other middleware that might consume the body
+    if CONFIG.debug.log_request_bodies {
+        router = router.layer(axum::middleware::from_fn(print_request_body));
+    }
+
+    let router = router
         .layer(axum::middleware::from_fn_with_state(
             endpoint_statistics_tracker_tx,
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
@@ -126,7 +133,8 @@ pub async fn new_full_router<
             }),
         );
     let registered_api_config = state.v1_state.registered_task_queues.api_config().await;
-    let router = maybe_merge_swagger_router(router, registered_api_config.iter().collect())
+    let router = maybe_merge_swagger_router(router, registered_api_config.iter().collect());
+    let router = router
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
         ))
@@ -143,9 +151,6 @@ pub async fn new_full_router<
                         .make_span_with(RestMakeSpan::new(tracing::Level::INFO))
                         .on_response(trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)),
                 )
-                // Uncomment the following lines and the functions below to
-                // print the full request body for debugging.
-                // .layer(axum::middleware::from_fn(print_request_body))
                 .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
                 .layer(CatchPanicLayer::new())
                 .layer(maybe_cors_layer)
@@ -160,43 +165,54 @@ pub async fn new_full_router<
     })
 }
 
-// // middleware that shows how to consume the request body upfront
-// async fn print_request_body(
-//     request: axum::extract::Request,
-//     next: axum::middleware::Next,
-// ) -> Result<impl IntoResponse, axum::response::Response> {
-//     let request = buffer_request_body(request).await?;
+async fn print_request_body(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<impl IntoResponse, axum::response::Response> {
+    let request = buffer_request_body(request).await?;
 
-//     Ok(next.run(request).await)
-// }
+    Ok(next.run(request).await)
+}
 
-// // the trick is to take the request apart, buffer the body, do what you need to do, then put
-// // the request back together
-// async fn buffer_request_body(
-//     request: axum::extract::Request,
-// ) -> Result<axum::extract::Request, axum::response::Response> {
-//     let (parts, body) = request.into_parts();
+// This function is expensive and should only be used for debugging purposes.
+async fn buffer_request_body(
+    request: axum::extract::Request,
+) -> Result<axum::extract::Request, axum::response::Response> {
+    let path = request.uri().path().to_string();
+    let request_id = request
+        .headers()
+        .get(crate::api::X_REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("MISSING-REQUEST-ID")
+        .to_string();
+    let method = request.method().to_string();
+    let (parts, body) = request.into_parts();
 
-//     // this won't work if the body is an long running stream
-//     let bytes = http_body_util::BodyExt::collect(body)
-//         .await
-//         .map_err(|err| {
-//             (
-//                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-//                 err.to_string(),
-//             )
-//                 .into_response()
-//         })?
-//         .to_bytes();
+    // this won't work if the body is an long running stream
+    let bytes = http_body_util::BodyExt::collect(body)
+        .await
+        .map_err(|err| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                err.to_string(),
+            )
+                .into_response()
+        })?
+        .to_bytes();
 
-//     let s = String::from_utf8_lossy(&bytes).to_string();
-//     tracing::info!(body = s);
+    let s = String::from_utf8_lossy(&bytes).to_string();
+    tracing::debug!(
+        method = method,
+        path = path,
+        body = s,
+        request_id = request_id
+    );
 
-//     Ok(axum::extract::Request::from_parts(
-//         parts,
-//         axum::body::Body::from(bytes),
-//     ))
-// }
+    Ok(axum::extract::Request::from_parts(
+        parts,
+        axum::body::Body::from(bytes),
+    ))
+}
 
 fn get_cors_layer(
     cors_origins: Option<&'static [HeaderValue]>,
