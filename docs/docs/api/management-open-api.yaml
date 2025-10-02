@@ -3528,6 +3528,11 @@ components:
       required:
         - projects
       properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token for next page of results
         projects:
           type: array
           items:

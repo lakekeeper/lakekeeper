@@ -12,7 +12,11 @@ pub use crate::service::{
     WarehouseStatus,
 };
 use crate::{
-    api::{management::v1::ApiServer, ApiContext, Result},
+    api::{
+        iceberg::v1::{PageToken, PaginationQuery},
+        management::v1::ApiServer,
+        ApiContext, Result,
+    },
     request_metadata::RequestMetadata,
     service::{
         authz::{
@@ -42,11 +46,33 @@ pub struct RenameProjectRequest {
     pub new_name: String,
 }
 
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProjectsQuery {
+    /// Next page token for pagination
+    #[serde(skip_serializing_if = "PageToken::skip_serialize")]
+    #[param(value_type=String)]
+    pub page_token: PageToken,
+    /// Signal an upper bound of the number of results that a client will receive
+    /// Default: 100
+    pub page_size: Option<i64>,
+}
+impl From<ListProjectsQuery> for PaginationQuery {
+    fn from(query: ListProjectsQuery) -> Self {
+        PaginationQuery {
+            page_token: query.page_token,
+            page_size: query.page_size,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct ListProjectsResponse {
     /// List of projects
     pub projects: Vec<GetProjectResponse>,
+    /// Token for next page of results
+    pub next_page_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -201,6 +227,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn list_projects(
+        request: ListProjectsQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ListProjectsResponse> {
@@ -215,18 +242,10 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         };
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
 
-        let projects = C::list_projects(project_id_filter, trx.transaction()).await?;
+        let response =
+            C::list_projects(project_id_filter, request.into(), trx.transaction()).await?;
         trx.commit().await?;
-
-        Ok(ListProjectsResponse {
-            projects: projects
-                .into_iter()
-                .map(|project| GetProjectResponse {
-                    project_id: project.project_id,
-                    project_name: project.name,
-                })
-                .collect(),
-        })
+        Ok(response)
     }
 
     async fn get_endpoint_statistics(
