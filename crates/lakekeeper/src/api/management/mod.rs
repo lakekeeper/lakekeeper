@@ -44,7 +44,7 @@ pub mod v1 {
     };
     use utoipa::{
         openapi::{security::SecurityScheme, KnownFormat, RefOr},
-        OpenApi, ToSchema,
+        OpenApi, PartialSchema, ToSchema,
     };
     use view::ViewManagementService as _;
     use warehouse::{
@@ -1713,6 +1713,72 @@ pub mod v1 {
             utoipa_schema,
         } in queue_api_configs
         {
+            let mut set_queue_config_schema = SetTaskQueueConfigRequest::schema();
+            let mut get_queue_config_schema = GetTaskQueueConfigResponse::schema();
+            let set_queue_config_type_name = format!("Set{utoipa_type_name}");
+            let get_queue_config_type_name = format!("Get{utoipa_type_name}");
+            let queue_config_type_ref = RefOr::Ref(
+                utoipa::openapi::schema::RefBuilder::new()
+                    .ref_location_from_schema_name(utoipa_type_name.to_string())
+                    .build(),
+            );
+            let set_queue_config_type_ref = RefOr::Ref(
+                utoipa::openapi::schema::RefBuilder::new()
+                    .ref_location_from_schema_name(set_queue_config_type_name.clone())
+                    .build(),
+            );
+            let get_queue_config_type_ref = RefOr::Ref(
+                utoipa::openapi::schema::RefBuilder::new()
+                    .ref_location_from_schema_name(get_queue_config_type_name.clone())
+                    .build(),
+            );
+
+            // replace the "queue-config" property with a ref to the actual queue config type
+            match &mut set_queue_config_schema {
+                RefOr::Ref(_) => {
+                    unreachable!(
+                        "The schema for SetTaskQueueConfigRequest should not be a reference."
+                    );
+                }
+                RefOr::T(s) => match s {
+                    utoipa::openapi::schema::Schema::Object(obj) => {
+                        let ins = obj
+                            .properties
+                            .insert("queue-config".to_string(), queue_config_type_ref.clone());
+                        if ins.is_none() {
+                            unreachable!("The schema for SetTaskQueueConfigRequest should have a 'queue-config' property.");
+                        }
+                    }
+                    _ => {
+                        unreachable!(
+                            "The schema for SetTaskQueueConfigRequest should be an object."
+                        );
+                    }
+                },
+            }
+            match &mut get_queue_config_schema {
+                RefOr::Ref(_) => {
+                    unreachable!(
+                        "The schema for GetTaskQueueConfigResponse should not be a reference."
+                    );
+                }
+                RefOr::T(s) => match s {
+                    utoipa::openapi::schema::Schema::Object(obj) => {
+                        let ins = obj
+                            .properties
+                            .insert("queue-config".to_string(), queue_config_type_ref.clone());
+                        if ins.is_none() {
+                            unreachable!("The schema for GetTaskQueueConfigResponse should have a 'queue-config' property.");
+                        }
+                    }
+                    _ => {
+                        unreachable!(
+                            "The schema for GetTaskQueueConfigResponse should be an object."
+                        );
+                    }
+                },
+            }
+
             let path = ManagementV1Endpoint::SetTaskQueueConfig
                 .path()
                 .replace("{queue_name}", queue_name);
@@ -1746,11 +1812,7 @@ pub mod v1 {
             body.content.insert(
                 "application/json".to_string(),
                 utoipa::openapi::ContentBuilder::new()
-                    .schema(Some(RefOr::Ref(
-                        utoipa::openapi::schema::RefBuilder::new()
-                            .ref_location_from_schema_name(utoipa_type_name.to_string())
-                            .build(),
-                    )))
+                    .schema(Some(set_queue_config_type_ref))
                     .build(),
             );
             let Some(get) = p.get.as_mut() else {
@@ -1774,11 +1836,7 @@ pub mod v1 {
                 .content(
                     "application/json",
                     utoipa::openapi::content::ContentBuilder::new()
-                        .schema(Some(RefOr::Ref(
-                            utoipa::openapi::schema::RefBuilder::new()
-                                .ref_location_from_schema_name(utoipa_type_name.to_string())
-                                .build(),
-                        )))
+                        .schema(Some(get_queue_config_type_ref))
                         .build(),
                 )
                 .header(
@@ -1805,6 +1863,20 @@ pub mod v1 {
             comps
                 .schemas
                 .insert(utoipa_type_name.to_string(), utoipa_schema.clone());
+            comps
+                .schemas
+                .insert(set_queue_config_type_name, set_queue_config_schema);
+            comps
+                .schemas
+                .insert(get_queue_config_type_name, get_queue_config_schema);
+
+            // Remove original SetTaskQueueConfigRequest and GetTaskQueueConfigResponse schemas
+            comps
+                .schemas
+                .remove(&SetTaskQueueConfigRequest::name().to_string());
+            comps
+                .schemas
+                .remove(&GetTaskQueueConfigResponse::name().to_string());
         }
 
         doc

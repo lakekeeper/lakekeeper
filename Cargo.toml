@@ -129,6 +129,8 @@ time = "0.3.36"
 tokio = { version = "1.41", default-features = false, features = [
     "signal",
     "rt-multi-thread",
+    "macros",
+    "time",
 ] }
 tokio-util = { version = "^0.7" }
 tower = { version = "^0.5" }

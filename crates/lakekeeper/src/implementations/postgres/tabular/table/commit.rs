@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use iceberg::{spec::TableMetadata, ErrorKind};
+use iceberg::{
+    spec::{TableMetadata, TableMetadataRef},
+    ErrorKind,
+};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use lakekeeper_io::Location;
@@ -99,7 +102,7 @@ pub(crate) async fn commit_table_transaction(
 struct TableMetadataTransition {
     warehouse_id: WarehouseId,
     previous_metadata_location: Option<Location>,
-    new_metadata: TableMetadata,
+    new_metadata: TableMetadataRef,
     new_metadata_location: Location,
 }
 
