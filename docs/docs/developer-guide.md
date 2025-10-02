@@ -13,7 +13,7 @@ To work on small and self-contained features, it is usually enough to have a Pos
 
 ```bash
 # start postgres
-docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
 # set envs
 echo 'export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres' > .env
 echo 'export ICEBERG_REST__PG_ENCRYPTION_KEY="abc"' >> .env

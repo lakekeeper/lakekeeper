@@ -77,3 +77,18 @@ Managed access can be enabled or disabled for warehouses and namespaces using th
 
 ## Best Practices
 We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas.
+
+## OpenFGA in Production
+When deploying OpenFGA in production environments, ensure you follow the [OpenFGA Production Checklist](https://openfga.dev/docs/best-practices/running-in-production).
+
+Lakekeeper includes [Query Consistency](https://openfga.dev/docs/interacting/consistency) specifications with each authorization request to OpenFGA. For most operations, `MINIMIZE_LATENCY` consistency provides optimal performance while maintaining sufficient data consistency guarantees.
+
+For medium to large-scale deployments, we strongly recommend enabling caching in OpenFGA and increasing the database connection pool limits. These optimizations significantly reduce database load and improve authorization latency. Configure the following environment variables in OpenFGA (written for version 1.10). You may increase the number of connections further if your database deployment can handle additional connections:
+
+```sh
+OPENFGA_DATASTORE_MAX_OPEN_CONNS=200
+OPENFGA_DATASTORE_MAX_IDLE_CONNS=100
+OPENFGA_CACHE_CONTROLLER_ENABLED=true
+OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
+OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
+```
