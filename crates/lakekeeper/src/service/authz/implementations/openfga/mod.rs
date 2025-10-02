@@ -10,7 +10,8 @@ use futures::future::try_join_all;
 use openfga_client::{
     client::{
         batch_check_single_result::CheckResult, BatchCheckItem, CheckRequestTupleKey,
-        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
+        ConsistencyPreference, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
+        TupleKeyWithoutCondition,
     },
     migration::AuthorizationModelVersion,
     tonic,
@@ -94,14 +95,19 @@ static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = L
 #[derive(Clone, Debug)]
 pub struct OpenFGAAuthorizer {
     client: BasicOpenFgaClient,
+    client_higher_consistency: BasicOpenFgaClient,
     health: Arc<RwLock<Vec<Health>>>,
     server_id: ServerId,
 }
 
 impl OpenFGAAuthorizer {
     pub fn new(client: BasicOpenFgaClient, server_id: ServerId) -> Self {
+        let client_higher_consistency = client
+            .clone()
+            .set_consistency(ConsistencyPreference::HigherConsistency);
         Self {
             client,
+            client_higher_consistency,
             health: Arc::new(RwLock::new(vec![])),
             server_id,
         }
@@ -645,7 +651,7 @@ impl Authorizer for OpenFGAAuthorizer {
         // immediately before
         self.require_no_relations(&(warehouse_id, table_id)).await?;
 
-        self.write(
+        self.write_higher_consistency(
             Some(vec![
                 TupleKey {
                     user: actor.to_openfga(),
@@ -768,6 +774,23 @@ impl OpenFGAAuthorizer {
         Ok(())
     }
 
+    /// A convenience wrapper around write.
+    /// All writes happen in a single transaction.
+    /// At most 100 writes can be performed in a single transaction.
+    async fn write_higher_consistency(
+        &self,
+        writes: impl Into<Option<Vec<TupleKey>>>,
+        deletes: impl Into<Option<Vec<TupleKeyWithoutCondition>>>,
+    ) -> OpenFGAResult<()> {
+        self.client_higher_consistency
+            .write(writes, deletes)
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to write to OpenFGA: {e}");
+            })?;
+        Ok(())
+    }
+
     /// A convenience wrapper around read that handles error conversion
     async fn read(
         &self,
@@ -776,6 +799,23 @@ impl OpenFGAAuthorizer {
         continuation_token: impl Into<Option<String>>,
     ) -> OpenFGAResult<ReadResponse> {
         self.client
+            .read(page_size, tuple_key, continuation_token)
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to read from OpenFGA: {e}");
+            })
+            .map(tonic::Response::into_inner)
+            .map_err(Into::into)
+    }
+
+    /// A convenience wrapper around read that handles error conversion
+    async fn read_higher_consistency(
+        &self,
+        page_size: i32,
+        tuple_key: impl Into<ReadRequestTupleKey>,
+        continuation_token: impl Into<Option<String>>,
+    ) -> OpenFGAResult<ReadResponse> {
+        self.client_higher_consistency
             .read(page_size, tuple_key, continuation_token)
             .await
             .inspect_err(|e| {
@@ -904,7 +944,7 @@ impl OpenFGAAuthorizer {
 
         // --------------------- 1. Object as "object" for any user ---------------------
         let relations_exist = self
-            .client
+            .client_higher_consistency
             .exists_relation_to(&fga_object)
             .await
             .map_err(|e| {
@@ -931,7 +971,7 @@ impl OpenFGAAuthorizer {
                 for suffix in s {
                     let user = format!("{fga_object_str}{suffix}");
                     let tuples = self
-                        .read(
+                        .read_higher_consistency(
                             1,
                             ReadRequestTupleKey {
                                 user,
@@ -994,7 +1034,7 @@ impl OpenFGAAuthorizer {
                     let user = format!("{fga_user_str}{suffix}");
                     while continuation_token != Some(String::new()) {
                         let response = self
-                            .read(
+                            .read_higher_consistency(
                                 MAX_TUPLES_PER_WRITE,
                                 ReadRequestTupleKey {
                                     user: user.clone(),
@@ -1010,7 +1050,7 @@ impl OpenFGAAuthorizer {
                             .into_iter()
                             .filter_map(|t| t.key)
                             .collect::<Vec<_>>();
-                        self.write(
+                        self.write_higher_consistency(
                             None,
                             Some(
                                 keys.into_iter()
@@ -1037,7 +1077,7 @@ impl OpenFGAAuthorizer {
 
     async fn delete_own_relations(&self, object: &impl OpenFgaEntity) -> Result<()> {
         let object_openfga = object.to_openfga();
-        self.client
+        self.client_higher_consistency
             .delete_relations_to_object(&object_openfga)
             .await
             .inspect_err(|e| tracing::error!("Failed to delete relations to {object_openfga}: {e}"))

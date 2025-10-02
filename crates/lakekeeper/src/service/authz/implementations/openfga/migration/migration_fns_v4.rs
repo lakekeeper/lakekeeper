@@ -553,7 +553,8 @@ mod openfga_integration_tests {
     async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
         let (client, _, server_id) = v3_client_for_empty_store().await?;
         Ok(OpenFGAAuthorizer {
-            client,
+            client: client.clone(),
+            client_higher_consistency: client,
             health: Arc::new(RwLock::new(vec![])),
             server_id,
         })
@@ -594,7 +595,8 @@ mod openfga_integration_tests {
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
         let client_v4 = migrate_to_v4(client, store_name, server_id).await?;
         Ok(OpenFGAAuthorizer {
-            client: client_v4,
+            client: client_v4.clone(),
+            client_higher_consistency: client_v4,
             health: Arc::new(RwLock::new(vec![])),
             server_id,
         })
@@ -1460,6 +1462,7 @@ mod openfga_integration_tests {
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
         let authorizer = OpenFGAAuthorizer {
             client: client.clone(),
+            client_higher_consistency: client.clone(),
             health: Arc::default(),
             server_id,
         };
