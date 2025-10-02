@@ -443,8 +443,9 @@ pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::str::FromStr;
+
+    use super::*;
 
     #[test]
     fn test_parse_data_access() {
