@@ -1,2 +1,2 @@
 ALTER TABLE endpoint_statistics
-DROP CONSTRAINT endpoint_statistics_warehouse_id_fkey;
+DROP CONSTRAINT IF EXISTS endpoint_statistics_warehouse_id_fkey;
