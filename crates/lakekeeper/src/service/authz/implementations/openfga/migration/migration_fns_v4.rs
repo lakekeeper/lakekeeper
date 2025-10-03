@@ -552,13 +552,11 @@ mod openfga_integration_tests {
 
     async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
         let (client, _, server_id) = v3_client_for_empty_store().await?;
-        // TODO(1361) server_id.to_openfga()
-        let openfga_server = format!("server:{server_id}");
         Ok(OpenFGAAuthorizer {
-            client,
+            client: client.clone(),
+            client_higher_consistency: client,
             health: Arc::new(RwLock::new(vec![])),
             server_id,
-            openfga_server,
         })
     }
 
@@ -596,13 +594,11 @@ mod openfga_integration_tests {
     async fn new_v4_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
         let client_v4 = migrate_to_v4(client, store_name, server_id).await?;
-        // TODO(1361) server_id.to_openfga()
-        let openfga_server = format!("server:{server_id}");
         Ok(OpenFGAAuthorizer {
-            client: client_v4,
+            client: client_v4.clone(),
+            client_higher_consistency: client_v4,
             health: Arc::new(RwLock::new(vec![])),
             server_id,
-            openfga_server,
         })
     }
 
@@ -1150,8 +1146,7 @@ mod openfga_integration_tests {
     #[allow(clippy::too_many_lines)]
     async fn test_v4_push_down_warehouse_id() -> anyhow::Result<()> {
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
-        // TODO(1361) server_id.to_openfga()
-        let openfga_server = format!("server:{server_id}");
+        let openfga_server = server_id.to_openfga();
 
         // Create the initial tuple structure:
         //
@@ -1465,13 +1460,11 @@ mod openfga_integration_tests {
         const NUM_TABULARS: usize = 10_000;
 
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
-        // TODO(1361) server_id.to_openfga()
-        let openfga_server = format!("server:{server_id}");
         let authorizer = OpenFGAAuthorizer {
             client: client.clone(),
+            client_higher_consistency: client.clone(),
             health: Arc::default(),
             server_id,
-            openfga_server: openfga_server.clone(),
         };
         let req_meta_human = RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
 
@@ -1483,6 +1476,7 @@ mod openfga_integration_tests {
         // authorizer.
 
         // Write project tuples manually
+        let openfga_server = authorizer.openfga_server();
         let actor = req_meta_human.actor();
         let project_openfga = format!("project:{project_id}");
         authorizer

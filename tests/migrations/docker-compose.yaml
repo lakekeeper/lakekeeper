@@ -7,9 +7,9 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck: &lakekeeper_healthcheck
-      test: [ "CMD", "${LAKEKEEPER_INITIAL_HEALTHCHECK_BIN}", "healthcheck" ]
+      test: ["CMD", "${LAKEKEEPER_INITIAL_HEALTHCHECK_BIN}", "healthcheck"]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -33,7 +33,7 @@ services:
     pull_policy: always
     environment: *lakekeeper_environment
     restart: "no"
-    command: [ "migrate" ]
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -44,10 +44,10 @@ services:
     image: localhost/lakekeeper-local:amd64
     pull_policy: never
     environment: *lakekeeper_environment
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck:
       <<: *lakekeeper_healthcheck
-      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
     depends_on:
       migrate_2:
         condition: service_completed_successfully
@@ -67,7 +67,7 @@ services:
     pull_policy: never
     environment: *lakekeeper_environment
     restart: "no"
-    command: [ "migrate" ]
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -75,11 +75,11 @@ services:
       iceberg_net:
 
   db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -92,9 +92,9 @@ services:
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-    command: [ "server", "--console-address", ":9001", "/data" ]
+    command: ["server", "--console-address", ":9001", "/data"]
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -172,7 +172,7 @@ services:
       - ./create-warehouse:/home/curl_user/create-warehouse
     networks:
       iceberg_net:
-  
+
   # Used to execute spark.py, which communicates with lakekeeper.
   # Make sure the corresponding lakekeeper service is up.
   #

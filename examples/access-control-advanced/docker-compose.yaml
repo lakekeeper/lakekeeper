@@ -146,7 +146,7 @@ services:
       iceberg_net:
 
   db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
@@ -159,7 +159,7 @@ services:
       iceberg_net:
 
   openfga-db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:

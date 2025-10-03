@@ -26,9 +26,9 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -56,7 +56,7 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=info
     restart: "no"
-    command: [ "migrate" ]
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -116,11 +116,11 @@ services:
       iceberg_net:
 
   db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -133,9 +133,9 @@ services:
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-    command: [ "server", "--console-address", ":9001", "/data" ]
+    command: ["server", "--console-address", ":9001", "/data"]
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -167,7 +167,7 @@ services:
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2

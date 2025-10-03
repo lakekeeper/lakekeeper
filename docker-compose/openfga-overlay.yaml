@@ -54,7 +54,7 @@ services:
         condition: service_healthy
 
   openfga-db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
       - PGDATA=/var/lib/postgresql/data/pgdata

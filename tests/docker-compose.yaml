@@ -118,7 +118,7 @@ services:
       - iceberg_rest_tests
 
   db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:

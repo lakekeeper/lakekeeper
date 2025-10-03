@@ -379,6 +379,34 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         self.id
     }
 
+    /// Fetch the configuration for this task queue for the given warehouse.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration cannot be fetched or deserialized.
+    pub async fn get_queue_config<C: Catalog>(
+        warehouse_id: WarehouseId,
+        catalog_state: C::State,
+    ) -> crate::api::Result<Option<Q>> {
+        let config =
+            C::get_task_queue_config(warehouse_id, Self::queue_name(), catalog_state).await?;
+
+        config
+            .map(|cfg| {
+                serde_json::from_value(cfg.queue_config.config).map_err(|e| {
+                    ErrorModel::internal(
+                        format!(
+                            "Failed to deserialize configuration for task queue `{}`: {e}",
+                            Self::queue_name()
+                        ),
+                        "TaskConfigDeserializationError",
+                        Some(Box::new(e)),
+                    )
+                    .into()
+                })
+            })
+            .transpose()
+    }
+
     /// Schedule a single task.
     ///
     /// There can only be a single active task for a (`entity_id`, `queue_name`) tuple.
@@ -422,7 +450,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the tasks cannot be enqueued / scheduled.
     pub async fn schedule_tasks<C: Catalog>(
-        tasks: Vec<(TaskMetadata, D)>,
+        tasks: impl Iterator<Item = (TaskMetadata, D)>,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>, ErrorModel> {
         let task_inputs = tasks

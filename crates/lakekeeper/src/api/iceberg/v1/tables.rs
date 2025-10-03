@@ -329,7 +329,10 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                                 name: table,
                             },
                         },
-                        parse_data_access(&headers),
+                        match parse_data_access(&headers) {
+                            DataAccessMode::ClientManaged => DataAccess::not_specified(),
+                            DataAccessMode::ServerDelegated(da) => da,
+                        },
                         api_context,
                         metadata,
                     )
@@ -379,14 +382,14 @@ pub struct TableParameters {
 
 pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 // Modeled as a string to enable multiple values to be specified.
 pub struct DataAccess {
     pub vended_credentials: bool,
     pub remote_signing: bool,
 }
 
-#[derive(Debug, Clone, Copy, derive_more::From)]
+#[derive(Debug, Clone, Copy, PartialEq, derive_more::From)]
 pub enum DataAccessMode {
     // For internal use only - indicates that the client has credentials
     // and thus doesn't need any form of data access delegation.
@@ -396,10 +399,10 @@ pub enum DataAccessMode {
 
 impl DataAccessMode {
     #[must_use]
-    pub fn requested(self) -> bool {
+    pub(crate) fn provide_credentials(self) -> bool {
         match self {
             DataAccessMode::ClientManaged => false,
-            DataAccessMode::ServerDelegated(da) => da.requested(),
+            DataAccessMode::ServerDelegated(_) => true,
         }
     }
 }
@@ -419,7 +422,7 @@ impl DataAccess {
     }
 }
 
-pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccess {
+pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
     let header = headers
         .get_all(DATA_ACCESS_HEADER)
         .iter()
@@ -427,22 +430,31 @@ pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccess {
         .collect::<Vec<_>>();
     let vended_credentials = header.contains(&"vended-credentials");
     let remote_signing = header.contains(&"remote-signing");
+    let client_managed = header.contains(&"client-managed");
+    if !vended_credentials && !remote_signing && client_managed {
+        return DataAccessMode::ClientManaged;
+    }
     DataAccess {
         vended_credentials,
         remote_signing,
     }
+    .into()
 }
 
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
 
+    use super::*;
+
     #[test]
     fn test_parse_data_access() {
         let headers = http::header::HeaderMap::new();
         let data_access = super::parse_data_access(&headers);
-        assert!(!data_access.vended_credentials);
-        assert!(!data_access.remote_signing);
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess::not_specified())
+        );
     }
 
     #[test]
@@ -453,8 +465,13 @@ mod test {
             http::header::HeaderValue::from_static("vended-credentials"),
         );
         let data_access = super::parse_data_access(&headers);
-        assert!(data_access.vended_credentials);
-        assert!(!data_access.remote_signing);
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false
+            })
+        );
 
         let mut headers = http::header::HeaderMap::new();
         headers.insert(
@@ -462,8 +479,24 @@ mod test {
             http::header::HeaderValue::from_static("vended-credentials"),
         );
         let data_access = super::parse_data_access(&headers);
-        assert!(data_access.vended_credentials);
-        assert!(!data_access.remote_signing);
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_data_access_client_managed() {
+        let mut headers = http::header::HeaderMap::new();
+        headers.insert(
+            http::header::HeaderName::from_str(super::DATA_ACCESS_HEADER).unwrap(),
+            http::header::HeaderValue::from_static("client-managed"),
+        );
+        let data_access = super::parse_data_access(&headers);
+        assert_eq!(data_access, DataAccessMode::ClientManaged);
     }
 
     #[test]

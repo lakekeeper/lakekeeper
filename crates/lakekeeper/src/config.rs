@@ -261,6 +261,10 @@ pub struct DynAppConfig {
 
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
+
+    // ------------- Debug -------------
+    #[serde(default)]
+    pub debug: DebugConfig,
 }
 
 pub(crate) fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
@@ -443,6 +447,13 @@ pub enum SecretBackend {
     Postgres,
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
+pub struct DebugConfig {
+    /// If true, log all request bodies to the debug log for debugging purposes.
+    /// This is expensive and should only be used for debugging.
+    pub log_request_bodies: bool,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Redact)]
 pub struct KV2Config {
     pub url: Url,
@@ -521,6 +532,7 @@ impl Default for DynAppConfig {
             endpoint_stat_flush_interval: Duration::from_secs(30),
             serve_swagger_ui: true,
             skip_storage_validation: false,
+            debug: DebugConfig::default(),
         }
     }
 }
@@ -1238,6 +1250,32 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__SKIP_STORAGE_VALIDATION", "false");
             let config = get_config();
             assert!(!config.skip_storage_validation);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_debug_log_request_bodies() {
+        // Test default value (should be false)
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.debug.log_request_bodies);
+            Ok(())
+        });
+
+        // Test setting to true
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_REQUEST_BODIES", "true");
+            let config = get_config();
+            assert!(config.debug.log_request_bodies);
+            Ok(())
+        });
+
+        // Test setting to false explicitly
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_REQUEST_BODIES", "false");
+            let config = get_config();
+            assert!(!config.debug.log_request_bodies);
             Ok(())
         });
     }

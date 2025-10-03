@@ -24,14 +24,27 @@ services:
     volumes:
       - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
+      test:
+        [
+          "CMD-SHELL",
+          'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3',
+        ]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 60s
     ports:
       - "30080:8080"
-    command: [ "start-dev", "--metrics-enabled=true", "--health-enabled=true", "--import-realm", "--verbose", "--log-level=INFO", "--features=token-exchange" ]
+    command:
+      [
+        "start-dev",
+        "--metrics-enabled=true",
+        "--health-enabled=true",
+        "--import-realm",
+        "--verbose",
+        "--log-level=INFO",
+        "--features=token-exchange",
+      ]
     networks:
       iceberg_net:
 
@@ -53,9 +66,9 @@ services:
       - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
       - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
       - RUST_LOG=info,lakekeeper=trace,middle=trace
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -79,7 +92,7 @@ services:
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -103,7 +116,7 @@ services:
       - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
       - RUST_LOG=info,lakekeeper=info,middle=trace
     restart: "no"
-    entrypoint: [ "/home/nonroot/lakekeeper", "migrate" ]
+    entrypoint: ["/home/nonroot/lakekeeper", "migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -115,11 +128,11 @@ services:
       iceberg_net:
 
   db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -128,11 +141,12 @@ services:
       iceberg_net:
 
   openfga-db:
-    image: postgres:16
+    image: postgres:17
     environment:
       - POSTGRES_PASSWORD=postgres
+    command: -c 'max_connections=500'
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -145,9 +159,9 @@ services:
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-    command: [ "server", "--console-address", ":9001", "/data" ]
+    command: ["server", "--console-address", ":9001", "/data"]
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -196,22 +210,21 @@ services:
     environment:
       - OPENFGA_DATASTORE_ENGINE=postgres
       - OPENFGA_DATASTORE_URI=postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
-      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=50
+      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=200
+      - OPENFGA_DATASTORE_MAX_IDLE_CONNS=100
       - OPENFGA_PLAYGROUND_ENABLED=false
       - OPENFGA_AUTHN_METHOD=oidc
       - OPENFGA_AUTHN_OIDC_ISSUER=http://keycloak:8080/realms/iceberg
       - OPENFGA_AUTHN_OIDC_ISSUER_ALIASES=http://localhost:30080/realms/iceberg
       - OPENFGA_AUTHN_OIDC_AUDIENCE=openfga
       - OPENFGA_HTTP_TLS_ENABLED=false
+      - OPENFGA_CACHE_CONTROLLER_ENABLED=true
+      - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
+      - OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
     networks:
       iceberg_net:
     healthcheck:
-      test:
-        [
-          "CMD",
-          "/usr/local/bin/grpc_health_probe",
-          "-addr=openfga:8081"
-        ]
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
       interval: 5s
       timeout: 30s
       retries: 3
@@ -219,7 +232,7 @@ services:
   starrocks:
     image: starrocks/allin1-ubuntu:3.3.9
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      test: ["CMD", "curl", "-I", "http://starrocks:8030/api/health"]
       interval: 2s
       timeout: 10s
       retries: 2

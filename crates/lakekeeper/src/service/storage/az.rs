@@ -237,7 +237,7 @@ impl AdlsProfile {
         credential: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
-        if matches!(data_access, DataAccessMode::ClientManaged) {
+        if !data_access.provide_credentials() {
             return Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),

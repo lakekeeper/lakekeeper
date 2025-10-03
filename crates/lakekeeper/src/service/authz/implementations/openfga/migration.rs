@@ -161,7 +161,6 @@ pub(crate) async fn migrate(
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod tests {
     use openfga_client::client::ConsistencyPreference;
 

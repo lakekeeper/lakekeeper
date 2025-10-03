@@ -1,3 +1,4 @@
+use iceberg::spec::TableMetadataRef;
 use typed_builder::TypedBuilder;
 
 #[cfg(feature = "axum")]
@@ -88,7 +89,7 @@ pub struct CommitTableRequest {
 #[serde(rename_all = "kebab-case")]
 pub struct CommitTableResponse {
     pub metadata_location: String,
-    pub metadata: TableMetadata,
+    pub metadata: TableMetadataRef,
     pub config: Option<std::collections::HashMap<String, String>>,
 }
 
