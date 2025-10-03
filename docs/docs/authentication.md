@@ -460,4 +460,23 @@ subjects:
   name: <lakekeeper-serviceaccount>
   namespace: <lakekeeper-namespace>
 ```
+
 The [Lakekeeper Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) creates the required binding by default.
+
+Applications running in Kubernetes pods can now authenticate using the service account token, which is typically mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`. Simply read this token and include it in the `Authorization` header.
+
+**Example with CURL:**
+```bash
+curl -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+     http://my-lakekeeper:8181/catalog/v1/config
+```
+
+**Example with Spark:**
+```bash
+spark-submit \
+  --conf spark.sql.catalog.lakekeeper.token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+  --conf spark.sql.catalog.lakekeeper.uri="http://my-lakekeeper:8181/catalog" \
+  my-spark-job.py
+```
+
+User identities appear in Lakekeeper as `k8s~<namespace>~<service-account-name>`.
