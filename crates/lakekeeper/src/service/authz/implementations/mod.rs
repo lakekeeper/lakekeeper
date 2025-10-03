@@ -34,7 +34,7 @@ pub async fn migrate_default_authorizer(
 ) -> std::result::Result<(), ErrorModel> {
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => {
-            let _server_id = server_id;
+            let _ = server_id;
             Ok(())
         }
         #[cfg(feature = "authz-openfga")]
