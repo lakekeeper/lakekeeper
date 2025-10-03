@@ -115,12 +115,14 @@ impl PostgresStatisticsSink {
                 let uri_flat = EndpointFlat::from(*uri);
                 let status_code_i32 = i32::from(status_code.as_u16());
 
-                let resolved_warehouse = warehouse.copied().or_else(|| {
-                    warehouse_name
-                        .as_deref()
-                        .and_then(|wn| warehouse_ids.get(&(project_str.clone(), wn.to_string())))
-                        .copied()
-                });
+                let resolved_warehouse = warehouse
+                    .as_deref()
+                    .or_else(|| {
+                        warehouse_name.as_deref().and_then(|wn| {
+                            warehouse_ids.get(&(project_str.clone(), wn.to_string()))
+                        })
+                    })
+                    .copied();
 
                 let key = (
                     project_str.clone(),
