@@ -4,17 +4,17 @@ on:
   push:
     branches:
       - main
-      - 'manual-release-*'
+      - "manual-release-*"
   pull_request:
     branches:
       - main
-      - 'manual-release-*'
+      - "manual-release-*"
 
 env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: read  # Needed to checkout code
+  contents: read # Needed to checkout code
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -24,9 +24,9 @@ jobs:
   docker:
     uses: ./.github/workflows/docker_build.yml
     with:
-      platform: 'amd64'
-      dockerfile: 'docker/full.Dockerfile'
-      image_name: 'lakekeeper-local'
+      platform: "amd64"
+      dockerfile: "docker/full.Dockerfile"
+      image_name: "lakekeeper-local"
   tests:
     needs: docker
     strategy:
@@ -37,32 +37,25 @@ jobs:
           - starrocks
           - trino
           - trino_opa
-          - spark_openfga-1.7.1
           - spark_openfga-1.8.0
           - spark_openfga-1.9.2
           - spark_openfga-1.10.0
-          - spark_kv2-1.7.1
-          - spark_adls-1.8.0
+          - spark_kv2-1.10.0
           - spark_adls-1.9.2
           - spark_adls-1.10.0
           - spark_wasbs-1.8.1
-          - spark_aws_remote_signing-1.7.1
           - spark_aws_remote_signing-1.8.0
           - spark_aws_remote_signing-1.9.2
           - spark_aws_remote_signing-1.10.0
-          - spark_aws_sts-1.7.1
           - spark_aws_sts-1.8.0
           - spark_aws_sts-1.9.2
           - spark_aws_sts-1.10.0
-          - spark_gcs-1.7.1
           - spark_gcs-1.8.0
           - spark_gcs-1.9.2
           - spark_gcs-1.10.0
-          - spark_minio_sts-1.7.1
           - spark_minio_sts-1.8.0
           - spark_minio_sts-1.9.2
           - spark_minio_sts-1.10.0
-          - spark_minio_remote_signing-1.7.1
           - spark_minio_remote_signing-1.8.0
           - spark_minio_remote_signing-1.9.2
           - spark_minio_remote_signing-1.10.0
@@ -71,13 +64,13 @@ jobs:
           - spark_aws_system_identity_remote_signing-1.10.0
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
-        test_name: ${{ matrix.names }}
+      test_name: ${{ matrix.names }}
     secrets: inherit
   integration_tests_results:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: Integration tests results
-    needs: [ tests ]
+    needs: [tests]
     steps:
       - run: |
           result="${{ needs.tests.result }}"
