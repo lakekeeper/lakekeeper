@@ -60,19 +60,15 @@ macro_rules! define_id_type_impl {
                 Self(uuid::Uuid::now_v7())
             }
 
-            /// Parses the ID from a string
-            ///
-            /// # Errors
-            /// Returns `ErrorModel` with `BAD_REQUEST` status code if the string is not a valid UUID
-            pub fn from_str_or_bad_request(s: &str) -> Result<Self, ErrorModel> {
+            fn from_str_with_code(s: &str, code: StatusCode) -> Result<Self, ErrorModel> {
                 Ok($name(uuid::Uuid::from_str(s).map_err(|e| {
                     ErrorModel::builder()
-                        .code(StatusCode::BAD_REQUEST.into())
-                        .message(concat!(
+                        .code(code.into())
+                        .message(format!(concat!(
                             "Provided ",
                             stringify!($name),
-                            " is not a valid UUID"
-                        ))
+                            " is not a valid UUID. Got: {{s}}"
+                        )))
                         .r#type(concat!(stringify!($name), "IsNotUUID"))
                         .source(Some(Box::new(e)))
                         .build()
@@ -82,20 +78,17 @@ macro_rules! define_id_type_impl {
             /// Parses the ID from a string
             ///
             /// # Errors
+            /// Returns `ErrorModel` with `BAD_REQUEST` status code if the string is not a valid UUID
+            pub fn from_str_or_bad_request(s: &str) -> Result<Self, ErrorModel> {
+                Self::from_str_with_code(s, StatusCode::BAD_REQUEST)
+            }
+
+            /// Parses the ID from a string
+            ///
+            /// # Errors
             /// Returns `ErrorModel` with `INTERNAL_SERVER_ERROR` status code if the string is not a valid UUID
             pub fn from_str_or_internal(s: &str) -> Result<Self, ErrorModel> {
-                Ok($name(uuid::Uuid::from_str(s).map_err(|e| {
-                    ErrorModel::builder()
-                        .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-                        .message(concat!(
-                            "Provided ",
-                            stringify!($name),
-                            " is not a valid UUID"
-                        ))
-                        .r#type(concat!(stringify!($name), "IsNotUUID"))
-                        .source(Some(Box::new(e)))
-                        .build()
-                })?))
+                Self::from_str_with_code(s, StatusCode::INTERNAL_SERVER_ERROR)
             }
         }
 
@@ -137,17 +130,17 @@ macro_rules! define_id_type_impl {
             }
         }
 
+        // Deserialize is separately implemented to provide better error messages
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> std::result::Result<$name, D::Error>
             where
                 D: serde::Deserializer<'de>,
             {
                 let s = String::deserialize(deserializer)?;
-                Ok($name::from(uuid::Uuid::from_str(&s).map_err(|e| {
+                Ok($name::from(uuid::Uuid::from_str(&s).map_err(|_| {
                     serde::de::Error::custom(format!(
-                        "Provided {} is not a valid UUID: {}",
+                        "Provided {} is not a valid UUID. Got {s}.",
                         stringify!($name),
-                        e
                     ))
                 })?))
             }
@@ -179,5 +172,29 @@ impl TryFrom<Prefix> for WarehouseId {
                 .build()
         })?;
         Ok(WarehouseId(prefix))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serde() {
+        let id = TableId::new_random();
+        let serialized = serde_json::to_value(id).unwrap();
+        assert_eq!(serialized, serde_json::json!(id.0.to_string()));
+        let deserialized: TableId = serde_json::from_value(serialized).unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_type_name_in_error() {
+        let invalid_uuid = "not-a-uuid";
+        let err = TableId::from_str_or_bad_request(invalid_uuid).unwrap_err();
+        assert_eq!(err.code, StatusCode::BAD_REQUEST);
+        assert_eq!(err.r#type, "TableIdIsNotUUID");
+        assert!(err.message.contains("TableId"));
+        assert!(err.source.is_some());
     }
 }

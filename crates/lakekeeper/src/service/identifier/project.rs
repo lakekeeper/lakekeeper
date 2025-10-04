@@ -41,10 +41,13 @@ impl ProjectId {
     /// Returns an error if the provided string is not a valid project id.
     /// Valid project ids may only contain alphanumeric characters, hyphens and underscores.
     pub fn try_new(id: String) -> Result<Self, ErrorModel> {
-        // Only allow the following characters in the project id:
-        // - Alphanumeric characters
-        // - Hyphens
-        // - Underscores
+        if id.is_empty() {
+            return Err(ErrorModel::bad_request(
+                "Project IDs must not be empty",
+                "MalformedProjectID",
+                None,
+            ));
+        }
 
         if id
             .chars()
@@ -52,9 +55,13 @@ impl ProjectId {
         {
             Ok(Self(id))
         } else {
-            Err(ErrorModel::bad_request(format!(
-                "Project IDs may only contain alphanumeric characters, hyphens and underscores. Got: `{id}`",
-            ), "MalformedProjectID", None))
+            Err(ErrorModel::bad_request(
+                format!(
+                    "Project IDs may only contain alphanumeric characters, hyphens and underscores. Got: `{id}`",
+                ),
+                "MalformedProjectID",
+                None,
+            ))
         }
     }
 
