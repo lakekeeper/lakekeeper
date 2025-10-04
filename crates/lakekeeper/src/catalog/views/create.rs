@@ -12,9 +12,8 @@ use crate::{
         compression_codec::CompressionCodec,
         io::write_file,
         maybe_get_secret, require_warehouse_id,
-        tables::{
-            determine_tabular_location, require_active_warehouse, validate_table_or_view_ident,
-        },
+        tables::{require_active_warehouse, validate_table_or_view_ident},
+        tabular::determine_tabular_location,
         views::validate_view_properties,
     },
     request_metadata::RequestMetadata,
