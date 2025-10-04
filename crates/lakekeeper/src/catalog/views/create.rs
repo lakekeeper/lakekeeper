@@ -38,7 +38,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = &parameters;
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     let view = TableIdent::new(namespace.clone(), request.name.clone());
 
     validate_table_or_view_ident(&view)?;

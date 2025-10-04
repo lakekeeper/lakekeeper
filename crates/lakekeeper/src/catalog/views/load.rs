@@ -28,7 +28,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = parameters;
-    let warehouse_id = require_warehouse_id(prefix)?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     // ToDo: Remove workaround when hierarchical namespaces are supported.
     // It is important for now to throw a 404 if a table cannot be found,
     // because spark might check if `table`.`branch` exists, which should return 404.

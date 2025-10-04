@@ -32,7 +32,7 @@ pub(super) async fn load_table<C: Catalog, A: Authorizer + Clone, S: SecretStore
 ) -> Result<LoadTableResult> {
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
-    let warehouse_id = require_warehouse_id(prefix)?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     // It is important to throw a 404 if a table cannot be found,
     // because spark might check if `table`.`branch` exists, which should return 404.
     // Only then will it treat it as a branch.

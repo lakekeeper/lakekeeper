@@ -1,7 +1,5 @@
 use std::str::FromStr;
 
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
-
 use super::RoleAssignee;
 use crate::{
     service::{
@@ -68,8 +66,8 @@ impl ParseOpenFgaEntity for RoleId {
             ));
         }
 
-        id.parse().map_err(|e: IcebergErrorResponse| {
-            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string(), e.error.message)
+        RoleId::from_str_or_bad_request(id).map_err(|e| {
+            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string(), e.message)
         })
     }
 }
@@ -94,15 +92,11 @@ impl ParseOpenFgaEntity for RoleAssignee {
 
         let id = &id[..id.len() - "#assignee".len()];
 
-        Ok(RoleAssignee::from_role(id.parse().map_err(
-            |e: IcebergErrorResponse| {
-                OpenFGAError::unexpected_entity(
-                    vec![FgaType::Role],
-                    id.to_string(),
-                    e.error.message,
-                )
-            },
-        )?))
+        Ok(RoleAssignee::from_role(
+            RoleId::from_str_or_bad_request(id).map_err(|e| {
+                OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string(), e.message)
+            })?,
+        ))
     }
 }
 
@@ -201,8 +195,8 @@ impl ParseOpenFgaEntity for ProjectId {
             ));
         }
 
-        ProjectId::from_str(id).map_err(|e: IcebergErrorResponse| {
-            OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string(), e.error.message)
+        ProjectId::from_str(id).map_err(|e| {
+            OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string(), e.message)
         })
     }
 }

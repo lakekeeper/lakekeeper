@@ -190,7 +190,7 @@ async fn resolve_projects(
             .then_some(ProjectId::try_new(p.project_id))
             .transpose()
             .inspect_err(|e| {
-                tracing::error!("Failed to parse project id from db: {:?}", e.error);
+                tracing::error!("Failed to parse project id from db: {e}");
             })
             .ok()
             .flatten()

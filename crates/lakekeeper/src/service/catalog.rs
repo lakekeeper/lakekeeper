@@ -45,12 +45,11 @@ use crate::{
         authn::UserId,
         authz::TableUuid,
         health::HealthExt,
-        tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
-        ServerId,
+        ServerId, TabularId, TabularIdentOwned,
     },
     SecretIdent,
 };

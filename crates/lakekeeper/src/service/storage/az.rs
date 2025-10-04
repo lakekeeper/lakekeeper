@@ -558,8 +558,7 @@ pub(crate) mod test {
     use super::*;
     use crate::service::{
         storage::{az::DEFAULT_AUTHORITY_HOST, AdlsProfile, StorageLocations, StorageProfile},
-        tabular_idents::TabularId,
-        NamespaceId,
+        NamespaceId, TabularId,
     };
 
     #[test]

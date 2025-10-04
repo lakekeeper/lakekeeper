@@ -21,7 +21,7 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     request_metadata: RequestMetadata,
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     let RenameTableRequest {
         source,
         destination,

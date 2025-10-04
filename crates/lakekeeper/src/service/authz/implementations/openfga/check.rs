@@ -429,8 +429,6 @@ pub(super) struct CheckResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
     use crate::service::UserId;
 
@@ -439,8 +437,10 @@ mod tests {
         let action = CheckOperation::Namespace {
             action: NamespaceAction::CreateTable,
             namespace: NamespaceIdentOrUuid::Id {
-                namespace_id: NamespaceId::from_str("00000000-0000-0000-0000-000000000000")
-                    .unwrap(),
+                namespace_id: NamespaceId::from_str_or_internal(
+                    "00000000-0000-0000-0000-000000000000",
+                )
+                .unwrap(),
             },
         };
         let json = serde_json::to_value(&action).unwrap();
@@ -461,8 +461,10 @@ mod tests {
             action: TableAction::GetMetadata,
             table: TabularIdentOrUuid::IdInWarehouse {
                 table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
-                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
-                    .unwrap(),
+                warehouse_id: WarehouseId::from_str_or_internal(
+                    "490cbf7a-cbfe-11ef-84c5-178606d4cab3",
+                )
+                .unwrap(),
             },
         };
         let json = serde_json::to_value(&action).unwrap();
@@ -484,8 +486,10 @@ mod tests {
             action: ViewAction::GetMetadata,
             view: TabularIdentOrUuid::IdInWarehouse {
                 table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
-                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
-                    .unwrap(),
+                warehouse_id: WarehouseId::from_str_or_internal(
+                    "490cbf7a-cbfe-11ef-84c5-178606d4cab3",
+                )
+                .unwrap(),
             },
         };
         let json = serde_json::to_value(&action).unwrap();
@@ -509,8 +513,10 @@ mod tests {
             table: TabularIdentOrUuid::Name {
                 namespace: NamespaceIdent::from_vec(vec!["trino_namespace".to_string()]).unwrap(),
                 table: "trino_table".to_string(),
-                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
-                    .unwrap(),
+                warehouse_id: WarehouseId::from_str_or_internal(
+                    "490cbf7a-cbfe-11ef-84c5-178606d4cab3",
+                )
+                .unwrap(),
             },
         };
         let json = serde_json::to_value(&action).unwrap();
@@ -533,8 +539,10 @@ mod tests {
             action: NamespaceAction::GetMetadata,
             namespace: NamespaceIdentOrUuid::Name {
                 namespace: NamespaceIdent::from_vec(vec!["trino_namespace".to_string()]).unwrap(),
-                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
-                    .unwrap(),
+                warehouse_id: WarehouseId::from_str_or_internal(
+                    "490cbf7a-cbfe-11ef-84c5-178606d4cab3",
+                )
+                .unwrap(),
             },
         };
         let check = CheckRequest {
@@ -564,8 +572,6 @@ mod tests {
     }
 
     mod openfga_integration_tests {
-        use std::str::FromStr;
-
         use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
         use openfga_client::client::TupleKey;
         use strum::IntoEnumIterator;
@@ -676,7 +682,7 @@ mod tests {
         async fn test_check(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, warehouse, namespace) = setup(operator_id.clone(), pool).await;
-            let namespace_id = NamespaceId::from_str(
+            let namespace_id = NamespaceId::from_str_or_internal(
                 namespace
                     .properties
                     .unwrap()

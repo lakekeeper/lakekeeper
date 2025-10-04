@@ -53,7 +53,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<ListNamespacesResponse> {
         // ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(prefix)?;
+        let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let ListNamespacesQuery {
             page_token: _,
             page_size: _,
@@ -194,7 +194,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CreateNamespaceResponse> {
         // ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(prefix)?;
+        let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let CreateNamespaceRequest {
             namespace,
             properties,
@@ -299,7 +299,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<GetNamespaceResponse> {
         let GetNamespacePropertiesQuery { return_uuid } = query;
         // ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(parameters.prefix)?;
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
         validate_namespace_ident(&parameters.namespace)?;
 
         // ------------------- AUTHZ -------------------
@@ -335,7 +335,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<()> {
         //  ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(parameters.prefix)?;
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
@@ -362,7 +362,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<()> {
         //  ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(parameters.prefix)?;
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
         validate_namespace_ident(&parameters.namespace)?;
 
         if CONFIG
@@ -419,7 +419,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<UpdateNamespacePropertiesResponse> {
         //  ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(parameters.prefix)?;
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
         validate_namespace_ident(&parameters.namespace)?;
         let UpdateNamespacePropertiesRequest { removals, updates } = request;
         updates

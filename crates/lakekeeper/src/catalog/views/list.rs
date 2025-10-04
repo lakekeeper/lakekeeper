@@ -26,7 +26,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     let return_uuids = query.return_uuids;
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = parameters;
-    let warehouse_id = require_warehouse_id(prefix)?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;

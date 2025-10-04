@@ -1101,7 +1101,7 @@ impl axum::response::IntoResponse for GetWarehouseResponse {
 impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
     fn from(warehouse: crate::service::GetWarehouseResponse) -> Self {
         Self {
-            id: warehouse.id.to_uuid(),
+            id: warehouse.id.into(),
             name: warehouse.name,
             project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,

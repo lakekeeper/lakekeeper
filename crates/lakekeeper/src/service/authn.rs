@@ -1,6 +1,4 @@
 use std::fmt::Debug;
-#[cfg(feature = "router")]
-use std::str::FromStr;
 
 #[cfg(feature = "router")]
 use axum::{
@@ -274,7 +272,7 @@ fn extract_role_id(
                 Some(Box::new(e)),
             )
         })?;
-        Ok(Some(RoleId::from_str(role_id)?))
+        Ok(Some(RoleId::from_str_or_bad_request(role_id)?))
     } else {
         Ok(None)
     }

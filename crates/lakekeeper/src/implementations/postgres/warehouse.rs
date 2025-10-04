@@ -668,7 +668,7 @@ fn db_to_api_tabular_delete_profile(
 
 pub(crate) async fn get_warehouse_stats(
     conn: PgPool,
-    warehouse_ident: WarehouseId,
+    warehouse_id: WarehouseId,
     PaginationQuery {
         page_size,
         page_token,
@@ -709,7 +709,7 @@ pub(crate) async fn get_warehouse_stats(
         ORDER BY timestamp DESC
         LIMIT $3
         "#,
-        warehouse_ident.0,
+        *warehouse_id,
         token_ts,
         page_size
     )
@@ -738,7 +738,7 @@ pub(crate) async fn get_warehouse_stats(
         })
         .collect();
     Ok(WarehouseStatisticsResponse {
-        warehouse_ident: *warehouse_ident,
+        warehouse_ident: *warehouse_id,
         stats,
         next_page_token,
     })
@@ -1103,7 +1103,7 @@ pub(crate) mod test {
                 "#,
                 i,
                 i,
-                warehouse_id.0,
+                *warehouse_id,
                 chrono::Utc::now() - chrono::Duration::hours(i)
             )
             .execute(&mut **t.transaction())

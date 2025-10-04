@@ -51,18 +51,20 @@ pub struct CatalogServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
     secret_store: PhantomData<S>,
 }
 
-fn require_warehouse_id(prefix: Option<Prefix>) -> Result<WarehouseId> {
-    prefix
-        .ok_or_else(|| {
-            tracing::debug!("No prefix specified.");
-            ErrorModel::bad_request(
-                "No prefix specified. The warehouse-id must be provided as prefix in the URL."
-                    .to_string(),
-                "NoPrefixProvided",
-                None,
-            )
-        })?
-        .try_into()
+fn require_warehouse_id(prefix: Option<&Prefix>) -> std::result::Result<WarehouseId, ErrorModel> {
+    WarehouseId::from_str_or_bad_request(
+        prefix
+            .ok_or_else(|| {
+                tracing::debug!("No prefix specified.");
+                ErrorModel::bad_request(
+                    "No prefix specified. The warehouse-id must be provided as prefix in the URL."
+                        .to_string(),
+                    "NoPrefixProvided",
+                    None,
+                )
+            })?
+            .as_ref(),
+    )
 }
 
 pub(crate) async fn maybe_get_secret<S: SecretStore>(
