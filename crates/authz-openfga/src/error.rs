@@ -1,8 +1,8 @@
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use lakekeeper::api::{ErrorModel, IcebergErrorResponse};
 use openfga_client::error::Error as OpenFGAClientError;
 
-use crate::service::authz::implementations::FgaType;
+use crate::FgaType;
 
 pub(crate) type OpenFGAResult<T> = Result<T, OpenFGAError>;
 

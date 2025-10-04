@@ -1,96 +1,12 @@
-use std::{
-    collections::HashSet,
-    fmt::Debug,
-    str::FromStr,
-    sync::{Arc, LazyLock},
+use std::sync::Arc;
+
+use lakekeeper::{
+    async_trait,
+    service::{authz::Authorizer, health::Health, ServerId},
+    tokio::sync::RwLock,
+    utoipa,
 };
-
-use axum::Router;
-use futures::future::try_join_all;
-use openfga_client::{
-    client::{
-        batch_check_single_result::CheckResult, BatchCheckItem, CheckRequestTupleKey,
-        ConsistencyPreference, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
-        TupleKeyWithoutCondition,
-    },
-    migration::AuthorizationModelVersion,
-    tonic,
-};
-
-use crate::{
-    request_metadata::RequestMetadata,
-    service::{
-        authn::Actor,
-        authz::{
-            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
-            ListProjectsResponse, Result,
-        },
-        NamespaceId, ServerId, TableId,
-    },
-    ProjectId, WarehouseId, CONFIG,
-};
-
-pub(super) mod api;
-mod check;
-mod client;
-mod entities;
-mod error;
-mod health;
-mod migration;
-mod models;
-mod relations;
-
-pub(crate) use client::{new_authorizer_from_config, new_client_from_config};
-pub use client::{
-    BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
-};
-use entities::{OpenFgaEntity, ParseOpenFgaEntity as _};
-pub(crate) use error::{OpenFGAError, OpenFGAResult};
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
-pub(crate) use migration::migrate;
-pub(crate) use models::{OpenFgaType, RoleAssignee};
-use openfga_client::client::BasicOpenFgaClient;
-use relations::{
-    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
-    WarehouseRelation,
-};
-use tokio::sync::RwLock;
-use utoipa::OpenApi;
-
-use crate::{
-    api::ApiContext,
-    service::{
-        authn::UserId,
-        authz::{
-            implementations::{openfga::relations::OpenFgaRelation, FgaType},
-            CatalogRoleAction, CatalogUserAction, NamespaceParent,
-        },
-        health::Health,
-        Catalog, RoleId, SecretStore, State, ViewId,
-    },
-};
-
-const MAX_TUPLES_PER_WRITE: i32 = 100;
-
-static AUTH_CONFIG: LazyLock<crate::config::OpenFGAConfig> =
-    LazyLock::new(|| CONFIG.openfga.clone().expect("OpenFGAConfig not found"));
-
-static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = LazyLock::new(
-    || {
-        AUTH_CONFIG
-        .authorization_model_version
-        .as_ref()
-        .filter(|v| !v.is_empty())
-        .map(|v| {
-            AuthorizationModelVersion::from_str(v).unwrap_or_else(|_| {
-                panic!(
-                    "Failed to parse OpenFGA authorization model version from config. Got {v}, expected <major>.<minor>"
-                )
-            })
-        })
-    },
-);
+use openfga_client::client::{BasicOpenFgaClient, ConsistencyPreference};
 
 #[derive(Clone, Debug)]
 pub struct OpenFGAAuthorizer {

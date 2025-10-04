@@ -9,7 +9,7 @@
 pub mod catalog;
 mod config;
 pub mod service;
-pub use config::{AuthZBackend, OpenFGAAuth, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
+pub use config::{AuthZBackend, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
 pub use service::{ProjectId, SecretIdent, WarehouseId};
 
 #[cfg(feature = "router")]

@@ -1,19 +1,17 @@
 use std::str::FromStr;
 
-use super::RoleAssignee;
-use crate::{
-    service::{
-        authn::{Actor, UserId},
-        authz::implementations::{
-            openfga::{OpenFGAError, OpenFGAResult},
-            FgaType,
-        },
-        NamespaceId, RoleId, ServerId, TableId, ViewId,
-    },
-    ProjectId, WarehouseId,
+use lakekeeper::service::{
+    authn::{Actor, UserId},
+    NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
 };
 
-pub(super) trait ParseOpenFgaEntity: Sized {
+use crate::{
+    error::{OpenFGAError, OpenFGAResult},
+    models::RoleAssignee,
+    FgaType,
+};
+
+pub(crate) trait ParseOpenFgaEntity: Sized {
     fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {
         let parts = s.split(':').collect::<Vec<&str>>();
 
@@ -30,7 +28,7 @@ pub(super) trait ParseOpenFgaEntity: Sized {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self>;
 }
 
-pub(super) trait OpenFgaEntity: Sized {
+pub(crate) trait OpenFgaEntity: Sized {
     fn to_openfga(&self) -> String;
 
     fn openfga_type(&self) -> FgaType;

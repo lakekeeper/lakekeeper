@@ -34,13 +34,10 @@ use super::{
         WarehouseRelation as AllWarehouseRelation,
     },
 };
-use crate::{
+use crate::{entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult};
+use lakekeeper::{
     api::ApiContext,
-    request_metadata::RequestMetadata,
     service::{
-        authz::implementations::openfga::{
-            entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
-        },
         Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId, ViewId,
     },
     ProjectId, WarehouseId,

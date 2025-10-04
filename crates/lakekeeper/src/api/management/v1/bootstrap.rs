@@ -5,19 +5,10 @@ use typed_builder::TypedBuilder;
 use super::user::{parse_create_user_request, CreateUserRequest, UserLastUpdatedWith, UserType};
 use crate::{
     api::{management::v1::ApiServer, ApiContext},
-    config,
     request_metadata::RequestMetadata,
     service::{authz::Authorizer, Actor, Catalog, Result, SecretStore, State, Transaction},
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
-
-#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum AuthZBackend {
-    AllowAll,
-    #[serde(rename = "openfga")]
-    OpenFGA,
-}
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, TypedBuilder)]
 #[serde(rename_all = "kebab-case")]
@@ -63,7 +54,7 @@ pub struct ServerInfo {
     #[schema(value_type = Option::<String>)]
     pub default_project_id: Option<ProjectId>,
     /// `AuthZ` backend in use.
-    pub authz_backend: AuthZBackend,
+    pub authz_backend: String,
     /// If using AWS system identities for S3 storage profiles are enabled.
     pub aws_system_identities_enabled: bool,
     /// If using Azure system identities for Azure storage profiles are enabled.
@@ -205,11 +196,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             bootstrapped: !server_data.is_open_for_bootstrap(),
             server_id: *server_data.server_id(),
             default_project_id: DEFAULT_PROJECT_ID.clone(),
-            authz_backend: match CONFIG.authz_backend {
-                config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
-                #[cfg(feature = "authz-openfga")]
-                config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
-            },
+            authz_backend: A::implementation_name().to_string(),
             aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
             azure_system_identities_enabled: CONFIG.enable_azure_system_credentials,
             gcp_system_identities_enabled: CONFIG.enable_gcp_system_credentials,

@@ -1,23 +1,21 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, LazyLock},
-};
-
 use anyhow::anyhow;
+use lakekeeper::service::ServerId;
+use lakekeeper::tokio;
+use lakekeeper::tokio::{sync::Semaphore, task::JoinSet};
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
     TupleKey,
 };
 use serde::Serialize;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, LazyLock},
+};
 use strum::IntoEnumIterator;
-use tokio::{sync::Semaphore, task::JoinSet};
 
-use crate::service::{
-    authz::implementations::openfga::{
-        NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
-        MAX_TUPLES_PER_WRITE,
-    },
-    ServerId,
+use crate::{
+    NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
+    MAX_TUPLES_PER_WRITE,
 };
 
 #[derive(Clone, Debug)]
@@ -482,29 +480,21 @@ async fn get_all_tuples_with_user(
 mod openfga_integration_tests {
     use std::time::Instant;
 
+    use lakekeeper::tokio::{sync::RwLock, task::JoinSet};
     use openfga_client::{
         client::{CheckRequestTupleKey, TupleKey},
         migration::TupleModelManager,
     };
-    use tokio::{sync::RwLock, task::JoinSet};
     use tracing_test::traced_test;
 
     use super::*;
     use crate::{
+        migration::{add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION},
+        new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation, AUTH_CONFIG,
+    };
+    use lakekeeper::{
         api::RequestMetadata,
-        service::{
-            authz::{
-                implementations::openfga::{
-                    migration::{
-                        add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION,
-                    },
-                    new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation,
-                    AUTH_CONFIG,
-                },
-                Authorizer,
-            },
-            NamespaceId, ServerId, TableId, UserId, ViewId,
-        },
+        service::{authz::Authorizer, NamespaceId, ServerId, TableId, UserId, ViewId},
         ProjectId, WarehouseId,
     };
 

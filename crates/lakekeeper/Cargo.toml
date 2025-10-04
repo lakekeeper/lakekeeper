@@ -13,7 +13,6 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 
 [features]
 all = [
-    "authz-openfga",
     "sqlx-postgres",
     "s3-signer",
     "router",
@@ -29,7 +28,6 @@ nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
-authz-openfga = ["dep:openfga-client"]
 test-utils = []
 
 [dependencies]
@@ -83,7 +81,6 @@ lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
 moka = { workspace = true }
-openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
@@ -137,4 +134,4 @@ tempfile = { version = "3.20" }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-test = "0.2.5"
+tracing-test = { workspace = true }

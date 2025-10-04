@@ -1,6 +1,6 @@
-use axum::{extract::State as AxumState, Extension, Json};
 use http::StatusCode;
-use iceberg::{NamespaceIdent, TableIdent};
+use lakekeeper::axum::{extract::State as AxumState, Extension, Json};
+use lakekeeper::iceberg::{NamespaceIdent, TableIdent};
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ use super::{
     },
     OpenFGAAuthorizer, OpenFGAError,
 };
-use crate::{
+use lakekeeper::{
     api::ApiContext,
     catalog::{
         namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
@@ -430,7 +430,7 @@ pub(super) struct CheckResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::UserId;
+    use lakekeeper::service::UserId;
 
     #[test]
     fn test_serde_check_action_namespace_id() {
