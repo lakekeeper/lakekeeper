@@ -3,5 +3,8 @@
   "extends": [
     "config:recommended"
   ],
-  "prHourlyLimit": 3
+  "prHourlyLimit": 3,
+  "ignoreDeps": [
+    "lakekeeper-console"
+  ]
 }
