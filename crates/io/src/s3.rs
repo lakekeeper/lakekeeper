@@ -1,4 +1,7 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+};
 
 use aws_config::{
     retry::RetryConfig, sts::AssumeRoleProvider, timeout::TimeoutConfig, AppName, BehaviorVersion,
@@ -8,6 +11,7 @@ use aws_sdk_s3::config::{
     IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
     SharedIdentityCache,
 };
+use aws_sdk_sts::types::Tag;
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
     time::SharedTimeSource,
@@ -97,6 +101,11 @@ pub struct S3Settings {
     #[builder(default)]
     pub assume_role_arn: Option<String>,
     #[builder(default)]
+    /// STS Session Tags to pass when assuming a role.
+    /// Each tag is a key-value pair.
+    /// Only has effect if `assume_role_arn` is set.
+    pub sts_session_tags: HashMap<String, String>,
+    #[builder(default)]
     pub endpoint: Option<url::Url>,
     pub region: String,
     // -------- S3 specific settings --------
@@ -123,6 +132,7 @@ impl S3Settings {
     pub async fn get_sdk_config(&self, s3_credential: Option<&S3Auth>) -> SdkConfig {
         let S3Settings {
             assume_role_arn,
+            sts_session_tags,
             endpoint,
             region,
             // S3 specific settings
@@ -180,6 +190,12 @@ impl S3Settings {
             if let Some(external_id) = s3_credential.and_then(S3Auth::external_id) {
                 assume_role_provider = assume_role_provider.external_id(external_id);
             }
+            if !sts_session_tags.is_empty() {
+                let tags = parse_sts_tags(sts_session_tags.iter());
+                if !tags.is_empty() {
+                    assume_role_provider = assume_role_provider.tags(tags);
+                }
+            }
             let assume_role_provider = assume_role_provider.build().await;
 
             sdk_config
@@ -190,6 +206,23 @@ impl S3Settings {
             sdk_config
         }
     }
+}
+
+fn parse_sts_tags<'a>(
+    sts_session_tags: impl Iterator<Item = (&'a String, &'a String)>,
+) -> Vec<Tag> {
+    sts_session_tags
+        .filter_map(|(key, value)| {
+            Tag::builder()
+                .key(key)
+                .value(value)
+                .build()
+                .inspect_err(|e| {
+                    tracing::error!("Failed to build STS tag `{key}`:`{value}`. {e}");
+                })
+                .ok()
+        })
+        .collect()
 }
 
 /// Validate the S3 region.
