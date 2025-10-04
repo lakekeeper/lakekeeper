@@ -1,4 +1,10 @@
-use crate::service::ListFlags;
+use crate::{
+    catalog::tables::parse_location,
+    service::{
+        storage::{StorageLocations as _, StorageProfile},
+        GetNamespaceResponse, ListFlags, TabularId,
+    },
+};
 
 pub(crate) fn default_view_flags() -> bool {
     false
@@ -10,6 +16,44 @@ pub(crate) fn default_table_flags() -> ListFlags {
         include_staged: false,
         include_deleted: false,
     }
+}
+
+pub(super) fn determine_tabular_location(
+    namespace: &GetNamespaceResponse,
+    request_table_location: Option<String>,
+    table_id: TabularId,
+    storage_profile: &StorageProfile,
+) -> Result<Location, ErrorModel> {
+    let request_table_location = request_table_location
+        .map(|l| parse_location(&l, StatusCode::BAD_REQUEST))
+        .transpose()?;
+
+    let mut location = if let Some(location) = request_table_location {
+        storage_profile.require_allowed_location(&location)?;
+        location
+    } else {
+        let namespace_props = NamespaceProperties::from_props_unchecked(
+            namespace.properties.clone().unwrap_or_default(),
+        );
+
+        let namespace_location = match namespace_props.get_location() {
+            Some(location) => location,
+            None => storage_profile
+                .default_namespace_location(namespace.namespace_id)
+                .map_err(|e| {
+                    ErrorModel::internal(
+                        "Failed to generate default namespace location",
+                        "InvalidDefaultNamespaceLocation",
+                        Some(Box::new(e)),
+                    )
+                })?,
+        };
+
+        storage_profile.default_tabular_location(&namespace_location, table_id)
+    };
+    // all locations are without a trailing slash
+    location.without_trailing_slash();
+    Ok(location)
 }
 
 macro_rules! list_entities {
@@ -90,4 +134,7 @@ macro_rules! list_entities {
     };
 }
 
+use http::StatusCode;
+use iceberg_ext::{catalog::rest::ErrorModel, configs::namespace::NamespaceProperties};
+use lakekeeper_io::Location;
 pub(crate) use list_entities;

@@ -9,21 +9,21 @@ use fxhash::FxHashSet;
 use http::StatusCode;
 use iceberg::{
     spec::{
-        FormatVersion, MetadataLog, SchemaId, SortOrder, TableMetadata, TableMetadataBuildResult,
-        TableMetadataBuilder, TableMetadataRef, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
+        MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataRef,
         PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
     },
     ErrorKind, NamespaceIdent, TableUpdate,
 };
 use iceberg_ext::{
     catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
-    configs::{namespace::NamespaceProperties, ParseFromStr},
+    configs::ParseFromStr,
 };
 use itertools::Itertools;
-use lakekeeper_io::{InvalidLocationError, Location};
+use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
 
+pub(crate) mod create_table;
 mod load_table;
 
 use super::{
@@ -54,15 +54,14 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
+        storage::{StorageLocations as _, StoragePermissions},
         task_queue::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags, NamedEntity, State,
-        TableCommit, TableCreation, TableId, TabularDetails, TabularId, Transaction,
-        WarehouseStatus,
+        Catalog, CreateTableResponse, ListFlags, NamedEntity, State, TableCommit, TableCreation,
+        TableId, TabularDetails, TabularId, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -142,174 +141,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     /// Create a table in the given namespace
     async fn create_table(
         parameters: NamespaceParameters,
-        // mut because we need to change location
-        mut request: CreateTableRequest,
+        request: CreateTableRequest,
         data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
-        let data_access = data_access.into();
-        // ------------------- VALIDATIONS -------------------
-        let NamespaceParameters { namespace, prefix } = parameters.clone();
-        let warehouse_id = require_warehouse_id(prefix.clone())?;
-        let table = TableIdent::new(namespace.clone(), request.name.clone());
-        validate_table_or_view_ident(&table)?;
-
-        if let Some(properties) = &request.properties {
-            validate_table_properties(properties.keys())?;
-        }
-
-        // ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let namespace_id = authorized_namespace_ident_to_id::<C, _>(
-            authorizer.clone(),
-            &request_metadata,
-            &warehouse_id,
-            &namespace,
-            CatalogNamespaceAction::CanCreateTable,
-            t.transaction(),
-        )
-        .await?;
-
-        // ------------------- BUSINESS LOGIC -------------------
-        let id = Uuid::now_v7();
-        let tabular_id = TabularId::Table(id.into());
-        let table_id = TableId::from(id);
-
-        let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-        let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
-        let storage_profile = &warehouse.storage_profile;
-        require_active_warehouse(warehouse.status)?;
-
-        let table_location = determine_tabular_location(
-            &namespace,
-            request.location.clone(),
-            tabular_id,
-            storage_profile,
-        )?;
-
-        // Update the request for event
-        request.location = Some(table_location.to_string());
-        let request = request; // Make it non-mutable again for our sanity
-
-        // If stage-create is true, we should not create the metadata file
-        let metadata_location = if request.stage_create.unwrap_or(false) {
-            None
-        } else {
-            let metadata_id = Uuid::now_v7();
-            Some(storage_profile.default_metadata_location(
-                &table_location,
-                &CompressionCodec::try_from_maybe_properties(request.properties.as_ref())?,
-                metadata_id,
-                0,
-            ))
-        };
-
-        let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
-
-        let CreateTableResponse {
-            table_metadata,
-            staged_table_id,
-        } = C::create_table(
-            TableCreation {
-                warehouse_id: warehouse.id,
-                namespace_id: namespace.namespace_id,
-                table_ident: &table,
-                table_metadata,
-                metadata_location: metadata_location.as_ref(),
-            },
-            t.transaction(),
-        )
-        .await?;
-
-        // We don't commit the transaction yet, first we need to write the metadata file.
-        let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
-            let secret_state = state.v1_state.secrets;
-            Some(secret_state.get_secret_by_id(secret_id).await?.secret)
-        } else {
-            None
-        };
-
-        let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
-        if !crate::service::storage::is_empty(&file_io, &table_location).await? {
-            return Err(ValidationError::from(InvalidLocationError::new(
-                table_location.to_string(),
-                "Unexpected files in location, tabular locations have to be empty",
-            ))
-            .into());
-        }
-
-        if let Some(metadata_location) = &metadata_location {
-            let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
-            write_file(
-                &file_io,
-                metadata_location,
-                &table_metadata,
-                compression_codec,
-            )
-            .await?;
-        }
-
-        // This requires the storage secret
-        // because the table config might contain vended-credentials based
-        // on the `data_access` parameter.
-        let config = storage_profile
-            .generate_table_config(
-                data_access,
-                storage_secret.as_ref(),
-                &table_location,
-                StoragePermissions::ReadWriteDelete,
-                &request_metadata,
-                warehouse_id,
-                table_id.into(),
-            )
-            .await?;
-
-        let storage_credentials = (!config.creds.inner().is_empty()).then(|| {
-            vec![StorageCredential {
-                prefix: table_location.to_string(),
-                config: config.creds.into(),
-            }]
-        });
-
-        let load_table_result = LoadTableResult {
-            metadata_location: metadata_location.as_ref().map(ToString::to_string),
-            metadata: table_metadata.clone(),
-            config: Some(config.config.into()),
-            storage_credentials,
-        };
-
-        authorizer
-            .create_table(&request_metadata, warehouse_id, table_id, namespace_id)
-            .await?;
-
-        // Metadata file written, now we can commit the transaction
-        t.commit().await?;
-
-        // If a staged table was overwritten, delete it from authorizer
-        if let Some(staged_table_id) = staged_table_id {
-            authorizer
-                .delete_table(warehouse_id, staged_table_id)
-                .await
-                .ok();
-        }
-
-        state
-            .v1_state
-            .hooks
-            .create_table(
-                warehouse_id,
-                parameters,
-                Arc::new(request),
-                Arc::new(table_metadata),
-                metadata_location.map(Arc::new),
-                data_access,
-                Arc::new(request_metadata),
-            )
-            .await;
-
-        Ok(load_table_result)
+        create_table::create_table(parameters, request, data_access, state, request_metadata).await
     }
 
     /// Register a table in the given namespace using given metadata file location
@@ -1703,44 +1540,6 @@ pub(super) fn parse_location(location: &str, code: StatusCode) -> Result<Locatio
         .map_err(Into::into)
 }
 
-pub(super) fn determine_tabular_location(
-    namespace: &GetNamespaceResponse,
-    request_table_location: Option<String>,
-    table_id: TabularId,
-    storage_profile: &StorageProfile,
-) -> Result<Location> {
-    let request_table_location = request_table_location
-        .map(|l| parse_location(&l, StatusCode::BAD_REQUEST))
-        .transpose()?;
-
-    let mut location = if let Some(location) = request_table_location {
-        storage_profile.require_allowed_location(&location)?;
-        location
-    } else {
-        let namespace_props = NamespaceProperties::from_props_unchecked(
-            namespace.properties.clone().unwrap_or_default(),
-        );
-
-        let namespace_location = match namespace_props.get_location() {
-            Some(location) => location,
-            None => storage_profile
-                .default_namespace_location(namespace.namespace_id)
-                .map_err(|e| {
-                    ErrorModel::internal(
-                        "Failed to generate default namespace location",
-                        "InvalidDefaultNamespaceLocation",
-                        Some(Box::new(e)),
-                    )
-                })?,
-        };
-
-        storage_profile.default_tabular_location(&namespace_location, table_id)
-    };
-    // all locations are without a trailing slash
-    location.without_trailing_slash();
-    Ok(location)
-}
-
 fn require_table_id(table_ident: &TableIdent, table_id: Option<TableId>) -> Result<TableId> {
     table_id.ok_or_else(|| {
         ErrorModel::not_found(
@@ -1883,70 +1682,6 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
         tracing::warn!("Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event.");
         serde_json::Value::Null
     }
-}
-
-pub(crate) fn create_table_request_into_table_metadata(
-    table_id: TableId,
-    request: CreateTableRequest,
-) -> Result<TableMetadata> {
-    let CreateTableRequest {
-        name: _,
-        location,
-        schema,
-        partition_spec,
-        write_order,
-        // Stage-create is already handled in the catalog service.
-        // If stage-create is true, the metadata_location is None,
-        // otherwise, it is the location of the metadata file.
-        stage_create: _,
-        mut properties,
-    } = request;
-
-    let location = location.ok_or_else(|| {
-        ErrorModel::conflict(
-            "Table location is required",
-            "CreateTableLocationRequired",
-            None,
-        )
-    })?;
-
-    let format_version = properties
-        .as_mut()
-        .and_then(|props| props.remove(PROPERTY_FORMAT_VERSION))
-        .map(|s| match s.as_str() {
-            "v1" | "1" => Ok(FormatVersion::V1),
-            "v2" | "2" => Ok(FormatVersion::V2),
-            "v3" | "3" => Ok(FormatVersion::V3),
-            _ => Err(ErrorModel::bad_request(
-                format!("Invalid format version specified in table_properties: {s}"),
-                "InvalidFormatVersion",
-                None,
-            )),
-        })
-        .transpose()?
-        .unwrap_or(FormatVersion::V2);
-
-    let table_metadata = TableMetadataBuilder::new(
-        schema,
-        partition_spec.unwrap_or(UnboundPartitionSpec::builder().build()),
-        write_order.unwrap_or(SortOrder::unsorted_order()),
-        location,
-        format_version,
-        properties.unwrap_or_default(),
-    )
-    .map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "CreateTableMetadataError", Some(Box::new(e)))
-    })?
-    .assign_uuid(*table_id)
-    .build()
-    .map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "BuildTableMetadataError", Some(Box::new(e)))
-    })?
-    .metadata;
-
-    Ok(table_metadata)
 }
 
 #[cfg(test)]

@@ -1091,7 +1091,7 @@ pub(crate) mod tests {
             iceberg::{types::PageToken, v1::tables::LoadTableFilters},
             management::v1::{warehouse::WarehouseStatus, DeleteKind},
         },
-        catalog::tables::create_table_request_into_table_metadata,
+        catalog::tables::create_table::create_table_request_into_table_metadata,
         implementations::postgres::{
             namespace::tests::initialize_namespace,
             tabular::{mark_tabular_as_deleted, table::create::create_table},
@@ -1296,9 +1296,7 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
 
-        let table_metadata =
-            crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
-                .unwrap();
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
             warehouse_id,
