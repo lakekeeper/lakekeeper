@@ -61,6 +61,14 @@ impl<A: Authorizer> TableCreationGuard<A> {
         self.authorizer_created = false;
     }
 
+    fn table_id(&self) -> TableId {
+        self.table_id
+    }
+
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
     async fn cleanup(&mut self) {
         if self.authorizer_created {
             if let Err(e) = self
@@ -130,9 +138,9 @@ async fn create_table_inner<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     guard: &mut TableCreationGuard<A>,
 ) -> Result<LoadTableResult> {
     let data_access = data_access.into();
+    let namespace = parameters.namespace.clone();
     // ------------------- VALIDATIONS -------------------
-    let NamespaceParameters { namespace, prefix } = parameters.clone();
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    let warehouse_id = guard.warehouse_id();
     let table = TableIdent::new(namespace.clone(), request.name.clone());
     validate_table_or_view_ident(&table)?;
 
@@ -154,9 +162,8 @@ async fn create_table_inner<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let id = Uuid::now_v7();
-    let tabular_id = TabularId::Table(id.into());
-    let table_id = TableId::from(id);
+    let table_id = guard.table_id();
+    let tabular_id = TabularId::Table(table_id);
 
     let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
     let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
