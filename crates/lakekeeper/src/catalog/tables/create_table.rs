@@ -100,7 +100,7 @@ pub(super) async fn create_table<C: Catalog, A: Authorizer + Clone, S: SecretSto
     request_metadata: RequestMetadata,
 ) -> Result<LoadTableResult> {
     let authorizer = state.v1_state.authz.clone();
-    let warehouse_id = require_warehouse_id(parameters.prefix.clone())?;
+    let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
     let table_id = TableId::from(Uuid::now_v7());
 
     let mut guard = TableCreationGuard::new(authorizer.clone(), warehouse_id, table_id);
