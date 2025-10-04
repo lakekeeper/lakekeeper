@@ -17,6 +17,7 @@ pub use error::{
 };
 use futures::{stream::BoxStream, StreamExt as _};
 pub use location::Location;
+pub use tokio;
 use tokio::task::JoinSet;
 pub use tryhard;
 use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
