@@ -2,6 +2,13 @@
 
 
 
+## [0.10.1](https://github.com/lakekeeper/lakekeeper/compare/v0.10.0...v0.10.1) (2025-10-04)
+
+
+### Miscellaneous Chores
+
+* release 0.10.1 ([d58faec](https://github.com/lakekeeper/lakekeeper/commit/d58faec18a78f3f518dd9a7af53796008bee6d77))
+
 ## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-29)
 
 
