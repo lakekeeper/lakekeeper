@@ -377,10 +377,12 @@ impl<'de> Deserialize<'de> for AuthZBackend {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        match s.to_lowercase().as_str() {
-            "allowall" | "allow-all" => Ok(Self::AllowAll),
-            _ => Ok(Self::External(s.to_lowercase())),
+        let raw = String::deserialize(deserializer)?;
+        let normalized = raw.trim().to_lowercase();
+        if normalized == "allowall" || normalized == "allow-all" {
+            Ok(Self::AllowAll)
+        } else {
+            Ok(Self::External(normalized))
         }
     }
 }
