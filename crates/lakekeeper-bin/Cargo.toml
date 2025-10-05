@@ -24,7 +24,7 @@ ui = ["dep:lakekeeper-console"]
 anyhow = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
 lakekeeper = { path = "../lakekeeper", features = ["all"] }
-lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.10.1", optional = true }
+lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.10.2", optional = true }
 limes = { workspace = true }
 reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
