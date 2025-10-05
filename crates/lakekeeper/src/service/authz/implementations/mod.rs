@@ -37,7 +37,7 @@ pub(super) mod allow_all;
 //         #[cfg(feature = "authz-openfga")]
 //         AuthZBackend::OpenFGA => {
 //             todo!()
-//             // let client = openfga::new_client_from_config().await?;
+//             // let client = openfga::new_client_from_default_config().await?;
 //             // let store_name = None;
 //             // openfga::migrate(&client, store_name, server_id).await?;
 //             Ok(())

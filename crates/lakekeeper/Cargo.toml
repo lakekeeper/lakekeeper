@@ -28,7 +28,7 @@ nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
-test-utils = []
+test-utils = ["lakekeeper-io/storage-in-memory"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -125,6 +125,7 @@ assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
+lakekeeper ={ path = ".", features = ["test-utils"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }

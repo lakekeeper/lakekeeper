@@ -1227,7 +1227,7 @@ async fn try_commit_tables<
     Ok(commits)
 }
 
-pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
+pub async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
@@ -1738,7 +1738,7 @@ pub(crate) mod test {
             },
             ListFlags, SecretStore, State, TableId, UserId,
         },
-        tests::random_request_metadata,
+        tests::{create_table_request as create_request, random_request_metadata},
         WarehouseId,
     };
 
@@ -1785,37 +1785,6 @@ pub(crate) mod test {
         .unwrap();
         let count = super::extract_count_from_metadata_location(&location);
         assert!(count.is_none());
-    }
-
-    pub(crate) fn create_request(
-        table_name: Option<String>,
-        stage_create: Option<bool>,
-    ) -> CreateTableRequest {
-        CreateTableRequest {
-            name: table_name.unwrap_or("my_table".to_string()),
-            location: None,
-            schema: Schema::builder()
-                .with_fields(vec![
-                    NestedField::required(
-                        1,
-                        "id",
-                        iceberg::spec::Type::Primitive(PrimitiveType::Int),
-                    )
-                    .into(),
-                    NestedField::required(
-                        2,
-                        "name",
-                        iceberg::spec::Type::Primitive(PrimitiveType::String),
-                    )
-                    .into(),
-                ])
-                .build()
-                .unwrap(),
-            partition_spec: Some(UnboundPartitionSpec::builder().build()),
-            write_order: None,
-            stage_create,
-            properties: None,
-        }
     }
 
     fn partition_spec() -> UnboundPartitionSpec {

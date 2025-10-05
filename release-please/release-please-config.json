@@ -2,15 +2,19 @@
     "packages": {
         "crates/lakekeeper": {
             "release-type": "rust",
-            "component": "catalog"
+            "component": "lakekeeper"
         },
         "crates/lakekeeper-bin": {
             "release-type": "rust",
-            "component": "catalog-bin"
+            "component": "lakekeeper-bin"
         },
         "crates/iceberg-ext": {
             "release-type": "rust",
             "component": "iceberg-ext"
+        },
+        "crates/authz-openfga": {
+            "release-type": "rust",
+            "component": "lakekeeper-authz-openfga"
         }
     },
     "plugins": [
@@ -24,7 +28,8 @@
             "components": [
                 "lakekeeper",
                 "lakekeeper-bin",
-                "iceberg-ext"
+                "iceberg-ext",
+                "lakekeeper-authz-openfga"
             ]
         }
     ],

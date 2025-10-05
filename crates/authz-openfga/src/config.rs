@@ -8,7 +8,7 @@ use veil::Redact;
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, Default)]
 pub struct DynAppConfig {
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -18,15 +18,6 @@ pub struct DynAppConfig {
         serialize_with = "serialize_openfga_config"
     )]
     pub openfga: Option<OpenFGAConfig>,
-}
-
-impl Default for DynAppConfig {
-    fn default() -> Self {
-        Self {
-            openfga: None,
-            authz_backend: AuthZBackend::default(),
-        }
-    }
 }
 
 impl DynAppConfig {
@@ -52,7 +43,7 @@ fn get_config() -> DynAppConfig {
     let config = match config.extract::<DynAppConfig>() {
         Ok(c) => c,
         Err(e) => {
-            panic!("Failed to extract OpenFGA config: {}", e);
+            panic!("Failed to extract OpenFGA config: {e}");
         }
     };
 

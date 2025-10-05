@@ -4,7 +4,11 @@
     unreachable_pub,
     clippy::pedantic
 )]
-#![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::large_enum_variant,
+    clippy::missing_errors_doc
+)]
 #![forbid(unsafe_code)]
 pub mod catalog;
 mod config;
@@ -26,6 +30,9 @@ pub use async_trait;
 pub use axum;
 pub use iceberg;
 pub use limes;
+#[cfg(feature = "sqlx")]
+pub use sqlx;
+
 #[cfg(feature = "kafka")]
 #[cfg_attr(docsrs, doc(cfg(feature = "kafka")))]
 pub use rdkafka;
@@ -51,34 +58,5 @@ pub mod metrics;
 pub mod request_tracing;
 
 pub use tracing;
-
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod tests;
-
-#[cfg(test)]
-pub mod test {
-    use std::{future::Future, sync::LazyLock};
-
-    use tokio::runtime::Runtime;
-
-    static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("failed to start Tokio runtime")
-    });
-
-    #[track_caller]
-    pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
-        {
-            if common_runtime {
-                return COMMON_RUNTIME.block_on(f);
-            }
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to start Tokio runtime")
-                .block_on(f)
-        }
-    }
-}

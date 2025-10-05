@@ -9,7 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::{HeaderMap, Method};
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 use limes::Authentication;
 use uuid::Uuid;
 

@@ -4,76 +4,32 @@
     unreachable_pub,
     clippy::pedantic
 )]
-#![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
+#![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
 #![forbid(unsafe_code)]
 
-// use std::{
-//     collections::HashSet,
-//     fmt::Debug,
-//     str::FromStr,
-//     sync::{Arc, LazyLock},
-// };
-
-// use futures::future::try_join_all;
-// use lakekeeper::{axum::Router, service::health::Health};
-// use openfga_client::{
-//     client::{
-//         batch_check_single_result::CheckResult, BatchCheckItem, CheckRequestTupleKey,
-//         ConsistencyPreference, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
-//         TupleKeyWithoutCondition,
-//     },
-//     migration::AuthorizationModelVersion,
-//     tonic,
-// };
-
-// use lakekeeper::{
-//     service::{
-//         authn::Actor,
-//         authz::{
-//             Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction,
-//             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ListProjectsResponse,
-//         },
-//         NamespaceId, ServerId, TableId,
-//     },
-//     ProjectId, WarehouseId, CONFIG,
-// };
-
-// mod api;
-// mod authorizer;
-// mod check;
-// mod client;
-// mod error;
-// mod health;
-// mod migration;
-
-// mod relations;
-
-// pub(crate) use client::{new_authorizer_from_config, new_client_from_config};
-// pub use client::{
-//     BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
-// };
-// use entities::{OpenFgaEntity, ParseOpenFgaEntity as _};
-// pub(crate) use error::{OpenFGAError, OpenFGAResult};
-// use lakekeeper::tokio::sync::RwLock;
-// use lakekeeper::utoipa::OpenApi;
-// pub(crate) use migration::migrate;
-// pub(crate) use models::{OpenFgaType, RoleAssignee};
-// use openfga_client::client::BasicOpenFgaClient;
-// use relations::{
-//     NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
-//     WarehouseRelation,
-// };
-
-// mod authorizer;
-mod config;
-mod entities;
-mod error;
-mod models;
-
+pub use authorizer::OpenFGAAuthorizer;
+pub use client::{
+    new_authorizer_from_default_config, BearerOpenFGAAuthorizer,
+    ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
+};
+pub(crate) use error::{OpenFGAError, OpenFGAResult};
+use openfga_client::migration::AuthorizationModelVersion;
 use std::{str::FromStr as _, sync::LazyLock};
 
+mod api;
+mod authorizer;
+mod check;
+mod client;
+mod config;
+mod entities;
+pub mod error;
+mod health;
+mod migration;
+mod models;
+mod relations;
+
 pub use config::CONFIG;
-use openfga_client::migration::AuthorizationModelVersion;
+pub use migration::migrate;
 
 const MAX_TUPLES_PER_WRITE: i32 = 100;
 

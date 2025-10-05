@@ -163,24 +163,17 @@ mod test {
     use sqlx::PgPool;
 
     use crate::{
-        api::{
+        WarehouseId, api::{
             iceberg::{
                 types::{DropParams, Prefix},
                 v1::ViewParameters,
             },
             management::v1::{
-                tasks::{ListTasksRequest, Service},
-                view::ViewManagementService,
-                ApiServer as ManagementApiServer,
+                ApiServer as ManagementApiServer, tasks::{ListTasksRequest, Service}, view::ViewManagementService
             },
-        },
-        catalog::views::{
+        }, catalog::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
-        },
-        request_metadata::RequestMetadata,
-        service::task_queue::TaskEntity,
-        tests::random_request_metadata,
-        WarehouseId,
+        }, request_metadata::RequestMetadata, service::task_queue::TaskEntity, tests::{create_view_request, random_request_metadata}
     };
 
     #[sqlx::test]
@@ -188,8 +181,7 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
         let created_view = Box::pin(create_view(
@@ -268,8 +260,7 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
         let created_view = Box::pin(create_view(
@@ -364,8 +355,7 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
         let created_view = Box::pin(create_view(

@@ -1,5 +1,8 @@
 use http::StatusCode;
 use lakekeeper::axum::{extract::State as AxumState, Extension, Json};
+use lakekeeper::catalog::namespace::authorized_namespace_ident_to_id;
+use lakekeeper::catalog::tables::authorized_table_ident_to_id;
+use lakekeeper::catalog::views::authorized_view_ident_to_id;
 use lakekeeper::iceberg::{NamespaceIdent, TableIdent};
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
@@ -15,16 +18,14 @@ use super::{
     },
     OpenFGAAuthorizer, OpenFGAError,
 };
+use crate::entities::OpenFgaEntity;
+use crate::relations::ActorExt;
+use lakekeeper::api::RequestMetadata;
 use lakekeeper::{
     api::ApiContext,
-    catalog::{
-        namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
-        views::authorized_view_ident_to_id,
-    },
-    request_metadata::RequestMetadata,
     service::{
-        authz::{implementations::openfga::entities::OpenFgaEntity, Authorizer},
-        Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId, Transaction, ViewId,
+        authz::Authorizer, Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId,
+        Transaction, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -572,30 +573,29 @@ mod tests {
     }
 
     mod openfga_integration_tests {
-        use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
+        use lakekeeper::api::CreateNamespaceRequest;
         use openfga_client::client::TupleKey;
         use strum::IntoEnumIterator;
         use uuid::Uuid;
 
+        use crate::migration::tests::authorizer_for_empty_store;
+        use crate::models::RoleAssignee;
+
         use super::super::{super::relations::*, *};
-        use crate::{
+        use lakekeeper::service::CreateNamespaceResponse;
+        use lakekeeper::tests::{SetupTestCatalog, TestWarehouseResponse};
+        use lakekeeper::{
             api::{
                 iceberg::v1::{namespace::NamespaceService, Prefix},
                 management::v1::{
                     role::{CreateRoleRequest, Service as RoleService},
-                    warehouse::TabularDeleteProfile,
                     ApiServer,
                 },
             },
             catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
             implementations::postgres::{PostgresCatalog, SecretsState},
-            service::{
-                authn::UserId,
-                authz::implementations::openfga::{
-                    migration::tests::authorizer_for_empty_store, RoleAssignee,
-                },
-            },
-            tests::TestWarehouseResponse,
+            service::authn::UserId,
+            sqlx,
         };
 
         async fn setup(
@@ -606,20 +606,18 @@ mod tests {
             TestWarehouseResponse,
             CreateNamespaceResponse,
         ) {
-            let prof = crate::catalog::test::memory_io_profile();
             let authorizer = authorizer_for_empty_store().await.1;
-            let (ctx, warehouse) = crate::catalog::test::setup(
-                pool.clone(),
-                prof,
-                None,
-                authorizer.clone(),
-                TabularDeleteProfile::Hard {},
-                Some(operator_id.clone()),
-            )
-            .await;
+
+            let (ctx, warehouse) = SetupTestCatalog::builder()
+                .pool(pool.clone())
+                .authorizer(authorizer.clone())
+                .user_id(Some(operator_id.clone()))
+                .build()
+                .setup()
+                .await;
 
             let namespace = CatalogServer::create_namespace(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
+                Some(Prefix::from(warehouse.warehouse_id.to_string())),
                 CreateNamespaceRequest {
                     namespace: NamespaceIdent::from_vec(vec!["ns1".to_string()]).unwrap(),
                     properties: None,

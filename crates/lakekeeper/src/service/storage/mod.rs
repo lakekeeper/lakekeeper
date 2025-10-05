@@ -5,7 +5,7 @@ pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
 
-#[cfg(test)]
+#[cfg(feature = "test-utils")]
 use std::{collections::HashMap, str::FromStr};
 
 pub use az::{AdlsProfile, AzCredential};
@@ -57,11 +57,11 @@ pub enum StorageProfile {
     #[serde(rename = "gcs")]
     #[schema(title = "StorageProfileGcs")]
     Gcs(GcsProfile),
-    #[cfg(test)]
+    #[cfg(feature = "test-utils")]
     Memory(MemoryProfile),
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-utils")]
 #[derive(
     Debug,
     Clone,
@@ -105,7 +105,7 @@ impl StorageProfile {
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => CatalogConfig {
                 overrides: HashMap::new(),
                 defaults: HashMap::new(),
@@ -130,7 +130,7 @@ impl StorageProfile {
             (StorageProfile::Gcs(this_profile), StorageProfile::Gcs(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             (StorageProfile::Memory(_this_profile), StorageProfile::Memory(_other_profile)) => {
                 unimplemented!("Local profile update not implemented")
             }
@@ -176,7 +176,7 @@ impl StorageProfile {
                 )
                 .await
                 .map(Into::into),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(StorageBackend::Memory(
                 lakekeeper_io::memory::MemoryStorage::new(),
             )),
@@ -192,7 +192,7 @@ impl StorageProfile {
             StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
                 .map_err(|_| {
                     InvalidLocationError::new(
@@ -224,7 +224,7 @@ impl StorageProfile {
             StorageProfile::S3(_) => "s3",
             StorageProfile::Adls(_) => "adls",
             StorageProfile::Gcs(_) => "gcs",
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => "memory",
         }
     }
@@ -290,7 +290,7 @@ impl StorageProfile {
                     )
                     .await
             }
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
@@ -322,7 +322,7 @@ impl StorageProfile {
             ),
             StorageProfile::Adls(prof) => prof.normalize(),
             StorageProfile::Gcs(profile) => profile.normalize(),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
         }
     }
@@ -361,7 +361,7 @@ impl StorageProfile {
             StorageProfile::S3(profile) => profile.sts_enabled,
             StorageProfile::Adls(_) => true,
             StorageProfile::Gcs(_) => true,
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
         };
 
@@ -467,7 +467,7 @@ impl StorageProfile {
                 self.validate_read_write_iceberg(&sts_file_io, test_location, true)
                     .await?;
             }
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => {
                 unreachable!("Local profile does not support vended credentials access validation")
             }
@@ -730,7 +730,7 @@ impl StorageLocations for StorageProfile {}
 impl StorageLocations for S3Profile {}
 impl StorageLocations for AdlsProfile {}
 
-#[cfg(test)]
+#[cfg(feature = "test-utils")]
 impl Default for MemoryProfile {
     fn default() -> Self {
         Self {
@@ -1189,7 +1189,7 @@ mod tests {
 
         #[test]
         fn test_vended_aws() {
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
@@ -1244,7 +1244,7 @@ mod tests {
         fn test_vended_s3_compat() {
             use super::super::s3::test::minio_integration_tests::storage_profile;
 
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);

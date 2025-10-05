@@ -28,7 +28,13 @@ url = { workspace = true }
 thiserror = { workspace = true }
 strum_macros = { workspace = true }
 urlencoding = { workspace = true }
+utoipa = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
 figment = { workspace = true, features = ["test"] }
+lakekeeper = { path = "../lakekeeper", features = ["test-utils"] }
+fastrand = { workspace = true }
+sqlx = { workspace = true }
+itertools = { workspace = true }

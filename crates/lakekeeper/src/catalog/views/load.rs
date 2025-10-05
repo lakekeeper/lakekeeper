@@ -129,15 +129,13 @@ pub(crate) mod test {
 
     use crate::{
         api::{
-            iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
-            ApiContext,
+            ApiContext, iceberg::v1::{DataAccess, Prefix, ViewParameters, views}
         },
         catalog::{
-            views::{create::test::create_view, test::setup},
-            CatalogServer,
+            CatalogServer, views::{create::test::create_view, test::setup}
         },
-        implementations::postgres::{secrets::SecretsState, PostgresCatalog},
-        service::{authz::AllowAllAuthorizer, State},
+        implementations::postgres::{PostgresCatalog, secrets::SecretsState},
+        service::{State, authz::AllowAllAuthorizer}, tests::create_view_request,
     };
 
     pub(crate) async fn load_view(
@@ -163,8 +161,7 @@ pub(crate) mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
         let created_view = Box::pin(create_view(

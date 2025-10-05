@@ -1194,6 +1194,7 @@ mod test {
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
         service::{authz::tests::HidingAuthorizer, State, UserId},
+        tests::create_view_request,
         WarehouseId,
     };
 
@@ -1234,10 +1235,7 @@ mod test {
         for i in 0..n_tabulars {
             let v = CatalogServer::create_view(
                 ns_params.clone(),
-                crate::catalog::views::create::test::create_view_request(
-                    Some(&format!("{i}")),
-                    None,
-                ),
+                create_view_request(Some(&format!("{i}")), None),
                 ctx.clone(),
                 DataAccess {
                     vended_credentials: true,
@@ -1320,10 +1318,7 @@ mod test {
         for i in 0..10 {
             let _ = CatalogServer::create_view(
                 ns_params.clone(),
-                crate::catalog::views::create::test::create_view_request(
-                    Some(&format!("view-{i}")),
-                    None,
-                ),
+                create_view_request(Some(&format!("view-{i}")), None),
                 ctx.clone(),
                 DataAccess {
                     vended_credentials: true,

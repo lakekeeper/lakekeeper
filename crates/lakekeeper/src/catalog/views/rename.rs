@@ -112,6 +112,7 @@ mod test {
         api::iceberg::v1::ViewParameters,
         catalog::views::{create::test::create_view, load::test::load_view, test::setup},
         implementations::postgres::namespace::tests::initialize_namespace,
+        tests::create_view_request,
     };
 
     #[sqlx::test]
@@ -119,8 +120,7 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = Prefix(whi.to_string());
         let created_view = Box::pin(create_view(
@@ -186,8 +186,7 @@ mod test {
                 .namespace;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = Prefix(whi.to_string());
         let created_view = Box::pin(create_view(

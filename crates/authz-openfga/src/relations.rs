@@ -3,15 +3,16 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use utoipa::ToSchema;
 
-use super::{
+use crate::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
-    OpenFGAError, OpenFGAResult, RoleAssignee,
+    models::RoleAssignee,
+    FgaType, OpenFGAError, OpenFGAResult,
 };
-use crate::service::{
+use lakekeeper::service::{
     authn::UserId,
     authz::{
-        implementations::FgaType, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-        CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+        CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
+        CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
     },
     Actor, RoleId,
 };
@@ -58,9 +59,13 @@ pub(super) enum UserOrRole {
     Role(RoleAssignee),
 }
 
-impl Actor {
+pub(crate) trait ActorExt {
     #[must_use]
-    pub(super) fn to_user_or_role(&self) -> Option<UserOrRole> {
+    fn to_user_or_role(&self) -> Option<UserOrRole>;
+}
+
+impl ActorExt for Actor {
+    fn to_user_or_role(&self) -> Option<UserOrRole> {
         match self {
             Actor::Principal(user) => Some(UserOrRole::User(user.clone())),
             Actor::Role {
@@ -1515,7 +1520,7 @@ impl ReducedRelation for CatalogViewAction {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
 
     #[test]

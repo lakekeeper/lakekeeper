@@ -4,7 +4,7 @@ use crate::FgaType;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-/// OpenFGA userset with `#assignee` suffix to represent role assignees
+/// `OpenFGA` userset with `#assignee` suffix to represent role assignees
 pub(crate) struct RoleAssignee(RoleId);
 
 impl RoleAssignee {
@@ -25,7 +25,6 @@ pub(crate) trait RoleIdExt {
 }
 
 impl RoleIdExt for RoleId {
-    #[must_use]
     fn into_assignees(self) -> RoleAssignee {
         RoleAssignee::from_role(self)
     }
