@@ -2584,11 +2584,6 @@ components:
           format: int64
           description: 'The validity of the sas token in seconds. Default: 3600.'
           minimum: 0
-    AuthZBackend:
-      type: string
-      enum:
-        - allow-all
-        - openfga
     AzCredential:
       oneOf:
         - type: object
@@ -4376,7 +4371,7 @@ components:
         - queues
       properties:
         authz-backend:
-          $ref: '#/components/schemas/AuthZBackend'
+          type: string
           description: '`AuthZ` backend in use.'
         aws-system-identities-enabled:
           type: boolean

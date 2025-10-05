@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    # "crates/lakekeeper-bin",
     "crates/authz-openfga",
     "crates/iceberg-ext",
     "crates/io",
     "crates/lakekeeper",
+    "crates/lakekeeper-bin",
 ]
 resolver = "2"
 

@@ -10,14 +10,13 @@
 use clap::{Parser, Subcommand};
 use lakekeeper::{
     api::management::v1::api_doc as v1_api_doc,
-    service::{
-        authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
-        task_queue::BUILT_IN_API_CONFIGS,
-    },
+    service::{authz::AllowAllAuthorizer, task_queue::BUILT_IN_API_CONFIGS},
     tokio, tracing, AuthZBackend, CONFIG,
 };
+use lakekeeper_authz_openfga::OpenFGAAuthorizer;
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
+mod authorizer;
 mod healthcheck;
 mod serve;
 #[cfg(feature = "ui")]
@@ -150,8 +149,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Database migration complete.");
 
             println!("Migrating authorizer...");
-            lakekeeper::service::authz::implementations::migrate_default_authorizer(server_id)
-                .await?;
+            authorizer::migrate(server_id).await?;
             println!("Authorizer migration complete.");
         }
         Some(Commands::Serve { force_start }) => {
@@ -182,11 +180,12 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::ManagementOpenapi {}) => {
             let queue_configs_ref = &BUILT_IN_API_CONFIGS;
             let queue_configs: Vec<&_> = queue_configs_ref.iter().collect();
-            let doc = match CONFIG.authz_backend {
+            let doc = match &CONFIG.authz_backend {
                 AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(queue_configs.clone()),
-                AuthZBackend::OpenFGA => {
-                    v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(queue_configs)
+                AuthZBackend::External(e) if e == "openfga" => {
+                    v1_api_doc::<OpenFGAAuthorizer>(queue_configs)
                 }
+                AuthZBackend::External(e) => anyhow::bail!("Unsupported authz backend `{e}`"),
             };
             println!("{}", doc.to_yaml()?);
         }

@@ -12,7 +12,7 @@ pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type BearerOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type ClientCredentialsOpenFGAAuthorizer = OpenFGAAuthorizer;
 
-pub(crate) async fn new_client_from_default_config() -> OpenFGAResult<BasicOpenFgaServiceClient> {
+pub async fn new_client_from_default_config() -> OpenFGAResult<BasicOpenFgaServiceClient> {
     let endpoint = AUTH_CONFIG.endpoint.clone();
 
     let client = match &AUTH_CONFIG.auth {

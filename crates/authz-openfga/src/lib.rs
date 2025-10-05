@@ -11,7 +11,7 @@ use std::{str::FromStr as _, sync::LazyLock};
 
 pub use authorizer::OpenFGAAuthorizer;
 pub use client::{
-    new_authorizer_from_default_config, BearerOpenFGAAuthorizer,
+    new_authorizer_from_default_config, new_client_from_default_config, BearerOpenFGAAuthorizer,
     ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
 };
 pub(crate) use error::{OpenFGAError, OpenFGAResult};
