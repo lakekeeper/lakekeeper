@@ -8,7 +8,7 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{io::IOErrorExt, CommonMetadata};
 
-const METADATA_COMPRESSION: &str = "write.metadata.compression-codec";
+pub(crate) const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
 
 #[derive(thiserror::Error, Debug)]
 #[error("Unsupported compression codec: {0}")]
@@ -78,7 +78,7 @@ impl CompressionCodec {
         properties: &HashMap<String, String>,
     ) -> Result<Self, UnsupportedCompressionCodec> {
         properties
-            .get(METADATA_COMPRESSION)
+            .get(PROPERTY_METADATA_COMPRESSION_CODEC)
             .map(String::as_str)
             .map_or(Ok(Self::default()), |value| match value {
                 "gzip" => Ok(Self::Gzip),

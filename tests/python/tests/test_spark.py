@@ -487,7 +487,7 @@ def test_table_properties(spark, warehouse: conftest.Warehouse):
         "CREATE TABLE test_table_properties.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
     )
     spark.sql(
-        "ALTER TABLE test_table_properties.my_table SET TBLPROPERTIES ('key1'='value1', 'key2'='value2')"
+        "ALTER TABLE test_table_properties.my_table SET TBLPROPERTIES ('key1'='value1', 'key2'='value2', 'write.metadata.metrics.max-inferred-column-defaults' = 100)"
     )
     pdf = (
         spark.sql("SHOW TBLPROPERTIES test_table_properties.my_table")
@@ -496,6 +496,9 @@ def test_table_properties(spark, warehouse: conftest.Warehouse):
     )
     assert pdf.loc["key1"]["value"] == "value1"
     assert pdf.loc["key2"]["value"] == "value2"
+    assert (
+        pdf.loc["write.metadata.metrics.max-inferred-column-defaults"]["value"] == "100"
+    )
 
 
 def test_write_read_table(spark):
