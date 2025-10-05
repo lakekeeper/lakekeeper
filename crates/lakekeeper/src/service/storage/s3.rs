@@ -1100,8 +1100,7 @@ pub(crate) mod test {
     use super::*;
     use crate::service::{
         storage::{StorageLocations as _, StorageProfile},
-        tabular_idents::TabularId,
-        NamespaceId,
+        NamespaceId, TabularId,
     };
 
     #[test]

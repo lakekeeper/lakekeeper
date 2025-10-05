@@ -47,7 +47,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 ) -> Result<LoadViewResult> {
     let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
-    let warehouse_id = require_warehouse_id(parameters.prefix.clone())?;
+    let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
 
     let CommitViewRequest {
         identifier,

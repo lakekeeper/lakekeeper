@@ -33,7 +33,10 @@ pub async fn migrate_default_authorizer(
     server_id: ServerId,
 ) -> std::result::Result<(), ErrorModel> {
     match &CONFIG.authz_backend {
-        AuthZBackend::AllowAll => Ok(()),
+        AuthZBackend::AllowAll => {
+            let _ = server_id;
+            Ok(())
+        }
         #[cfg(feature = "authz-openfga")]
         AuthZBackend::OpenFGA => {
             let client = openfga::new_client_from_config().await?;

@@ -12,9 +12,8 @@ use crate::{
         compression_codec::CompressionCodec,
         io::write_file,
         maybe_get_secret, require_warehouse_id,
-        tables::{
-            determine_tabular_location, require_active_warehouse, validate_table_or_view_ident,
-        },
+        tables::{require_active_warehouse, validate_table_or_view_ident},
+        tabular::determine_tabular_location,
         views::validate_view_properties,
     },
     request_metadata::RequestMetadata,
@@ -38,7 +37,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = &parameters;
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     let view = TableIdent::new(namespace.clone(), request.name.clone());
 
     validate_table_or_view_ident(&view)?;

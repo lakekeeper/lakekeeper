@@ -32,7 +32,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         storage::error::{IcebergFileIoError, UnexpectedStorageType},
-        tabular_idents::TabularId,
+        TabularId,
     },
     WarehouseId, CONFIG,
 };

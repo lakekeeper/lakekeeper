@@ -30,7 +30,7 @@ use crate::{
     catalog::tables::{maybe_body_to_json, CommitContext},
     service::{
         endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
-        tabular_idents::TabularId,
+        TabularId,
     },
     CONFIG,
 };

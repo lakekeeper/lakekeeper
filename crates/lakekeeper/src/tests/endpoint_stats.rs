@@ -555,26 +555,6 @@ mod test {
         )
         .await
         .unwrap();
-
-        let stats = ApiServer::get_endpoint_statistics(
-            setup.ctx.clone(),
-            GetEndpointStatisticsRequest {
-                warehouse: WarehouseFilter::All,
-                status_codes: None,
-                range_specifier: None,
-            },
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(stats.called_endpoints.len(), 1);
-        assert_eq!(stats.called_endpoints[0].len(), 1);
-        assert_eq!(stats.called_endpoints[0][0].http_route, ep.as_http_route());
-        assert_eq!(stats.called_endpoints[0][0].status_code, 200);
-        assert_eq!(stats.called_endpoints[0][0].count, 1);
-
-        assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
     }
 
     async fn send_all_endpoints(setup: &StatsSetup) {

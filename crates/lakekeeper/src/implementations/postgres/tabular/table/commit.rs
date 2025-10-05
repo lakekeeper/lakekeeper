@@ -167,7 +167,7 @@ fn build_table_and_tabular_update_queries(
         })?;
 
         query_builder_table.push("(");
-        query_builder_table.push_bind(warehouse_id.to_uuid());
+        query_builder_table.push_bind(*warehouse_id);
         query_builder_table.push(", ");
         query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");
@@ -185,7 +185,7 @@ fn build_table_and_tabular_update_queries(
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
-        query_builder_tabular.push_bind(warehouse_id.to_uuid());
+        query_builder_tabular.push_bind(*warehouse_id);
         query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(new_metadata.uuid());
         query_builder_tabular.push(", ");

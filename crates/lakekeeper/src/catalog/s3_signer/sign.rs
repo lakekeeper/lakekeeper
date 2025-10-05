@@ -57,7 +57,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<S3SignResponse> {
-        let warehouse_id = require_warehouse_id(prefix.clone())?;
+        let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let authorizer = state.v1_state.authz.clone();
         authorizer
             .require_warehouse_action(

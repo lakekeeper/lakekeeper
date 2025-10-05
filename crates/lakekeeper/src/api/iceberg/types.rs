@@ -33,6 +33,12 @@ impl From<&str> for Prefix {
     }
 }
 
+impl AsRef<str> for Prefix {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub enum PageToken {

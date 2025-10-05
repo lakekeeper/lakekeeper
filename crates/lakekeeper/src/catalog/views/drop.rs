@@ -32,7 +32,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = &parameters;
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     validate_table_or_view_ident(view)?;
 
     // ------------------- AUTHZ -------------------
@@ -157,8 +157,6 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
-
     use http::StatusCode;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CreateViewRequest;
@@ -298,7 +296,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseId::from_str(prefix.as_str()).unwrap(),
+            WarehouseId::from_str_or_internal(prefix.as_str()).unwrap(),
             true,
             api_context.clone(),
             random_request_metadata(),
@@ -325,7 +323,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseId::from_str(prefix.as_str()).unwrap(),
+            WarehouseId::from_str_or_internal(prefix.as_str()).unwrap(),
             false,
             api_context.clone(),
             random_request_metadata(),
@@ -394,7 +392,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseId::from_str(prefix.as_str()).unwrap(),
+            WarehouseId::from_str_or_internal(prefix.as_str()).unwrap(),
             true,
             api_context.clone(),
             random_request_metadata(),

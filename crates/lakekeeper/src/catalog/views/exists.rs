@@ -18,7 +18,7 @@ pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStor
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = parameters;
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     validate_table_or_view_ident(&view)?;
 
     // ------------------- BUSINESS LOGIC -------------------
