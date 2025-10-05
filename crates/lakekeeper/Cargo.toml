@@ -124,8 +124,8 @@ openssl-src = { version = "300.4.2", features = [
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
-lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 lakekeeper ={ path = ".", features = ["test-utils"] }
+lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }

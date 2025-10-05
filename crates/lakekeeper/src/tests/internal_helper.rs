@@ -1,3 +1,16 @@
+use std::{future::Future, sync::LazyLock};
+
+use iceberg::{
+    spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec},
+    NamespaceIdent, TableIdent,
+};
+use iceberg_ext::catalog::rest::{
+    CreateNamespaceRequest, CreateNamespaceResponse, CreateTableRequest, CreateViewRequest,
+    LoadTableResult, LoadViewResult,
+};
+use serde_json::json;
+use tokio::runtime::Runtime;
+
 use crate::{
     api::{
         iceberg::{
@@ -16,15 +29,6 @@ use crate::{
     service::{authz::Authorizer, Catalog, SecretStore, State},
     tests::random_request_metadata,
 };
-use iceberg::spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec};
-use iceberg::{NamespaceIdent, TableIdent};
-use iceberg_ext::catalog::rest::{
-    CreateNamespaceRequest, CreateNamespaceResponse, CreateTableRequest, CreateViewRequest,
-    LoadTableResult, LoadViewResult,
-};
-use serde_json::json;
-use std::{future::Future, sync::LazyLock};
-use tokio::runtime::Runtime;
 
 static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()

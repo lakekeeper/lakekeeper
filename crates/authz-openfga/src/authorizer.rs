@@ -1,35 +1,44 @@
-use crate::entities::{OpenFgaEntity, ParseOpenFgaEntity};
-use crate::error::{OpenFGAError, OpenFGAResult};
-use crate::models::OpenFgaType;
-use crate::relations::{
-    NamespaceRelation, OpenFgaRelation, ProjectRelation, RoleRelation, ServerRelation,
-    TableRelation, ViewRelation, WarehouseRelation,
-};
-use crate::{relations, FgaType, AUTH_CONFIG, MAX_TUPLES_PER_WRITE};
+use std::{collections::HashSet, sync::Arc};
+
 use futures::future::try_join_all;
-use lakekeeper::api::{ApiContext, IcebergErrorResponse, RequestMetadata};
-use lakekeeper::axum::Router;
-use lakekeeper::service::authz::{
-    CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-    CatalogTableAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
-    ListProjectsResponse, NamespaceParent,
-};
-use lakekeeper::service::{Actor, ErrorModel, NamespaceId, RoleId, State, TableId, UserId, ViewId};
 use lakekeeper::{
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
     async_trait,
-    service::{authz::Authorizer, health::Health, Catalog, SecretStore, ServerId},
+    axum::Router,
+    service::{
+        authz::{
+            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+            CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
+            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+        },
+        health::Health,
+        Actor, Catalog, ErrorModel, NamespaceId, RoleId, SecretStore, ServerId, State, TableId,
+        UserId, ViewId,
+    },
     tokio::sync::RwLock,
     utoipa, ProjectId, WarehouseId,
 };
-use openfga_client::client::batch_check_single_result::CheckResult;
-use openfga_client::client::{
-    BasicOpenFgaClient, BatchCheckItem, CheckRequestTupleKey, ConsistencyPreference,
-    ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
+use openfga_client::{
+    client::{
+        batch_check_single_result::CheckResult, BasicOpenFgaClient, BatchCheckItem,
+        CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, ReadResponse, Tuple,
+        TupleKey, TupleKeyWithoutCondition,
+    },
+    tonic,
 };
-use openfga_client::tonic;
-use std::collections::HashSet;
-use std::sync::Arc;
 use utoipa::OpenApi as _;
+
+use crate::{
+    entities::{OpenFgaEntity, ParseOpenFgaEntity},
+    error::{OpenFGAError, OpenFGAResult},
+    models::OpenFgaType,
+    relations,
+    relations::{
+        NamespaceRelation, OpenFgaRelation, ProjectRelation, RoleRelation, ServerRelation,
+        TableRelation, ViewRelation, WarehouseRelation,
+    },
+    FgaType, AUTH_CONFIG, MAX_TUPLES_PER_WRITE,
+};
 
 type AuthorizerResult<T> = std::result::Result<T, IcebergErrorResponse>;
 
@@ -1087,12 +1096,14 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 pub(crate) mod tests {
     mod openfga_integration_tests {
         use http::StatusCode;
+        use lakekeeper::tokio;
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
-        use crate::client::{new_authorizer, new_client_from_default_config};
-        use crate::migrate;
-        use lakekeeper::tokio;
+        use crate::{
+            client::{new_authorizer, new_client_from_default_config},
+            migrate,
+        };
 
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 

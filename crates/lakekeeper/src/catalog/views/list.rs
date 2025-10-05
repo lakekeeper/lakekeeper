@@ -85,15 +85,18 @@ mod test {
 
     use crate::{
         api::{
-            ApiContext, iceberg::{
+            iceberg::{
                 types::{PageToken, Prefix},
-                v1::{DataAccess, ListTablesQuery, NamespaceParameters, views::ViewService},
-            }, management::v1::warehouse::TabularDeleteProfile
+                v1::{views::ViewService, DataAccess, ListTablesQuery, NamespaceParameters},
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+            ApiContext,
         },
-        catalog::{CatalogServer, test::impl_pagination_tests},
+        catalog::{test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
-        service::{State, UserId, authz::tests::HidingAuthorizer}, tests::create_view_request,
+        service::{authz::tests::HidingAuthorizer, State, UserId},
+        tests::create_view_request,
     };
 
     async fn pagination_test_setup(

@@ -1,12 +1,12 @@
 //! Get `OpenFGA` clients
 
-use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
-use crate::config::OpenFGAAuth;
-use crate::migration::get_active_auth_model_id;
 use lakekeeper::service::ServerId;
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference,
 };
+
+use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use crate::{config::OpenFGAAuth, migration::get_active_auth_model_id};
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type BearerOpenFGAAuthorizer = OpenFGAAuthorizer;

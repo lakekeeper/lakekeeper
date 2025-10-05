@@ -1,16 +1,23 @@
-use crate::api::management::v1::bootstrap::{BootstrapRequest, Service as _};
-use crate::api::management::v1::warehouse::{
-    CreateWarehouseRequest, Service as _, TabularDeleteProfile,
+use crate::{
+    api::{
+        management::v1::{
+            bootstrap::{BootstrapRequest, Service as _},
+            warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
+            ApiServer,
+        },
+        RequestMetadata,
+    },
+    implementations::{
+        postgres::{migrations::migrate, PostgresCatalog, SecretsState},
+        CatalogState,
+    },
+    service::{
+        contract_verification::ContractVerifiers,
+        endpoint_hooks::EndpointHookCollection,
+        storage::{StorageCredential, StorageProfile},
+        UserId,
+    },
 };
-use crate::api::management::v1::ApiServer;
-use crate::api::RequestMetadata;
-use crate::implementations::postgres::migrations::migrate;
-use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-use crate::implementations::CatalogState;
-use crate::service::contract_verification::ContractVerifiers;
-use crate::service::endpoint_hooks::EndpointHookCollection;
-use crate::service::storage::{StorageCredential, StorageProfile};
-use crate::service::UserId;
 
 #[cfg(test)]
 mod drop_recursive;

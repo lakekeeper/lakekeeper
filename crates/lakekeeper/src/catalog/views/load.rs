@@ -129,13 +129,16 @@ pub(crate) mod test {
 
     use crate::{
         api::{
-            ApiContext, iceberg::v1::{DataAccess, Prefix, ViewParameters, views}
+            iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
+            ApiContext,
         },
         catalog::{
-            CatalogServer, views::{create::test::create_view, test::setup}
+            views::{create::test::create_view, test::setup},
+            CatalogServer,
         },
-        implementations::postgres::{PostgresCatalog, secrets::SecretsState},
-        service::{State, authz::AllowAllAuthorizer}, tests::create_view_request,
+        implementations::postgres::{secrets::SecretsState, PostgresCatalog},
+        service::{authz::AllowAllAuthorizer, State},
+        tests::create_view_request,
     };
 
     pub(crate) async fn load_view(

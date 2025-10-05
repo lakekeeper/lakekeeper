@@ -1,21 +1,27 @@
-use crate::relations::{
-    NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
+use std::{
+    collections::VecDeque,
+    sync::{Arc, LazyLock},
 };
-use crate::MAX_TUPLES_PER_WRITE;
+
 use anyhow::anyhow;
-use lakekeeper::service::ServerId;
-use lakekeeper::tokio;
-use lakekeeper::tokio::{sync::Semaphore, task::JoinSet};
+use lakekeeper::{
+    service::ServerId,
+    tokio,
+    tokio::{sync::Semaphore, task::JoinSet},
+};
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
     TupleKey,
 };
 use serde::Serialize;
-use std::{
-    collections::VecDeque,
-    sync::{Arc, LazyLock},
-};
 use strum::IntoEnumIterator;
+
+use crate::{
+    relations::{
+        NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
+    },
+    MAX_TUPLES_PER_WRITE,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct MigrationState {
@@ -479,7 +485,12 @@ async fn get_all_tuples_with_user(
 mod openfga_integration_tests {
     use std::time::Instant;
 
-    use lakekeeper::{service::UserId, tokio::task::JoinSet};
+    use lakekeeper::{
+        api::RequestMetadata,
+        service::{authz::Authorizer, NamespaceId, ServerId, TableId, UserId, ViewId},
+        tokio::task::JoinSet,
+        ProjectId, WarehouseId,
+    };
     use openfga_client::{
         client::{CheckRequestTupleKey, TupleKey},
         migration::TupleModelManager,
@@ -487,17 +498,12 @@ mod openfga_integration_tests {
     use tracing_test::traced_test;
 
     use super::*;
-    use crate::client::new_client_from_default_config;
-    use crate::entities::OpenFgaEntity;
-    use crate::relations::ServerRelation;
     use crate::{
+        client::new_client_from_default_config,
+        entities::OpenFgaEntity,
         migration::{add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION},
+        relations::ServerRelation,
         OpenFGAAuthorizer, AUTH_CONFIG,
-    };
-    use lakekeeper::{
-        api::RequestMetadata,
-        service::{authz::Authorizer, NamespaceId, ServerId, TableId, ViewId},
-        ProjectId, WarehouseId,
     };
     // Tests must write tuples according to v3 model manually.
     // Writing through methods like `authorizer.create_*` may create tuples different from

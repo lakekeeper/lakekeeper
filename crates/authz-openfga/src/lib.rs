@@ -7,6 +7,8 @@
 #![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
 #![forbid(unsafe_code)]
 
+use std::{str::FromStr as _, sync::LazyLock};
+
 pub use authorizer::OpenFGAAuthorizer;
 pub use client::{
     new_authorizer_from_default_config, BearerOpenFGAAuthorizer,
@@ -14,7 +16,6 @@ pub use client::{
 };
 pub(crate) use error::{OpenFGAError, OpenFGAResult};
 use openfga_client::migration::AuthorizationModelVersion;
-use std::{str::FromStr as _, sync::LazyLock};
 
 mod api;
 mod authorizer;

@@ -30,9 +30,6 @@ pub use async_trait;
 pub use axum;
 pub use iceberg;
 pub use limes;
-#[cfg(feature = "sqlx")]
-pub use sqlx;
-
 #[cfg(feature = "kafka")]
 #[cfg_attr(docsrs, doc(cfg(feature = "kafka")))]
 pub use rdkafka;
@@ -40,6 +37,8 @@ pub use request_metadata::{
     determine_base_uri, determine_forwarded_prefix, X_FORWARDED_HOST_HEADER,
     X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
 };
+#[cfg(feature = "sqlx")]
+pub use sqlx;
 pub use tokio;
 pub use tokio_util::sync::CancellationToken;
 #[cfg(feature = "router")]

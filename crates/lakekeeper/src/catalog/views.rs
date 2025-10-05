@@ -8,6 +8,11 @@ mod rename;
 
 use std::str::FromStr;
 
+#[allow(unused_imports)]
+pub use exists::authorized_view_ident_to_id;
+use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
+use lakekeeper_io::Location;
+
 use super::{tables::validate_table_properties, CatalogServer};
 use crate::{
     api::iceberg::{
@@ -21,10 +26,6 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{authz::Authorizer, Catalog, SecretStore, State},
 };
-#[allow(unused_imports)]
-pub use exists::authorized_view_ident_to_id;
-use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
-use lakekeeper_io::Location;
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>

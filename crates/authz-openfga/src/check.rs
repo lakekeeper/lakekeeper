@@ -1,9 +1,18 @@
 use http::StatusCode;
-use lakekeeper::axum::{extract::State as AxumState, Extension, Json};
-use lakekeeper::catalog::namespace::authorized_namespace_ident_to_id;
-use lakekeeper::catalog::tables::authorized_table_ident_to_id;
-use lakekeeper::catalog::views::authorized_view_ident_to_id;
-use lakekeeper::iceberg::{NamespaceIdent, TableIdent};
+use lakekeeper::{
+    api::{ApiContext, RequestMetadata},
+    axum::{extract::State as AxumState, Extension, Json},
+    catalog::{
+        namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
+        views::authorized_view_ident_to_id,
+    },
+    iceberg::{NamespaceIdent, TableIdent},
+    service::{
+        authz::Authorizer, Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId,
+        Transaction, ViewId,
+    },
+    ProjectId, WarehouseId,
+};
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
 
@@ -18,17 +27,7 @@ use super::{
     },
     OpenFGAAuthorizer, OpenFGAError,
 };
-use crate::entities::OpenFgaEntity;
-use crate::relations::ActorExt;
-use lakekeeper::api::RequestMetadata;
-use lakekeeper::{
-    api::ApiContext,
-    service::{
-        authz::Authorizer, Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId,
-        Transaction, ViewId,
-    },
-    ProjectId, WarehouseId,
-};
+use crate::{entities::OpenFgaEntity, relations::ActorExt};
 
 /// Check if a specific action is allowed on the given object
 #[utoipa::path(
@@ -430,8 +429,9 @@ pub(super) struct CheckResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use lakekeeper::service::UserId;
+
+    use super::*;
 
     #[test]
     fn test_serde_check_action_namespace_id() {
@@ -573,17 +573,6 @@ mod tests {
     }
 
     mod openfga_integration_tests {
-        use lakekeeper::api::CreateNamespaceRequest;
-        use openfga_client::client::TupleKey;
-        use strum::IntoEnumIterator;
-        use uuid::Uuid;
-
-        use crate::migration::tests::authorizer_for_empty_store;
-        use crate::models::RoleAssignee;
-
-        use super::super::{super::relations::*, *};
-        use lakekeeper::service::CreateNamespaceResponse;
-        use lakekeeper::tests::{SetupTestCatalog, TestWarehouseResponse};
         use lakekeeper::{
             api::{
                 iceberg::v1::{namespace::NamespaceService, Prefix},
@@ -591,12 +580,20 @@ mod tests {
                     role::{CreateRoleRequest, Service as RoleService},
                     ApiServer,
                 },
+                CreateNamespaceRequest,
             },
             catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
             implementations::postgres::{PostgresCatalog, SecretsState},
-            service::authn::UserId,
+            service::{authn::UserId, CreateNamespaceResponse},
             sqlx,
+            tests::{SetupTestCatalog, TestWarehouseResponse},
         };
+        use openfga_client::client::TupleKey;
+        use strum::IntoEnumIterator;
+        use uuid::Uuid;
+
+        use super::super::{super::relations::*, *};
+        use crate::{migration::tests::authorizer_for_empty_store, models::RoleAssignee};
 
         async fn setup(
             operator_id: UserId,

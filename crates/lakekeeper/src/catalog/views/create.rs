@@ -204,13 +204,13 @@ pub(crate) mod test {
     use uuid::Uuid;
 
     use super::*;
-    use crate::tests::create_view_request;
     use crate::{
         api::iceberg::{types::Prefix, v1::DataAccess},
         implementations::postgres::{
             namespace::tests::initialize_namespace, secrets::SecretsState,
         },
         service::authz::AllowAllAuthorizer,
+        tests::create_view_request,
     };
 
     pub(crate) async fn create_view(

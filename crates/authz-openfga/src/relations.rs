@@ -1,3 +1,11 @@
+use lakekeeper::service::{
+    authn::UserId,
+    authz::{
+        CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
+        CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+    },
+    Actor, RoleId,
+};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -7,14 +15,6 @@ use crate::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
     models::RoleAssignee,
     FgaType, OpenFGAError, OpenFGAResult,
-};
-use lakekeeper::service::{
-    authn::UserId,
-    authz::{
-        CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-        CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-    },
-    Actor, RoleId,
 };
 
 pub(super) trait Assignment: Sized {

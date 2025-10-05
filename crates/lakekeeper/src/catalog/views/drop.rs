@@ -163,17 +163,24 @@ mod test {
     use sqlx::PgPool;
 
     use crate::{
-        WarehouseId, api::{
+        api::{
             iceberg::{
                 types::{DropParams, Prefix},
                 v1::ViewParameters,
             },
             management::v1::{
-                ApiServer as ManagementApiServer, tasks::{ListTasksRequest, Service}, view::ViewManagementService
+                tasks::{ListTasksRequest, Service},
+                view::ViewManagementService,
+                ApiServer as ManagementApiServer,
             },
-        }, catalog::views::{
+        },
+        catalog::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
-        }, request_metadata::RequestMetadata, service::task_queue::TaskEntity, tests::{create_view_request, random_request_metadata}
+        },
+        request_metadata::RequestMetadata,
+        service::task_queue::TaskEntity,
+        tests::{create_view_request, random_request_metadata},
+        WarehouseId,
     };
 
     #[sqlx::test]

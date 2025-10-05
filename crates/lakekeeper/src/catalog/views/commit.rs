@@ -399,7 +399,10 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        WarehouseId, api::iceberg::v1::{DataAccess, Prefix, ViewParameters, views}, catalog::views::{create::test::create_view, test::setup}, tests::create_view_request
+        api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
+        catalog::views::{create::test::create_view, test::setup},
+        tests::create_view_request,
+        WarehouseId,
     };
 
     #[sqlx::test]

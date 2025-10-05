@@ -1,11 +1,12 @@
 use std::sync::LazyLock;
 
-use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use lakekeeper::service::ServerId;
 use openfga_client::{
     client::{BasicAuthLayer, BasicOpenFgaServiceClient},
     migration::{AuthorizationModelVersion, MigrationFn, TupleModelManager},
 };
+
+use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| *V4_CURRENT_MODEL_VERSION); // <- Change this for every change in the model
@@ -161,12 +162,13 @@ pub async fn migrate(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use openfga_client::client::ConsistencyPreference;
+
     use super::{
         super::{client::new_authorizer, OpenFGAAuthorizer},
         *,
     };
     use crate::client::new_client_from_default_config;
-    use openfga_client::client::ConsistencyPreference;
     pub(crate) async fn authorizer_for_empty_store(
     ) -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
         let client = new_client_from_default_config().await.unwrap();
@@ -191,10 +193,11 @@ pub(crate) mod tests {
     }
 
     mod openfga_integration_tests {
-        use super::super::*;
-        use crate::client::new_client_from_default_config;
         use lakekeeper::tokio;
         use openfga_client::client::ReadAuthorizationModelsRequest;
+
+        use super::super::*;
+        use crate::client::new_client_from_default_config;
 
         #[tokio::test]
         async fn test_migrate() {
