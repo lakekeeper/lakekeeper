@@ -20,7 +20,7 @@ use crate::{
             ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
-        Catalog, State, Transaction,
+        CatalogStore, State, Transaction,
     },
     ProjectId,
 };
@@ -80,10 +80,10 @@ impl axum::response::IntoResponse for GetProjectResponse {
     }
 }
 
-impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_project(
         request: CreateProjectRequest,
         context: ApiContext<State<A, C, S>>,

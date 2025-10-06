@@ -24,8 +24,8 @@ use crate::{
             ProtectionResponse,
         },
     },
-    catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    server::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     service::{
         storage::{join_location, split_location},
         task_queue::TaskId,
@@ -1139,11 +1139,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
         implementations::postgres::{
             namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
             CatalogState,
         },
+        server::tables::CONCURRENT_UPDATE_ERROR_TYPE,
         service::NamespaceId,
     };
 

@@ -24,11 +24,11 @@ use crate::{
         },
     },
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, Catalog, SecretStore, State},
+    service::{authz::Authorizer, CatalogStore, SecretStore, State},
 };
 
 #[async_trait::async_trait]
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::views::ViewService<State<A, C, S>> for CatalogServer<C, A, S>
 {
     /// List all view identifiers underneath a given namespace
@@ -148,18 +148,18 @@ mod test {
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext, RequestMetadata,
         },
-        catalog::{
-            test::tabular_test_multi_warehouse_setup, views::validate_view_properties,
-            CatalogServer,
-        },
         implementations::postgres::{
             namespace::tests::initialize_namespace, tabular::view::tests::view_request,
-            warehouse::test::initialize_warehouse, PostgresCatalog, SecretsState,
+            warehouse::test::initialize_warehouse, PostgresBackend, SecretsState,
+        },
+        server::{
+            test::tabular_test_multi_warehouse_setup, views::validate_view_properties,
+            CatalogServer,
         },
         service::{
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
-            Catalog, State, ViewId,
+            CatalogStore, State, ViewId,
         },
         WarehouseId,
     };
@@ -168,7 +168,7 @@ mod test {
         pool: PgPool,
         namespace_name: Option<Vec<String>>,
     ) -> (
-        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceIdent,
         WarehouseId,
     ) {
@@ -219,7 +219,7 @@ mod test {
     }
 
     async fn assert_view_exists(
-        ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         warehouse_id: WarehouseId,
         view_id: ViewId,
         namespace: &NamespaceIdent,
@@ -228,7 +228,7 @@ mod test {
         assert_msg: &str,
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
-        let views = PostgresCatalog::list_views(
+        let views = PostgresBackend::list_views(
             warehouse_id,
             namespace,
             include_deleted,
@@ -247,7 +247,7 @@ mod test {
     }
 
     async fn assert_view_doesnt_exist(
-        ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         warehouse_id: WarehouseId,
         view_id: ViewId,
         namespace: &NamespaceIdent,
@@ -256,7 +256,7 @@ mod test {
         assert_msg: &str,
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
-        let views = PostgresCatalog::list_views(
+        let views = PostgresBackend::list_views(
             warehouse_id,
             namespace,
             include_deleted,
@@ -296,7 +296,7 @@ mod test {
                 name: v_name.clone(),
             };
             let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
-            PostgresCatalog::create_view(
+            PostgresBackend::create_view(
                 *wh_id,
                 *ns_id,
                 &ident,
@@ -377,7 +377,7 @@ mod test {
             name: v_name.clone(),
         };
         let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
-        PostgresCatalog::create_view(
+        PostgresBackend::create_view(
             deleted_view_data.0,
             deleted_view_data.1,
             &ident,
@@ -426,7 +426,7 @@ mod test {
                 name: v_name.clone(),
             };
             let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
-            PostgresCatalog::create_view(
+            PostgresBackend::create_view(
                 *wh_id,
                 *ns_id,
                 &ident,

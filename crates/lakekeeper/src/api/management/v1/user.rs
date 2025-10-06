@@ -11,7 +11,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogServerAction, CatalogUserAction},
-        Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
+        CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
     },
 };
 
@@ -185,7 +185,10 @@ pub struct UpdateUserRequest {
     pub user_type: UserType,
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
 
 /// Parse a create user request and extend with information
 /// from the request metadata if this is a self-provisioning request.
@@ -260,7 +263,7 @@ pub(crate) fn parse_create_user_request(
 }
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_user(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,

@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{Catalog, TableId, TabularId, ViewId};
+use crate::service::{CatalogStore, TableId, TabularId, ViewId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -383,7 +383,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// # Errors
     /// Returns an error if the configuration cannot be fetched or deserialized.
-    pub async fn get_queue_config<C: Catalog>(
+    pub async fn get_queue_config<C: CatalogStore>(
         warehouse_id: WarehouseId,
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Q>> {
@@ -414,7 +414,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// # Errors
     /// Returns an error if the task cannot be enqueued / scheduled.
-    pub async fn schedule_task<C: Catalog>(
+    pub async fn schedule_task<C: CatalogStore>(
         task_metadata: TaskMetadata,
         payload: D,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
@@ -449,7 +449,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// # Errors
     /// Returns an error if the tasks cannot be enqueued / scheduled.
-    pub async fn schedule_tasks<C: Catalog>(
+    pub async fn schedule_tasks<C: CatalogStore>(
         tasks: impl Iterator<Item = (TaskMetadata, D)>,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>, ErrorModel> {
@@ -481,7 +481,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// If `cancel_running_and_should_stop` is true, also cancel tasks in the `running` and `should-stop` states.
     #[tracing::instrument(level = "info", skip(transaction), fields(queue_name = %Self::queue_name(), filter = ?filter, cancel_running_and_should_stop))]
-    pub async fn cancel_scheduled_tasks<C: Catalog>(
+    pub async fn cancel_scheduled_tasks<C: CatalogStore>(
         filter: TaskFilter,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
         cancel_running_and_should_stop: bool,
@@ -506,7 +506,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the task cannot be picked from the queue or if
     /// deserialization of the queue configuration or task data fails.
-    pub async fn pick_new_task<C: Catalog>(
+    pub async fn pick_new_task<C: CatalogStore>(
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Self>> {
         let task = C::pick_new_task(
@@ -558,7 +558,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 
     /// Continuously poll for a new task in the queue until a task is found.
     /// Returns None if cancellation is requested.
-    pub async fn poll_for_new_task<C: Catalog>(
+    pub async fn poll_for_new_task<C: CatalogStore>(
         catalog_state: C::State,
         poll_interval: &Duration,
         cancellation_token: tokio_util::sync::CancellationToken,
@@ -609,7 +609,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// # Errors
     /// Returns an error if the heartbeat fails.
-    pub async fn heartbeat_in_transaction<C: Catalog>(
+    pub async fn heartbeat_in_transaction<C: CatalogStore>(
         &self,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
         progress: f32,
@@ -647,7 +647,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// * If the transaction cannot be started or committed.
     /// * If the heartbeat fails.
-    pub async fn heartbeat<C: Catalog>(
+    pub async fn heartbeat<C: CatalogStore>(
         &self,
         catalog_state: C::State,
         progress: f32,
@@ -679,7 +679,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Records an failure for a task in the catalog, updating its status and retry count.
     ///
     /// Does not return an error, but logs it.
-    pub async fn record_failure<C: Catalog>(&self, catalog_state: C::State, error: &str) {
+    pub async fn record_failure<C: CatalogStore>(&self, catalog_state: C::State, error: &str) {
         let max_retries = Q::max_retries();
 
         let status = Status::Failure(error, max_retries);
@@ -722,7 +722,11 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// Records the success of a task in the catalog, updating its status.
     /// Does not return an error, but logs it.
-    pub async fn record_success<C: Catalog>(&self, catalog_state: C::State, details: Option<&str>) {
+    pub async fn record_success<C: CatalogStore>(
+        &self,
+        catalog_state: C::State,
+        details: Option<&str>,
+    ) {
         let status = Status::Success(details);
 
         for attempt in 1..=5 {
@@ -764,7 +768,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// Records the success of a task in the catalog, updating its status.
     /// Does not return an error, but logs it.
-    pub async fn record_success_in_transaction<C: Catalog>(
+    pub async fn record_success_in_transaction<C: CatalogStore>(
         &self,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
         details: Option<&str>,
@@ -793,7 +797,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         }
     }
 
-    async fn report_deserialization_failure<C: Catalog>(
+    async fn report_deserialization_failure<C: CatalogStore>(
         catalog_state: C::State,
         id: TaskAttemptId,
         error: &str,
@@ -842,7 +846,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         };
     }
 
-    async fn record_status_for_state<C: Catalog>(
+    async fn record_status_for_state<C: CatalogStore>(
         &self,
         catalog_state: C::State,
         result: Status<'_>,
@@ -874,7 +878,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         Ok(())
     }
 
-    async fn record_status_for_transaction<C: Catalog>(
+    async fn record_status_for_transaction<C: CatalogStore>(
         &self,
         result: Status<'_>,
         mut transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,

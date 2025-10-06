@@ -26,13 +26,13 @@ use crate::{
         },
         ApiContext, Result,
     },
-    catalog::UnfilteredPage,
     request_metadata::RequestMetadata,
+    server::UnfilteredPage,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
         task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        Catalog, ListFlags, NamespaceId, State, TabularId, Transaction,
+        CatalogStore, ListFlags, NamespaceId, State, TabularId, Transaction,
     },
     ProjectId, WarehouseId,
 };
@@ -273,10 +273,13 @@ pub struct UndropTabularsRequest {
     pub targets: Vec<TabularId>,
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
 
 #[async_trait::async_trait]
-pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_warehouse(
         request: CreateWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
@@ -873,7 +876,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let namespace_id = query.namespace_id;
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
         let (tabulars, idents, next_page_token) =
-            crate::catalog::fetch_until_full_page::<_, _, _, C>(
+            crate::server::fetch_until_full_page::<_, _, _, C>(
                 pagination_query.page_size,
                 pagination_query.page_token,
                 |page_size, page_token, t| {
@@ -1190,9 +1193,9 @@ mod test {
             },
             ApiContext,
         },
-        catalog::{test::impl_pagination_tests, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
+        server::{test::impl_pagination_tests, CatalogServer},
         service::{authz::tests::HidingAuthorizer, State, UserId},
         tests::create_view_request,
         WarehouseId,
@@ -1203,14 +1206,14 @@ mod test {
         n_tabulars: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
         WarehouseId,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -1221,7 +1224,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -1289,11 +1292,11 @@ mod test {
 
     #[sqlx::test]
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -1304,7 +1307,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),

@@ -751,10 +751,10 @@ pub(crate) mod test {
     use super::*;
     use crate::{
         api::iceberg::types::PageToken,
-        implementations::postgres::{PostgresCatalog, PostgresTransaction},
+        implementations::postgres::{PostgresBackend, PostgresTransaction},
         service::{
             storage::{S3Flavor, S3Profile},
-            Catalog as _, Transaction,
+            CatalogStore as _, Transaction,
         },
     };
 
@@ -774,7 +774,7 @@ pub(crate) mod test {
             .unwrap();
 
         if create_project {
-            PostgresCatalog::create_project(
+            PostgresBackend::create_project(
                 &project_id,
                 format!("Project {project_id}"),
                 t.transaction(),
@@ -792,7 +792,7 @@ pub(crate) mod test {
                 .build(),
         ));
 
-        let warehouse_id = PostgresCatalog::create_warehouse(
+        let warehouse_id = PostgresBackend::create_warehouse(
             "test_warehouse".to_string(),
             &project_id,
             storage_profile,
@@ -814,7 +814,7 @@ pub(crate) mod test {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
 
-        let fetched_warehouse_id = PostgresCatalog::get_warehouse_by_name(
+        let fetched_warehouse_id = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
             &ProjectId::from(uuid::Uuid::nil()),
             state.clone(),
@@ -836,7 +836,7 @@ pub(crate) mod test {
             .await
             .unwrap();
 
-        let projects = PostgresCatalog::list_projects(None, trx.transaction())
+        let projects = PostgresBackend::list_projects(None, trx.transaction())
             .await
             .unwrap()
             .into_iter()
@@ -853,7 +853,7 @@ pub(crate) mod test {
             .await
             .unwrap();
 
-        let projects = PostgresCatalog::list_projects(None, trx.transaction())
+        let projects = PostgresBackend::list_projects(None, trx.transaction())
             .await
             .unwrap()
             .into_iter()
@@ -865,7 +865,7 @@ pub(crate) mod test {
         assert!(projects.contains(&project_id_2));
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let projects = PostgresCatalog::list_projects(
+        let projects = PostgresBackend::list_projects(
             Some(HashSet::from_iter(vec![project_id_1.clone()])),
             trx.transaction(),
         )
@@ -888,7 +888,7 @@ pub(crate) mod test {
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let warehouses = PostgresCatalog::list_warehouses(&project_id, None, trx.transaction())
+        let warehouses = PostgresBackend::list_warehouses(&project_id, None, trx.transaction())
             .await
             .unwrap();
         trx.commit().await.unwrap();
@@ -908,10 +908,10 @@ pub(crate) mod test {
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::rename_warehouse(warehouse_id_1, "new_name", transaction.transaction())
+        PostgresBackend::rename_warehouse(warehouse_id_1, "new_name", transaction.transaction())
             .await
             .unwrap();
-        PostgresCatalog::set_warehouse_status(
+        PostgresBackend::set_warehouse_status(
             warehouse_id_1,
             WarehouseStatus::Inactive,
             transaction.transaction(),
@@ -928,7 +928,7 @@ pub(crate) mod test {
             .unwrap();
 
         // Assert active whs
-        let warehouses = PostgresCatalog::list_warehouses(
+        let warehouses = PostgresBackend::list_warehouses(
             &project_id,
             Some(vec![WarehouseStatus::Active, WarehouseStatus::Inactive]),
             trx.transaction(),
@@ -943,7 +943,7 @@ pub(crate) mod test {
         // Assert only active whs
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let warehouses = PostgresCatalog::list_warehouses(&project_id, None, trx.transaction())
+        let warehouses = PostgresBackend::list_warehouses(&project_id, None, trx.transaction())
             .await
             .unwrap();
         trx.commit().await.unwrap();
@@ -961,7 +961,7 @@ pub(crate) mod test {
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::rename_warehouse(warehouse_id, "new_name", transaction.transaction())
+        PostgresBackend::rename_warehouse(warehouse_id, "new_name", transaction.transaction())
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -970,7 +970,7 @@ pub(crate) mod test {
             .await
             .unwrap();
         let warehouse =
-            PostgresCatalog::get_warehouse(warehouse_id, read_transaction.transaction())
+            PostgresBackend::get_warehouse(warehouse_id, read_transaction.transaction())
                 .await
                 .unwrap();
         assert_eq!(warehouse.unwrap().name, "new_name");
@@ -984,7 +984,7 @@ pub(crate) mod test {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            PostgresCatalog::create_project(&project_id, "old_name".to_string(), t.transaction())
+            PostgresBackend::create_project(&project_id, "old_name".to_string(), t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -994,7 +994,7 @@ pub(crate) mod test {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            PostgresCatalog::rename_project(&project_id, "new_name", t.transaction())
+            PostgresBackend::rename_project(&project_id, "new_name", t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -1003,7 +1003,7 @@ pub(crate) mod test {
         let mut read_transaction = PostgresTransaction::begin_read(state.clone())
             .await
             .unwrap();
-        let project = PostgresCatalog::get_project(&project_id, read_transaction.transaction())
+        let project = PostgresBackend::get_project(&project_id, read_transaction.transaction())
             .await
             .unwrap();
         assert_eq!(project.unwrap().name, "new_name");
@@ -1016,11 +1016,11 @@ pub(crate) mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(&project_id, "old_name".to_string(), t.transaction())
+        PostgresBackend::create_project(&project_id, "old_name".to_string(), t.transaction())
             .await
             .unwrap();
         let err =
-            PostgresCatalog::create_project(&project_id, "other_name".to_string(), t.transaction())
+            PostgresBackend::create_project(&project_id, "other_name".to_string(), t.transaction())
                 .await
                 .unwrap_err();
         assert_eq!(err.error.code, StatusCode::CONFLICT);
@@ -1112,7 +1112,7 @@ pub(crate) mod test {
         }
         t.commit().await.unwrap();
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: None,
@@ -1125,7 +1125,7 @@ pub(crate) mod test {
 
         assert_eq!(stats.stats.len(), 11);
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(3),
@@ -1139,7 +1139,7 @@ pub(crate) mod test {
         assert_eq!(stats.stats.len(), 3);
         assert!(stats.next_page_token.is_some());
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(5),
@@ -1153,7 +1153,7 @@ pub(crate) mod test {
         assert_eq!(stats.stats.len(), 5);
         assert!(stats.next_page_token.is_some());
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(5),
@@ -1168,7 +1168,7 @@ pub(crate) mod test {
         assert!(stats.next_page_token.is_some());
 
         // last page is empty
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(5),

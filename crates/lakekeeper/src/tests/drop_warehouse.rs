@@ -17,7 +17,7 @@ use crate::{
             ApiServer, DeleteWarehouseQuery,
         },
     },
-    catalog::CatalogServer,
+    server::CatalogServer,
     service::authz::AllowAllAuthorizer,
     tests::{random_request_metadata, spawn_build_in_queues},
 };

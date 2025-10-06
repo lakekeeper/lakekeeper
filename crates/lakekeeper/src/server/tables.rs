@@ -48,12 +48,12 @@ use crate::{
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         set_not_found_status_code,
     },
-    catalog::{
+    request_metadata::RequestMetadata,
+    server::{
         self,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
         tabular::list_entities,
     },
-    request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
         contract_verification::{ContractVerification, ContractVerificationOutcome},
@@ -64,8 +64,8 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        Catalog, CreateTableResponse, ListFlags, NamedEntity, State, TableCommit, TableCreation,
-        TableId, TabularDetails, TabularId, Transaction, WarehouseStatus,
+        CatalogStore, CreateTableResponse, ListFlags, NamedEntity, State, TableCommit,
+        TableCreation, TableId, TabularDetails, TabularId, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -78,7 +78,7 @@ pub(crate) const CONCURRENT_UPDATE_ERROR_TYPE: &str = "ConcurrentUpdateError";
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
 #[async_trait::async_trait]
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::tables::TablesService<State<A, C, S>> for CatalogServer<C, A, S>
 {
     #[allow(clippy::too_many_lines)]
@@ -110,7 +110,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let (identifiers, table_uuids, next_page_token) =
-            catalog::fetch_until_full_page::<_, _, _, C>(
+            server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
                 list_entities!(
@@ -749,7 +749,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-async fn resolve_and_authorize_table_access<C: Catalog, A: Authorizer + Clone>(
+async fn resolve_and_authorize_table_access<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: &TableIdent,
     warehouse_id: WarehouseId,
@@ -870,7 +870,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
 /// Returns an error if the commit fails or if a DB error occurs.
 /// This function will retry on concurrent update errors up to a maximum number of retries.
 async fn commit_tables_inner<
-    C: Catalog,
+    C: CatalogStore,
     A: Authorizer,
     S: SecretStore,
     H: ::std::hash::BuildHasher + 'static + Send + Sync,
@@ -954,7 +954,7 @@ async fn commit_tables_inner<
 /// Returns an error if the commit fails, if the table identifiers are not unique,
 /// or if the table identifiers are not provided for each change.
 /// This function will retry on concurrent update errors up to a maximum number of retries.
-async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
     request: CommitTransactionRequest,
     state: ApiContext<State<A, C, S>>,
@@ -1031,7 +1031,7 @@ async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretSt
 // Extract the core commit logic to a separate function for retry purposes
 #[allow(clippy::too_many_lines)]
 async fn try_commit_tables<
-    C: Catalog,
+    C: CatalogStore,
     A: Authorizer + Clone,
     S: SecretStore,
     H: ::std::hash::BuildHasher,
@@ -1231,7 +1231,7 @@ async fn try_commit_tables<
     Ok(commits)
 }
 
-pub async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
+pub async fn authorized_table_ident_to_id<C: CatalogStore, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
@@ -1729,15 +1729,15 @@ pub(crate) mod test {
             },
             ApiContext,
         },
-        catalog::{
-            tables::validate_table_properties,
-            test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
-            Catalog, CatalogServer,
-        },
         implementations::postgres::{
-            tabular::table::tests::initialize_table, PostgresCatalog, SecretsState,
+            tabular::table::tests::initialize_table, PostgresBackend, SecretsState,
         },
         request_metadata::RequestMetadata,
+        server::{
+            tables::validate_table_properties,
+            test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
+            CatalogServer, CatalogStore,
+        },
         service::{
             authz::{
                 tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
@@ -1862,7 +1862,7 @@ pub(crate) mod test {
     /// Helper to load a table using `CatalogServer`
     async fn load_table(
         ctx: &ApiContext<
-            State<impl crate::service::authz::Authorizer, impl Catalog, impl SecretStore>,
+            State<impl crate::service::authz::Authorizer, impl CatalogStore, impl SecretStore>,
         >,
         ns_params: &NamespaceParameters,
         table_name: &str,
@@ -1889,7 +1889,7 @@ pub(crate) mod test {
     /// Helper to commit table changes
     async fn commit_table_changes(
         ctx: &ApiContext<
-            State<impl crate::service::authz::Authorizer, impl Catalog, impl SecretStore>,
+            State<impl crate::service::authz::Authorizer, impl CatalogStore, impl SecretStore>,
         >,
         ns_params: &NamespaceParameters,
         table_ident: &TableIdent,
@@ -3095,7 +3095,7 @@ pub(crate) mod test {
     async fn commit_test_setup(
         pool: PgPool,
     ) -> (
-        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         CreateNamespaceResponse,
         NamespaceParameters,
         LoadTableResult,
@@ -3119,14 +3119,14 @@ pub(crate) mod test {
     async fn table_test_setup(
         pool: PgPool,
     ) -> (
-        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         CreateNamespaceResponse,
         NamespaceParameters,
         String,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let base_loc = prof.base_location().unwrap().to_string();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3135,7 +3135,7 @@ pub(crate) mod test {
             None,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -3343,16 +3343,16 @@ pub(crate) mod test {
         n_tables: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let base_location = prof.base_location().unwrap();
         let authz = HidingAuthorizer::new();
         // Prevent hidden tables from becoming visible through `can_list_everything`.
         authz.block_can_list_everything();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3361,7 +3361,7 @@ pub(crate) mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -3408,13 +3408,13 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden tables from becoming visible through `can_list_everything`.
         authz.block_can_list_everything();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3423,7 +3423,7 @@ pub(crate) mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -3616,11 +3616,11 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3629,7 +3629,7 @@ pub(crate) mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -3804,9 +3804,9 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_rename_table_without_can_rename(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let authz = HidingAuthorizer::new();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3816,7 +3816,7 @@ pub(crate) mod test {
         )
         .await;
 
-        let from_ns = crate::catalog::test::create_ns(
+        let from_ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "from_ns".to_string(),
@@ -3867,9 +3867,9 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_rename_table_without_can_create(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let authz = HidingAuthorizer::new();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3879,7 +3879,7 @@ pub(crate) mod test {
         )
         .await;
 
-        let from_ns = crate::catalog::test::create_ns(
+        let from_ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "from_ns".to_string(),
@@ -3930,8 +3930,8 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_rename_table_without_target_namespace(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let prof = crate::server::test::memory_io_profile();
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -3941,7 +3941,7 @@ pub(crate) mod test {
         )
         .await;
 
-        let from_ns = crate::catalog::test::create_ns(
+        let from_ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "from_ns".to_string(),
@@ -3991,8 +3991,8 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let prof = crate::server::test::memory_io_profile();
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -4002,7 +4002,7 @@ pub(crate) mod test {
         )
         .await;
 
-        let from_ns = crate::catalog::test::create_ns(
+        let from_ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "from_ns".to_string(),
@@ -4181,7 +4181,7 @@ pub(crate) mod test {
             .await;
 
             // Verify table creation.
-            let _meta = PostgresCatalog::get_table_metadata_by_id(
+            let _meta = PostgresBackend::get_table_metadata_by_id(
                 *wh_id,
                 t_id,
                 list_flags,
@@ -4213,7 +4213,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Deleted table cannot be accessed anymore.
-        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+        let deleted_res = PostgresBackend::get_table_metadata_by_id(
             deleted_table_data.0,
             t_id,
             list_flags,
@@ -4226,7 +4226,7 @@ pub(crate) mod test {
         // Tables in other warehouses are still there.
         assert!(!wh_ns_data.is_empty());
         for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
-            PostgresCatalog::get_table_metadata_by_id(
+            PostgresBackend::get_table_metadata_by_id(
                 *wh_id,
                 t_id,
                 list_flags,
@@ -4247,7 +4247,7 @@ pub(crate) mod test {
             Some(t_name.clone()),
         )
         .await;
-        let _meta = PostgresCatalog::get_table_metadata_by_id(
+        let _meta = PostgresBackend::get_table_metadata_by_id(
             deleted_table_data.0,
             t_id,
             list_flags,
@@ -4287,7 +4287,7 @@ pub(crate) mod test {
             .await;
 
             // Verify table creation.
-            let _meta = PostgresCatalog::get_table_metadata_by_id(
+            let _meta = PostgresBackend::get_table_metadata_by_id(
                 *wh_id,
                 t_id,
                 list_flags_active,
@@ -4319,7 +4319,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Check availability depending on list flags.
-        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+        let deleted_res = PostgresBackend::get_table_metadata_by_id(
             deleted_table_data.0,
             t_id,
             list_flags_active,
@@ -4328,7 +4328,7 @@ pub(crate) mod test {
         .await
         .unwrap();
         assert!(deleted_res.is_none(), "Table should be soft deleted");
-        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+        let deleted_res = PostgresBackend::get_table_metadata_by_id(
             deleted_table_data.0,
             t_id,
             ListFlags::all(), // include soft deleted
@@ -4341,7 +4341,7 @@ pub(crate) mod test {
         // Tables in other warehouses are still there.
         assert!(!wh_ns_data.is_empty());
         for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
-            PostgresCatalog::get_table_metadata_by_id(
+            PostgresBackend::get_table_metadata_by_id(
                 *wh_id,
                 t_id,
                 list_flags_active,

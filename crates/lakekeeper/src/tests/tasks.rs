@@ -4,7 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
-    implementations::postgres::{PostgresCatalog, SecretsState},
+    implementations::postgres::{PostgresBackend, SecretsState},
     service::{authz::AllowAllAuthorizer, State, UserId},
     tests::TestWarehouseResponse,
 };
@@ -19,14 +19,14 @@ mod test {
 
     use crate::{
         api::management::v1::warehouse::{QueueConfig, SetTaskQueueConfigRequest},
-        implementations::postgres::PostgresCatalog,
+        implementations::postgres::PostgresBackend,
         service::{
             task_queue::{
                 EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
                 TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
                 TaskQueueRegistry,
             },
-            Catalog, Transaction,
+            CatalogStore, Transaction,
         },
     };
 
@@ -82,7 +82,7 @@ mod test {
                         let task_id = rx.recv().await.unwrap();
 
                         let task = SpecializedTask::<Config, TestTaskData, ExecutionDetails>::pick_new_task::<
-                            PostgresCatalog,
+                            PostgresBackend,
                         >(ctx.v1_state.catalog.clone())
                         .await
                         .unwrap()
@@ -101,10 +101,10 @@ mod test {
             })
             .await;
         let mut transaction =
-            <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
+            <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state.clone())
                 .await
                 .unwrap();
-        <PostgresCatalog as Catalog>::set_task_queue_config(
+        <PostgresBackend as CatalogStore>::set_task_queue_config(
             setup.warehouse.warehouse_id,
             &QUEUE_NAME,
             SetTaskQueueConfigRequest {
@@ -122,11 +122,12 @@ mod test {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        let mut transaction = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state)
-            .await
-            .unwrap();
+        let mut transaction =
+            <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state)
+                .await
+                .unwrap();
 
-        let task_id = PostgresCatalog::enqueue_task(
+        let task_id = PostgresBackend::enqueue_task(
             &QUEUE_NAME,
             TaskInput {
                 task_metadata: TaskMetadata {
@@ -164,7 +165,7 @@ mod test {
 }
 
 struct TasksSetup {
-    ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+    ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
     warehouse: TestWarehouseResponse,
 }
 

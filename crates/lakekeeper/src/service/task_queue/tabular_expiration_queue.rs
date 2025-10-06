@@ -13,7 +13,7 @@ use crate::{
         task_queue::{
             tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData, TaskQueueName,
         },
-        Catalog, Transaction,
+        CatalogStore, Transaction,
     },
     CancellationToken,
 };
@@ -66,7 +66,7 @@ impl TaskConfig for TabularExpirationQueueConfig {
     }
 }
 
-pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
+pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     poll_interval: Duration,
@@ -104,7 +104,7 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     }
 }
 
-async fn instrumented_expire<C: Catalog, A: Authorizer>(
+async fn instrumented_expire<C: CatalogStore, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     task: &TabularExpirationTask,
@@ -134,7 +134,7 @@ async fn handle_table<C, A>(
     task: &TabularExpirationTask,
 ) -> Result<()>
 where
-    C: Catalog,
+    C: CatalogStore,
     A: Authorizer,
 {
     let entity_id = task.task_metadata.entity_id;
@@ -264,11 +264,11 @@ mod test {
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog, PostgresTransaction, SecretsState,
+            CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
         },
         service::{
-            authz::AllowAllAuthorizer, storage::MemoryProfile, Catalog, ListFlags, NamedEntity,
-            Transaction,
+            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, ListFlags,
+            NamedEntity, Transaction,
         },
     };
 
@@ -285,7 +285,7 @@ mod test {
         let sec = secrets.clone();
         let auth = AllowAllAuthorizer::default();
         queues
-            .register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
+            .register_built_in_queues::<PostgresBackend, SecretsState, AllowAllAuthorizer>(
                 cat,
                 sec,
                 auth,
@@ -317,7 +317,7 @@ mod test {
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
             .await
             .unwrap();
-        let _ = <PostgresCatalog as Catalog>::list_tabulars(
+        let _ = <PostgresBackend as CatalogStore>::list_tabulars(
             warehouse,
             None,
             ListFlags {
@@ -333,10 +333,11 @@ mod test {
         .remove(&table.table_id.into())
         .unwrap();
         trx.commit().await.unwrap();
-        let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
-            .await
-            .unwrap();
-        TabularExpirationTask::schedule_task::<PostgresCatalog>(
+        let mut trx =
+            <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state.clone())
+                .await
+                .unwrap();
+        TabularExpirationTask::schedule_task::<PostgresBackend>(
             TaskMetadata {
                 warehouse_id: warehouse,
                 entity_id: EntityId::Table(table.table_id),
@@ -352,7 +353,7 @@ mod test {
         .await
         .unwrap();
 
-        <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
+        <PostgresBackend as CatalogStore>::mark_tabular_as_deleted(
             warehouse,
             table.table_id.into(),
             false,
@@ -367,7 +368,7 @@ mod test {
             .await
             .unwrap();
 
-        let del = <PostgresCatalog as Catalog>::list_tabulars(
+        let del = <PostgresBackend as CatalogStore>::list_tabulars(
             warehouse,
             None,
             ListFlags {
@@ -391,7 +392,7 @@ mod test {
             let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
                 .await
                 .unwrap();
-            let gone = <PostgresCatalog as Catalog>::list_tabulars(
+            let gone = <PostgresBackend as CatalogStore>::list_tabulars(
                 warehouse,
                 None,
                 ListFlags {
@@ -417,7 +418,7 @@ mod test {
             .await
             .unwrap();
 
-        assert!(<PostgresCatalog as Catalog>::list_tabulars(
+        assert!(<PostgresBackend as CatalogStore>::list_tabulars(
             warehouse,
             None,
             ListFlags {

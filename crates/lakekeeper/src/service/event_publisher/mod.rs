@@ -27,7 +27,7 @@ use crate::{
         management::v1::warehouse::UndropTabularsRequest,
         RequestMetadata,
     },
-    catalog::tables::{maybe_body_to_json, CommitContext},
+    server::tables::{maybe_body_to_json, CommitContext},
     service::{
         endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
         TabularId,

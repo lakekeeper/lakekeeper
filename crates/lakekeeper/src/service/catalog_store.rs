@@ -39,8 +39,8 @@ use crate::{
             DeleteWarehouseQuery, ProtectionResponse,
         },
     },
-    catalog::tables::TableMetadataDiffs,
     request_metadata::RequestMetadata,
+    server::tables::TableMetadataDiffs,
     service::{
         authn::UserId,
         authz::TableUuid,
@@ -302,7 +302,7 @@ impl TabularInfo {
 }
 
 #[async_trait::async_trait]
-pub trait Catalog
+pub trait CatalogStore
 where
     Self: std::fmt::Debug + Clone + Send + Sync + 'static,
 {

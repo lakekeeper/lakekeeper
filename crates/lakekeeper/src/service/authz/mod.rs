@@ -6,8 +6,8 @@ use strum::EnumIter;
 use strum_macros::EnumString;
 
 use super::{
-    health::HealthExt, Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
-    TabularDetails, ViewId, WarehouseId,
+    health::HealthExt, Actor, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State,
+    TableId, TabularDetails, ViewId, WarehouseId,
 };
 use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata, service::ServerId};
 
@@ -212,7 +212,7 @@ where
     fn api_doc() -> utoipa::openapi::OpenApi;
 
     /// Router for the API
-    fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>>;
+    fn new_router<C: CatalogStore, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>>;
 
     /// Check if the requested actor combination is allowed - especially if the user
     /// is allowed to assume the specified role.
@@ -1096,7 +1096,9 @@ pub(crate) mod tests {
             AllowAllAuthorizer::api_doc()
         }
 
-        fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
+        fn new_router<C: CatalogStore, S: SecretStore>(
+            &self,
+        ) -> Router<ApiContext<State<Self, C, S>>> {
             Router::new()
         }
 

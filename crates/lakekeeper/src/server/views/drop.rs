@@ -6,8 +6,8 @@ use crate::{
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         set_not_found_status_code, ApiContext,
     },
-    catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
     request_metadata::RequestMetadata,
+    server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
@@ -16,12 +16,12 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        Catalog, NamedEntity, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        CatalogStore, NamedEntity, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     DropParams {
         purge_requested,
@@ -174,10 +174,10 @@ mod test {
                 ApiServer as ManagementApiServer,
             },
         },
-        catalog::views::{
+        request_metadata::RequestMetadata,
+        server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-        request_metadata::RequestMetadata,
         service::task_queue::TaskEntity,
         tests::{create_view_request, random_request_metadata},
         WarehouseId,

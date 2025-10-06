@@ -1,5 +1,5 @@
 use crate::{
-    catalog::tables::parse_location,
+    server::tables::parse_location,
     service::{
         storage::{StorageLocations as _, StorageProfile},
         GetNamespaceResponse, ListFlags, TabularId,
@@ -61,9 +61,9 @@ macro_rules! list_entities {
         |ps, page_token, trx| {
             use ::paste::paste;
             paste! {
-                use crate::catalog::tabular::[<default_ $entity:snake _flags>] as default_flags;
+                use crate::server::tabular::[<default_ $entity:snake _flags>] as default_flags;
             }
-            use crate::catalog::UnfilteredPage;
+            use crate::server::UnfilteredPage;
             let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();

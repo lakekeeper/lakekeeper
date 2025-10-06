@@ -6,16 +6,16 @@ use crate::{
         tables::{DataAccessMode, LoadTableFilters},
         ApiContext, LoadTableResult, Result, TableIdent, TableParameters,
     },
-    catalog::{
+    request_metadata::RequestMetadata,
+    server::{
         maybe_get_secret, require_warehouse_id,
         tables::{
             parse_location, require_not_staged, resolve_and_authorize_table_access,
             take_table_metadata, validate_table_or_view_ident,
         },
     },
-    request_metadata::RequestMetadata,
     service::{
-        authz::Authorizer, secrets::SecretStore, Catalog, ListFlags,
+        authz::Authorizer, secrets::SecretStore, CatalogStore, ListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, Transaction,
     },
     WarehouseId,
@@ -23,7 +23,7 @@ use crate::{
 
 /// Load a table from the catalog
 #[allow(clippy::too_many_lines)]
-pub(super) async fn load_table<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
     data_access: impl Into<DataAccessMode> + Send,
     filters: LoadTableFilters,
@@ -131,7 +131,7 @@ pub(super) async fn load_table<C: Catalog, A: Authorizer + Clone, S: SecretStore
 ///
 /// # Errors
 /// Returns an error if the table is staged, if it cannot be found, or if a DB error occurs.
-async fn load_table_inner<C: Catalog>(
+async fn load_table_inner<C: CatalogStore>(
     warehouse_id: WarehouseId,
     table_id: TableId,
     table_ident: &TableIdent,
@@ -176,8 +176,8 @@ mod tests {
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
-        catalog::{test::setup, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        implementations::postgres::{PostgresBackend, SecretsState},
+        server::{test::setup, CatalogServer},
         service::{authz::AllowAllAuthorizer, State},
         tests::random_request_metadata,
     };
@@ -208,12 +208,12 @@ mod tests {
     async fn setup_table_with_snapshots(
         pool: PgPool,
     ) -> (
-        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceParameters,
         TableIdent,
         LoadTableResult,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let (ctx, warehouse) = setup(
             pool,
             prof,
@@ -539,7 +539,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_load_table_snapshots_filter_with_no_refs(pool: PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let (ctx, warehouse) = setup(
             pool,
             prof,

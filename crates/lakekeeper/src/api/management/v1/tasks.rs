@@ -13,7 +13,7 @@ use crate::{
             TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
             TaskStatus as TQTaskStatus,
         },
-        Catalog, Result, SecretStore, State, TableId, TabularId, Transaction, ViewId,
+        CatalogStore, Result, SecretStore, State, TableId, TabularId, Transaction, ViewId,
     },
     WarehouseId,
 };
@@ -261,10 +261,13 @@ pub enum ControlTaskAction {
 
 // -------------------- SERVICE TRAIT --------------------
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     /// List tasks with optional filtering
     async fn list_tasks(
         warehouse_id: WarehouseId,

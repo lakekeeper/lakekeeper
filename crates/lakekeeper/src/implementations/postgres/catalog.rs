@@ -70,7 +70,7 @@ use crate::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
-        Catalog, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
+        CatalogStore, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
         CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
         GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
         NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, ServerInfo,
@@ -81,7 +81,7 @@ use crate::{
 };
 
 #[async_trait::async_trait]
-impl Catalog for super::PostgresCatalog {
+impl CatalogStore for super::PostgresBackend {
     type Transaction = PostgresTransaction;
     type State = CatalogState;
 

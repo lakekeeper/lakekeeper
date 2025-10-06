@@ -10,8 +10,8 @@
     clippy::missing_errors_doc
 )]
 #![forbid(unsafe_code)]
-pub mod catalog;
 mod config;
+pub mod server;
 pub mod service;
 pub use config::{AuthZBackend, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
 pub use service::{ProjectId, SecretIdent, WarehouseId};

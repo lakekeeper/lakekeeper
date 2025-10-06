@@ -23,7 +23,7 @@ use crate::{
         },
         health::ServiceHealthProvider,
         task_queue::TaskQueueRegistry,
-        Catalog, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
     },
     CancellationToken, CONFIG,
 };
@@ -105,7 +105,7 @@ fn log_service_completion<H: ::std::hash::BuildHasher>(
 
 #[derive(derive_more::Debug, typed_builder::TypedBuilder)]
 pub struct ServeConfiguration<
-    C: Catalog,
+    C: CatalogStore,
     S: SecretStore,
     A: Authorizer = AllowAllAuthorizer,
     N: Authenticator + 'static = AuthenticatorEnum,
@@ -156,7 +156,7 @@ pub struct ServeConfiguration<
 /// - If the service cannot bind to the specified address.
 /// - If the terms of service have not been accepted during bootstrap.
 #[allow(clippy::too_many_lines)]
-pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
+pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
     let cancellation_token = CancellationToken::new();
@@ -276,7 +276,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn serve_inner<
-    C: Catalog,
+    C: CatalogStore,
     S: SecretStore,
     A: Authorizer,
     N: Authenticator + 'static,

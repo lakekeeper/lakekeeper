@@ -11,7 +11,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogRoleAction},
-        Catalog, Result, RoleId, SecretStore, State, Transaction,
+        CatalogStore, Result, RoleId, SecretStore, State, Transaction,
     },
     ProjectId,
 };
@@ -132,10 +132,13 @@ impl IntoResponse for SearchRoleResponse {
     }
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
 
 #[async_trait::async_trait]
-pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_role(
         request: CreateRoleRequest,
         context: ApiContext<State<A, C, S>>,
@@ -166,7 +169,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // -------------------- Business Logic --------------------
         let description = request.description.filter(|d| !d.is_empty());
         let role_id = RoleId::new_random();
-        let mut t: <C as Catalog>::Transaction =
+        let mut t: <C as CatalogStore>::Transaction =
             C::Transaction::begin_write(context.v1_state.catalog).await?;
         let user = C::create_role(
             role_id,

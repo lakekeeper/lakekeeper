@@ -24,9 +24,9 @@ use crate::{
         },
         ApiContext,
     },
-    catalog::CatalogServer,
-    implementations::postgres::{PostgresCatalog, SecretsState},
-    service::{authz::Authorizer, Catalog, SecretStore, State},
+    implementations::postgres::{PostgresBackend, SecretsState},
+    server::CatalogServer,
+    service::{authz::Authorizer, CatalogStore, SecretStore, State},
     tests::random_request_metadata,
 };
 
@@ -52,7 +52,7 @@ pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output 
 }
 
 pub(crate) async fn create_ns<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: String,
     ns_name: String,
 ) -> CreateNamespaceResponse {
@@ -70,7 +70,7 @@ pub(crate) async fn create_ns<T: Authorizer>(
 }
 
 pub(crate) async fn create_table<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: impl Into<String>,
     ns_name: impl Into<String>,
     name: impl Into<String>,
@@ -90,7 +90,7 @@ pub(crate) async fn create_table<T: Authorizer>(
 }
 
 pub(crate) async fn drop_table<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: &str,
     ns_name: &str,
     name: &str,
@@ -113,7 +113,7 @@ pub(crate) async fn drop_table<T: Authorizer>(
 }
 
 pub(crate) async fn create_view<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: &str,
     ns_name: &str,
     name: &str,
@@ -132,7 +132,7 @@ pub(crate) async fn create_view<T: Authorizer>(
     .await
 }
 
-pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
+pub(crate) async fn drop_namespace<A: Authorizer, C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<A, C, S>>,
     flags: NamespaceDropFlags,
     namespace_parameters: NamespaceParameters,

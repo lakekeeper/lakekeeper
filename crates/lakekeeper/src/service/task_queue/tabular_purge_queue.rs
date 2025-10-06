@@ -9,8 +9,8 @@ use utoipa::{PartialSchema, ToSchema};
 use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
     api::Result,
-    catalog::{io::remove_all, maybe_get_secret},
-    service::{task_queue::TaskQueueName, Catalog, SecretStore, Transaction},
+    server::{io::remove_all, maybe_get_secret},
+    service::{task_queue::TaskQueueName, CatalogStore, SecretStore, Transaction},
 };
 
 const QN_STR: &str = "tabular_purge";
@@ -57,7 +57,7 @@ pub struct TabularPurgeExecutionDetails {}
 
 impl TaskExecutionDetails for TabularPurgeExecutionDetails {}
 
-pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
+pub(crate) async fn tabular_purge_worker<C: CatalogStore, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
     poll_interval: Duration,
@@ -91,7 +91,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     }
 }
 
-async fn instrumented_purge<S: SecretStore, C: Catalog>(
+async fn instrumented_purge<S: SecretStore, C: CatalogStore>(
     catalog_state: C::State,
     secret_state: &S,
     task: &TabularPurgeTask,
@@ -128,7 +128,7 @@ async fn purge<C, S>(
     catalog_state: C::State,
 ) -> Result<()>
 where
-    C: Catalog,
+    C: CatalogStore,
     S: SecretStore,
 {
     let tabular_location_str = &task.data.tabular_location;

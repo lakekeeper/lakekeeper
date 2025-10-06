@@ -253,8 +253,8 @@ mod test {
     use super::*;
     use crate::{
         api::iceberg::v1::PageToken,
-        implementations::postgres::{CatalogState, PostgresCatalog, PostgresTransaction},
-        service::{Catalog, Transaction},
+        implementations::postgres::{CatalogState, PostgresBackend, PostgresTransaction},
+        service::{CatalogStore, Transaction},
     };
 
     #[sqlx::test]
@@ -279,7 +279,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -327,7 +327,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -373,7 +373,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -431,7 +431,7 @@ mod test {
             .await
             .unwrap();
 
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project1_id,
             format!("Project {project1_id}"),
             t.transaction(),
@@ -439,7 +439,7 @@ mod test {
         .await
         .unwrap();
 
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project2_id,
             format!("Project {project2_id}"),
             t.transaction(),
@@ -544,7 +544,7 @@ mod test {
             .await
             .unwrap();
 
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project1_id,
             format!("Project {project1_id}"),
             t.transaction(),
@@ -643,7 +643,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -694,7 +694,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),

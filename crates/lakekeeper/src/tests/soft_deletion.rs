@@ -24,7 +24,7 @@ use crate::{
             ApiServer,
         },
     },
-    catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
+    server::{CatalogServer, NAMESPACE_ID_PROPERTY},
     service::{
         authz::AllowAllAuthorizer,
         task_queue::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,

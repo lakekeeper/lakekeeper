@@ -5,16 +5,16 @@ use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
     api::{iceberg::types::Prefix, ApiContext},
-    catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
     request_metadata::RequestMetadata,
+    server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        Catalog, Result, SecretStore, State, TabularId, Transaction,
+        CatalogStore, Result, SecretStore, State, TabularId, Transaction,
     },
 };
 
-pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
     request: RenameTableRequest,
     state: ApiContext<State<A, C, S>>,
@@ -110,8 +110,8 @@ mod test {
     use super::*;
     use crate::{
         api::iceberg::v1::ViewParameters,
-        catalog::views::{create::test::create_view, load::test::load_view, test::setup},
         implementations::postgres::namespace::tests::initialize_namespace,
+        server::views::{create::test::create_view, load::test::load_view, test::setup},
         tests::create_view_request,
     };
 

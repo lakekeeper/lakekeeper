@@ -11,7 +11,6 @@ use sqlx::{Postgres, Row, Transaction};
 
 use crate::{
     api,
-    catalog::tables::{TableMetadataDiffs, CONCURRENT_UPDATE_ERROR_TYPE},
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::table::{
@@ -19,6 +18,7 @@ use crate::{
             DbTableFormatVersion, TableUpdateFlags, MAX_PARAMETERS,
         },
     },
+    server::tables::{TableMetadataDiffs, CONCURRENT_UPDATE_ERROR_TYPE},
     service::{storage::split_location, TableCommit, TableId},
     WarehouseId,
 };

@@ -17,13 +17,13 @@ use crate::{
         tables::DataAccessMode, ApiContext, CreateTableRequest, ErrorModel, LoadTableResult,
         NamespaceParameters, Result, TableIdent,
     },
-    catalog::{compression_codec::CompressionCodec, tabular::determine_tabular_location},
     request_metadata::RequestMetadata,
+    server::{compression_codec::CompressionCodec, tabular::determine_tabular_location},
     service::{
         authz::{Authorizer, CatalogNamespaceAction},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, ValidationError},
-        Catalog, CreateTableResponse, State, TableCreation, TableId, TabularId, Transaction,
+        CatalogStore, CreateTableResponse, State, TableCreation, TableId, TabularId, Transaction,
     },
     WarehouseId,
 };
@@ -91,7 +91,7 @@ impl<A: Authorizer> TableCreationGuard<A> {
 }
 
 /// Load a table from the catalog
-pub(super) async fn create_table<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     // mut because we need to change location
     request: CreateTableRequest,
@@ -128,7 +128,7 @@ pub(super) async fn create_table<C: Catalog, A: Authorizer + Clone, S: SecretSto
 
 /// Inner function that performs the actual table creation logic
 #[allow(clippy::too_many_lines)]
-async fn create_table_inner<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     // mut because we need to change location
     mut request: CreateTableRequest,

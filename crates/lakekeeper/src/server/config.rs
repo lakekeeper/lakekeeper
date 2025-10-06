@@ -12,13 +12,13 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        Catalog, ProjectId, SecretStore, State, Transaction,
+        CatalogStore, ProjectId, SecretStore, State, Transaction,
     },
     CONFIG,
 };
 
 #[async_trait::async_trait]
-impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
+impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
     crate::api::iceberg::v1::config::Service<State<A, C, S>> for CatalogServer<C, A, S>
 {
     async fn get_config(
@@ -111,9 +111,9 @@ fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
     }
 }
 
-async fn maybe_register_user<D: Catalog>(
+async fn maybe_register_user<D: CatalogStore>(
     request_metadata: &RequestMetadata,
-    state: <D as Catalog>::State,
+    state: <D as CatalogStore>::State,
 ) -> Result<()> {
     let Some(user_id) = request_metadata.user_id() else {
         return Ok(());

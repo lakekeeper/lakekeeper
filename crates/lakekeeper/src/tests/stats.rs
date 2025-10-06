@@ -4,7 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
-    implementations::postgres::{PostgresCatalog, SecretsState},
+    implementations::postgres::{PostgresBackend, SecretsState},
     service::{authz::AllowAllAuthorizer, State, UserId},
     tests::TestWarehouseResponse,
 };
@@ -128,7 +128,7 @@ mod test {
 // TODO: test with multiple warehouses and projects
 
 struct StatsSetup {
-    ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+    ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
     warehouse: TestWarehouseResponse,
     namespace_name: String,
 }

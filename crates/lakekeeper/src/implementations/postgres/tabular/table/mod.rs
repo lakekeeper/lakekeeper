@@ -1091,13 +1091,13 @@ pub(crate) mod tests {
             iceberg::{types::PageToken, v1::tables::LoadTableFilters},
             management::v1::{warehouse::WarehouseStatus, DeleteKind},
         },
-        catalog::tables::create_table::create_table_request_into_table_metadata,
         implementations::postgres::{
             namespace::tests::initialize_namespace,
             tabular::{mark_tabular_as_deleted, table::create::create_table},
             warehouse::{set_warehouse_status, test::initialize_warehouse},
-            PostgresCatalog,
+            PostgresBackend,
         },
+        server::tables::create_table::create_table_request_into_table_metadata,
         service::{
             task_queue::{
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -2094,7 +2094,7 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
+        let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
             TaskMetadata {
                 entity_id: EntityId::Table(table.table_id),
                 warehouse_id,
