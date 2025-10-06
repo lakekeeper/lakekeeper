@@ -4,14 +4,17 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) static CONFIG_BIN: LazyLock<DynAppConfig> = LazyLock::new(get_config);
 
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
 pub(crate) struct DynAppConfig {
     /// Run migration before serving requests. This can simplify testing.
     /// We do not recommend enabling this in production, especially if
     /// multiple instances of Lakekeeper are running.
-    #[serde(alias = "debug__migrate_before_serve")]
-    pub(crate) debug_migrate_before_serve: bool,
+    pub(crate) debug: DebugConfig,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug, Default)]
+pub struct DebugConfig {
+    pub migrate_before_serve: bool,
 }
 
 fn get_config() -> DynAppConfig {
@@ -46,21 +49,21 @@ mod tests {
     fn test_migrate_before_serve_env_vars() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
-            assert!(!config.debug_migrate_before_serve);
+            assert!(!config.debug.migrate_before_serve);
             Ok(())
         });
 
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__DEBUG__MIGRATE_BEFORE_SERVE", "true");
             let config = get_config();
-            assert!(config.debug_migrate_before_serve);
+            assert!(config.debug.migrate_before_serve);
             Ok(())
         });
 
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__DEBUG__MIGRATE_BEFORE_SERVE", "false");
             let config = get_config();
-            assert!(!config.debug_migrate_before_serve);
+            assert!(!config.debug.migrate_before_serve);
             Ok(())
         });
     }
