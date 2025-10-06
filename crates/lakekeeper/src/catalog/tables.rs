@@ -48,7 +48,11 @@ use crate::{
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         set_not_found_status_code,
     },
-    catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
+    catalog::{
+        self,
+        compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
+        tabular::list_entities,
+    },
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
@@ -1227,7 +1231,7 @@ async fn try_commit_tables<
     Ok(commits)
 }
 
-pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
+pub async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
@@ -1631,14 +1635,17 @@ where
     I: IntoIterator<Item = &'a String>,
 {
     for prop in properties {
-        if (prop.starts_with("write.metadata")
+        // Only allow explicitly supported write.metadata properties to prevent
+        // future properties from being silently ignored, which could mislead users.
+        if ((prop.starts_with("write.metadata")
             && ![
                 PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
                 PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED,
-                "write.metadata.compression-codec",
+                PROPERTY_METADATA_COMPRESSION_CODEC,
             ]
             .contains(&prop.as_str()))
-            || prop.starts_with("write.data.path")
+            || prop.starts_with("write.data.path"))
+            && !prop.starts_with("write.metadata.metrics.")
         {
             return Err(ErrorModel::conflict(
                 format!("Properties contain unsupported property: '{prop}'"),
@@ -1738,13 +1745,23 @@ pub(crate) mod test {
             },
             ListFlags, SecretStore, State, TableId, UserId,
         },
-        tests::random_request_metadata,
+        tests::{create_table_request as create_request, random_request_metadata},
         WarehouseId,
     };
 
     #[test]
     fn test_mixed_case_properties() {
         let properties = ["a".to_string(), "B".to_string()];
+        assert!(validate_table_properties(properties.iter()).is_ok());
+    }
+
+    #[test]
+    fn test_allow_metrics_properties() {
+        let properties = [
+            "write.metadata.metrics.max-inferred-column-defaults".to_string(),
+            "write.metadata.metrics.default".to_string(),
+            "write.metadata.metrics.column.col1".to_string(),
+        ];
         assert!(validate_table_properties(properties.iter()).is_ok());
     }
 
@@ -1785,37 +1802,6 @@ pub(crate) mod test {
         .unwrap();
         let count = super::extract_count_from_metadata_location(&location);
         assert!(count.is_none());
-    }
-
-    pub(crate) fn create_request(
-        table_name: Option<String>,
-        stage_create: Option<bool>,
-    ) -> CreateTableRequest {
-        CreateTableRequest {
-            name: table_name.unwrap_or("my_table".to_string()),
-            location: None,
-            schema: Schema::builder()
-                .with_fields(vec![
-                    NestedField::required(
-                        1,
-                        "id",
-                        iceberg::spec::Type::Primitive(PrimitiveType::Int),
-                    )
-                    .into(),
-                    NestedField::required(
-                        2,
-                        "name",
-                        iceberg::spec::Type::Primitive(PrimitiveType::String),
-                    )
-                    .into(),
-                ])
-                .build()
-                .unwrap(),
-            partition_spec: Some(UnboundPartitionSpec::builder().build()),
-            write_order: None,
-            stage_create,
-            properties: None,
-        }
     }
 
     fn partition_spec() -> UnboundPartitionSpec {

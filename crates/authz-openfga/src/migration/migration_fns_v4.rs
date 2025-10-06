@@ -4,20 +4,23 @@ use std::{
 };
 
 use anyhow::anyhow;
+use lakekeeper::{
+    service::ServerId,
+    tokio,
+    tokio::{sync::Semaphore, task::JoinSet},
+};
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
     TupleKey,
 };
 use serde::Serialize;
 use strum::IntoEnumIterator;
-use tokio::{sync::Semaphore, task::JoinSet};
 
-use crate::service::{
-    authz::implementations::openfga::{
+use crate::{
+    relations::{
         NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
-        MAX_TUPLES_PER_WRITE,
     },
-    ServerId,
+    MAX_TUPLES_PER_WRITE,
 };
 
 #[derive(Clone, Debug)]
@@ -482,32 +485,26 @@ async fn get_all_tuples_with_user(
 mod openfga_integration_tests {
     use std::time::Instant;
 
+    use lakekeeper::{
+        api::RequestMetadata,
+        service::{authz::Authorizer, NamespaceId, ServerId, TableId, UserId, ViewId},
+        tokio::task::JoinSet,
+        ProjectId, WarehouseId,
+    };
     use openfga_client::{
         client::{CheckRequestTupleKey, TupleKey},
         migration::TupleModelManager,
     };
-    use tokio::{sync::RwLock, task::JoinSet};
     use tracing_test::traced_test;
 
     use super::*;
     use crate::{
-        api::RequestMetadata,
-        service::{
-            authz::{
-                implementations::openfga::{
-                    migration::{
-                        add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION,
-                    },
-                    new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation,
-                    AUTH_CONFIG,
-                },
-                Authorizer,
-            },
-            NamespaceId, ServerId, TableId, UserId, ViewId,
-        },
-        ProjectId, WarehouseId,
+        client::new_client_from_default_config,
+        entities::OpenFgaEntity,
+        migration::{add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION},
+        relations::ServerRelation,
+        OpenFGAAuthorizer, AUTH_CONFIG,
     };
-
     // Tests must write tuples according to v3 model manually.
     // Writing through methods like `authorizer.create_*` may create tuples different from
     // what v4 migration is designed to handle.
@@ -520,7 +517,7 @@ mod openfga_integration_tests {
     /// Constructs a client for a store that has been initialized and migrated to v3.
     /// Returns the client, name of the store, and server id.
     async fn v3_client_for_empty_store() -> anyhow::Result<(BasicOpenFgaClient, String, ServerId)> {
-        let mut client = new_client_from_config().await?;
+        let mut client = new_client_from_default_config().await?;
         let server_id = ServerId::new_random();
         let test_uuid = uuid::Uuid::now_v7();
         let store_name = format!("test_store_{test_uuid}");
@@ -552,12 +549,7 @@ mod openfga_integration_tests {
 
     async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
         let (client, _, server_id) = v3_client_for_empty_store().await?;
-        Ok(OpenFGAAuthorizer {
-            client: client.clone(),
-            client_higher_consistency: client,
-            health: Arc::new(RwLock::new(vec![])),
-            server_id,
-        })
+        Ok(OpenFGAAuthorizer::new(client, server_id))
     }
 
     /// Migrates the `OpenFGA` store to v4, which will also execute the migration function.
@@ -594,12 +586,7 @@ mod openfga_integration_tests {
     async fn new_v4_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
         let client_v4 = migrate_to_v4(client, store_name, server_id).await?;
-        Ok(OpenFGAAuthorizer {
-            client: client_v4.clone(),
-            client_higher_consistency: client_v4,
-            health: Arc::new(RwLock::new(vec![])),
-            server_id,
-        })
+        Ok(OpenFGAAuthorizer::new(client_v4, server_id))
     }
 
     #[tokio::test]
@@ -1460,12 +1447,7 @@ mod openfga_integration_tests {
         const NUM_TABULARS: usize = 10_000;
 
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
-        let authorizer = OpenFGAAuthorizer {
-            client: client.clone(),
-            client_higher_consistency: client.clone(),
-            health: Arc::default(),
-            server_id,
-        };
+        let authorizer = OpenFGAAuthorizer::new(client.clone(), server_id);
         let req_meta_human = RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
 
         tracing::info!("Populating OpenFGA store");

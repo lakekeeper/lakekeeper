@@ -1,11 +1,11 @@
-use async_trait::async_trait;
-use openfga_client::client::CheckRequestTupleKey;
-
-use super::{OpenFGAAuthorizer, OpenFgaEntity, ServerRelation};
-use crate::{
+use lakekeeper::{
+    async_trait::async_trait,
     service::health::{Health, HealthExt, HealthStatus},
     ProjectId,
 };
+use openfga_client::client::CheckRequestTupleKey;
+
+use crate::{entities::OpenFgaEntity, relations::ServerRelation, OpenFGAAuthorizer};
 
 #[async_trait]
 impl HealthExt for OpenFGAAuthorizer {
@@ -38,19 +38,18 @@ impl HealthExt for OpenFGAAuthorizer {
 #[cfg(test)]
 mod tests {
     mod openfga_integration_tests {
+        use lakekeeper::{service::ServerId, tokio};
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
-        use crate::service::{
-            authz::implementations::openfga::{
-                client::new_authorizer, migrate, new_client_from_config,
-            },
-            ServerId,
+        use crate::{
+            client::{new_authorizer, new_client_from_default_config},
+            migration::migrate,
         };
 
         #[tokio::test]
         async fn test_health() {
-            let client = new_client_from_config().await.unwrap();
+            let client = new_client_from_default_config().await.unwrap();
 
             let server_id = ServerId::new_random();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());

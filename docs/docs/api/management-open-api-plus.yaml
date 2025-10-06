@@ -1,17 +1,17 @@
 openapi: 3.1.0
 info:
-  title: Lakekeeper Management API
+  title: Lakekeeper＋ Management API
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).
   license:
     name: Apache-2.0
     identifier: Apache-2.0
   version: 0.0.0
 servers:
-  - url: '{scheme}://{host}/{basePath}'
+  - url: "{scheme}://{host}/{basePath}"
     description: Lakekeeper Management API
     variables:
       basePath:
-        default: ''
+        default: ""
         description: Optional prefix to be appended to all routes
       host:
         default: localhost
@@ -33,23 +33,23 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BootstrapRequest'
+              $ref: "#/components/schemas/BootstrapRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Server bootstrapped successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-        '500':
+                $ref: "#/components/schemas/IcebergErrorResponse"
+        "500":
           description: InternalError
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/default-project:
     get:
       tags:
@@ -60,18 +60,18 @@ paths:
         This endpoint is deprecated and will be removed in a future version.
       operationId: get_default_project_deprecated
       responses:
-        '200':
+        "200":
           description: Project details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectResponse'
+                $ref: "#/components/schemas/GetProjectResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
       deprecated: true
     delete:
       tags:
@@ -82,14 +82,14 @@ paths:
         This endpoint is deprecated and will be removed in a future version.
       operationId: delete_default_project_deprecated
       responses:
-        '204':
+        "204":
           description: Project deleted successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
       deprecated: true
   /management/v1/default-project/rename:
     post:
@@ -104,17 +104,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RenameProjectRequest'
+              $ref: "#/components/schemas/RenameProjectRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Project renamed successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
       deprecated: true
   /management/v1/endpoint-statistics:
     post:
@@ -163,21 +163,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GetEndpointStatisticsRequest'
+              $ref: "#/components/schemas/GetEndpointStatisticsRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Endpoint statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EndpointStatisticsResponse'
+                $ref: "#/components/schemas/EndpointStatisticsResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/info:
     get:
       tags:
@@ -186,24 +186,24 @@ paths:
       description: Returns basic information about the server configuration and status.
       operationId: get_server_info
       responses:
-        '200':
+        "200":
           description: Server info
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServerInfo'
+                $ref: "#/components/schemas/ServerInfo"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-        '500':
+                $ref: "#/components/schemas/IcebergErrorResponse"
+        "500":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/permissions/check:
     post:
       tags:
@@ -214,15 +214,15 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CheckRequest'
+              $ref: "#/components/schemas/CheckRequest"
         required: true
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CheckResponse'
+                $ref: "#/components/schemas/CheckResponse"
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -238,12 +238,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetNamespaceAuthPropertiesResponse'
+                $ref: "#/components/schemas/GetNamespaceAuthPropertiesResponse"
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
@@ -273,12 +273,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Server Relations
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetNamespaceAccessResponse'
+                $ref: "#/components/schemas/GetNamespaceAccessResponse"
   /management/v1/permissions/namespace/{namespace_id}/assignments:
     get:
       tags:
@@ -293,7 +293,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/NamespaceRelation'
+              $ref: "#/components/schemas/NamespaceRelation"
         - name: namespace_id
           in: path
           description: Namespace ID
@@ -302,12 +302,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
+                $ref: "#/components/schemas/GetNamespaceAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -325,10 +325,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateNamespaceAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateNamespaceAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/namespace/{namespace_id}/managed-access:
     post:
@@ -348,11 +348,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetManagedAccessRequest'
+              $ref: "#/components/schemas/SetManagedAccessRequest"
         required: true
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
   /management/v1/permissions/project/access:
     get:
       tags:
@@ -375,12 +375,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Server Relations
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectAccessResponse'
+                $ref: "#/components/schemas/GetProjectAccessResponse"
   /management/v1/permissions/project/assignments:
     get:
       tags:
@@ -395,14 +395,14 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/ProjectRelation'
+              $ref: "#/components/schemas/ProjectRelation"
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+                $ref: "#/components/schemas/GetProjectAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -412,10 +412,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateProjectAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateProjectAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/project/{project_id}/access:
     get:
@@ -446,12 +446,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Server Relations
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectAccessResponse'
+                $ref: "#/components/schemas/GetProjectAccessResponse"
   /management/v1/permissions/project/{project_id}/assignments:
     get:
       tags:
@@ -466,7 +466,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/ProjectRelation'
+              $ref: "#/components/schemas/ProjectRelation"
         - name: project_id
           in: path
           description: Project ID
@@ -475,12 +475,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+                $ref: "#/components/schemas/GetProjectAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -498,10 +498,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateProjectAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateProjectAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/role/{role_id}/access:
     get:
@@ -518,12 +518,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetRoleAccessResponse'
+                $ref: "#/components/schemas/GetRoleAccessResponse"
   /management/v1/permissions/role/{role_id}/assignments:
     get:
       tags:
@@ -538,7 +538,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/RoleRelation'
+              $ref: "#/components/schemas/RoleRelation"
         - name: role_id
           in: path
           description: Role ID
@@ -547,12 +547,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetRoleAssignmentsResponse'
+                $ref: "#/components/schemas/GetRoleAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -569,10 +569,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateRoleAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateRoleAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/server/access:
     get:
@@ -596,12 +596,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Server Access
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetServerAccessResponse'
+                $ref: "#/components/schemas/GetServerAccessResponse"
   /management/v1/permissions/server/assignments:
     get:
       tags:
@@ -616,14 +616,14 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/ServerRelation'
+              $ref: "#/components/schemas/ServerRelation"
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetServerAssignmentsResponse'
+                $ref: "#/components/schemas/GetServerAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -633,10 +633,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateServerAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateServerAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
@@ -653,12 +653,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetWarehouseAuthPropertiesResponse'
+                $ref: "#/components/schemas/GetWarehouseAuthPropertiesResponse"
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
@@ -688,12 +688,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetWarehouseAccessResponse'
+                $ref: "#/components/schemas/GetWarehouseAccessResponse"
   /management/v1/permissions/warehouse/{warehouse_id}/assignments:
     get:
       tags:
@@ -708,7 +708,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/WarehouseRelation'
+              $ref: "#/components/schemas/WarehouseRelation"
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -717,12 +717,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
+                $ref: "#/components/schemas/GetWarehouseAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -740,10 +740,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateWarehouseAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateWarehouseAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:
@@ -763,11 +763,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetManagedAccessRequest'
+              $ref: "#/components/schemas/SetManagedAccessRequest"
         required: true
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
     get:
       tags:
@@ -804,12 +804,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Server Relations
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetTableAccessResponse'
+                $ref: "#/components/schemas/GetTableAccessResponse"
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
     get:
       tags:
@@ -824,7 +824,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/TableRelation'
+              $ref: "#/components/schemas/TableRelation"
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -840,12 +840,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetTableAssignmentsResponse'
+                $ref: "#/components/schemas/GetTableAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -870,10 +870,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateTableAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateTableAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
     get:
@@ -911,12 +911,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetViewAccessResponse'
+                $ref: "#/components/schemas/GetViewAccessResponse"
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
     get:
       tags:
@@ -931,7 +931,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/ViewRelation'
+              $ref: "#/components/schemas/ViewRelation"
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -947,12 +947,12 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetViewAssignmentsResponse'
+                $ref: "#/components/schemas/GetViewAssignmentsResponse"
     post:
       tags:
         - permissions
@@ -977,10 +977,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateViewAssignmentsRequest'
+              $ref: "#/components/schemas/UpdateViewAssignmentsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Permissions updated successfully
   /management/v1/project:
     get:
@@ -997,18 +997,18 @@ paths:
           schema:
             type: string
       responses:
-        '200':
+        "200":
           description: Project details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectResponse'
+                $ref: "#/components/schemas/GetProjectResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - project
@@ -1019,21 +1019,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateProjectRequest'
+              $ref: "#/components/schemas/CreateProjectRequest"
         required: true
       responses:
-        '201':
+        "201":
           description: Project created successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreateProjectResponse'
+                $ref: "#/components/schemas/CreateProjectResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     delete:
       tags:
         - project
@@ -1047,14 +1047,14 @@ paths:
           schema:
             type: string
       responses:
-        '204':
+        "204":
           description: Project deleted successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/project-list:
     get:
       tags:
@@ -1063,18 +1063,18 @@ paths:
       description: Lists all projects that the requesting user has access to.
       operationId: list_projects
       responses:
-        '200':
+        "200":
           description: List of projects
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListProjectsResponse'
+                $ref: "#/components/schemas/ListProjectsResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/project/rename:
     post:
       tags:
@@ -1092,17 +1092,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RenameProjectRequest'
+              $ref: "#/components/schemas/RenameProjectRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Project renamed successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/project/{project_id}:
     get:
       tags:
@@ -1116,18 +1116,18 @@ paths:
           schema:
             type: string
       responses:
-        '200':
+        "200":
           description: Project details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetProjectResponse'
+                $ref: "#/components/schemas/GetProjectResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     delete:
       tags:
         - project
@@ -1141,14 +1141,14 @@ paths:
           schema:
             type: string
       responses:
-        '204':
+        "204":
           description: Project deleted successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/project/{project_id}/rename:
     post:
       tags:
@@ -1166,17 +1166,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RenameProjectRequest'
+              $ref: "#/components/schemas/RenameProjectRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Project renamed successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/role:
     get:
       tags:
@@ -1192,7 +1192,7 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
         - name: pageToken
           in: query
           description: Next page token
@@ -1200,7 +1200,7 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
         - name: pageSize
           in: query
           description: |-
@@ -1210,7 +1210,7 @@ paths:
           schema:
             type:
               - integer
-              - 'null'
+              - "null"
             format: int64
         - name: projectId
           in: query
@@ -1221,20 +1221,20 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
       responses:
-        '200':
+        "200":
           description: List of roles
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListRolesResponse'
+                $ref: "#/components/schemas/ListRolesResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - role
@@ -1245,21 +1245,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateRoleRequest'
+              $ref: "#/components/schemas/CreateRoleRequest"
         required: true
       responses:
-        '201':
+        "201":
           description: Role successfully created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Role'
+                $ref: "#/components/schemas/Role"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/role/{role_id}:
     get:
       tags:
@@ -1275,18 +1275,18 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Role details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Role'
+                $ref: "#/components/schemas/Role"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - role
@@ -1303,21 +1303,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateRoleRequest'
+              $ref: "#/components/schemas/UpdateRoleRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Role updated successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Role'
+                $ref: "#/components/schemas/Role"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     delete:
       tags:
         - role
@@ -1332,14 +1332,14 @@ paths:
             type: string
             format: uuid
       responses:
-        '204':
+        "204":
           description: Role deleted successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/search/role:
     post:
       tags:
@@ -1351,21 +1351,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchRoleRequest'
+              $ref: "#/components/schemas/SearchRoleRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: List of users
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchRoleResponse'
+                $ref: "#/components/schemas/SearchRoleResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/search/user:
     post:
       tags:
@@ -1377,21 +1377,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchUserRequest'
+              $ref: "#/components/schemas/SearchUserRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: List of users
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchUserResponse'
+                $ref: "#/components/schemas/SearchUserResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/user:
     get:
       tags:
@@ -1407,7 +1407,7 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
         - name: pageToken
           in: query
           description: Next page token
@@ -1415,7 +1415,7 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
         - name: pageSize
           in: query
           description: |-
@@ -1425,21 +1425,21 @@ paths:
           schema:
             type:
               - integer
-              - 'null'
+              - "null"
             format: int64
       responses:
-        '200':
+        "200":
           description: List of users
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListUsersResponse'
+                $ref: "#/components/schemas/ListUsersResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - user
@@ -1452,27 +1452,27 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateUserRequest'
+              $ref: "#/components/schemas/CreateUserRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: User updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
-        '201':
+                $ref: "#/components/schemas/User"
+        "201":
           description: User created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                $ref: "#/components/schemas/User"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/user/{user_id}:
     get:
       tags:
@@ -1487,18 +1487,18 @@ paths:
           schema:
             type: string
       responses:
-        '200':
+        "200":
           description: User details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                $ref: "#/components/schemas/User"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     put:
       tags:
         - user
@@ -1517,17 +1517,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateUserRequest'
+              $ref: "#/components/schemas/UpdateUserRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: User details updated successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     delete:
       tags:
         - user
@@ -1543,14 +1543,14 @@ paths:
           schema:
             type: string
       responses:
-        '204':
+        "204":
           description: User deleted successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse:
     get:
       tags:
@@ -1572,7 +1572,7 @@ paths:
           schema:
             type: array
             items:
-              $ref: '#/components/schemas/WarehouseStatus'
+              $ref: "#/components/schemas/WarehouseStatus"
         - name: projectId
           in: query
           description: |-
@@ -1582,20 +1582,20 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
       responses:
-        '200':
+        "200":
           description: List of warehouses
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListWarehousesResponse'
+                $ref: "#/components/schemas/ListWarehousesResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - warehouse
@@ -1609,21 +1609,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateWarehouseRequest'
+              $ref: "#/components/schemas/CreateWarehouseRequest"
         required: true
       responses:
-        '201':
+        "201":
           description: Warehouse created successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreateWarehouseResponse'
+                $ref: "#/components/schemas/CreateWarehouseResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -1639,18 +1639,18 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Warehouse details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetWarehouseResponse'
+                $ref: "#/components/schemas/GetWarehouseResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     delete:
       tags:
         - warehouse
@@ -1667,14 +1667,14 @@ paths:
             type: string
             format: uuid
       responses:
-        '204':
+        "204":
           description: Warehouse deleted successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/activate:
     post:
       tags:
@@ -1690,14 +1690,14 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Warehouse activated successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/deactivate:
     post:
       tags:
@@ -1713,14 +1713,14 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Warehouse deactivated successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/delete-profile:
     post:
       tags:
@@ -1739,17 +1739,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateWarehouseDeleteProfileRequest'
+              $ref: "#/components/schemas/UpdateWarehouseDeleteProfileRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Deletion Profile updated successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/deleted-tabulars:
     get:
       tags:
@@ -1778,7 +1778,7 @@ paths:
           schema:
             type:
               - string
-              - 'null'
+              - "null"
         - name: pageSize
           in: query
           description: |-
@@ -1788,21 +1788,21 @@ paths:
           schema:
             type:
               - integer
-              - 'null'
+              - "null"
             format: int64
       responses:
-        '200':
+        "200":
           description: List of soft-deleted tabulars
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListDeletedTabularsResponse'
+                $ref: "#/components/schemas/ListDeletedTabularsResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop:
     post:
       tags:
@@ -1821,17 +1821,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UndropTabularsRequest'
+              $ref: "#/components/schemas/UndropTabularsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Tabular undropped successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
     post:
       tags:
@@ -1852,17 +1852,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UndropTabularsRequest'
+              $ref: "#/components/schemas/UndropTabularsRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Tabular undropped successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
       deprecated: true
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
     get:
@@ -1885,18 +1885,18 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - warehouse
@@ -1920,21 +1920,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetProtectionRequest'
+              $ref: "#/components/schemas/SetProtectionRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Namespace protection set successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/protection:
     post:
       tags:
@@ -1953,21 +1953,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetProtectionRequest'
+              $ref: "#/components/schemas/SetProtectionRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Warehouse protection set successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -1986,17 +1986,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RenameWarehouseRequest'
+              $ref: "#/components/schemas/RenameWarehouseRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Warehouse renamed successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/search-tabular:
     post:
       tags:
@@ -2019,21 +2019,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchTabularRequest'
+              $ref: "#/components/schemas/SearchTabularRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: List of tabulars
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchTabularResponse'
+                $ref: "#/components/schemas/SearchTabularResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/statistics:
     get:
       tags:
@@ -2078,21 +2078,21 @@ paths:
           schema:
             type:
               - integer
-              - 'null'
+              - "null"
             format: int64
       responses:
-        '200':
+        "200":
           description: Warehouse statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WarehouseStatisticsResponse'
+                $ref: "#/components/schemas/WarehouseStatisticsResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/storage:
     post:
       tags:
@@ -2111,17 +2111,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateWarehouseStorageRequest'
+              $ref: "#/components/schemas/UpdateWarehouseStorageRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Storage profile updated successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/storage-credential:
     post:
       tags:
@@ -2142,17 +2142,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateWarehouseCredentialRequest'
+              $ref: "#/components/schemas/UpdateWarehouseCredentialRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Storage credential updated successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -2174,18 +2174,18 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - warehouse
@@ -2209,21 +2209,82 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetProtectionRequest'
+              $ref: "#/components/schemas/SetProtectionRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Table protection set successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
+  /management/v1/warehouse/{warehouse_id}/task-queue/expire_snapshots/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_expire_snapshots
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: ""
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetExpireSnapshotsQueueConfig"
+        4XX:
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IcebergErrorResponse"
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_expire_snapshots
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetExpireSnapshotsQueueConfig"
+        required: true
+      responses:
+        "204":
+          description: Task queue config set successfully
+        4XX:
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
     get:
       tags:
@@ -2239,8 +2300,8 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           headers:
             x-request-id:
               schema:
@@ -2250,13 +2311,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetTabularExpirationQueueConfig'
+                $ref: "#/components/schemas/GetTabularExpirationQueueConfig"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - tasks
@@ -2274,17 +2335,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetTabularExpirationQueueConfig'
+              $ref: "#/components/schemas/SetTabularExpirationQueueConfig"
         required: true
       responses:
-        '204':
+        "204":
           description: Task queue config set successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config:
     get:
       tags:
@@ -2300,8 +2361,8 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           headers:
             x-request-id:
               schema:
@@ -2311,13 +2372,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetPurgeQueueConfig'
+                $ref: "#/components/schemas/GetPurgeQueueConfig"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - tasks
@@ -2335,17 +2396,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetPurgeQueueConfig'
+              $ref: "#/components/schemas/SetPurgeQueueConfig"
         required: true
       responses:
-        '204':
+        "204":
           description: Task queue config set successfully
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}:
     get:
       tags:
@@ -2367,28 +2428,28 @@ paths:
             format: uuid
         - name: numAttempts
           in: query
-          description: 'Number of attempts to retrieve (default: 5)'
+          description: "Number of attempts to retrieve (default: 5)"
           required: false
           schema:
             type:
               - integer
-              - 'null'
+              - "null"
             format: int32
             default: 5
             minimum: 0
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetTaskDetailsResponse'
+                $ref: "#/components/schemas/GetTaskDetailsResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/task/control:
     post:
       tags:
@@ -2407,17 +2468,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ControlTasksRequest'
+              $ref: "#/components/schemas/ControlTasksRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: All requested actions were successful
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/task/list:
     post:
       tags:
@@ -2435,21 +2496,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ListTasksRequest'
+              $ref: "#/components/schemas/ListTasksRequest"
         required: true
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListTasksResponse'
+                $ref: "#/components/schemas/ListTasksResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
     get:
       tags:
@@ -2471,18 +2532,18 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
-          description: ''
+        "200":
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
     post:
       tags:
         - warehouse
@@ -2506,21 +2567,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetProtectionRequest'
+              $ref: "#/components/schemas/SetProtectionRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: View protection set successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectionResponse'
+                $ref: "#/components/schemas/ProtectionResponse"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
   /management/v1/whoami:
     get:
       tags:
@@ -2529,18 +2590,18 @@ paths:
       description: Returns information about the user associated with the current authentication token.
       operationId: whoami
       responses:
-        '200':
+        "200":
           description: User details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                $ref: "#/components/schemas/User"
         4XX:
-          description: ''
+          description: ""
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+                $ref: "#/components/schemas/IcebergErrorResponse"
 components:
   schemas:
     AdlsProfile:
@@ -2561,29 +2622,34 @@ components:
         authority-host:
           type:
             - string
-            - 'null'
+            - "null"
           format: uri
-          description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
+          description: "The authority host to use for authentication. Default: `https://login.microsoftonline.com`."
         filesystem:
           type: string
           description: Name of the adls filesystem, in blobstorage also known as container.
         host:
           type:
             - string
-            - 'null'
-          description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
+            - "null"
+          description: "The host to use for the storage account. Default: `dfs.core.windows.net`."
         key-prefix:
           type:
             - string
-            - 'null'
+            - "null"
           description: Subpath in the filesystem to use.
         sas-token-validity-seconds:
           type:
             - integer
-            - 'null'
+            - "null"
           format: int64
-          description: 'The validity of the sas token in seconds. Default: 3600.'
+          description: "The validity of the sas token in seconds. Default: 3600."
           minimum: 0
+    AuthZBackend:
+      type: string
+      enum:
+        - allow-all
+        - openfga
     AzCredential:
       oneOf:
         - type: object
@@ -2641,22 +2707,22 @@ components:
         user-email:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Email of the user performing bootstrap. Optional. If not provided
             the server will try to parse the email from the provided token.
         user-name:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Name of the user performing bootstrap. Optional. If not provided
             the server will try to parse the name from the provided token.
             The initial user will become the global admin.
         user-type:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/UserType'
+            - type: "null"
+            - $ref: "#/components/schemas/UserType"
               description: |-
                 Type of the user performing bootstrap. Optional. If not provided
                 the server will try to parse the type from the provided token.
@@ -2672,7 +2738,7 @@ components:
                 - action
               properties:
                 action:
-                  $ref: '#/components/schemas/ServerAction'
+                  $ref: "#/components/schemas/ServerAction"
         - type: object
           required:
             - project
@@ -2683,11 +2749,11 @@ components:
                 - action
               properties:
                 action:
-                  $ref: '#/components/schemas/ProjectAction'
+                  $ref: "#/components/schemas/ProjectAction"
                 project-id:
                   type:
                     - string
-                    - 'null'
+                    - "null"
                   format: uuid
         - type: object
           required:
@@ -2700,7 +2766,7 @@ components:
                 - warehouse-id
               properties:
                 action:
-                  $ref: '#/components/schemas/WarehouseAction'
+                  $ref: "#/components/schemas/WarehouseAction"
                 warehouse-id:
                   type: string
                   format: uuid
@@ -2710,39 +2776,39 @@ components:
           properties:
             namespace:
               allOf:
-                - $ref: '#/components/schemas/NamespaceIdentOrUuid'
+                - $ref: "#/components/schemas/NamespaceIdentOrUuid"
                 - type: object
                   required:
                     - action
                   properties:
                     action:
-                      $ref: '#/components/schemas/NamespaceAction'
+                      $ref: "#/components/schemas/NamespaceAction"
         - type: object
           required:
             - table
           properties:
             table:
               allOf:
-                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - $ref: "#/components/schemas/TabularIdentOrUuid"
                 - type: object
                   required:
                     - action
                   properties:
                     action:
-                      $ref: '#/components/schemas/TableAction'
+                      $ref: "#/components/schemas/TableAction"
         - type: object
           required:
             - view
           properties:
             view:
               allOf:
-                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - $ref: "#/components/schemas/TabularIdentOrUuid"
                 - type: object
                   required:
                     - action
                   properties:
                     action:
-                      $ref: '#/components/schemas/ViewAction'
+                      $ref: "#/components/schemas/ViewAction"
       description: Represents an action on an object
     CheckRequest:
       type: object
@@ -2752,11 +2818,11 @@ components:
       properties:
         identity:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/UserOrRole'
+            - type: "null"
+            - $ref: "#/components/schemas/UserOrRole"
               description: The user or role to check access for.
         operation:
-          $ref: '#/components/schemas/CheckOperation'
+          $ref: "#/components/schemas/CheckOperation"
           description: The operation to check.
     CheckResponse:
       type: object
@@ -2822,7 +2888,7 @@ components:
         - task-ids
       properties:
         action:
-          $ref: '#/components/schemas/ControlTaskAction'
+          $ref: "#/components/schemas/ControlTaskAction"
           description: The action to perform on the task
         task-ids:
           type: array
@@ -2838,7 +2904,7 @@ components:
         project-id:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Request a specific project ID - optional.
             If not provided, a new project ID will be generated (recommended).
@@ -2861,7 +2927,7 @@ components:
         description:
           type:
             - string
-            - 'null'
+            - "null"
           description: Description of the role
         name:
           type: string
@@ -2869,7 +2935,7 @@ components:
         project-id:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Project ID in which the role is created.
             Deprecated: Please use the `x-project-id` header instead.
@@ -2879,14 +2945,14 @@ components:
         email:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Email of the user. If id is not specified, the email is extracted
             from the provided token.
         id:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Subject id of the user - allows user provisioning.
             The id must be identical to the subject in JWT tokens, prefixed
@@ -2897,7 +2963,7 @@ components:
         name:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Name of the user. If id is not specified, the name is extracted
             from the provided token.
@@ -2908,8 +2974,8 @@ components:
             Default: false
         user-type:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/UserType'
+            - type: "null"
+            - $ref: "#/components/schemas/UserType"
               description: Type of the user. Useful to override wrongly classified users
     CreateWarehouseRequest:
       type: object
@@ -2918,22 +2984,22 @@ components:
         - storage-profile
       properties:
         delete-profile:
-          $ref: '#/components/schemas/TabularDeleteProfile'
-          description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
+          $ref: "#/components/schemas/TabularDeleteProfile"
+          description: "Profile to determine behavior upon dropping of tabulars. Default: hard deletion."
         project-id:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Project ID in which to create the warehouse.
             Deprecated: Please use the `x-project-id` header instead.
         storage-credential:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/StorageCredential'
+            - type: "null"
+            - $ref: "#/components/schemas/StorageCredential"
               description: Optional storage credential to use for the warehouse.
         storage-profile:
-          $ref: '#/components/schemas/StorageProfile'
+          $ref: "#/components/schemas/StorageProfile"
           description: Storage profile to use for the warehouse.
         warehouse-name:
           type: string
@@ -2986,7 +3052,7 @@ components:
             type: string
           description: List of namespace parts the tabular belongs to
         typ:
-          $ref: '#/components/schemas/TabularType'
+          $ref: "#/components/schemas/TabularType"
           description: Type of the tabular
         warehouse-id:
           type: string
@@ -3026,7 +3092,7 @@ components:
         updated-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: |-
             Timestamp at which the datapoint was last updated.
@@ -3035,7 +3101,7 @@ components:
         warehouse-id:
           type:
             - string
-            - 'null'
+            - "null"
           format: uuid
           description: |-
             The ID of the warehouse that handled the request.
@@ -3046,7 +3112,7 @@ components:
         warehouse-name:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             The name of the warehouse that handled the request.
 
@@ -3066,7 +3132,7 @@ components:
           items:
             type: array
             items:
-              $ref: '#/components/schemas/EndpointStatistic'
+              $ref: "#/components/schemas/EndpointStatistic"
           description: |-
             Array of arrays of statistics detailing each called endpoint for each `timestamp`.
 
@@ -3122,6 +3188,63 @@ components:
         type:
           type: string
           description: Internal type definition of the error
+    ExpireSnapshotsQueueConfig:
+      type: object
+      description: |-
+        Warehouse-specific configuration for the expiration queue.
+        Parameters can be overridden with table properties. Please see the documentation of each parameter for details.
+      properties:
+        enable-expire-snapshots:
+          type:
+            - boolean
+            - "null"
+          description: |-
+            Enable or disable automatic expiration of snapshots for all tables in this warehouse.
+            Can be overridden on a per-table level with the table property `lakekeeper.history.expire.enabled`.
+            Tables with the `gc.enabled` flag set to false, are also excluded from automatic expiration.
+          default: "false"
+        max-ref-age-ms:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |-
+            For snapshot references except the main branch, default max age of snapshot references to keep while expiring snapshots.
+            The main branch never expires.
+            If not set, defaults to `i64::MAX` (no expiration).
+          default: 9223372036854775807
+        max-snapshot-age-ms:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |-
+            Default maximum age of a snapshot in milliseconds before it is considered expired.
+            If not set, defaults to `432000000` (5 days).
+            Can be overridden on a per-table level with the table property `history.expire.max-snapshot-age-ms`.
+          default: 432000000
+        min-snapshots-to-expire:
+          type:
+            - integer
+            - "null"
+          format: int32
+          description: |-
+            Minimum number of snapshots that must be eligible for expiration before the job runs.
+            This prevents expensive expiration jobs from running when there are only a few snapshots to expire.
+            If not set, defaults to `20`.
+            Can be overridden on a per-table level with the table property `lakekeeper.history.expire.min-snapshots-to-expire`.
+          default: 20
+          minimum: 0
+        min-snapshots-to-keep:
+          type:
+            - integer
+            - "null"
+          format: int32
+          description: |-
+            Default min number of snapshots to keep on the table and all of its branches while expiring snapshots.
+            If not set, defaults to `1`.
+            Can be overridden on a per-table level with the table property `history.expire.min-snapshots-to-keep`.
+          default: 1
     GcsCredential:
       oneOf:
         - type: object
@@ -3139,7 +3262,7 @@ components:
               enum:
                 - service-account-key
             key:
-              $ref: '#/components/schemas/GcsServiceKey'
+              $ref: "#/components/schemas/GcsServiceKey"
         - type: object
           title: GcsCredentialSystemIdentity
           description: |-
@@ -3185,7 +3308,7 @@ components:
         key-prefix:
           type:
             - string
-            - 'null'
+            - "null"
           description: Subpath in the bucket to use.
     GcsServiceKey:
       type: object
@@ -3231,8 +3354,8 @@ components:
       properties:
         range-specifier:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/TimeWindowSelector'
+            - type: "null"
+            - $ref: "#/components/schemas/TimeWindowSelector"
               description: |-
                 Range specifier
 
@@ -3241,7 +3364,7 @@ components:
         status-codes:
           type:
             - array
-            - 'null'
+            - "null"
           items:
             type: integer
             format: int32
@@ -3251,12 +3374,24 @@ components:
 
             Optional filter to only return statistics for requests with specific status codes.
         warehouse:
-          $ref: '#/components/schemas/WarehouseFilter'
+          $ref: "#/components/schemas/WarehouseFilter"
           description: |-
             Warehouse filter
 
             Can return statistics for a specific warehouse, all warehouses or requests that could not be
             associated to any warehouse.
+    GetExpireSnapshotsQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - "null"
+          format: int64
+        queue-config:
+          $ref: "#/components/schemas/ExpireSnapshotsQueueConfig"
     GetNamespaceAccessResponse:
       type: object
       required:
@@ -3265,7 +3400,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/NamespaceAction'
+            $ref: "#/components/schemas/NamespaceAction"
     GetNamespaceAssignmentsResponse:
       type: object
       required:
@@ -3274,7 +3409,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/NamespaceAssignment'
+            $ref: "#/components/schemas/NamespaceAssignment"
     GetNamespaceAuthPropertiesResponse:
       type: object
       required:
@@ -3293,7 +3428,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectAction'
+            $ref: "#/components/schemas/ProjectAction"
     GetProjectAssignmentsResponse:
       type: object
       required:
@@ -3303,7 +3438,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectAssignment'
+            $ref: "#/components/schemas/ProjectAssignment"
         project-id:
           type: string
           format: uuid
@@ -3327,10 +3462,10 @@ components:
         max-seconds-since-last-heartbeat:
           type:
             - integer
-            - 'null'
+            - "null"
           format: int64
         queue-config:
-          $ref: '#/components/schemas/PurgeQueueConfig'
+          $ref: "#/components/schemas/PurgeQueueConfig"
     GetRoleAccessResponse:
       type: object
       required:
@@ -3339,7 +3474,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/RoleAction'
+            $ref: "#/components/schemas/RoleAction"
     GetRoleAssignmentsResponse:
       type: object
       required:
@@ -3348,7 +3483,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/RoleAssignment'
+            $ref: "#/components/schemas/RoleAssignment"
     GetServerAccessResponse:
       type: object
       required:
@@ -3357,7 +3492,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/ServerAction'
+            $ref: "#/components/schemas/ServerAction"
     GetServerAssignmentsResponse:
       type: object
       required:
@@ -3366,7 +3501,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/ServerAssignment'
+            $ref: "#/components/schemas/ServerAssignment"
     GetTableAccessResponse:
       type: object
       required:
@@ -3375,7 +3510,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/TableAction'
+            $ref: "#/components/schemas/TableAction"
     GetTableAssignmentsResponse:
       type: object
       required:
@@ -3384,7 +3519,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/TableAssignment'
+            $ref: "#/components/schemas/TableAssignment"
     GetTabularExpirationQueueConfig:
       type: object
       required:
@@ -3393,13 +3528,13 @@ components:
         max-seconds-since-last-heartbeat:
           type:
             - integer
-            - 'null'
+            - "null"
           format: int64
         queue-config:
-          $ref: '#/components/schemas/TabularExpirationQueueConfig'
+          $ref: "#/components/schemas/TabularExpirationQueueConfig"
     GetTaskDetailsResponse:
       allOf:
-        - $ref: '#/components/schemas/Task'
+        - $ref: "#/components/schemas/Task"
           description: Most recent task information
         - type: object
           required:
@@ -3409,12 +3544,12 @@ components:
             attempts:
               type: array
               items:
-                $ref: '#/components/schemas/TaskAttempt'
+                $ref: "#/components/schemas/TaskAttempt"
               description: History of past attempts
             execution-details:
               type:
                 - object
-                - 'null'
+                - "null"
               description: Execution details for the current attempt
             task-data:
               type: object
@@ -3427,7 +3562,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/ViewAction'
+            $ref: "#/components/schemas/ViewAction"
     GetViewAssignmentsResponse:
       type: object
       required:
@@ -3436,7 +3571,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/ViewAssignment'
+            $ref: "#/components/schemas/ViewAssignment"
     GetWarehouseAccessResponse:
       type: object
       required:
@@ -3445,7 +3580,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/WarehouseAction'
+            $ref: "#/components/schemas/WarehouseAction"
     GetWarehouseAssignmentsResponse:
       type: object
       required:
@@ -3454,7 +3589,7 @@ components:
         assignments:
           type: array
           items:
-            $ref: '#/components/schemas/WarehouseAssignment'
+            $ref: "#/components/schemas/WarehouseAssignment"
     GetWarehouseAuthPropertiesResponse:
       type: object
       required:
@@ -3474,7 +3609,7 @@ components:
         - protected
       properties:
         delete-profile:
-          $ref: '#/components/schemas/TabularDeleteProfile'
+          $ref: "#/components/schemas/TabularDeleteProfile"
           description: Delete profile used for the warehouse.
         id:
           type: string
@@ -3490,10 +3625,10 @@ components:
           type: boolean
           description: Whether the warehouse is protected from being deleted.
         status:
-          $ref: '#/components/schemas/WarehouseStatus'
+          $ref: "#/components/schemas/WarehouseStatus"
           description: Whether the warehouse is active.
         storage-profile:
-          $ref: '#/components/schemas/StorageProfile'
+          $ref: "#/components/schemas/StorageProfile"
           description: Storage profile used for the warehouse.
     IcebergErrorResponse:
       type: object
@@ -3502,7 +3637,7 @@ components:
         - error
       properties:
         error:
-          $ref: '#/components/schemas/ErrorModel'
+          $ref: "#/components/schemas/ErrorModel"
     ListDeletedTabularsResponse:
       type: object
       required:
@@ -3511,12 +3646,12 @@ components:
         next-page-token:
           type:
             - string
-            - 'null'
+            - "null"
           description: Token to fetch the next page
         tabulars:
           type: array
           items:
-            $ref: '#/components/schemas/DeletedTabularResponse'
+            $ref: "#/components/schemas/DeletedTabularResponse"
           description: List of tabulars
     ListProjectsResponse:
       type: object
@@ -3526,7 +3661,7 @@ components:
         projects:
           type: array
           items:
-            $ref: '#/components/schemas/GetProjectResponse'
+            $ref: "#/components/schemas/GetProjectResponse"
           description: List of projects
     ListRolesResponse:
       type: object
@@ -3536,45 +3671,45 @@ components:
         next-page-token:
           type:
             - string
-            - 'null'
+            - "null"
         roles:
           type: array
           items:
-            $ref: '#/components/schemas/Role'
+            $ref: "#/components/schemas/Role"
     ListTasksRequest:
       type: object
       properties:
         created-after:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: Filter tasks created after this timestamp
           example: 2025-12-31T23:59:59Z
         created-before:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: Filter tasks created before this timestamp
           example: 2025-12-31T23:59:59Z
         entities:
           type:
             - array
-            - 'null'
+            - "null"
           items:
-            $ref: '#/components/schemas/TaskEntity'
+            $ref: "#/components/schemas/TaskEntity"
           description: Filter by specific entity
         page-size:
           type:
             - integer
-            - 'null'
+            - "null"
           format: int64
           description: Number of results per page
         page-token:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Next page token, re-use the same request as for the original request,
             but set this to the `next_page_token` from the previous response.
@@ -3582,16 +3717,16 @@ components:
         queue-name:
           type:
             - array
-            - 'null'
+            - "null"
           items:
             type: string
           description: Filter by one or more queue names
         status:
           type:
             - array
-            - 'null'
+            - "null"
           items:
-            $ref: '#/components/schemas/TaskStatus'
+            $ref: "#/components/schemas/TaskStatus"
           description: Filter by task status
     ListTasksResponse:
       type: object
@@ -3601,12 +3736,12 @@ components:
         next-page-token:
           type:
             - string
-            - 'null'
+            - "null"
           description: Token for the next page of results
         tasks:
           type: array
           items:
-            $ref: '#/components/schemas/Task'
+            $ref: "#/components/schemas/Task"
           description: List of tasks
     ListUsersResponse:
       type: object
@@ -3616,11 +3751,11 @@ components:
         next-page-token:
           type:
             - string
-            - 'null'
+            - "null"
         users:
           type: array
           items:
-            $ref: '#/components/schemas/User'
+            $ref: "#/components/schemas/User"
     ListWarehousesResponse:
       type: object
       required:
@@ -3629,7 +3764,7 @@ components:
         warehouses:
           type: array
           items:
-            $ref: '#/components/schemas/GetWarehouseResponse'
+            $ref: "#/components/schemas/GetWarehouseResponse"
           description: List of warehouses in the project.
     NamespaceAction:
       type: string
@@ -3650,7 +3785,7 @@ components:
     NamespaceAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3661,7 +3796,7 @@ components:
                     - ownership
           title: NamespaceAssignmentOwnership
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3672,7 +3807,7 @@ components:
                     - pass_grants
           title: NamespaceAssignmentPassGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3683,7 +3818,7 @@ components:
                     - manage_grants
           title: NamespaceAssignmentManageGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3694,7 +3829,7 @@ components:
                     - describe
           title: NamespaceAssignmentDescribe
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3705,7 +3840,7 @@ components:
                     - select
           title: NamespaceAssignmentSelect
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3716,7 +3851,7 @@ components:
                     - create
           title: NamespaceAssignmentCreate
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3780,7 +3915,7 @@ components:
     ProjectAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3791,7 +3926,7 @@ components:
                     - project_admin
           title: ProjectAssignmentProjectAdmin
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3802,7 +3937,7 @@ components:
                     - security_admin
           title: ProjectAssignmentSecurityAdmin
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3813,7 +3948,7 @@ components:
                     - data_admin
           title: ProjectAssignmentDataAdmin
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3824,7 +3959,7 @@ components:
                     - role_creator
           title: ProjectAssignmentRoleCreator
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3835,7 +3970,7 @@ components:
                     - describe
           title: ProjectAssignmentDescribe
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3846,7 +3981,7 @@ components:
                     - select
           title: ProjectAssignmentSelect
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3857,7 +3992,7 @@ components:
                     - create
           title: ProjectAssignmentCreate
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3889,7 +4024,7 @@ components:
         updated_at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: Updated at
     PurgeQueueConfig:
@@ -3935,7 +4070,7 @@ components:
         description:
           type:
             - string
-            - 'null'
+            - "null"
           description: Description of the role
         id:
           type: string
@@ -3950,7 +4085,7 @@ components:
         updated-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: Timestamp when the role was last updated
     RoleAction:
@@ -3966,7 +4101,7 @@ components:
     RoleAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -3977,7 +4112,7 @@ components:
                     - assignee
           title: RoleAssignmentAssignee
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4006,7 +4141,7 @@ components:
         external-id:
           type:
             - string
-            - 'null'
+            - "null"
     S3AwsSystemIdentityCredential:
       type: object
       title: S3CredentialSystemIdentity
@@ -4014,7 +4149,7 @@ components:
         external-id:
           type:
             - string
-            - 'null'
+            - "null"
     S3CloudflareR2Credential:
       type: object
       title: CloudflareR2Credential
@@ -4041,7 +4176,7 @@ components:
     S3Credential:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/S3AccessKeyCredential'
+            - $ref: "#/components/schemas/S3AccessKeyCredential"
               description: Authenticate to AWS using access-key and secret-key.
             - type: object
               required:
@@ -4053,7 +4188,7 @@ components:
                     - access-key
           description: Authenticate to AWS using access-key and secret-key.
         - allOf:
-            - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+            - $ref: "#/components/schemas/S3AwsSystemIdentityCredential"
               description: |-
                 Authenticate to AWS using the identity configured on the system
                  that runs lakekeeper. The AWS SDK is used to load the credentials.
@@ -4069,7 +4204,7 @@ components:
             Authenticate to AWS using the identity configured on the system
              that runs lakekeeper. The AWS SDK is used to load the credentials.
         - allOf:
-            - $ref: '#/components/schemas/S3CloudflareR2Credential'
+            - $ref: "#/components/schemas/S3CloudflareR2Credential"
             - type: object
               required:
                 - credential-type
@@ -4093,7 +4228,7 @@ components:
         allow-alternative-protocols:
           type:
             - boolean
-            - 'null'
+            - "null"
           description: |-
             Allow `s3a://` and `s3n://` in locations.
             This is disabled by default. We do not recommend to use this setting
@@ -4102,12 +4237,12 @@ components:
         assume-role-arn:
           type:
             - string
-            - 'null'
+            - "null"
           description: Optional ARN to assume when accessing the bucket from Lakekeeper.
         aws-kms-key-arn:
           type:
             - string
-            - 'null'
+            - "null"
           description: ARN of the KMS key used to encrypt the S3 bucket, if any.
         bucket:
           type: string
@@ -4115,7 +4250,7 @@ components:
         endpoint:
           type:
             - string
-            - 'null'
+            - "null"
           format: uri
           description: |-
             Optional endpoint to use for S3 requests, if not provided
@@ -4123,19 +4258,19 @@ components:
             If both region and endpoint are provided, the endpoint will be used.
             Example: `http://s3-de.my-domain.com:9000`
         flavor:
-          $ref: '#/components/schemas/S3Flavor'
+          $ref: "#/components/schemas/S3Flavor"
           description: |-
             S3 flavor to use.
             Defaults to AWS
         key-prefix:
           type:
             - string
-            - 'null'
+            - "null"
           description: Subpath in the bucket to use.
         path-style-access:
           type:
             - boolean
-            - 'null'
+            - "null"
           description: |-
             Path style access for S3 requests.
             If the underlying S3 supports both, we recommend to not set `path_style_access`.
@@ -4161,7 +4296,7 @@ components:
           type: string
           description: Region to use for S3 requests.
         remote-signing-url-style:
-          $ref: '#/components/schemas/S3UrlStyleDetectionMode'
+          $ref: "#/components/schemas/S3UrlStyleDetectionMode"
           description: |-
             S3 URL style detection mode for remote signing.
             One of `auto`, `path-style`, `virtual-host`.
@@ -4184,7 +4319,7 @@ components:
         sts-role-arn:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Optional role ARN to assume for sts vended-credentials.
             If not provided, `assume_role_arn` is used.
@@ -4215,7 +4350,7 @@ components:
         project-id:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Deprecated: Please use the `x-project-id` header instead.
             Project ID in which the role is created.
@@ -4232,7 +4367,7 @@ components:
         roles:
           type: array
           items:
-            $ref: '#/components/schemas/Role'
+            $ref: "#/components/schemas/Role"
           description: List of users matching the search criteria
     SearchTabular:
       type: object
@@ -4244,7 +4379,7 @@ components:
         distance:
           type:
             - number
-            - 'null'
+            - "null"
           format: float
           description: Better matches have a lower distance
         namespace-name:
@@ -4253,7 +4388,7 @@ components:
             type: string
           description: Namespace name
         tabular-id:
-          $ref: '#/components/schemas/TabularIdentUuid'
+          $ref: "#/components/schemas/TabularIdentUuid"
           description: ID of the tabular
         tabular-name:
           type: string
@@ -4278,7 +4413,7 @@ components:
         tabulars:
           type: array
           items:
-            $ref: '#/components/schemas/SearchTabular'
+            $ref: "#/components/schemas/SearchTabular"
           description: List of tabulars matching the search criteria
     SearchUser:
       type: object
@@ -4290,7 +4425,7 @@ components:
         email:
           type:
             - string
-            - 'null'
+            - "null"
           description: |-
             Email of the user. If id is not specified, the email is extracted
             from the provided token.
@@ -4301,7 +4436,7 @@ components:
           type: string
           description: Name of the user
         user-type:
-          $ref: '#/components/schemas/UserType'
+          $ref: "#/components/schemas/UserType"
           description: Type of the user
     SearchUserRequest:
       type: object
@@ -4322,7 +4457,7 @@ components:
         users:
           type: array
           items:
-            $ref: '#/components/schemas/SearchUser'
+            $ref: "#/components/schemas/SearchUser"
           description: List of users matching the search criteria
     ServerAction:
       type: string
@@ -4337,7 +4472,7 @@ components:
     ServerAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4348,7 +4483,7 @@ components:
                     - admin
           title: ServerAssignmentAdmin
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4371,8 +4506,8 @@ components:
         - queues
       properties:
         authz-backend:
-          type: string
-          description: '`AuthZ` backend in use.'
+          $ref: "#/components/schemas/AuthZBackend"
+          description: "`AuthZ` backend in use."
         aws-system-identities-enabled:
           type: boolean
           description: If using AWS system identities for S3 storage profiles are enabled.
@@ -4385,7 +4520,7 @@ components:
         default-project-id:
           type:
             - string
-            - 'null'
+            - "null"
           description: Default Project ID. Null if not set
         gcp-system-identities-enabled:
           type: boolean
@@ -4409,6 +4544,18 @@ components:
       enum:
         - admin
         - operator
+    SetExpireSnapshotsQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - "null"
+          format: int64
+        queue-config:
+          $ref: "#/components/schemas/ExpireSnapshotsQueueConfig"
     SetManagedAccessRequest:
       type: object
       required:
@@ -4432,10 +4579,10 @@ components:
         max-seconds-since-last-heartbeat:
           type:
             - integer
-            - 'null'
+            - "null"
           format: int64
         queue-config:
-          $ref: '#/components/schemas/PurgeQueueConfig'
+          $ref: "#/components/schemas/PurgeQueueConfig"
     SetTabularExpirationQueueConfig:
       type: object
       required:
@@ -4444,14 +4591,14 @@ components:
         max-seconds-since-last-heartbeat:
           type:
             - integer
-            - 'null'
+            - "null"
           format: int64
         queue-config:
-          $ref: '#/components/schemas/TabularExpirationQueueConfig'
+          $ref: "#/components/schemas/TabularExpirationQueueConfig"
     StorageCredential:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/S3Credential'
+            - $ref: "#/components/schemas/S3Credential"
               description: |-
                 Credentials for S3 storage
 
@@ -4490,7 +4637,7 @@ components:
               }"#).unwrap();
             ```
         - allOf:
-            - $ref: '#/components/schemas/AzCredential'
+            - $ref: "#/components/schemas/AzCredential"
               description: |-
                 Credentials for Az storage
 
@@ -4531,7 +4678,7 @@ components:
               }"#).unwrap();
             ```
         - allOf:
-            - $ref: '#/components/schemas/GcsCredential'
+            - $ref: "#/components/schemas/GcsCredential"
               description: |
                 Credentials for GCS storage
 
@@ -4595,7 +4742,7 @@ components:
     StorageProfile:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/AdlsProfile'
+            - $ref: "#/components/schemas/AdlsProfile"
               description: Azure storage profile
             - type: object
               required:
@@ -4608,7 +4755,7 @@ components:
           title: StorageProfileAdls
           description: Azure storage profile
         - allOf:
-            - $ref: '#/components/schemas/S3Profile'
+            - $ref: "#/components/schemas/S3Profile"
               description: S3 storage profile
             - type: object
               required:
@@ -4621,7 +4768,7 @@ components:
           title: StorageProfileS3
           description: S3 storage profile
         - allOf:
-            - $ref: '#/components/schemas/GcsProfile'
+            - $ref: "#/components/schemas/GcsProfile"
             - type: object
               required:
                 - type
@@ -4653,7 +4800,7 @@ components:
     TableAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4664,7 +4811,7 @@ components:
                     - ownership
           title: TableAssignmentOwnership
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4675,7 +4822,7 @@ components:
                     - pass_grants
           title: TableAssignmentPassGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4686,7 +4833,7 @@ components:
                     - manage_grants
           title: TableAssignmentManageGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4697,7 +4844,7 @@ components:
                     - describe
           title: TableAssignmentDescribe
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4708,7 +4855,7 @@ components:
                     - select
           title: TableAssignmentSelect
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -4839,7 +4986,7 @@ components:
           format: date-time
           description: When this task attempt was created
         entity:
-          $ref: '#/components/schemas/TaskEntity'
+          $ref: "#/components/schemas/TaskEntity"
           description: Type of entity this task operates on
         entity-name:
           type: array
@@ -4849,19 +4996,19 @@ components:
         last-heartbeat-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: Last heartbeat timestamp for running tasks
         parent-task-id:
           type:
             - string
-            - 'null'
+            - "null"
           format: uuid
           description: Parent task ID if this is a sub-task
         picked-up-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: When the latest attempt of the task was picked up for processing by a worker.
         progress:
@@ -4876,7 +5023,7 @@ components:
           format: date-time
           description: When the latest attempt of the task is scheduled for
         status:
-          $ref: '#/components/schemas/TaskStatus'
+          $ref: "#/components/schemas/TaskStatus"
           description: Current status of the task
         task-id:
           type: string
@@ -4885,7 +5032,7 @@ components:
         updated-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: When the task was last updated
         warehouse-id:
@@ -4912,18 +5059,18 @@ components:
         duration:
           type:
             - string
-            - 'null'
+            - "null"
           description: How long this attempt took
           example: PT1H30M45.5S
         execution-details:
           type:
             - object
-            - 'null'
+            - "null"
           description: Execution details for this attempt
         message:
           type:
             - string
-            - 'null'
+            - "null"
           description: Message associated with this attempt
         progress:
           type: number
@@ -4936,11 +5083,11 @@ components:
         started-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: When this attempt started
         status:
-          $ref: '#/components/schemas/TaskStatus'
+          $ref: "#/components/schemas/TaskStatus"
           description: Status of this attempt
     TaskEntity:
       oneOf:
@@ -5042,7 +5189,7 @@ components:
         targets:
           type: array
           items:
-            $ref: '#/components/schemas/TabularIdentUuid'
+            $ref: "#/components/schemas/TabularIdentUuid"
           description: Tabulars to undrop
     UpdateNamespaceAssignmentsRequest:
       type: object
@@ -5050,33 +5197,33 @@ components:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/NamespaceAssignment'
+            $ref: "#/components/schemas/NamespaceAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/NamespaceAssignment'
+            $ref: "#/components/schemas/NamespaceAssignment"
     UpdateProjectAssignmentsRequest:
       type: object
       properties:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectAssignment'
+            $ref: "#/components/schemas/ProjectAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectAssignment'
+            $ref: "#/components/schemas/ProjectAssignment"
     UpdateRoleAssignmentsRequest:
       type: object
       properties:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/RoleAssignment'
+            $ref: "#/components/schemas/RoleAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/RoleAssignment'
+            $ref: "#/components/schemas/RoleAssignment"
     UpdateRoleRequest:
       type: object
       required:
@@ -5085,7 +5232,7 @@ components:
         description:
           type:
             - string
-            - 'null'
+            - "null"
           description: Description of the role. If not set, the description will be removed.
         name:
           type: string
@@ -5096,22 +5243,22 @@ components:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/ServerAssignment'
+            $ref: "#/components/schemas/ServerAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/ServerAssignment'
+            $ref: "#/components/schemas/ServerAssignment"
     UpdateTableAssignmentsRequest:
       type: object
       properties:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/TableAssignment'
+            $ref: "#/components/schemas/TableAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/TableAssignment'
+            $ref: "#/components/schemas/TableAssignment"
     UpdateUserRequest:
       type: object
       required:
@@ -5121,40 +5268,40 @@ components:
         email:
           type:
             - string
-            - 'null'
+            - "null"
         name:
           type: string
         user-type:
-          $ref: '#/components/schemas/UserType'
+          $ref: "#/components/schemas/UserType"
     UpdateViewAssignmentsRequest:
       type: object
       properties:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/ViewAssignment'
+            $ref: "#/components/schemas/ViewAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/ViewAssignment'
+            $ref: "#/components/schemas/ViewAssignment"
     UpdateWarehouseAssignmentsRequest:
       type: object
       properties:
         deletes:
           type: array
           items:
-            $ref: '#/components/schemas/WarehouseAssignment'
+            $ref: "#/components/schemas/WarehouseAssignment"
         writes:
           type: array
           items:
-            $ref: '#/components/schemas/WarehouseAssignment'
+            $ref: "#/components/schemas/WarehouseAssignment"
     UpdateWarehouseCredentialRequest:
       type: object
       properties:
         new-storage-credential:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/StorageCredential'
+            - type: "null"
+            - $ref: "#/components/schemas/StorageCredential"
               description: |-
                 New storage credential to use for the warehouse.
                 If not specified, the existing credential is removed.
@@ -5164,7 +5311,7 @@ components:
         - delete-profile
       properties:
         delete-profile:
-          $ref: '#/components/schemas/TabularDeleteProfile'
+          $ref: "#/components/schemas/TabularDeleteProfile"
     UpdateWarehouseStorageRequest:
       type: object
       required:
@@ -5172,14 +5319,14 @@ components:
       properties:
         storage-credential:
           oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/StorageCredential'
+            - type: "null"
+            - $ref: "#/components/schemas/StorageCredential"
               description: |-
                 Optional storage credential to use for the warehouse.
                 The existing credential is not re-used. If no credential is
                 provided, we assume that this storage does not require credentials.
         storage-profile:
-          $ref: '#/components/schemas/StorageProfile'
+          $ref: "#/components/schemas/StorageProfile"
           description: |-
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
@@ -5202,13 +5349,13 @@ components:
         email:
           type:
             - string
-            - 'null'
+            - "null"
           description: Email of the user
         id:
           type: string
           description: The user's ID
         last-updated-with:
-          $ref: '#/components/schemas/UserLastUpdatedWith'
+          $ref: "#/components/schemas/UserLastUpdatedWith"
           description: The endpoint that last updated the user
         name:
           type: string
@@ -5216,11 +5363,11 @@ components:
         updated-at:
           type:
             - string
-            - 'null'
+            - "null"
           format: date-time
           description: Timestamp when the user was last updated
         user-type:
-          $ref: '#/components/schemas/UserType'
+          $ref: "#/components/schemas/UserType"
           description: Type of the user
     UserLastUpdatedWith:
       type: string
@@ -5275,7 +5422,7 @@ components:
     ViewAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5286,7 +5433,7 @@ components:
                     - ownership
           title: ViewAssignmentOwnership
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5297,7 +5444,7 @@ components:
                     - pass_grants
           title: ViewAssignmentPassGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5308,7 +5455,7 @@ components:
                     - manage_grants
           title: ViewAssignmentManageGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5319,7 +5466,7 @@ components:
                     - describe
           title: ViewAssignmentDescribe
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5365,7 +5512,7 @@ components:
     WarehouseAssignment:
       oneOf:
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5376,7 +5523,7 @@ components:
                     - ownership
           title: WarehouseAssignmentOwnership
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5387,7 +5534,7 @@ components:
                     - pass_grants
           title: WarehouseAssignmentPassGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5398,7 +5545,7 @@ components:
                     - manage_grants
           title: WarehouseAssignmentManageGrants
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5409,7 +5556,7 @@ components:
                     - describe
           title: WarehouseAssignmentDescribe
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5420,7 +5567,7 @@ components:
                     - select
           title: WarehouseAssignmentSelect
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5431,7 +5578,7 @@ components:
                     - create
           title: WarehouseAssignmentCreate
         - allOf:
-            - $ref: '#/components/schemas/UserOrRole'
+            - $ref: "#/components/schemas/UserOrRole"
             - type: object
               required:
                 - type
@@ -5522,12 +5669,12 @@ components:
         next-page-token:
           type:
             - string
-            - 'null'
+            - "null"
           description: Next page token
         stats:
           type: array
           items:
-            $ref: '#/components/schemas/WarehouseStatistics'
+            $ref: "#/components/schemas/WarehouseStatistics"
           description: Ordered list of warehouse statistics.
         warehouse-ident:
           type: string

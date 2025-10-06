@@ -1368,7 +1368,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);
@@ -1428,7 +1428,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1446,7 +1446,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1464,7 +1464,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1522,7 +1522,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1586,7 +1586,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();

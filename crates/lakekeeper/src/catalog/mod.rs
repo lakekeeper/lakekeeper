@@ -3,12 +3,12 @@ pub(crate) mod compression_codec;
 mod config;
 pub(crate) mod io;
 mod metrics;
-pub(crate) mod namespace;
+pub mod namespace;
 #[cfg(feature = "s3-signer")]
 mod s3_signer;
 pub mod tables;
 pub(crate) mod tabular;
-pub(crate) mod views;
+pub mod views;
 
 use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
 

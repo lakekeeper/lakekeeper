@@ -6,16 +6,15 @@ use lakekeeper::{
     serve::{serve, ServeConfiguration},
     service::{
         authn::{get_default_authenticator_from_config, BuiltInAuthenticators},
-        authz::{
-            implementations::{get_default_authorizer_from_config, BuiltInAuthorizers},
-            Authorizer,
-        },
+        authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
         event_publisher::get_default_cloud_event_backends_from_config,
         Catalog, SecretStore,
     },
+    tracing,
 };
 
+use crate::authorizer::AuthorizerEnum;
 #[cfg(feature = "ui")]
 use crate::ui;
 
@@ -24,16 +23,18 @@ pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Re
     let server_id = <PostgresCatalog as Catalog>::get_server_info(catalog.clone())
         .await?
         .server_id();
-    let authorizer = get_default_authorizer_from_config(server_id).await?;
+    let authorizer = AuthorizerEnum::init_from_env(server_id).await?;
     let stats = vec![stats];
 
     match authorizer {
-        BuiltInAuthorizers::AllowAll(authz) => {
+        AuthorizerEnum::AllowAll(authz) => {
+            tracing::info!("Using AllowAll authorizer");
             serve_with_authn::<PostgresCatalog, _, _>(bind_addr, secrets, catalog, authz, stats)
                 .await
         }
-        BuiltInAuthorizers::OpenFGA(authz) => {
-            serve_with_authn::<PostgresCatalog, _, _>(bind_addr, secrets, catalog, authz, stats)
+        AuthorizerEnum::OpenFGA(authz) => {
+            tracing::info!("Using OpenFGA authorizer");
+            serve_with_authn::<PostgresCatalog, _, _>(bind_addr, secrets, catalog, *authz, stats)
                 .await
         }
     }

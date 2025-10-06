@@ -1,5 +1,6 @@
 {
-    "crates/lakekeeper": "0.10.0",
-    "crates/lakekeeper-bin": "0.10.0",
-    "crates/iceberg-ext": "0.10.0"
+    "crates/lakekeeper": "0.10.2",
+    "crates/lakekeeper-bin": "0.10.2",
+    "crates/iceberg-ext": "0.10.2",
+    "crates/authz-openfga": "0.10.2"
 }

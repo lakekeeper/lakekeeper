@@ -4,12 +4,16 @@
     unreachable_pub,
     clippy::pedantic
 )]
-#![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::large_enum_variant,
+    clippy::missing_errors_doc
+)]
 #![forbid(unsafe_code)]
 pub mod catalog;
 mod config;
 pub mod service;
-pub use config::{AuthZBackend, OpenFGAAuth, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
+pub use config::{AuthZBackend, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
 pub use service::{ProjectId, SecretIdent, WarehouseId};
 
 #[cfg(feature = "router")]
@@ -33,6 +37,8 @@ pub use request_metadata::{
     determine_base_uri, determine_forwarded_prefix, X_FORWARDED_HOST_HEADER,
     X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
 };
+#[cfg(feature = "sqlx")]
+pub use sqlx;
 pub use tokio;
 pub use tokio_util::sync::CancellationToken;
 #[cfg(feature = "router")]
@@ -51,34 +57,5 @@ pub mod metrics;
 pub mod request_tracing;
 
 pub use tracing;
-
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod tests;
-
-#[cfg(test)]
-pub mod test {
-    use std::{future::Future, sync::LazyLock};
-
-    use tokio::runtime::Runtime;
-
-    static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("failed to start Tokio runtime")
-    });
-
-    #[track_caller]
-    pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
-        {
-            if common_runtime {
-                return COMMON_RUNTIME.block_on(f);
-            }
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to start Tokio runtime")
-                .block_on(f)
-        }
-    }
-}

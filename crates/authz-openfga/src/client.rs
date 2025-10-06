@@ -1,20 +1,18 @@
 //! Get `OpenFGA` clients
 
+use lakekeeper::service::ServerId;
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference,
 };
 
 use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
-use crate::{
-    service::{authz::implementations::openfga::migration::get_active_auth_model_id, ServerId},
-    OpenFGAAuth,
-};
+use crate::{config::OpenFGAAuth, migration::get_active_auth_model_id};
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type BearerOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type ClientCredentialsOpenFGAAuthorizer = OpenFGAAuthorizer;
 
-pub(crate) async fn new_client_from_config() -> OpenFGAResult<BasicOpenFgaServiceClient> {
+pub async fn new_client_from_default_config() -> OpenFGAResult<BasicOpenFgaServiceClient> {
     let endpoint = AUTH_CONFIG.endpoint.clone();
 
     let client = match &AUTH_CONFIG.auth {
@@ -58,10 +56,10 @@ pub(crate) async fn new_client_from_config() -> OpenFGAResult<BasicOpenFgaServic
 /// - Server connection fails
 /// - Store (name) not found (from crate Config)
 /// - Active Authorization model not found
-pub(crate) async fn new_authorizer_from_config(
+pub async fn new_authorizer_from_default_config(
     server_id: ServerId,
 ) -> OpenFGAResult<OpenFGAAuthorizer> {
-    let client = new_client_from_config().await?;
+    let client = new_client_from_default_config().await?;
     new_authorizer(
         client,
         None,

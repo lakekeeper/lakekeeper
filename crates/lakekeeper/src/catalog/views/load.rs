@@ -138,6 +138,7 @@ pub(crate) mod test {
         },
         implementations::postgres::{secrets::SecretsState, PostgresCatalog},
         service::{authz::AllowAllAuthorizer, State},
+        tests::create_view_request,
     };
 
     pub(crate) async fn load_view(
@@ -163,8 +164,7 @@ pub(crate) mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
         let created_view = Box::pin(create_view(

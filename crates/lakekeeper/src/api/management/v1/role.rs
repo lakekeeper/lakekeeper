@@ -135,7 +135,7 @@ impl IntoResponse for SearchRoleResponse {
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     async fn create_role(
         request: CreateRoleRequest,
         context: ApiContext<State<A, C, S>>,

@@ -1,6 +1,18 @@
-use axum::{extract::State as AxumState, Extension, Json};
 use http::StatusCode;
-use iceberg::{NamespaceIdent, TableIdent};
+use lakekeeper::{
+    api::{ApiContext, RequestMetadata},
+    axum::{extract::State as AxumState, Extension, Json},
+    catalog::{
+        namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
+        views::authorized_view_ident_to_id,
+    },
+    iceberg::{NamespaceIdent, TableIdent},
+    service::{
+        authz::Authorizer, Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId,
+        Transaction, ViewId,
+    },
+    ProjectId, WarehouseId,
+};
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
 
@@ -15,19 +27,7 @@ use super::{
     },
     OpenFGAAuthorizer, OpenFGAError,
 };
-use crate::{
-    api::ApiContext,
-    catalog::{
-        namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
-        views::authorized_view_ident_to_id,
-    },
-    request_metadata::RequestMetadata,
-    service::{
-        authz::{implementations::openfga::entities::OpenFgaEntity, Authorizer},
-        Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId, Transaction, ViewId,
-    },
-    ProjectId, WarehouseId,
-};
+use crate::{entities::OpenFgaEntity, relations::ActorExt};
 
 /// Check if a specific action is allowed on the given object
 #[utoipa::path(
@@ -429,8 +429,9 @@ pub(super) struct CheckResponse {
 
 #[cfg(test)]
 mod tests {
+    use lakekeeper::service::UserId;
+
     use super::*;
-    use crate::service::UserId;
 
     #[test]
     fn test_serde_check_action_namespace_id() {
@@ -572,31 +573,27 @@ mod tests {
     }
 
     mod openfga_integration_tests {
-        use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
+        use lakekeeper::{
+            api::{
+                iceberg::v1::{namespace::NamespaceService, Prefix},
+                management::v1::{
+                    role::{CreateRoleRequest, Service as RoleService},
+                    ApiServer,
+                },
+                CreateNamespaceRequest,
+            },
+            catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
+            implementations::postgres::{PostgresCatalog, SecretsState},
+            service::{authn::UserId, CreateNamespaceResponse},
+            sqlx,
+            tests::{SetupTestCatalog, TestWarehouseResponse},
+        };
         use openfga_client::client::TupleKey;
         use strum::IntoEnumIterator;
         use uuid::Uuid;
 
         use super::super::{super::relations::*, *};
-        use crate::{
-            api::{
-                iceberg::v1::{namespace::NamespaceService, Prefix},
-                management::v1::{
-                    role::{CreateRoleRequest, Service as RoleService},
-                    warehouse::TabularDeleteProfile,
-                    ApiServer,
-                },
-            },
-            catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
-            implementations::postgres::{PostgresCatalog, SecretsState},
-            service::{
-                authn::UserId,
-                authz::implementations::openfga::{
-                    migration::tests::authorizer_for_empty_store, RoleAssignee,
-                },
-            },
-            tests::TestWarehouseResponse,
-        };
+        use crate::{migration::tests::authorizer_for_empty_store, models::RoleAssignee};
 
         async fn setup(
             operator_id: UserId,
@@ -606,20 +603,18 @@ mod tests {
             TestWarehouseResponse,
             CreateNamespaceResponse,
         ) {
-            let prof = crate::catalog::test::memory_io_profile();
             let authorizer = authorizer_for_empty_store().await.1;
-            let (ctx, warehouse) = crate::catalog::test::setup(
-                pool.clone(),
-                prof,
-                None,
-                authorizer.clone(),
-                TabularDeleteProfile::Hard {},
-                Some(operator_id.clone()),
-            )
-            .await;
+
+            let (ctx, warehouse) = SetupTestCatalog::builder()
+                .pool(pool.clone())
+                .authorizer(authorizer.clone())
+                .user_id(Some(operator_id.clone()))
+                .build()
+                .setup()
+                .await;
 
             let namespace = CatalogServer::create_namespace(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
+                Some(Prefix::from(warehouse.warehouse_id.to_string())),
                 CreateNamespaceRequest {
                     namespace: NamespaceIdent::from_vec(vec!["ns1".to_string()]).unwrap(),
                     properties: None,

@@ -202,6 +202,8 @@ pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
+    fn implementation_name() -> &'static str;
+
     /// The server ID that was passed to the authorizer during initialization.
     /// Must remain stable for the lifetime of the running process (typically generated at startup).
     fn server_id(&self) -> ServerId;
@@ -1082,6 +1084,10 @@ pub(crate) mod tests {
     }
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
+        fn implementation_name() -> &'static str {
+            "test-hiding-authorizer"
+        }
+
         fn server_id(&self) -> ServerId {
             self.server_id
         }

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/authz-openfga",
     "crates/iceberg-ext",
     "crates/io",
     "crates/lakekeeper",
@@ -87,7 +88,6 @@ maplit = "1.0.2"
 middle = { version = "0.3", features = ["tonic"] }
 mockall = "0.13.0"
 moka = { version = "^0.12", features = ["sync"] }
-openfga-client = { version = "0.4", features = ["auth-middle"] }
 paste = "1.0.15"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
@@ -158,6 +158,7 @@ utoipa = { version = "5.4.0", features = [
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 veil = "0.2.0"
+tracing-test = "0.2.5"
 
 [profile.dev]
 opt-level = 1

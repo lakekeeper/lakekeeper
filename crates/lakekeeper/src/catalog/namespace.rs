@@ -531,7 +531,8 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
     }
 }
 
-pub(crate) async fn authorized_namespace_ident_to_id<C: Catalog, A: Authorizer + Clone>(
+/// Validate and authorize access to a namespace, returning its ID if it exists.
+pub async fn authorized_namespace_ident_to_id<C: Catalog, A: Authorizer + Clone>(
     authorizer: A,
     metadata: &RequestMetadata,
     warehouse_id: &WarehouseId,

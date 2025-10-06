@@ -50,6 +50,10 @@ pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
+    fn implementation_name() -> &'static str {
+        "allow-all"
+    }
+
     fn server_id(&self) -> ServerId {
         self.server_id
     }

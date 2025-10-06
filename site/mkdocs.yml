@@ -108,6 +108,7 @@ extra:
       link: https://github.com/lakekeeper/lakekeeper
 
 extra_css:
+  - /assets/css/extra.css
   - /assets/css/home.css
   - /assets/css/bootstrap.min.css
   - /assets/css/animate.css

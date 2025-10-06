@@ -1,7 +1,10 @@
-use crate::service::{authz::implementations::FgaType, RoleId};
+use lakekeeper::service::RoleId;
+
+use crate::FgaType;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
+/// `OpenFGA` userset with `#assignee` suffix to represent role assignees
 pub(crate) struct RoleAssignee(RoleId);
 
 impl RoleAssignee {
@@ -11,14 +14,18 @@ impl RoleAssignee {
     }
 
     #[must_use]
-    pub(crate) fn role(&self) -> &RoleId {
-        &self.0
+    pub(crate) fn role(&self) -> RoleId {
+        self.0
     }
 }
 
-impl RoleId {
+pub(crate) trait RoleIdExt {
     #[must_use]
-    pub(crate) fn into_assignees(self) -> RoleAssignee {
+    fn into_assignees(self) -> RoleAssignee;
+}
+
+impl RoleIdExt for RoleId {
+    fn into_assignees(self) -> RoleAssignee {
         RoleAssignee::from_role(self)
     }
 }

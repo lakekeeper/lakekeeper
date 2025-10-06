@@ -9,7 +9,7 @@ mod rename;
 use std::str::FromStr;
 
 #[allow(unused_imports)]
-pub(crate) use exists::authorized_view_ident_to_id;
+pub use exists::authorized_view_ident_to_id;
 use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
 use lakekeeper_io::Location;
 

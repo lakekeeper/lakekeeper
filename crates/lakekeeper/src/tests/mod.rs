@@ -1,182 +1,53 @@
-mod drop_recursive;
-mod drop_warehouse;
-mod endpoint_stats;
-mod soft_deletion;
-mod stats;
-mod tasks;
-
-use iceberg::{NamespaceIdent, TableIdent};
-use iceberg_ext::catalog::rest::{
-    CreateNamespaceRequest, CreateNamespaceResponse, LoadTableResult, LoadViewResult,
-};
-use sqlx::PgPool;
-use uuid::Uuid;
-
 use crate::{
     api::{
-        iceberg::{
-            types::Prefix,
-            v1::{
-                namespace::{NamespaceDropFlags, NamespaceService as _},
-                tables::TablesService,
-                views::ViewService,
-                DataAccess, DropParams, NamespaceParameters, TableParameters,
-            },
-        },
         management::v1::{
             bootstrap::{BootstrapRequest, Service as _},
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
             ApiServer,
         },
-        ApiContext,
+        RequestMetadata,
     },
-    catalog::CatalogServer,
-    implementations::postgres::{migrations::migrate, CatalogState, PostgresCatalog, SecretsState},
-    request_metadata::RequestMetadata,
+    implementations::{
+        postgres::{migrations::migrate, PostgresCatalog, SecretsState},
+        CatalogState,
+    },
     service::{
-        authz::Authorizer,
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
-        storage::{
-            s3::S3AccessKeyCredential, MemoryProfile, S3Credential, S3Flavor, S3Profile,
-            StorageCredential, StorageProfile,
-        },
-        task_queue::TaskQueueRegistry,
-        Catalog, SecretStore, State, UserId,
+        storage::{StorageCredential, StorageProfile},
+        UserId,
     },
+};
+
+#[cfg(test)]
+mod drop_recursive;
+#[cfg(test)]
+mod drop_warehouse;
+#[cfg(test)]
+mod endpoint_stats;
+#[cfg(test)]
+mod soft_deletion;
+#[cfg(test)]
+mod stats;
+#[cfg(test)]
+mod tasks;
+use crate::{
+    api::ApiContext,
+    service::{authz::Authorizer, task_queue::TaskQueueRegistry, State},
     WarehouseId, CONFIG,
 };
 
-pub(crate) fn memory_io_profile() -> StorageProfile {
-    MemoryProfile::default().into()
-}
+#[cfg(test)]
+mod internal_helper;
+#[cfg(test)]
+pub(crate) use internal_helper::*;
+use sqlx::PgPool;
+use uuid::Uuid;
 
-#[allow(dead_code)]
-pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
-    let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
-    let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-    let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-    let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-    let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-    let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT")
-        .unwrap()
-        .parse()
-        .unwrap();
-
-    let cred: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-        aws_access_key_id,
-        aws_secret_access_key,
-        external_id: None,
-    })
-    .into();
-    let mut profile: StorageProfile = S3Profile::builder()
-        .bucket(bucket)
-        .key_prefix(key_prefix)
-        .endpoint(endpoint)
-        .path_style_access(true)
-        .flavor(S3Flavor::S3Compat)
-        .region(region)
-        .sts_enabled(true)
-        .build()
-        .into();
-
-    profile.normalize(Some(&cred)).unwrap();
-    (profile, cred)
-}
-
-pub(crate) async fn create_ns<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    prefix: String,
-    ns_name: String,
-) -> CreateNamespaceResponse {
-    CatalogServer::create_namespace(
-        Some(Prefix(prefix)),
-        CreateNamespaceRequest {
-            namespace: NamespaceIdent::new(ns_name),
-            properties: None,
-        },
-        api_context.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .unwrap()
-}
-
-pub(crate) async fn create_table<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    prefix: impl Into<String>,
-    ns_name: impl Into<String>,
-    name: impl Into<String>,
-    stage: bool,
-) -> crate::api::Result<LoadTableResult> {
-    CatalogServer::create_table(
-        NamespaceParameters {
-            prefix: Some(Prefix(prefix.into())),
-            namespace: NamespaceIdent::new(ns_name.into()),
-        },
-        crate::catalog::tables::test::create_request(Some(name.into()), Some(stage)),
-        DataAccess::not_specified(),
-        api_context,
-        random_request_metadata(),
-    )
-    .await
-}
-
-pub(crate) async fn drop_table<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    prefix: &str,
-    ns_name: &str,
-    name: &str,
-    purge_requested: Option<bool>,
-    force: bool,
-) -> crate::api::Result<()> {
-    CatalogServer::drop_table(
-        TableParameters {
-            prefix: Some(Prefix(prefix.to_string())),
-            table: TableIdent::new(NamespaceIdent::new(ns_name.to_string()), name.to_string()),
-        },
-        DropParams {
-            purge_requested: purge_requested.unwrap_or_default(),
-            force,
-        },
-        api_context,
-        random_request_metadata(),
-    )
-    .await
-}
-
-pub(crate) async fn create_view<T: Authorizer>(
-    api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    prefix: &str,
-    ns_name: &str,
-    name: &str,
-    location: Option<&str>,
-) -> crate::api::Result<LoadViewResult> {
-    CatalogServer::create_view(
-        NamespaceParameters {
-            prefix: Some(Prefix(prefix.to_string())),
-            namespace: NamespaceIdent::new(ns_name.to_string()),
-        },
-        crate::catalog::views::create::test::create_view_request(Some(name), location),
-        api_context,
-        DataAccess::not_specified(),
-        random_request_metadata(),
-    )
-    .await
-}
-
-pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
-    api_context: ApiContext<State<A, C, S>>,
-    flags: NamespaceDropFlags,
-    namespace_parameters: NamespaceParameters,
-) -> crate::api::Result<()> {
-    CatalogServer::drop_namespace(
-        namespace_parameters,
-        flags,
-        api_context,
-        random_request_metadata(),
-    )
-    .await
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn memory_io_profile() -> StorageProfile {
+    crate::service::storage::MemoryProfile::default().into()
 }
 
 #[derive(Debug)]
@@ -184,6 +55,59 @@ pub struct TestWarehouseResponse {
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
     pub additional_warehouses: Vec<(WarehouseId, String)>,
+}
+
+pub async fn spawn_build_in_queues<T: Authorizer>(
+    ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    poll_interval: Option<std::time::Duration>,
+    cancellation_token: crate::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    let task_queues = TaskQueueRegistry::new();
+    task_queues
+        .register_built_in_queues::<PostgresCatalog, _, _>(
+            ctx.v1_state.catalog.clone(),
+            ctx.v1_state.secrets.clone(),
+            ctx.v1_state.authz.clone(),
+            poll_interval.unwrap_or(CONFIG.task_poll_interval),
+        )
+        .await;
+    let task_runner = task_queues.task_queues_runner(cancellation_token).await;
+
+    tokio::task::spawn(task_runner.run_queue_workers(true))
+}
+
+#[derive(typed_builder::TypedBuilder, Debug)]
+pub struct SetupTestCatalog<T: Authorizer> {
+    pool: PgPool,
+    #[builder(default = StorageProfile::Memory(Default::default()))]
+    storage_profile: StorageProfile,
+    authorizer: T,
+    #[builder(default = TabularDeleteProfile::Hard {})]
+    delete_profile: TabularDeleteProfile,
+    #[builder(default)]
+    user_id: Option<UserId>,
+    #[builder(default = 1)]
+    number_of_warehouses: usize,
+}
+
+impl<T: Authorizer> SetupTestCatalog<T> {
+    pub async fn setup(
+        self,
+    ) -> (
+        ApiContext<State<T, PostgresCatalog, SecretsState>>,
+        TestWarehouseResponse,
+    ) {
+        setup(
+            self.pool,
+            self.storage_profile,
+            None,
+            self.authorizer,
+            self.delete_profile,
+            self.user_id,
+            self.number_of_warehouses,
+        )
+        .await
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -297,23 +221,4 @@ pub(crate) async fn get_api_context<T: Authorizer>(
 
 pub(crate) fn random_request_metadata() -> RequestMetadata {
     RequestMetadata::new_unauthenticated()
-}
-
-pub(crate) async fn spawn_build_in_queues<T: Authorizer>(
-    ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    poll_interval: Option<std::time::Duration>,
-    cancellation_token: crate::CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    let task_queues = TaskQueueRegistry::new();
-    task_queues
-        .register_built_in_queues::<PostgresCatalog, _, _>(
-            ctx.v1_state.catalog.clone(),
-            ctx.v1_state.secrets.clone(),
-            ctx.v1_state.authz.clone(),
-            poll_interval.unwrap_or(CONFIG.task_poll_interval),
-        )
-        .await;
-    let task_runner = task_queues.task_queues_runner(cancellation_token).await;
-
-    tokio::task::spawn(task_runner.run_queue_workers(true))
 }

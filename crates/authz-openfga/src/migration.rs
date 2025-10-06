@@ -1,12 +1,12 @@
 use std::sync::LazyLock;
 
+use lakekeeper::service::ServerId;
 use openfga_client::{
     client::{BasicAuthLayer, BasicOpenFgaServiceClient},
     migration::{AuthorizationModelVersion, MigrationFn, TupleModelManager},
 };
 
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
-use crate::service::ServerId;
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| *V4_CURRENT_MODEL_VERSION); // <- Change this for every change in the model
@@ -48,7 +48,7 @@ pub(crate) fn add_model_v3(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-            "../../../../../../../authz/openfga/v3.4/schema.json"
+            "../../../authz/openfga/v3.4/schema.json"
         ))
         // Change also the model version in this string:
         .expect("Model v3.4 is a valid AuthorizationModel in JSON format."),
@@ -67,7 +67,7 @@ pub(crate) fn add_model_v4_0(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-            "../../../../../../../authz/openfga/v4.0/schema.json"
+            "../../../authz/openfga/v4.0/schema.json"
         ))
         // Change also the model version in this string:
         .expect("Model v4.0 is a valid AuthorizationModel in JSON format."),
@@ -86,7 +86,7 @@ pub(crate) fn add_model_v4_current(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-            "../../../../../../../authz/openfga/v4.1/schema.json"
+            "../../../authz/openfga/v4.1/schema.json"
         ))
         // Change also the model version in this string:
         .expect("Model v4.1 is a valid AuthorizationModel in JSON format."),
@@ -105,7 +105,7 @@ pub(crate) fn add_model_v4_current(
 ///
 /// # Errors
 /// * [`OpenFGAError::ClientError`] if the client fails to get the active model id
-pub(super) async fn get_active_auth_model_id(
+pub(crate) async fn get_active_auth_model_id(
     client: &mut BasicOpenFgaServiceClient,
     store_name: Option<String>,
 ) -> OpenFGAResult<String> {
@@ -139,7 +139,7 @@ pub(super) async fn get_active_auth_model_id(
 /// - Failed to read existing models
 /// - Failed to write new model
 /// - Failed to write new version tuples
-pub(crate) async fn migrate(
+pub async fn migrate(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
     server_id: ServerId,
@@ -168,11 +168,10 @@ pub(crate) mod tests {
         super::{client::new_authorizer, OpenFGAAuthorizer},
         *,
     };
-    use crate::service::{authz::implementations::openfga::new_client_from_config, ServerId};
-
+    use crate::client::new_client_from_default_config;
     pub(crate) async fn authorizer_for_empty_store(
     ) -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
-        let client = new_client_from_config().await.unwrap();
+        let client = new_client_from_default_config().await.unwrap();
 
         let server_id = ServerId::new_random();
         let test_uuid = uuid::Uuid::now_v7();
@@ -194,14 +193,15 @@ pub(crate) mod tests {
     }
 
     mod openfga_integration_tests {
+        use lakekeeper::tokio;
         use openfga_client::client::ReadAuthorizationModelsRequest;
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::new_client_from_config;
+        use crate::client::new_client_from_default_config;
 
         #[tokio::test]
         async fn test_migrate() {
-            let mut client = new_client_from_config().await.unwrap();
+            let mut client = new_client_from_default_config().await.unwrap();
             let server_id = ServerId::new_random();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
 

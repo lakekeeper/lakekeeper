@@ -39,7 +39,7 @@ pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStor
     Ok(())
 }
 
-pub(crate) async fn authorized_view_ident_to_id<C: Catalog, A: Authorizer>(
+pub async fn authorized_view_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
@@ -67,6 +67,7 @@ mod test {
     use crate::{
         api::iceberg::{types::Prefix, v1::ViewParameters},
         catalog::views::{create::test::create_view, test::setup},
+        tests::create_view_request,
     };
 
     #[sqlx::test]
@@ -74,8 +75,7 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest =
-            super::super::create::test::create_view_request(Some(view_name), None);
+        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
 
         let prefix = Prefix(whi.to_string());
         let _ = Box::pin(create_view(

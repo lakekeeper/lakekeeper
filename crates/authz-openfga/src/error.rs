@@ -1,13 +1,13 @@
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use lakekeeper::api::{ErrorModel, IcebergErrorResponse};
 use openfga_client::error::Error as OpenFGAClientError;
 
-use crate::service::authz::implementations::FgaType;
+use crate::FgaType;
 
-pub(crate) type OpenFGAResult<T> = Result<T, OpenFGAError>;
+pub type OpenFGAResult<T> = Result<T, OpenFGAError>;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum OpenFGAError {
+pub enum OpenFGAError {
     #[error("OpenFGA client error: {0}")]
     ClientError(#[source] Box<OpenFGAClientError>),
     #[error("Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!")]

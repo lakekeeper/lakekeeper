@@ -200,7 +200,6 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 #[cfg(test)]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
-    use serde_json::json;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -211,6 +210,7 @@ pub(crate) mod test {
             namespace::tests::initialize_namespace, secrets::SecretsState,
         },
         service::authz::AllowAllAuthorizer,
+        tests::create_view_request,
     };
 
     pub(crate) async fn create_view(
@@ -289,50 +289,5 @@ pub(crate) mod test {
         let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))
             .await
             .expect("Recreate with same name but different ns should work.");
-    }
-
-    pub(crate) fn create_view_request(
-        name: Option<&str>,
-        location: Option<&str>,
-    ) -> CreateViewRequest {
-        serde_json::from_value(json!({
-                                  "name": name.unwrap_or("myview"),
-                                  "location": location,
-                                  "schema": {
-                                    "schema-id": 0,
-                                    "type": "struct",
-                                    "fields": [
-                                      {
-                                        "id": 0,
-                                        "name": "id",
-                                        "required": false,
-                                        "type": "long"
-                                      }
-                                    ]
-                                  },
-                                  "view-version": {
-                                    "version-id": 1,
-                                    "schema-id": 0,
-                                    "timestamp-ms": 1_719_395_654_343_i64,
-                                    "summary": {
-                                      "engine-version": "3.5.1",
-                                      "iceberg-version": "Apache Iceberg 1.5.2 (commit cbb853073e681b4075d7c8707610dceecbee3a82)",
-                                      "engine-name": "spark",
-                                      "app-id": "local-1719395622847"
-                                    },
-                                    "representations": [
-                                      {
-                                        "type": "sql",
-                                        "sql": "select id, xyz from spark_demo.my_table",
-                                        "dialect": "spark"
-                                      }
-                                    ],
-                                    "default-namespace": []
-                                  },
-                                  "properties": {
-                                    "create_engine_version": "Spark 3.5.1",
-                                    "engine_version": "Spark 3.5.1",
-                                    "spark.query-column-names": "id"
-                                  }})).unwrap()
     }
 }

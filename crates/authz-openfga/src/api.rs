@@ -2,12 +2,19 @@
 
 use std::collections::HashSet;
 
-use axum::{
-    extract::{Path, Query, State as AxumState},
-    routing::{get, post},
-    Extension, Json, Router,
-};
 use http::StatusCode;
+use lakekeeper::{
+    api::{ApiContext, RequestMetadata},
+    axum::{
+        extract::{Path, Query, State as AxumState},
+        routing::{get, post},
+        Extension, Json, Router,
+    },
+    service::{
+        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId, ViewId,
+    },
+    ProjectId, WarehouseId,
+};
 use openfga_client::client::{
     CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
 };
@@ -35,15 +42,7 @@ use super::{
     },
 };
 use crate::{
-    api::ApiContext,
-    request_metadata::RequestMetadata,
-    service::{
-        authz::implementations::openfga::{
-            entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
-        },
-        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId, ViewId,
-    },
-    ProjectId, WarehouseId,
+    entities::OpenFgaEntity, models::RoleIdExt as _, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -1645,17 +1644,18 @@ mod tests {
     }
 
     mod openfga_integration_tests {
+        use lakekeeper::{
+            service::{
+                authn::UserId,
+                authz::{Authorizer, CatalogNamespaceAction},
+            },
+            tokio,
+        };
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
         use super::super::*;
-        use crate::service::{
-            authn::UserId,
-            authz::{
-                implementations::openfga::migration::tests::authorizer_for_empty_store, Authorizer,
-                CatalogNamespaceAction,
-            },
-        };
+        use crate::migration::tests::authorizer_for_empty_store;
 
         #[tokio::test]
         async fn test_cannot_assign_role_to_itself() {

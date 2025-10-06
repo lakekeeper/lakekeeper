@@ -400,10 +400,8 @@ mod test {
 
     use crate::{
         api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
-        catalog::views::{
-            create::test::{create_view, create_view_request},
-            test::setup,
-        },
+        catalog::views::{create::test::create_view, test::setup},
+        tests::create_view_request,
         WarehouseId,
     };
 
