@@ -277,8 +277,9 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .get(X_PROJECT_ID_HEADER)
         .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
         .and_then(|hv| hv.to_str().ok())
-        .map(ProjectId::from_str)
-        .transpose();
+        .and_then(|s| (!s.is_empty()).then(|| ProjectId::from_str(s)))
+        .transpose()
+        .map_err(|e| e.append_detail("Invalid project ID header value"));
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => return IcebergErrorResponse::from(err).into_response(),
