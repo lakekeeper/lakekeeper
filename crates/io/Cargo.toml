@@ -19,6 +19,7 @@ storage-s3 = [
     "dep:aws-credential-types",
     "dep:aws-smithy-async",
     "dep:aws-smithy-http-client",
+    "dep:aws-sdk-sts",
 ]
 storage-adls = [
     "dep:azure_storage_blobs",
@@ -42,8 +43,9 @@ async-stream = { workspace = true }
 aws-config = { workspace = true, features = [
     "behavior-version-latest",
 ], optional = true }
-aws-credential-types = { version = "^1.2", optional = true }
-aws-sdk-s3 = { version = "^1.65", optional = true }
+aws-credential-types = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-sts = { workspace = true, optional = true }
 aws-smithy-async = { workspace = true, optional = true }
 aws-smithy-http-client = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true }
