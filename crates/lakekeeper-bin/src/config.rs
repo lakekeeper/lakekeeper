@@ -13,8 +13,8 @@ pub(crate) struct DynAppConfig {
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
-pub struct DebugConfig {
-    pub migrate_before_serve: bool,
+pub(crate) struct DebugConfig {
+    pub(crate) migrate_before_serve: bool,
 }
 
 fn get_config() -> DynAppConfig {
