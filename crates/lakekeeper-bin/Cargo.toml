@@ -23,8 +23,13 @@ ui = ["dep:lakekeeper-console"]
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
+figment = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["all"] }
 lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.10.2", optional = true }
 limes = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }

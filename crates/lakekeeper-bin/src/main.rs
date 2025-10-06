@@ -18,12 +18,14 @@ use lakekeeper::{
 };
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
+mod config;
 mod healthcheck;
 mod serve;
 #[cfg(feature = "ui")]
 mod ui;
 mod wait_for_db;
 
+pub(crate) use config::CONFIG_BIN;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
@@ -135,37 +137,15 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Migrate {}) => {
             print_info();
-            println!("Migrating database...");
-            let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-                CONFIG
-                    .to_pool_opts()
-                    .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
-            )
-            .await?;
-
-            // This embeds database migrations in the application binary so we can ensure the database
-            // is migrated correctly on startup
-            let server_id =
-                lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
-            println!("Database migration complete.");
-
-            println!("Migrating authorizer...");
-            lakekeeper::service::authz::implementations::migrate_default_authorizer(server_id)
-                .await?;
-            println!("Authorizer migration complete.");
+            migrate().await?;
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
-            tracing::info!(
-                "Starting server on {}:{}...",
-                CONFIG.bind_ip,
-                CONFIG.listen_port
-            );
-            let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
-            if !force_start {
-                wait_for_db::wait_for_db(true, 0, 0, true).await?;
+            if CONFIG_BIN.debug_migrate_before_serve {
+                wait_for_db::wait_for_db(false, 15, 2, true).await?;
+                migrate().await?;
             }
-            serve::serve_default(bind_addr).await?;
+            serve(force_start).await?;
         }
         Some(Commands::Healthcheck {
             check_all,
@@ -195,6 +175,42 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("No subcommand provided. Use --help for more information.");
         }
     }
+
+    Ok(())
+}
+
+async fn migrate() -> anyhow::Result<()> {
+    println!("Migrating database...");
+    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
+        CONFIG
+            .to_pool_opts()
+            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
+    )
+    .await?;
+
+    // This embeds database migrations in the application binary so we can ensure the database
+    // is migrated correctly on startup
+    let server_id = lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
+    println!("Database migration complete.");
+
+    println!("Migrating authorizer...");
+    lakekeeper::service::authz::implementations::migrate_default_authorizer(server_id).await?;
+    println!("Authorizer migration complete.");
+
+    Ok(())
+}
+
+async fn serve(force_start: bool) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting server on {}:{}...",
+        CONFIG.bind_ip,
+        CONFIG.listen_port
+    );
+    let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
+    if !force_start {
+        wait_for_db::wait_for_db(true, 0, 0, true).await?;
+    }
+    serve::serve_default(bind_addr).await?;
 
     Ok(())
 }
