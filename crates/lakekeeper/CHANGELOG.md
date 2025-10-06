@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.2](https://github.com/lakekeeper/lakekeeper/compare/v0.10.1...v0.10.2) (2025-10-06)
+
+
+### Bug Fixes
+
+* Parse empty ProjectID headers as None ([#1424](https://github.com/lakekeeper/lakekeeper/issues/1424)) ([8f067e7](https://github.com/lakekeeper/lakekeeper/commit/8f067e725b372b3e09ca3d04409d10a854bf9b8e))
+
+
+### Miscellaneous Chores
+
+* release 0.10.2 ([8d5171e](https://github.com/lakekeeper/lakekeeper/commit/8d5171ec9ba7fa5bac2b062af9eb8fffb28bbd42))
+
 ## [0.10.1](https://github.com/lakekeeper/lakekeeper/compare/v0.10.0...v0.10.1) (2025-10-05)
 
 
