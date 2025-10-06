@@ -254,14 +254,11 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
 ) -> Response {
     let request_id: Uuid = headers
         .get(X_REQUEST_ID_HEADER)
-        .and_then(|hv| {
-            hv.to_str()
-                .map(Uuid::from_str)
-                .ok()
-                .transpose()
-                .ok()
-                .flatten()
-        })
+        .and_then(|hv| hv.to_str().ok())
+        .and_then(|s| (!s.is_empty()).then(|| Uuid::from_str(s)))
+        .transpose()
+        .ok()
+        .flatten()
         .unwrap_or(Uuid::now_v7());
 
     let Some(base_uri) = determine_base_uri(&headers) else {
@@ -279,7 +276,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .and_then(|hv| hv.to_str().ok())
         .and_then(|s| (!s.is_empty()).then(|| ProjectId::from_str(s)))
         .transpose()
-        .map_err(|e| e.append_detail("Invalid project ID header value"));
+        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")));
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => return IcebergErrorResponse::from(err).into_response(),
