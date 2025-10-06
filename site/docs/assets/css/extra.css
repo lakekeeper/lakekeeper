@@ -17,6 +17,23 @@
 
 [data-md-color-primary=indigo] {
   --md-primary-fg-color--light: var(--lakekeeper-primary-light-color);
-  --md-primary-fg-color--dark:  var(--lakekeeper-primary-dark-color);
+  --md-primary-fg-color--dark: var(--lakekeeper-primary-dark-color);
 }
 
+/* Short Lakekeeper Plus Badge with auto-generated content */
+.lkp::after {
+  content: "★ lakekeeper ＋";
+  color: var(--lakekeeper-warning-color) !important;
+  background: rgba(253, 176, 34, 0.1);
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 0.45em;
+  font-weight: 500;
+  border: 0.5px solid var(--lakekeeper-warning-color);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}

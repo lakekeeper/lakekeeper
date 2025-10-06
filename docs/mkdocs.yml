@@ -7,7 +7,8 @@ nav:
   - Concepts: concepts.md
   - API:
       - Catalog: api/catalog.md
-      - Management: api/management.md
+      - Management (Core): api/management.md
+      - Management <span class="lkp"></span>: api/management-plus.md
   - Query Engines: engines.md
   - User Guide:
       - bootstrap.md

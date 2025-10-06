@@ -41,10 +41,10 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 
 | Variable                                                    | Example            | Description |
 |-------------------------------------------------------------|--------------------|-----|
-| `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | Lakekeeper supports using AWS system identities (i.e. through `AWS_*` environment variables or EC2 instance profiles) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable AWS system identities, set `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`. Default: `false` (AWS system credentials disabled) |
+| <nobr>`LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`<nobr>     | <nobr>`true`<nobr> | Lakekeeper supports using AWS system identities (i.e. through `AWS_*` environment variables or EC2 instance profiles) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable AWS system identities, set `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`. Default: `false` (AWS system credentials disabled) |
 | `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS`           | <nobr>`true`<nobr> | By default, when using AWS system credentials, users must specify an `assume-role-arn` for Lakekeeper to assume when accessing S3. Setting this option to `true` allows Lakekeeper to use system credentials directly without role assumption, meaning the system identity must have direct access to warehouse locations. Default: `false` (direct system credential access disabled) |
 | `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | <nobr>`true`<nobr> | Controls whether an `external-id` is required when assuming a role with AWS system credentials. External IDs provide additional security when cross-account role assumption is used. Default: true (external ID required) |
-| `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS`               | <nobr>`true`<nobr> | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. Default: `false` (Azure system credentials disabled) |
+| <nobr>`LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS`<nobr>   | <nobr>`true`<nobr> | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. Default: `false` (Azure system credentials disabled) |
 | `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | Lakekeeper supports using GCP system identities (i.e. through `GOOGLE_APPLICATION_CREDENTIALS` environment variables or the Compute Engine Metadata Server) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. Default: `false` (GCP system credentials disabled) |
 
 ### Persistence Store
@@ -90,11 +90,12 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                                      | Example    | Description     |
-|-----------------------------------------------|------------|-----------------|
-| <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`<nobr>  | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
-| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` | 2          | Number of workers spawned to expire soft-deleted tables and views. |
-| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`      | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| Variable                                                                          | Example    | Description |
+|-----------------------------------------------------------------------------------|------------|-----|
+| <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`</nobr>                                     | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS`                                     | 2          | Number of workers spawned to expire soft-deleted tables and views. |
+| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`                                          | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| <nobr>`LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`</nobr><span class="lkp"></span> | 2          | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 
 ### NATS
 
@@ -257,9 +258,10 @@ You may be running Lakekeeper in your own environment which uses self-signed cer
 
 Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.
 
-| Variable                                             | Example | Description |
-|------------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr> | `true`  | If set to `true`, Lakekeeper will log all incoming request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
+| Variable                                               | Example | Description |
+|--------------------------------------------------------|---------|-----------|
+| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr>   | `true`  | If set to `true`, Lakekeeper will log all incoming request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE`</nobr> | `true`  | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. Default: `false` |
 
 **Warning**: Debug options can expose sensitive information in logs and should only be used in secure development environments.
 

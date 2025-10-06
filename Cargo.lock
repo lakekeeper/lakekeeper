@@ -3432,7 +3432,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.10.0"
+version = "0.10.2"
 dependencies = [
  "axum 0.8.4",
  "bytes",
@@ -3905,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper"
-version = "0.10.0"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -4023,22 +4023,24 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-bin"
-version = "0.10.0"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "clap",
+ "figment",
  "lakekeeper",
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
  "limes",
  "reqwest",
+ "serde",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "lakekeeper-console"
 version = "0.1.0"
-source = "git+https://github.com/lakekeeper/console?rev=v0.10.1#30fb240fa734e8672283a3dc52f440a6d3da765f"
+source = "git+https://github.com/lakekeeper/console?rev=v0.10.2#aa55e5df7dea3109e37a7b9c528eb0f5783b058d"
 dependencies = [
  "derivative",
  "fs_extra",

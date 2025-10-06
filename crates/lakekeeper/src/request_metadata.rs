@@ -254,14 +254,13 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
 ) -> Response {
     let request_id: Uuid = headers
         .get(X_REQUEST_ID_HEADER)
-        .and_then(|hv| {
-            hv.to_str()
-                .map(Uuid::from_str)
-                .ok()
-                .transpose()
-                .ok()
-                .flatten()
-        })
+        .and_then(|hv| hv.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(Uuid::from_str)
+        .transpose()
+        .ok()
+        .flatten()
         .unwrap_or(Uuid::now_v7());
 
     let Some(base_uri) = determine_base_uri(&headers) else {
@@ -277,8 +276,11 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .get(X_PROJECT_ID_HEADER)
         .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
         .and_then(|hv| hv.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(ProjectId::from_str)
-        .transpose();
+        .transpose()
+        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")));
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => {

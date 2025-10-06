@@ -48,7 +48,11 @@ use crate::{
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         set_not_found_status_code,
     },
-    catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
+    catalog::{
+        self,
+        compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
+        tabular::list_entities,
+    },
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
@@ -1631,14 +1635,17 @@ where
     I: IntoIterator<Item = &'a String>,
 {
     for prop in properties {
-        if (prop.starts_with("write.metadata")
+        // Only allow explicitly supported write.metadata properties to prevent
+        // future properties from being silently ignored, which could mislead users.
+        if ((prop.starts_with("write.metadata")
             && ![
                 PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
                 PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED,
-                "write.metadata.compression-codec",
+                PROPERTY_METADATA_COMPRESSION_CODEC,
             ]
             .contains(&prop.as_str()))
-            || prop.starts_with("write.data.path")
+            || prop.starts_with("write.data.path"))
+            && !prop.starts_with("write.metadata.metrics.")
         {
             return Err(ErrorModel::conflict(
                 format!("Properties contain unsupported property: '{prop}'"),
@@ -1745,6 +1752,16 @@ pub(crate) mod test {
     #[test]
     fn test_mixed_case_properties() {
         let properties = ["a".to_string(), "B".to_string()];
+        assert!(validate_table_properties(properties.iter()).is_ok());
+    }
+
+    #[test]
+    fn test_allow_metrics_properties() {
+        let properties = [
+            "write.metadata.metrics.max-inferred-column-defaults".to_string(),
+            "write.metadata.metrics.default".to_string(),
+            "write.metadata.metrics.column.col1".to_string(),
+        ];
         assert!(validate_table_properties(properties.iter()).is_ok());
     }
 
