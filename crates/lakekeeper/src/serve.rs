@@ -7,6 +7,7 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::{
     api::{
+        management::v1::bootstrap::{LicenseStatus, APACHE_LICENSE_STATUS},
         router::{new_full_router, serve as service_serve, RouterArgs},
         shutdown_signal, ApiContext,
     },
@@ -148,6 +149,9 @@ pub struct ServeConfiguration<
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
     pub register_additional_background_services_fn: Vec<RegisterBackgroundServiceFn<A, C, S>>,
+    /// License Status
+    #[builder(default)]
+    pub license_status: Option<&'static LicenseStatus>,
 }
 
 /// Starts the service with the provided configuration.
@@ -306,7 +310,10 @@ async fn serve_inner<
         register_additional_task_queues_fn,
         additional_endpoint_hooks,
         register_additional_background_services_fn: additional_background_services,
+        license_status,
     } = config;
+
+    let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -381,6 +388,7 @@ async fn serve_inner<
             contract_verifiers: contract_verification,
             registered_task_queues,
             hooks,
+            license_status,
         },
     };
 

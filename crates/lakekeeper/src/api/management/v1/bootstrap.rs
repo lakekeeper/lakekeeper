@@ -1,3 +1,6 @@
+use std::sync::LazyLock;
+
+use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
@@ -39,6 +42,38 @@ pub struct BootstrapRequest {
     pub user_type: Option<UserType>,
 }
 
+pub(crate) static APACHE_LICENSE_STATUS: LazyLock<LicenseStatus> =
+    LazyLock::new(|| LicenseStatus {
+        license_type: "Apache-2.0".to_string(),
+        valid: true,
+        customer: None,
+        expiration: None,
+        error: None,
+        license_id: None,
+    });
+
+/// Status of license validation
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct LicenseStatus {
+    /// License type (e.g., "Apache-2.0", "Vakamo-Enterprise", etc.)
+    pub license_type: String,
+    /// If the license is valid and active
+    pub valid: bool,
+    /// Customer name the license is issued to (None for open source)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub customer: Option<String>,
+    /// License expiration date (None for perpetual licenses like Apache)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiration: Option<DateTime<Utc>>,
+    /// Any validation error that occurred
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// License ID or identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license_id: Option<String>,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 #[allow(clippy::struct_excessive_bools)]
@@ -63,6 +98,8 @@ pub struct ServerInfo {
     pub gcp_system_identities_enabled: bool,
     /// List of queues that are registered for the server.
     pub queues: Vec<String>,
+    /// License status information
+    pub license_status: LicenseStatus,
 }
 
 impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -205,6 +242,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 names.sort_unstable();
                 names.into_iter().map(ToString::to_string).collect()
             },
+            license_status: state.v1_state.license_status.clone(),
         })
     }
 }

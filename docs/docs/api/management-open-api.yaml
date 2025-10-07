@@ -3503,6 +3503,40 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorModel'
+    LicenseStatus:
+      type: object
+      description: Status of license validation
+      required:
+        - license-type
+        - valid
+      properties:
+        customer:
+          type:
+            - string
+            - 'null'
+          description: Customer name the license is issued to (None for open source)
+        error:
+          type:
+            - string
+            - 'null'
+          description: Any validation error that occurred
+        expiration:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: License expiration date (None for perpetual licenses like Apache)
+        license-id:
+          type:
+            - string
+            - 'null'
+          description: License ID or identifier
+        license-type:
+          type: string
+          description: License type (e.g., "Apache-2.0", "Vakamo-Enterprise", etc.)
+        valid:
+          type: boolean
+          description: If the license is valid and active
     ListDeletedTabularsResponse:
       type: object
       required:
@@ -4369,6 +4403,7 @@ components:
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
         - queues
+        - license-status
       properties:
         authz-backend:
           type: string
@@ -4390,6 +4425,9 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        license-status:
+          $ref: '#/components/schemas/LicenseStatus'
+          description: License status information
         queues:
           type: array
           items:

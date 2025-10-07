@@ -1,7 +1,7 @@
 use crate::{
     api::{
         management::v1::{
-            bootstrap::{BootstrapRequest, Service as _},
+            bootstrap::{BootstrapRequest, Service as _, APACHE_LICENSE_STATUS},
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
             ApiServer,
         },
@@ -215,6 +215,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             contract_verifiers: ContractVerifiers::new(vec![]),
             hooks: EndpointHookCollection::new(vec![]),
             registered_task_queues,
+            license_status: &APACHE_LICENSE_STATUS,
         },
     }
 }
