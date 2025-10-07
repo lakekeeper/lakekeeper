@@ -110,6 +110,7 @@ jobs:
 
       - name: Test Make all
         run: |
+          cd examples/kafka-connect-iceberg-sink
           make run-producer
 
   test-example-kafka-connect-iceberg-sink:
