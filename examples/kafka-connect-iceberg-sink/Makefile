@@ -60,8 +60,8 @@ stop-producer:
 # KAFKA
 # ========================
 build-kafka-connect:
-	docker build -t localhost/kafka-connect-iceberg-sink-connector:0.1 -f docker/kafka-connect/Dockerfile .
-	kind load docker-image localhost/kafka-connect-iceberg-sink-connector:0.1 --name $(CLUSTER)
+	docker build -t kafka-connect-iceberg-sink-connector:0.1 -f docker/kafka-connect/Dockerfile .
+	kind load docker-image kafka-connect-iceberg-sink-connector:0.1 --name $(CLUSTER)
 
 install-kafka:
 	kubectl create -f 'https://strimzi.io/install/latest?namespace=kafka' -n $(NAMESPACE)
