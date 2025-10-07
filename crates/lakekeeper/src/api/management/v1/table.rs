@@ -3,18 +3,18 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogTableAction},
-        Catalog, SecretStore, State, TableId, TabularId, Transaction,
+        CatalogStore, SecretStore, State, TableId, TabularId, Transaction,
     },
     WarehouseId,
 };
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> TableManagementService<C, A, S>
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> TableManagementService<C, A, S>
     for ApiServer<C, A, S>
 {
 }
 
 #[async_trait::async_trait]
-pub trait TableManagementService<C: Catalog, A: Authorizer, S: SecretStore>
+pub trait TableManagementService<C: CatalogStore, A: Authorizer, S: SecretStore>
 where
     Self: Send + Sync + 'static,
 {

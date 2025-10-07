@@ -2,14 +2,14 @@ use http::StatusCode;
 use lakekeeper::{
     api::{ApiContext, RequestMetadata},
     axum::{extract::State as AxumState, Extension, Json},
-    catalog::{
+    iceberg::{NamespaceIdent, TableIdent},
+    server::{
         namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
         views::authorized_view_ident_to_id,
     },
-    iceberg::{NamespaceIdent, TableIdent},
     service::{
-        authz::Authorizer, Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId,
-        Transaction, ViewId,
+        authz::Authorizer, CatalogStore, ListFlags, NamespaceId, Result, SecretStore, State,
+        TableId, Transaction, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -39,7 +39,7 @@ use crate::{entities::OpenFgaEntity, relations::ActorExt};
             (status = 200, body = CheckResponse),
     )
 )]
-pub(super) async fn check<C: Catalog, S: SecretStore>(
+pub(super) async fn check<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<CheckRequest>,
@@ -48,7 +48,7 @@ pub(super) async fn check<C: Catalog, S: SecretStore>(
     Ok((StatusCode::OK, Json(CheckResponse { allowed })))
 }
 
-async fn check_internal<C: Catalog, S: SecretStore>(
+async fn check_internal<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
     metadata: &RequestMetadata,
     request: CheckRequest,
@@ -198,7 +198,7 @@ async fn check_server(
     Ok((action.to_openfga().to_string(), openfga_server))
 }
 
-async fn check_namespace<C: Catalog, S: SecretStore>(
+async fn check_namespace<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
     metadata: &RequestMetadata,
     namespace: &NamespaceIdentOrUuid,
@@ -238,7 +238,7 @@ async fn check_namespace<C: Catalog, S: SecretStore>(
     .to_openfga())
 }
 
-async fn check_table<C: Catalog, S: SecretStore>(
+async fn check_table<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
     metadata: &RequestMetadata,
     table: &TabularIdentOrUuid,
@@ -288,7 +288,7 @@ async fn check_table<C: Catalog, S: SecretStore>(
     })
 }
 
-async fn check_view<C: Catalog, S: SecretStore>(
+async fn check_view<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
     metadata: &RequestMetadata,
     view: &TabularIdentOrUuid,
@@ -582,8 +582,8 @@ mod tests {
                 },
                 CreateNamespaceRequest,
             },
-            catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
-            implementations::postgres::{PostgresCatalog, SecretsState},
+            implementations::postgres::{PostgresBackend, SecretsState},
+            server::{CatalogServer, NAMESPACE_ID_PROPERTY},
             service::{authn::UserId, CreateNamespaceResponse},
             sqlx,
             tests::{SetupTestCatalog, TestWarehouseResponse},
@@ -599,7 +599,7 @@ mod tests {
             operator_id: UserId,
             pool: sqlx::PgPool,
         ) -> (
-            ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+            ApiContext<State<OpenFGAAuthorizer, PostgresBackend, SecretsState>>,
             TestWarehouseResponse,
             CreateNamespaceResponse,
         ) {

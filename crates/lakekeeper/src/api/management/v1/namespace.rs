@@ -3,18 +3,18 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogNamespaceAction},
-        Catalog, NamespaceId, SecretStore, State, Transaction,
+        CatalogStore, NamespaceId, SecretStore, State, Transaction,
     },
     WarehouseId,
 };
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> NamespaceManagementService<C, A, S>
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> NamespaceManagementService<C, A, S>
     for ApiServer<C, A, S>
 {
 }
 
 #[async_trait::async_trait]
-pub trait NamespaceManagementService<C: Catalog, A: Authorizer, S: SecretStore>
+pub trait NamespaceManagementService<C: CatalogStore, A: Authorizer, S: SecretStore>
 where
     Self: Send + Sync + 'static,
 {

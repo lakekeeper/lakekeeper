@@ -28,8 +28,8 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
         CatalogConfig,
     },
-    catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
+    server::{compression_codec::CompressionCodec, io::list_location},
     service::{
         storage::error::{IcebergFileIoError, UnexpectedStorageType},
         TabularId,
@@ -496,7 +496,7 @@ impl StorageProfile {
         tracing::debug!("Validating access to: {}", test_file_write);
 
         // Test write
-        crate::catalog::io::write_file(io, &test_file_write, "test", compression_codec)
+        crate::server::io::write_file(io, &test_file_write, "test", compression_codec)
             .await
             .map_err(|e| {
                 tracing::info!("Error while writing file: {e:?}");
@@ -504,7 +504,7 @@ impl StorageProfile {
             })?;
 
         // Test read
-        let _ = crate::catalog::io::read_file(io, &test_file_write, compression_codec)
+        let _ = crate::server::io::read_file(io, &test_file_write, compression_codec)
             .await
             .map_err(|e| {
                 tracing::info!("Error while reading file: {e:?}");
@@ -512,7 +512,7 @@ impl StorageProfile {
             })?;
 
         // Test delete
-        crate::catalog::io::delete_file(io, &test_file_write)
+        crate::server::io::delete_file(io, &test_file_write)
             .await
             .map_err(|e| {
                 tracing::info!("Error while deleting file: {e:?}");
@@ -929,7 +929,7 @@ mod tests {
         *,
     };
     use crate::{
-        catalog::io::{delete_file, read_metadata_file, write_file},
+        server::io::{delete_file, read_metadata_file, write_file},
         service::storage::s3::S3AccessKeyCredential,
     };
 

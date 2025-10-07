@@ -9,7 +9,7 @@ use crate::{
             task_queues_runner::QueueWorkerConfig, TaskConfig, TaskQueueName, TaskQueueWorkerFn,
             TaskQueuesRunner,
         },
-        Catalog, SecretStore,
+        CatalogStore, SecretStore,
     },
     CancellationToken, CONFIG,
 };
@@ -173,7 +173,7 @@ impl TaskQueueRegistry {
         self
     }
 
-    pub async fn register_built_in_queues<C: Catalog, S: SecretStore, A: Authorizer>(
+    pub async fn register_built_in_queues<C: CatalogStore, S: SecretStore, A: Authorizer>(
         &self,
         catalog_state: C::State,
         secret_store: S,

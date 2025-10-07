@@ -14,11 +14,11 @@ use crate::{
         iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
         management::v1::ProtectionResponse,
     },
-    catalog::namespace::MAX_NAMESPACE_DEPTH,
     implementations::postgres::{
         pagination::{PaginateToken, V1PaginateToken},
         tabular::TabularType,
     },
+    server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
         storage::join_location, task_queue::TaskId, CreateNamespaceRequest,
         CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
@@ -659,7 +659,7 @@ pub(crate) mod tests {
     use tracing_test::traced_test;
 
     use super::{
-        super::{warehouse::test::initialize_warehouse, PostgresCatalog},
+        super::{warehouse::test::initialize_warehouse, PostgresBackend},
         *,
     };
     use crate::{
@@ -671,7 +671,7 @@ pub(crate) mod tests {
             },
             CatalogState, PostgresTransaction,
         },
-        service::{Catalog as _, Transaction as _},
+        service::{CatalogStore as _, Transaction as _},
     };
 
     pub(crate) async fn initialize_namespace(
@@ -686,7 +686,7 @@ pub(crate) mod tests {
 
         let namespace_id = NamespaceId::new_random();
 
-        let response = PostgresCatalog::create_namespace(
+        let response = PostgresBackend::create_namespace(
             warehouse_id,
             namespace_id,
             CreateNamespaceRequest {
@@ -722,7 +722,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let namespace_id =
-            PostgresCatalog::namespace_to_id(warehouse_id, &namespace, transaction.transaction())
+            PostgresBackend::namespace_to_id(warehouse_id, &namespace, transaction.transaction())
                 .await
                 .unwrap()
                 .expect("Namespace not found");
@@ -731,7 +731,7 @@ pub(crate) mod tests {
         assert_eq!(response.1.properties, properties);
 
         let response =
-            PostgresCatalog::get_namespace(warehouse_id, namespace_id, transaction.transaction())
+            PostgresBackend::get_namespace(warehouse_id, namespace_id, transaction.transaction())
                 .await
                 .unwrap();
 
@@ -745,14 +745,14 @@ pub(crate) mod tests {
             .unwrap();
 
         let response =
-            PostgresCatalog::namespace_to_id(warehouse_id, &namespace, transaction.transaction())
+            PostgresBackend::namespace_to_id(warehouse_id, &namespace, transaction.transaction())
                 .await
                 .unwrap()
                 .is_some();
 
         assert!(response);
 
-        let response = PostgresCatalog::list_namespaces(
+        let response = PostgresBackend::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
                 page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
@@ -785,7 +785,7 @@ pub(crate) mod tests {
             ("key2".to_string(), "updated_value".to_string()),
             ("new_key".to_string(), "new_value".to_string()),
         ]);
-        PostgresCatalog::update_namespace_properties(
+        PostgresBackend::update_namespace_properties(
             warehouse_id,
             namespace_id,
             new_props.clone(),
@@ -799,7 +799,7 @@ pub(crate) mod tests {
         let mut t = PostgresTransaction::begin_read(state.clone())
             .await
             .unwrap();
-        let response = PostgresCatalog::get_namespace(warehouse_id, namespace_id, t.transaction())
+        let response = PostgresBackend::get_namespace(warehouse_id, namespace_id, t.transaction())
             .await
             .unwrap();
         drop(t);
@@ -809,7 +809,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        PostgresCatalog::drop_namespace(
+        PostgresBackend::drop_namespace(
             warehouse_id,
             namespace_id,
             NamespaceDropFlags::default(),
@@ -852,7 +852,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let namespaces = PostgresCatalog::list_namespaces(
+        let namespaces = PostgresBackend::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
                 page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
@@ -882,7 +882,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let namespaces = PostgresCatalog::list_namespaces(
+        let namespaces = PostgresBackend::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
                 page_token: next_page_token.map_or(
@@ -922,7 +922,7 @@ pub(crate) mod tests {
         );
 
         // last page is empty
-        let namespaces = PostgresCatalog::list_namespaces(
+        let namespaces = PostgresBackend::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
                 page_token: next_page_token.map_or(
@@ -1164,7 +1164,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let response = PostgresCatalog::create_namespace(
+        let response = PostgresBackend::create_namespace(
             warehouse_id,
             NamespaceId::new_random(),
             CreateNamespaceRequest {
@@ -1184,7 +1184,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let response = PostgresCatalog::create_namespace(
+        let response = PostgresBackend::create_namespace(
             warehouse_id,
             NamespaceId::new_random(),
             CreateNamespaceRequest {
@@ -1213,7 +1213,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        PostgresCatalog::set_namespace_protected(response.0, true, transaction.transaction())
+        PostgresBackend::set_namespace_protected(response.0, true, transaction.transaction())
             .await
             .unwrap();
 
@@ -1242,7 +1242,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        PostgresCatalog::set_namespace_protected(response.0, true, transaction.transaction())
+        PostgresBackend::set_namespace_protected(response.0, true, transaction.transaction())
             .await
             .unwrap();
 

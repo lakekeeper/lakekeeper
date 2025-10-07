@@ -8,7 +8,7 @@ use crate::{
         RequestMetadata,
     },
     implementations::{
-        postgres::{migrations::migrate, PostgresCatalog, SecretsState},
+        postgres::{migrations::migrate, PostgresBackend, SecretsState},
         CatalogState,
     },
     service::{
@@ -58,13 +58,13 @@ pub struct TestWarehouseResponse {
 }
 
 pub async fn spawn_build_in_queues<T: Authorizer>(
-    ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    ctx: &ApiContext<State<T, PostgresBackend, SecretsState>>,
     poll_interval: Option<std::time::Duration>,
     cancellation_token: crate::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     let task_queues = TaskQueueRegistry::new();
     task_queues
-        .register_built_in_queues::<PostgresCatalog, _, _>(
+        .register_built_in_queues::<PostgresBackend, _, _>(
             ctx.v1_state.catalog.clone(),
             ctx.v1_state.secrets.clone(),
             ctx.v1_state.authz.clone(),
@@ -94,7 +94,7 @@ impl<T: Authorizer> SetupTestCatalog<T> {
     pub async fn setup(
         self,
     ) -> (
-        ApiContext<State<T, PostgresCatalog, SecretsState>>,
+        ApiContext<State<T, PostgresBackend, SecretsState>>,
         TestWarehouseResponse,
     ) {
         setup(
@@ -120,7 +120,7 @@ pub(crate) async fn setup<T: Authorizer>(
     user_id: Option<UserId>,
     number_of_warehouses: usize,
 ) -> (
-    ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    ApiContext<State<T, PostgresBackend, SecretsState>>,
     TestWarehouseResponse,
 ) {
     assert!(
@@ -193,13 +193,13 @@ pub(crate) async fn setup<T: Authorizer>(
 pub(crate) async fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
-) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
+) -> ApiContext<State<T, PostgresBackend, SecretsState>> {
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
     let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
 
     let task_queues = TaskQueueRegistry::new();
     task_queues
-        .register_built_in_queues::<PostgresCatalog, _, _>(
+        .register_built_in_queues::<PostgresBackend, _, _>(
             catalog_state.clone(),
             secret_store.clone(),
             auth.clone(),

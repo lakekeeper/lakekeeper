@@ -12,8 +12,8 @@ use lakekeeper::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::Health,
-        Actor, Catalog, ErrorModel, NamespaceId, RoleId, SecretStore, ServerId, State, TableId,
-        UserId, ViewId,
+        Actor, CatalogStore, ErrorModel, NamespaceId, RoleId, SecretStore, ServerId, State,
+        TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
     utoipa, ProjectId, WarehouseId,
@@ -79,7 +79,7 @@ impl Authorizer for OpenFGAAuthorizer {
         crate::api::ApiDoc::openapi()
     }
 
-    fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
+    fn new_router<C: CatalogStore, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
         crate::api::new_v1_router()
     }
 

@@ -8,7 +8,7 @@ use lakekeeper_io::{
     RetryableErrorKind,
 };
 
-use crate::catalog::{compression_codec::UnsupportedCompressionCodec, io::IOErrorExt};
+use crate::server::{compression_codec::UnsupportedCompressionCodec, io::IOErrorExt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {

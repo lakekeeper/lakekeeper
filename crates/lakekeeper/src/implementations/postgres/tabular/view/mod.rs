@@ -590,7 +590,7 @@ pub(crate) mod tests {
             namespace::tests::initialize_namespace,
             tabular::{mark_tabular_as_deleted, view::load_view},
             warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog,
+            CatalogState, PostgresBackend,
         },
         service::{
             task_queue::{
@@ -872,7 +872,7 @@ pub(crate) mod tests {
         let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
+        let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
             TaskMetadata {
                 entity_id: EntityId::View(created_meta.uuid().into()),
                 warehouse_id,

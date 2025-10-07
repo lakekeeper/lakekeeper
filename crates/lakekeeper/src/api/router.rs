@@ -29,7 +29,7 @@ use crate::{
         authz::Authorizer,
         health::ServiceHealthProvider,
         task_queue::QueueApiConfig,
-        Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     CancellationToken, CONFIG,
 };
@@ -41,7 +41,7 @@ static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(||
     serde_norway::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
 });
 
-pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
+pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,
     pub state: ApiContext<State<A, C, S>>,
     pub service_health_provider: ServiceHealthProvider,
@@ -50,7 +50,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
     for RouterArgs<C, A, S, N>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,7 +77,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
 /// # Errors
 /// - Fails if the token verifier chain cannot be created
 pub async fn new_full_router<
-    C: Catalog,
+    C: CatalogStore,
     A: Authorizer + Clone,
     S: SecretStore,
     N: Authenticator + 'static,
@@ -92,7 +92,7 @@ pub async fn new_full_router<
         // registered_task_queues,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
-    let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
+    let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let authorizer = state.v1_state.authz.clone();
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
@@ -255,7 +255,7 @@ fn get_cors_layer(
     maybe_cors_layer
 }
 
-fn maybe_merge_swagger_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
     queue_api_configs: Vec<&QueueApiConfig>,
 ) -> Router<ApiContext<State<A, C, S>>> {

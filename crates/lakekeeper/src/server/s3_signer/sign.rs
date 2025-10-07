@@ -13,8 +13,8 @@ use crate::{
         iceberg::types::Prefix, ApiContext, ErrorModel, IcebergErrorResponse, Result,
         S3SignRequest, S3SignResponse,
     },
-    catalog::require_warehouse_id,
     request_metadata::RequestMetadata,
+    server::require_warehouse_id,
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
         secrets::SecretStore,
@@ -22,7 +22,7 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
+        CatalogStore, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
     },
     WarehouseId,
 };
@@ -46,7 +46,7 @@ enum Operation {
 }
 
 #[async_trait::async_trait]
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::s3_signer::Service<State<A, C, S>> for CatalogServer<C, A, S>
 {
     #[allow(clippy::too_many_lines)]
@@ -225,7 +225,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-async fn s3_url_style_detection<C: Catalog>(
+async fn s3_url_style_detection<C: CatalogStore>(
     state: C::State,
     warehouse_id: WarehouseId,
 ) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
@@ -450,7 +450,7 @@ async fn authorize_operation<A: Authorizer>(
 
 /// Helper function for fetching table metadata by ID
 async fn get_unauthorized_table_metadata_by_id<
-    C: Catalog,
+    C: CatalogStore,
     A: Authorizer + Clone,
     S: SecretStore,
 >(
@@ -476,7 +476,7 @@ async fn get_unauthorized_table_metadata_by_id<
 }
 
 /// Helper function for fetching table metadata by location
-async fn get_table_metadata_by_location<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn get_table_metadata_by_location<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     warehouse_id: WarehouseId,
     parsed_url: &s3_utils::ParsedSignRequest,
     include_staged: bool,
@@ -938,7 +938,7 @@ mod test {
     use itertools::Itertools as _;
 
     use super::*;
-    use crate::{catalog::s3_signer::sign::s3_utils::parse_s3_url, service::storage::S3Flavor};
+    use crate::{server::s3_signer::sign::s3_utils::parse_s3_url, service::storage::S3Flavor};
 
     #[derive(Debug)]
     struct TC {

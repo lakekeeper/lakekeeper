@@ -78,8 +78,8 @@ pub mod v1 {
             authn::UserId,
             authz::Authorizer,
             task_queue::{QueueApiConfig, TaskId},
-            Actor, Catalog, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State,
-            TableId, TabularId, ViewId,
+            Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
+            State, TableId, TabularId, ViewId,
         },
         ProjectId, WarehouseId,
     };
@@ -179,7 +179,7 @@ pub mod v1 {
     }
 
     #[derive(Clone, Debug)]
-    pub struct ApiServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
+    pub struct ApiServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
         auth_handler: PhantomData<A>,
         config_server: PhantomData<C>,
         secret_store: PhantomData<S>,
@@ -198,7 +198,7 @@ pub mod v1 {
             (status = 500, description = "Unauthorized", body = IcebergErrorResponse)
         )
     )]
-    async fn get_server_info<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_server_info<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<ServerInfo>)> {
@@ -222,7 +222,7 @@ pub mod v1 {
             (status = 500, description = "InternalError", body = IcebergErrorResponse)
         )
     )]
-    async fn bootstrap<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn bootstrap<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<BootstrapRequest>,
@@ -246,7 +246,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn create_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn create_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateUserRequest>,
@@ -272,7 +272,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn search_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn search_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchUserRequest>,
@@ -293,7 +293,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -315,7 +315,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn whoami<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn whoami<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<User>)> {
@@ -351,7 +351,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn update_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn update_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -373,7 +373,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn list_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn list_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<ListUsersQuery>,
@@ -395,7 +395,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn delete_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn delete_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -418,7 +418,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn create_role<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn create_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateRoleRequest>,
@@ -442,7 +442,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn search_role<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn search_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchRoleRequest>,
@@ -463,7 +463,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn list_roles<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn list_roles<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<ListRolesQuery>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -484,7 +484,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn delete_role<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn delete_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -507,7 +507,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_role<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -529,7 +529,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn update_role<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn update_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -555,7 +555,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn create_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn create_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateWarehouseRequest>,
@@ -575,7 +575,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn list_projects<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn list_projects<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<ListProjectsResponse> {
@@ -594,7 +594,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn create_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn create_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateProjectRequest>,
@@ -615,7 +615,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
@@ -639,7 +639,7 @@ pub mod v1 {
         since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
     )]
-    async fn get_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_default_project_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
@@ -657,7 +657,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -676,7 +676,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn delete_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn delete_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
@@ -702,7 +702,7 @@ pub mod v1 {
         since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
     )]
-    async fn delete_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn delete_default_project_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
@@ -724,7 +724,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn delete_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn delete_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -745,7 +745,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn rename_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn rename_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameProjectRequest>,
@@ -770,7 +770,7 @@ pub mod v1 {
         since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
     )]
-    async fn rename_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn rename_default_project_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameProjectRequest>,
@@ -791,7 +791,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn rename_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn rename_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -815,7 +815,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn list_warehouses<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn list_warehouses<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Query(request): Query<ListWarehousesRequest>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -836,7 +836,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -868,7 +868,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn delete_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn delete_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(query): Query<DeleteWarehouseQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -893,7 +893,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn rename_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn rename_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -917,7 +917,11 @@ pub mod v1 {
         (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn update_warehouse_delete_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn update_warehouse_delete_profile<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -945,7 +949,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn deactivate_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn deactivate_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -966,7 +970,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn activate_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn activate_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -988,7 +992,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn update_storage_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn update_storage_profile<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1013,7 +1017,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn update_storage_credential<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn update_storage_credential<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1084,7 +1088,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_warehouse_statistics<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_warehouse_statistics<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(query): Query<GetWarehouseStatisticsQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1148,7 +1152,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_endpoint_statistics<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_endpoint_statistics<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(query): Json<GetEndpointStatisticsRequest>,
@@ -1175,7 +1179,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn search_tabular<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn search_tabular<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1199,7 +1203,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn list_deleted_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn list_deleted_tabulars<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(query): Query<ListDeletedTabularsQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1233,7 +1237,7 @@ pub mod v1 {
         since = "0.7.0",
         note = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."
     )]
-    async fn undrop_tabulars_deprecated<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn undrop_tabulars_deprecated<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1262,7 +1266,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn undrop_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn undrop_tabulars<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1305,7 +1309,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_table_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_table_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1332,7 +1336,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn set_table_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn set_table_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1361,7 +1365,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_view_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_view_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1388,7 +1392,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn set_view_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn set_view_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1417,7 +1421,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_namespace_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_namespace_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1444,7 +1448,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn set_namespace_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn set_namespace_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1473,7 +1477,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn set_warehouse_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn set_warehouse_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1501,7 +1505,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn set_task_queue_config<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn set_task_queue_config<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1532,7 +1536,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_task_queue_config<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_task_queue_config<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1559,7 +1563,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn list_tasks<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn list_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1579,7 +1583,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn get_task_details<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn get_task_details<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, task_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1605,7 +1609,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    async fn control_tasks<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    async fn control_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1882,7 +1886,7 @@ pub mod v1 {
         doc
     }
 
-    impl<C: Catalog, A: Authorizer, S: SecretStore> ApiServer<C, A, S> {
+    impl<C: CatalogStore, A: Authorizer, S: SecretStore> ApiServer<C, A, S> {
         #[allow(clippy::too_many_lines)]
         pub fn new_v1_router(authorizer: &A) -> Router<ApiContext<State<A, C, S>>> {
             Router::new()

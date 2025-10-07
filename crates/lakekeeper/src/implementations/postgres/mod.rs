@@ -54,7 +54,7 @@ pub async fn get_writer_pool(pool_opts: PgPoolOptions) -> anyhow::Result<sqlx::P
 }
 
 #[derive(Debug, Clone)]
-pub struct PostgresCatalog {}
+pub struct PostgresBackend {}
 
 #[derive(Debug)]
 

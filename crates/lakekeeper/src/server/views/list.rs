@@ -7,17 +7,17 @@ use crate::{
         iceberg::v1::{ListTablesQuery, NamespaceParameters},
         ApiContext, Result,
     },
-    catalog::{
+    request_metadata::RequestMetadata,
+    server::{
         namespace::authorized_namespace_ident_to_id, require_warehouse_id, tabular::list_entities,
     },
-    request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction},
-        Catalog, SecretStore, State, Transaction,
+        CatalogStore, SecretStore, State, Transaction,
     },
 };
 
-pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     query: ListTablesQuery,
     state: ApiContext<State<A, C, S>>,
@@ -31,7 +31,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let mut t: <C as Catalog>::Transaction =
+    let mut t: <C as CatalogStore>::Transaction =
         C::Transaction::begin_read(state.v1_state.catalog).await?;
 
     let namespace_id = authorized_namespace_ident_to_id::<C, _>(
@@ -46,7 +46,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
 
     // ------------------- BUSINESS LOGIC -------------------
     let (identifiers, view_uuids, next_page_token) =
-        crate::catalog::fetch_until_full_page::<_, _, _, C>(
+        crate::server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token,
             list_entities!(
@@ -92,9 +92,9 @@ mod test {
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
-        catalog::{test::impl_pagination_tests, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
+        server::{test::impl_pagination_tests, CatalogServer},
         service::{authz::tests::HidingAuthorizer, State, UserId},
         tests::create_view_request,
     };
@@ -104,15 +104,15 @@ mod test {
         n_tables: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let authz = HidingAuthorizer::new();
         // Prevent hidden views from becoming visible through `can_list_everything`.
         authz.block_can_list_everything();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -121,7 +121,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -169,13 +169,13 @@ mod test {
 
     #[sqlx::test]
     async fn test_view_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
         // Prevent hidden views from becoming visible through `can_list_everything`.
         authz.block_can_list_everything();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -184,7 +184,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -378,11 +378,11 @@ mod test {
 
     #[sqlx::test]
     async fn test_list_views(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -391,7 +391,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),

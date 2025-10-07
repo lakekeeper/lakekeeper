@@ -15,7 +15,7 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, ServerId, State, TableId,
+        Actor, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, ServerId, State, TableId,
         ViewId, WarehouseId,
     },
 };
@@ -62,7 +62,7 @@ impl Authorizer for AllowAllAuthorizer {
         ApiDoc::openapi()
     }
 
-    fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
+    fn new_router<C: CatalogStore, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
         Router::new()
     }
 

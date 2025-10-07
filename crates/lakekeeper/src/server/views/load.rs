@@ -5,21 +5,21 @@ use crate::{
         iceberg::v1::{DataAccessMode, ViewParameters},
         set_not_found_status_code, ApiContext,
     },
-    catalog::{
+    request_metadata::RequestMetadata,
+    server::{
         require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident},
         views::parse_view_location,
     },
-    request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         storage::{StorageCredential, StoragePermissions},
-        Catalog, GetWarehouseResponse, Result, SecretStore, State, Transaction,
+        CatalogStore, GetWarehouseResponse, Result, SecretStore, State, Transaction,
         ViewMetadataWithLocation,
     },
 };
 
-pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     state: ApiContext<State<A, C, S>>,
     data_access: impl Into<DataAccessMode>,
@@ -132,21 +132,21 @@ pub(crate) mod test {
             iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
             ApiContext,
         },
-        catalog::{
+        implementations::postgres::{secrets::SecretsState, PostgresBackend},
+        server::{
             views::{create::test::create_view, test::setup},
             CatalogServer,
         },
-        implementations::postgres::{secrets::SecretsState, PostgresCatalog},
         service::{authz::AllowAllAuthorizer, State},
         tests::create_view_request,
     };
 
     pub(crate) async fn load_view(
-        api_context: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        api_context: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         params: ViewParameters,
     ) -> crate::api::Result<LoadViewResult> {
-        <CatalogServer<PostgresCatalog, AllowAllAuthorizer, SecretsState> as views::ViewService<
-            State<AllowAllAuthorizer, PostgresCatalog, SecretsState>,
+        <CatalogServer<PostgresBackend, AllowAllAuthorizer, SecretsState> as views::ViewService<
+            State<AllowAllAuthorizer, PostgresBackend, SecretsState>,
         >>::load_view(
             params,
             api_context,

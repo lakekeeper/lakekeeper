@@ -13,7 +13,8 @@ use crate::{
         ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
-    catalog::{
+    request_metadata::RequestMetadata,
+    server::{
         compression_codec::CompressionCodec,
         io::{remove_all, write_file},
         require_warehouse_id,
@@ -24,13 +25,13 @@ use crate::{
         },
         views::{parse_view_location, validate_view_updates},
     },
-    request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        Catalog, NamespaceId, State, Transaction, ViewCommit, ViewId, ViewMetadataWithLocation,
+        CatalogStore, NamespaceId, State, Transaction, ViewCommit, ViewId,
+        ViewMetadataWithLocation,
     },
     SecretIdent, WarehouseId,
 };
@@ -38,7 +39,7 @@ use crate::{
 /// Commit updates to a view
 // TODO: break up into smaller fns
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     request: CommitViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -170,7 +171,7 @@ struct CommitViewContext<'a> {
 }
 
 // Core commit logic that may be retried
-async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
@@ -400,7 +401,7 @@ mod test {
 
     use crate::{
         api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
-        catalog::views::{create::test::create_view, test::setup},
+        server::views::{create::test::create_view, test::setup},
         tests::create_view_request,
         WarehouseId,
     };

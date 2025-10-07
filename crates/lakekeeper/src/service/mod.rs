@@ -1,6 +1,6 @@
 pub mod authn;
 pub mod authz;
-mod catalog;
+mod catalog_store;
 pub mod contract_verification;
 pub mod endpoint_hooks;
 pub mod endpoint_statistics;
@@ -10,8 +10,8 @@ pub mod secrets;
 pub mod storage;
 pub mod task_queue;
 pub use authn::{Actor, UserId};
-pub use catalog::{
-    Catalog, CommitTableResponse, CreateNamespaceRequest, CreateNamespaceResponse,
+pub use catalog_store::{
+    CatalogStore, CommitTableResponse, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse, DeletionDetails,
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
@@ -40,7 +40,7 @@ pub use identifier::{generic::*, project::ProjectId};
 
 // ---------------- State ----------------
 #[derive(Clone, Debug)]
-pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
+pub struct State<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> {
     pub authz: A,
     pub catalog: C::State,
     pub secrets: S,
@@ -49,9 +49,9 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
     pub registered_task_queues: RegisteredTaskQueues,
 }
 
-impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}
+impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> ServiceState for State<A, C, S> {}
 
-impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> State<A, C, S> {
+impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> State<A, C, S> {
     pub fn server_id(&self) -> ServerId {
         self.authz.server_id()
     }

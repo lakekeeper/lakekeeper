@@ -23,7 +23,7 @@ use crate::{
         iceberg::v1::{PageToken, Prefix},
         ErrorModel, Result,
     },
-    service::{authz::Authorizer, secrets::SecretStore, storage::StorageCredential, Catalog},
+    service::{authz::Authorizer, secrets::SecretStore, storage::StorageCredential, CatalogStore},
     WarehouseId, CONFIG,
 };
 
@@ -45,7 +45,7 @@ impl CommonMetadata for ViewMetadata {
 
 #[derive(Clone, Debug)]
 
-pub struct CatalogServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
+pub struct CatalogServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
     auth_handler: PhantomData<A>,
     catalog_backend: PhantomData<C>,
     secret_store: PhantomData<S>,
@@ -174,7 +174,7 @@ impl<Entity, EntityId> UnfilteredPage<Entity, EntityId> {
     }
 }
 
-pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun, C: Catalog>(
+pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun, C: CatalogStore>(
     page_size: Option<i64>,
     page_token: PageToken,
     mut fetch_fn: FetchFun,
@@ -255,12 +255,12 @@ pub(crate) mod test {
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
-        catalog::CatalogServer,
         implementations::{
-            postgres::{tabular::table::tests::get_namespace_id, PostgresCatalog, SecretsState},
+            postgres::{tabular::table::tests::get_namespace_id, PostgresBackend, SecretsState},
             CatalogState,
         },
         request_metadata::RequestMetadata,
+        server::CatalogServer,
         service::{
             authz::{AllowAllAuthorizer, Authorizer},
             storage::{
@@ -308,7 +308,7 @@ pub(crate) mod test {
     }
 
     pub(crate) async fn create_ns<T: Authorizer>(
-        api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
+        api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
         prefix: String,
         ns_name: String,
     ) -> CreateNamespaceResponse {
@@ -333,7 +333,7 @@ pub(crate) mod test {
         delete_profile: TabularDeleteProfile,
         user_id: Option<UserId>,
     ) -> (
-        ApiContext<State<T, PostgresCatalog, SecretsState>>,
+        ApiContext<State<T, PostgresBackend, SecretsState>>,
         TestWarehouseResponse,
     ) {
         crate::tests::setup(
@@ -368,11 +368,11 @@ pub(crate) mod test {
         num_warehouses: usize,
         delete_profile: TabularDeleteProfile,
     ) -> (
-        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         Vec<(WarehouseId, NamespaceId, NamespaceParameters)>,
         String,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
         let base_loc = prof.base_location().unwrap().to_string();
         let (ctx, res) = crate::tests::setup(
             pool.clone(),
@@ -395,7 +395,7 @@ pub(crate) mod test {
         let mut wh_ns_data = Vec::with_capacity(num_warehouses);
         for wh_id in wh_ids {
             let ns =
-                crate::catalog::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
+                crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
                     .await;
             let ns_params = NamespaceParameters {
                 prefix: Some(Prefix(wh_id.to_string())),

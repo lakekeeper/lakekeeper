@@ -24,7 +24,7 @@ use crate::{
         management::v1::warehouse::UndropTabularsRequest,
         RequestMetadata,
     },
-    catalog::tables::CommitContext,
+    server::tables::CommitContext,
     service::{TableId, UndropTabularResponse, ViewId},
     WarehouseId,
 };

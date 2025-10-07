@@ -8,7 +8,8 @@ use crate::{
         iceberg::v1::{DataAccessMode, NamespaceParameters},
         ApiContext,
     },
-    catalog::{
+    request_metadata::RequestMetadata,
+    server::{
         compression_codec::CompressionCodec,
         io::write_file,
         maybe_get_secret, require_warehouse_id,
@@ -16,18 +17,17 @@ use crate::{
         tabular::determine_tabular_location,
         views::validate_view_properties,
     },
-    request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
         storage::{StorageLocations as _, StoragePermissions},
-        Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        CatalogStore, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
 /// Create a view in the given namespace
-pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -217,7 +217,7 @@ pub(crate) mod test {
         api_context: ApiContext<
             State<
                 AllowAllAuthorizer,
-                crate::implementations::postgres::PostgresCatalog,
+                crate::implementations::postgres::PostgresBackend,
                 SecretsState,
             >,
         >,
@@ -245,7 +245,7 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_create_view(pool: PgPool) {
-        let (api_context, namespace, whi) = crate::catalog::views::test::setup(pool, None).await;
+        let (api_context, namespace, whi) = crate::server::views::test::setup(pool, None).await;
 
         let mut rq = create_view_request(None, None);
 

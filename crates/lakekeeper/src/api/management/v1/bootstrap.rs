@@ -6,7 +6,7 @@ use super::user::{parse_create_user_request, CreateUserRequest, UserLastUpdatedW
 use crate::{
     api::{management::v1::ApiServer, ApiContext},
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, Actor, Catalog, Result, SecretStore, State, Transaction},
+    service::{authz::Authorizer, Actor, CatalogStore, Result, SecretStore, State, Transaction},
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
@@ -65,10 +65,10 @@ pub struct ServerInfo {
     pub queues: Vec<String>,
 }
 
-impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn bootstrap(
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
