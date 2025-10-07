@@ -16,9 +16,8 @@ env:
   # Publish the build output as CI artifact to inspect
   preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'lakekeeper/lakekeeper' }}
 
-# Define permissions for the entire workflow
 permissions:
-  contents: write      # Needed for creating releases and uploading assets
+  contents: write # Needed for creating releases and uploading assets
   pull-requests: write # Needed for release-please to create/update PRs
 
 jobs:
@@ -441,7 +440,7 @@ jobs:
           docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
-      
+
       - name: Push Images to Dockerhub
         run: |
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
