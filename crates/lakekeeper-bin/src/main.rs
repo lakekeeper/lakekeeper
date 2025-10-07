@@ -140,11 +140,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
-            if CONFIG_BIN.debug.migrate_before_serve {
-                wait_for_db::wait_for_db(false, 15, 2, true).await?;
-                migrate().await?;
-            }
-            serve(force_start).await?;
+            serve_and_maybe_migrate(force_start).await?;
         }
         Some(Commands::Healthcheck {
             check_all,
