@@ -69,4 +69,20 @@ mod tests {
             Ok(())
         });
     }
+
+    #[test]
+    fn test_auto_serve_env_vars() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.debug.auto_serve);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__AUTO_SERVE", "true");
+            let config = get_config();
+            assert!(config.debug.auto_serve);
+            Ok(())
+        });
+    }
 }
