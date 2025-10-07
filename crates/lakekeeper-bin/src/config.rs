@@ -15,6 +15,8 @@ pub(crate) struct DynAppConfig {
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
 pub(crate) struct DebugConfig {
     pub(crate) migrate_before_serve: bool,
+    /// Run the serve command unless another command is specified.
+    pub(crate) auto_serve: bool,
 }
 
 fn get_config() -> DynAppConfig {

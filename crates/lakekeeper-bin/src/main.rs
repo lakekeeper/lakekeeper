@@ -171,12 +171,26 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", doc.to_yaml()?);
         }
         None => {
-            // Error out if no subcommand is provided.
-            eprintln!("No subcommand provided. Use --help for more information.");
+            if CONFIG_BIN.debug.auto_serve {
+                print_info();
+                serve_and_maybe_migrate(true).await?;
+            } else {
+                // Error out if no subcommand is provided.
+                eprintln!("No subcommand provided. Use --help for more information.");
+                anyhow::bail!("No subcommand provided");
+            }
         }
     }
 
     Ok(())
+}
+
+async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
+    if CONFIG_BIN.debug.migrate_before_serve {
+        wait_for_db::wait_for_db(false, 15, 2, true).await?;
+        migrate().await?;
+    }
+    serve(force_start).await
 }
 
 async fn migrate() -> anyhow::Result<()> {
