@@ -3,10 +3,10 @@
 pub mod v1 {
     #![allow(clippy::needless_for_each)]
 
-    pub mod server;
     pub mod namespace;
     pub mod project;
     pub mod role;
+    pub mod server;
     pub mod table;
     pub mod tabular;
     pub mod tasks;
@@ -22,7 +22,6 @@ pub mod v1 {
         routing::{get, post},
         Extension, Json, Router,
     };
-    use server::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     use namespace::NamespaceManagementService as _;
@@ -35,6 +34,7 @@ pub mod v1 {
         SearchRoleResponse, Service as _, UpdateRoleRequest,
     };
     use serde::{Deserialize, Serialize};
+    use server::{BootstrapRequest, ServerInfo, Service as _};
     use table::TableManagementService as _;
     use tabular::TabularManagementService as _;
     use typed_builder::TypedBuilder;
