@@ -27,7 +27,7 @@ use crate::{
     server::{CatalogServer, NAMESPACE_ID_PROPERTY},
     service::{
         authz::AllowAllAuthorizer,
-        task_queue::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,
+        tasks::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,
         TabularId,
     },
     tests::random_request_metadata,

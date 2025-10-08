@@ -22,7 +22,7 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        CatalogStore, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
+        CatalogStore, GetTableMetadataResponse, TabularListFlags, State, TableId, Transaction,
     },
     WarehouseId,
 };
@@ -464,7 +464,7 @@ async fn get_unauthorized_table_metadata_by_id<
     C::get_table_metadata_by_id(
         warehouse_id,
         table_id,
-        ListFlags {
+        TabularListFlags {
             include_staged,
             // we were able to resolve the table to id so we know the table is not deleted
             include_deleted: false,
@@ -497,7 +497,7 @@ async fn get_table_metadata_by_location<C: CatalogStore, A: Authorizer + Clone, 
     let metadata = C::get_table_metadata_by_s3_location(
         warehouse_id,
         first_location.location(),
-        ListFlags {
+        TabularListFlags {
             include_staged,
             // spark iceberg drops the table and then checks for existence of metadata files
             // which in turn needs to sign HEAD requests for files reachable from the

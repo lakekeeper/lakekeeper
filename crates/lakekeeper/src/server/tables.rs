@@ -1,9 +1,3 @@
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr as _,
-    sync::Arc,
-};
-
 use futures::FutureExt;
 use fxhash::FxHashSet;
 use http::StatusCode;
@@ -21,11 +15,14 @@ use iceberg_ext::{
 use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr as _,
+    sync::Arc,
+};
 use uuid::Uuid;
-
 pub(crate) mod create_table;
 mod load_table;
-
 use super::{
     commit_tables::apply_commit,
     io::{delete_file, read_metadata_file, write_file},
@@ -59,13 +56,13 @@ use crate::{
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
-        task_queue::{
+        tasks::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        CatalogStore, CreateTableResponse, ListFlags, NamedEntity, State, TableCommit,
-        TableCreation, TableId, TabularDetails, TabularId, Transaction, WarehouseStatus,
+        CatalogStore, CreateTableResponse, NamedEntity, State, TableCommit, TableCreation, TableId,
+        TabularDetails, TabularId, TabularListFlags, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -204,7 +201,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             previous_table = C::table_to_id(
                 warehouse_id,
                 &table,
-                ListFlags {
+                TabularListFlags {
                     include_active: true,
                     include_staged: true,
                     include_deleted: false,
@@ -360,7 +357,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &table,
             warehouse_id,
-            ListFlags {
+            TabularListFlags {
                 include_active: true,
                 include_staged: false,
                 include_deleted: false,
@@ -488,7 +485,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let table_details = C::table_to_id(
             warehouse_id,
             table,
-            ListFlags {
+            TabularListFlags {
                 include_active,
                 include_staged,
                 include_deleted,
@@ -620,7 +617,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let list_flags = ListFlags {
+        let list_flags = TabularListFlags {
             include_staged: false,
             include_deleted: false,
             include_active: true,
@@ -663,7 +660,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // * creating a table in the destination namespace
         let authorizer = state.v1_state.authz;
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let list_flags = ListFlags {
+        let list_flags = TabularListFlags {
             include_staged: false,
             include_deleted: false,
             include_active: true,
@@ -753,7 +750,7 @@ async fn resolve_and_authorize_table_access<C: CatalogStore, A: Authorizer + Clo
     request_metadata: &RequestMetadata,
     table: &TableIdent,
     warehouse_id: WarehouseId,
-    list_flags: ListFlags,
+    list_flags: TabularListFlags,
     authorizer: A,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> Result<(TabularDetails, Option<StoragePermissions>)> {
@@ -986,7 +983,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     let table_ids = C::table_idents_to_ids(
         warehouse_id,
         identifiers,
-        ListFlags {
+        TabularListFlags {
             include_active,
             include_staged,
             include_deleted,
@@ -1236,7 +1233,7 @@ pub async fn authorized_table_ident_to_id<C: CatalogStore, A: Authorizer>(
     metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
     table_ident: &TableIdent,
-    list_flags: ListFlags,
+    list_flags: TabularListFlags,
     action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> Result<TableId> {
@@ -1743,7 +1740,7 @@ pub(crate) mod test {
                 tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
                 CatalogTableAction,
             },
-            ListFlags, SecretStore, State, TableId, UserId,
+            SecretStore, State, TableId, TabularListFlags, UserId,
         },
         tests::{create_table_request as create_request, random_request_metadata},
         WarehouseId,
@@ -4166,7 +4163,7 @@ pub(crate) mod test {
 
         let t_id = TableId::new_random();
         let t_name = "t1".to_string();
-        let list_flags = ListFlags::all();
+        let list_flags = TabularListFlags::all();
 
         // Create tables with the same table ID across different warehouses.
         for (wh_id, _ns_id, ns_params) in &wh_ns_data {
@@ -4272,7 +4269,7 @@ pub(crate) mod test {
 
         let t_id = TableId::new_random();
         let t_name = "t1".to_string();
-        let list_flags_active = ListFlags::default();
+        let list_flags_active = TabularListFlags::active();
 
         // Create tables with the same table ID across different warehouses.
         for (wh_id, _ns_id, ns_params) in &wh_ns_data {
@@ -4331,7 +4328,7 @@ pub(crate) mod test {
         let deleted_res = PostgresBackend::get_table_metadata_by_id(
             deleted_table_data.0,
             t_id,
-            ListFlags::all(), // include soft deleted
+            TabularListFlags::all(), // include soft deleted
             ctx.v1_state.catalog.clone(),
         )
         .await

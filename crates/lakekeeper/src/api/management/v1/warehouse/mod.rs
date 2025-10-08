@@ -31,8 +31,8 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
-        task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        CatalogStore, ListFlags, NamespaceId, State, TabularId, Transaction,
+        tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
+        CatalogStore, CatalogTaskOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
     },
     ProjectId, WarehouseId,
 };
@@ -891,7 +891,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         let page = C::list_tabulars(
                             warehouse_id,
                             namespace_id,
-                            ListFlags::only_deleted(),
+                            TabularListFlags::only_deleted(),
                             t.transaction(),
                             query,
                         )

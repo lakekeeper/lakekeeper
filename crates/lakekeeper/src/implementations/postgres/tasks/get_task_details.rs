@@ -8,7 +8,7 @@ use super::EntityType;
 use crate::{
     api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
+    service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId,
 };
 
@@ -266,7 +266,7 @@ mod tests {
             check_and_heartbeat_task, pick_task, record_failure, record_success,
             test::setup_warehouse,
         },
-        service::task_queue::{
+        service::tasks::{
             EntityId, TaskCheckState, TaskEntity, TaskInput, TaskMetadata, TaskOutcome,
             TaskQueueName, TaskStatus, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
         },

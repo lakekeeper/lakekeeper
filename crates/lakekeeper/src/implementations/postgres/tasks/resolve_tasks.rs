@@ -6,7 +6,7 @@ use uuid::Uuid;
 use super::EntityType;
 use crate::{
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{TaskEntity, TaskId, TaskQueueName},
+    service::tasks::{TaskEntity, TaskId, TaskQueueName},
     WarehouseId,
 };
 
@@ -116,7 +116,7 @@ mod tests {
             test::{setup_two_warehouses, setup_warehouse},
         },
         service::{
-            task_queue::{
+            tasks::{
                 EntityId, TaskInput, TaskMetadata, TaskQueueName,
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },

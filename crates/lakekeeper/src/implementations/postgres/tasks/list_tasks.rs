@@ -15,7 +15,7 @@ use crate::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
     },
-    service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
+    service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId, CONFIG,
 };
 
@@ -128,7 +128,7 @@ pub(crate) async fn list_tasks(
     let queue_names = queue_names
         .unwrap_or_default()
         .into_iter()
-        .map(crate::service::task_queue::TaskQueueName::into_string)
+        .map(crate::service::tasks::TaskQueueName::into_string)
         .collect_vec();
 
     let status_filter_is_none = status.is_none();
@@ -294,7 +294,7 @@ mod tests {
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success, test::setup_warehouse,
         },
-        service::task_queue::{
+        service::tasks::{
             EntityId, TaskEntity, TaskInput, TaskMetadata, TaskOutcome, TaskQueueName, TaskStatus,
             DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
         },
@@ -338,7 +338,7 @@ mod tests {
         entity_id: EntityId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
-    ) -> Result<crate::service::task_queue::TaskId, IcebergErrorResponse> {
+    ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
         queue_task_helper_with_entity_name(
             conn,
             queue_name,
@@ -357,7 +357,7 @@ mod tests {
         entity_name: Vec<String>,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
-    ) -> Result<crate::service::task_queue::TaskId, IcebergErrorResponse> {
+    ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
         let result = super::super::queue_task_batch(
             conn,
             queue_name,
@@ -770,7 +770,7 @@ mod tests {
         // Cancel some tasks (next 2)
         super::super::cancel_scheduled_tasks(
             &mut conn,
-            crate::service::task_queue::TaskFilter::TaskIds(task_ids[6..8].to_vec()),
+            crate::service::tasks::TaskFilter::TaskIds(task_ids[6..8].to_vec()),
             Some(&tq_name),
             false,
         )
@@ -980,7 +980,7 @@ mod tests {
         // Task 3: Cancel while scheduled
         super::super::cancel_scheduled_tasks(
             &mut conn,
-            crate::service::task_queue::TaskFilter::TaskIds(vec![task_ids[3]]),
+            crate::service::tasks::TaskFilter::TaskIds(vec![task_ids[3]]),
             Some(&tq_name),
             false,
         )

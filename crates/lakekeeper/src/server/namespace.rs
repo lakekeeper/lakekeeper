@@ -24,11 +24,12 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
-        task_queue::{
+        tasks::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskFilter, TaskMetadata,
         },
-        CatalogStore, GetWarehouseResponse, NamedEntity, NamespaceId, State, Transaction,
+        CatalogStore, CatalogTaskOps, GetWarehouseResponse, NamedEntity, NamespaceId, State,
+        Transaction,
     },
     WarehouseId, CONFIG,
 };

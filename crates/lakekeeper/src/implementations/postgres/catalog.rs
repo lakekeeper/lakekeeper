@@ -66,16 +66,17 @@ use crate::{
     service::{
         authn::UserId,
         storage::StorageProfile,
-        task_queue::{
+        tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
         CatalogStore, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
         CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
-        GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
+        GetWarehouseResponse, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
         NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, ServerInfo,
         TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
-        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
+        TabularListFlags, Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId,
+        WarehouseStatus,
     },
     SecretIdent,
 };
@@ -176,7 +177,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn list_tables<'a>(
         warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,
-        list_flags: ListFlags,
+        list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<TableId, TableInfo>> {
@@ -193,7 +194,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn resolve_table_ident<'a>(
         warehouse_id: WarehouseId,
         table: &TableIdent,
-        list_flags: ListFlags,
+        list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<crate::service::TabularDetails>> {
         resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction).await
@@ -202,7 +203,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn table_idents_to_ids(
         warehouse_id: WarehouseId,
         tables: HashSet<&TableIdent>,
-        list_flags: ListFlags,
+        list_flags: TabularListFlags,
         catalog_state: Self::State,
     ) -> Result<HashMap<TableIdent, Option<TableId>>> {
         table_idents_to_ids(warehouse_id, tables, list_flags, &catalog_state.read_pool()).await
@@ -222,7 +223,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn get_table_metadata_by_id(
         warehouse_id: WarehouseId,
         table: TableId,
-        list_flags: ListFlags,
+        list_flags: TabularListFlags,
         catalog_state: Self::State,
     ) -> Result<Option<GetTableMetadataResponse>> {
         get_table_metadata_by_id(warehouse_id, table, list_flags, catalog_state).await
@@ -231,7 +232,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn get_table_metadata_by_s3_location(
         warehouse_id: WarehouseId,
         location: &Location,
-        list_flags: ListFlags,
+        list_flags: TabularListFlags,
         catalog_state: Self::State,
     ) -> Result<Option<GetTableMetadataResponse>> {
         get_table_metadata_by_s3_location(warehouse_id, location, list_flags, catalog_state).await
@@ -653,7 +654,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn list_tabulars(
         warehouse_id: WarehouseId,
         namespace_id: Option<NamespaceId>,
-        list_flags: ListFlags,
+        list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<TabularId, TabularInfo>> {
@@ -773,7 +774,7 @@ impl CatalogStore for super::PostgresBackend {
         list_tasks(warehouse_id, query, &mut *transaction).await
     }
 
-    async fn enqueue_tasks(
+    async fn enqueue_tasks_impl(
         queue_name: &'static TaskQueueName,
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -788,7 +789,7 @@ impl CatalogStore for super::PostgresBackend {
         Ok(queued.into_iter().map(|t| t.task_id).collect())
     }
 
-    async fn cancel_scheduled_tasks(
+    async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
         filter: TaskFilter,
         force: bool,
@@ -806,7 +807,7 @@ impl CatalogStore for super::PostgresBackend {
         check_and_heartbeat_task(&mut *transaction, &id, progress, execution_details).await
     }
 
-    async fn stop_tasks(
+    async fn stop_tasks_impl(
         task_ids: &[TaskId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
@@ -821,7 +822,7 @@ impl CatalogStore for super::PostgresBackend {
         reschedule_tasks_for(&mut *transaction, task_ids, scheduled_for).await
     }
 
-    async fn set_task_queue_config(
+    async fn set_task_queue_config_impl(
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
@@ -830,7 +831,7 @@ impl CatalogStore for super::PostgresBackend {
         set_task_queue_config(transaction, queue_name, warehouse_id, config).await
     }
 
-    async fn get_task_queue_config(
+    async fn get_task_queue_config_impl(
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         state: Self::State,

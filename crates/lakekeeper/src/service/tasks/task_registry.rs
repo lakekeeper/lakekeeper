@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use crate::{
     service::{
         authz::Authorizer,
-        task_queue::{
+        tasks::{
             task_queues_runner::QueueWorkerConfig, TaskConfig, TaskQueueName, TaskQueueWorkerFn,
             TaskQueuesRunner,
         },
@@ -310,7 +310,7 @@ mod test {
     use utoipa::ToSchema;
 
     use super::*;
-    use crate::service::task_queue::TaskQueueName;
+    use crate::service::tasks::TaskQueueName;
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]

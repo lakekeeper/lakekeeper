@@ -15,7 +15,7 @@ use crate::{
         },
     },
     service::{
-        authz::Authorizer, secrets::SecretStore, CatalogStore, ListFlags,
+        authz::Authorizer, secrets::SecretStore, CatalogStore, TabularListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, Transaction,
     },
     WarehouseId,
@@ -43,7 +43,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         return Err(e);
     }
 
-    let list_flags = ListFlags {
+    let list_flags = TabularListFlags {
         include_active: true,
         include_staged: false,
         include_deleted: false,

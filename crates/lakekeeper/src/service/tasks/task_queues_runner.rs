@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::future::BoxFuture;
 
-use crate::{service::task_queue::TaskQueueName, CancellationToken};
+use crate::{service::tasks::TaskQueueName, CancellationToken};
 
 /// Infinitely running task worker loop function that polls tasks from a queue and
 /// processes. Accepts a cancellation token for graceful shutdown.

@@ -8,7 +8,7 @@ use lakekeeper::{
         views::authorized_view_ident_to_id,
     },
     service::{
-        authz::Authorizer, CatalogStore, ListFlags, NamespaceId, Result, SecretStore, State,
+        authz::Authorizer, CatalogStore, TabularListFlags, NamespaceId, Result, SecretStore, State,
         TableId, Transaction, ViewId,
     },
     ProjectId, WarehouseId,
@@ -273,7 +273,7 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
                     namespace: namespace.clone(),
                     name: table.clone(),
                 },
-                ListFlags {
+                TabularListFlags {
                     include_active: true,
                     include_staged: false,
                     include_deleted: false,

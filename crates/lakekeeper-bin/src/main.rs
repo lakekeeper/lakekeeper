@@ -10,7 +10,7 @@
 use clap::{Parser, Subcommand};
 use lakekeeper::{
     api::management::v1::api_doc as v1_api_doc,
-    service::{authz::AllowAllAuthorizer, task_queue::BUILT_IN_API_CONFIGS},
+    service::{authz::AllowAllAuthorizer, tasks::BUILT_IN_API_CONFIGS},
     tokio, tracing, AuthZBackend, CONFIG,
 };
 use lakekeeper_authz_openfga::OpenFGAAuthorizer;

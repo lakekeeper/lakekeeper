@@ -33,7 +33,7 @@ mod stats;
 mod tasks;
 use crate::{
     api::ApiContext,
-    service::{authz::Authorizer, task_queue::TaskQueueRegistry, State},
+    service::{authz::Authorizer, tasks::TaskQueueRegistry, State},
     WarehouseId, CONFIG,
 };
 

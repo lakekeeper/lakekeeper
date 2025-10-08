@@ -11,7 +11,7 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        task_queue::{
+        tasks::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
@@ -178,7 +178,7 @@ mod test {
         server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-        service::task_queue::TaskEntity,
+        service::tasks::TaskEntity,
         tests::{create_view_request, random_request_metadata},
         WarehouseId,
     };

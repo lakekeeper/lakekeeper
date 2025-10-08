@@ -10,7 +10,7 @@ use crate::{
     api::{management::v1::DeleteKind, Result},
     service::{
         authz::Authorizer,
-        task_queue::{
+        tasks::{
             tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData, TaskQueueName,
         },
         CatalogStore, Transaction,
@@ -267,7 +267,7 @@ mod test {
             CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
         },
         service::{
-            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, ListFlags,
+            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, TabularListFlags,
             NamedEntity, Transaction,
         },
     };
@@ -277,7 +277,7 @@ mod test {
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let queues = crate::service::task_queue::TaskQueueRegistry::new();
+        let queues = crate::service::tasks::TaskQueueRegistry::new();
 
         let secrets =
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
@@ -320,7 +320,7 @@ mod test {
         let _ = <PostgresBackend as CatalogStore>::list_tabulars(
             warehouse,
             None,
-            ListFlags {
+            TabularListFlags {
                 include_active: true,
                 include_staged: false,
                 include_deleted: true,
@@ -371,7 +371,7 @@ mod test {
         let del = <PostgresBackend as CatalogStore>::list_tabulars(
             warehouse,
             None,
-            ListFlags {
+            TabularListFlags {
                 include_active: false,
                 include_staged: false,
                 include_deleted: true,
@@ -395,7 +395,7 @@ mod test {
             let gone = <PostgresBackend as CatalogStore>::list_tabulars(
                 warehouse,
                 None,
-                ListFlags {
+                TabularListFlags {
                     include_active: false,
                     include_staged: false,
                     include_deleted: true,
@@ -421,7 +421,7 @@ mod test {
         assert!(<PostgresBackend as CatalogStore>::list_tabulars(
             warehouse,
             None,
-            ListFlags {
+            TabularListFlags {
                 include_active: false,
                 include_staged: false,
                 include_deleted: true,

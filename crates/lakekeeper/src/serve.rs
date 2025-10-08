@@ -23,7 +23,7 @@ use crate::{
             CloudEventsPublisherBackgroundTask,
         },
         health::ServiceHealthProvider,
-        task_queue::TaskQueueRegistry,
+        tasks::TaskQueueRegistry,
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
     },
     CancellationToken, CONFIG,

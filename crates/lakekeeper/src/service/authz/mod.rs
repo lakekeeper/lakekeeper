@@ -133,18 +133,18 @@ pub enum CatalogViewAction {
     CanControlTasks,
 }
 
-pub trait TableUuid {
-    fn table_uuid(&self) -> TableId;
+pub trait AsTableId {
+    fn as_table_id(&self) -> TableId;
 }
 
-impl TableUuid for TableId {
-    fn table_uuid(&self) -> TableId {
+impl AsTableId for TableId {
+    fn as_table_id(&self) -> TableId {
         *self
     }
 }
 
-impl TableUuid for TabularDetails {
-    fn table_uuid(&self) -> TableId {
+impl AsTableId for TabularDetails {
+    fn as_table_id(&self) -> TableId {
         self.table_id
     }
 }
@@ -850,7 +850,7 @@ where
         }
     }
 
-    async fn require_table_action<T: TableUuid + Send>(
+    async fn require_table_action<T: AsTableId + Send>(
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
@@ -871,7 +871,7 @@ where
                     .is_allowed_table_action(
                         metadata,
                         warehouse_id,
-                        table_details.table_uuid(),
+                        table_details.as_table_id(),
                         action,
                     )
                     .await?

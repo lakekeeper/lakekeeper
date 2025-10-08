@@ -10,7 +10,7 @@ use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecution
 use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
-    service::{task_queue::TaskQueueName, CatalogStore, SecretStore, Transaction},
+    service::{tasks::TaskQueueName, CatalogStore, SecretStore, Transaction},
 };
 
 const QN_STR: &str = "tabular_purge";

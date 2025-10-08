@@ -77,7 +77,7 @@ pub mod v1 {
         service::{
             authn::UserId,
             authz::Authorizer,
-            task_queue::{QueueApiConfig, TaskId},
+            tasks::{QueueApiConfig, TaskId},
             Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
             State, TableId, TabularId, ViewId,
         },

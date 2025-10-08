@@ -28,7 +28,7 @@ use crate::{
         authn::{auth_middleware_fn, AuthMiddlewareState},
         authz::Authorizer,
         health::ServiceHealthProvider,
-        task_queue::QueueApiConfig,
+        tasks::QueueApiConfig,
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     CancellationToken, CONFIG,

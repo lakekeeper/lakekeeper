@@ -21,12 +21,12 @@ mod test {
         api::management::v1::warehouse::{QueueConfig, SetTaskQueueConfigRequest},
         implementations::postgres::PostgresBackend,
         service::{
-            task_queue::{
+            tasks::{
                 EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
                 TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
                 TaskQueueRegistry,
             },
-            CatalogStore, Transaction,
+            CatalogStore, CatalogTaskOps, Transaction,
         },
     };
 
@@ -104,7 +104,7 @@ mod test {
             <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state.clone())
                 .await
                 .unwrap();
-        <PostgresBackend as CatalogStore>::set_task_queue_config(
+        <PostgresBackend as CatalogTaskOps>::set_task_queue_config(
             setup.warehouse.warehouse_id,
             &QUEUE_NAME,
             SetTaskQueueConfigRequest {

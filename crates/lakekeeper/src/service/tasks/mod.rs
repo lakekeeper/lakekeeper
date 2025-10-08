@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{CatalogStore, TableId, TabularId, ViewId};
+use crate::service::{CatalogStore, CatalogTaskOps, TableId, TabularId, ViewId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -954,6 +954,9 @@ impl std::fmt::Display for Status<'_> {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use uuid::Uuid;
+
     #[test]
     fn test_task_entity_serde_table() {
         let json = serde_json::json!({
@@ -964,12 +967,12 @@ mod test {
         let deserialized: super::TaskEntity = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(
             deserialized,
-            super::TaskEntity::Table {
-                table_id: super::TableId::from(
-                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+            TaskEntity::Table {
+                table_id: TableId::from(
+                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
                 ),
-                warehouse_id: super::WarehouseId::from(
-                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
+                warehouse_id: WarehouseId::from(
+                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
                 ),
             }
         );

@@ -28,7 +28,7 @@ use crate::{
     server::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     service::{
         storage::{join_location, split_location},
-        task_queue::TaskId,
+        tasks::TaskId,
         DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
         TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
     },
@@ -134,7 +134,7 @@ pub(crate) async fn get_tabular_protected(
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     table: &TabularIdentBorrowed<'a>,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     transaction: E,
 ) -> Result<Option<(TabularId, String)>>
 where
@@ -214,7 +214,7 @@ struct TabularRow {
 pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     tables: HashSet<TabularIdentBorrowed<'_>>,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     catalog_state: E,
 ) -> Result<HashMap<TabularIdentOwned, Option<TabularId>>>
 where
@@ -436,7 +436,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     warehouse_id: WarehouseId,
     namespace: Option<&NamespaceIdent>,
     namespace_id: Option<NamespaceId>,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,

@@ -112,7 +112,7 @@ pub(crate) fn assigned_rows_as_u64(assigned_rows: i64) -> std::result::Result<u6
 pub(crate) async fn resolve_table_ident<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     table: &TableIdent,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     catalog_state: E,
 ) -> Result<Option<TabularDetails>>
 where
@@ -144,7 +144,7 @@ where
 pub(crate) async fn table_idents_to_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     tables: HashSet<&TableIdent>,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     catalog_state: E,
 ) -> Result<HashMap<TableIdent, Option<TableId>>>
 where
@@ -209,7 +209,7 @@ impl From<FormatVersion> for DbTableFormatVersion {
 pub(crate) async fn list_tables<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     namespace: &NamespaceIdent,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     transaction: E,
     pagination_query: PaginationQuery,
 ) -> Result<PaginatedMapping<TableId, TableInfo>>
@@ -869,7 +869,7 @@ pub(crate) async fn load_tables(
 pub(crate) async fn get_table_metadata_by_id(
     warehouse_id: WarehouseId,
     table: TableId,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
     let table = sqlx::query!(
@@ -932,7 +932,7 @@ pub(crate) async fn get_table_metadata_by_id(
 pub(crate) async fn get_table_metadata_by_s3_location(
     warehouse_id: WarehouseId,
     location: &Location,
-    list_flags: crate::service::ListFlags,
+    list_flags: crate::service::TabularListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
     let (fs_protocol, fs_location) = split_location(location.as_str())?;
@@ -1099,11 +1099,11 @@ pub(crate) mod tests {
         },
         server::tables::create_table::create_table_request_into_table_metadata,
         service::{
-            task_queue::{
+            tasks::{
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
                 EntityId, TaskMetadata,
             },
-            ListFlags, NamedEntity, NamespaceId, TableCreation,
+            NamedEntity, NamespaceId, TableCreation, TabularListFlags,
         },
     };
 
@@ -1475,7 +1475,7 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &table_ident,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1489,7 +1489,7 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1499,9 +1499,9 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
         )
@@ -1526,7 +1526,7 @@ pub(crate) mod tests {
         let exists = table_idents_to_ids(
             warehouse_id,
             vec![&table_ident].into_iter().collect(),
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1541,7 +1541,7 @@ pub(crate) mod tests {
         let exists = table_idents_to_ids(
             warehouse_id,
             tables.clone(),
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1552,9 +1552,9 @@ pub(crate) mod tests {
         let exists = table_idents_to_ids(
             warehouse_id,
             tables.clone(),
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
         )
@@ -1573,7 +1573,7 @@ pub(crate) mod tests {
         let exists = table_idents_to_ids(
             warehouse_id,
             tables.clone(),
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1588,9 +1588,9 @@ pub(crate) mod tests {
         let exists = table_idents_to_ids(
             warehouse_id,
             tables.clone(),
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
         )
@@ -1652,7 +1652,7 @@ pub(crate) mod tests {
         let existing = table_idents_to_ids(
             warehouse_id,
             HashSet::from([&table_ident_upper]),
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1668,7 +1668,7 @@ pub(crate) mod tests {
         let existing = table_idents_to_ids(
             warehouse_id,
             HashSet::from([&table_ident_lower, &table_ident_upper]),
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1706,7 +1706,7 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1716,7 +1716,7 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &new_table_ident,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1755,7 +1755,7 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1765,7 +1765,7 @@ pub(crate) mod tests {
         let exists = resolve_table_ident(
             warehouse_id,
             &new_table_ident,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
@@ -1812,7 +1812,7 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &namespace,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
         )
@@ -1825,7 +1825,7 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &table1.namespace,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
         )
@@ -1841,7 +1841,7 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &table2.namespace,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
         )
@@ -1851,9 +1851,9 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &table2.namespace,
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
             PaginationQuery::empty(),
@@ -1877,7 +1877,7 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &namespace,
-            ListFlags::default(),
+            TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
         )
@@ -1916,9 +1916,9 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &namespace,
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
             PaginationQuery {
@@ -1938,9 +1938,9 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &namespace,
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
             PaginationQuery {
@@ -1960,9 +1960,9 @@ pub(crate) mod tests {
         let tables = list_tables(
             warehouse_id,
             &namespace,
-            ListFlags {
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
             PaginationQuery {
@@ -1986,7 +1986,7 @@ pub(crate) mod tests {
         let metadata = get_table_metadata_by_id(
             warehouse_id,
             table.table_id,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -1997,7 +1997,7 @@ pub(crate) mod tests {
         let id = get_table_metadata_by_s3_location(
             warehouse_id,
             &metadata_location,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2013,7 +2013,7 @@ pub(crate) mod tests {
         let id = get_table_metadata_by_s3_location(
             warehouse_id,
             &subpath,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2028,7 +2028,7 @@ pub(crate) mod tests {
         get_table_metadata_by_s3_location(
             warehouse_id,
             &metadata_location,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2039,7 +2039,7 @@ pub(crate) mod tests {
         get_table_metadata_by_s3_location(
             warehouse_id,
             &metadata_location,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2054,7 +2054,7 @@ pub(crate) mod tests {
         assert!(get_table_metadata_by_s3_location(
             warehouse_id,
             &shorter,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2077,7 +2077,7 @@ pub(crate) mod tests {
         let r = get_table_metadata_by_id(
             warehouse_id,
             table.table_id,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2124,7 +2124,7 @@ pub(crate) mod tests {
         assert!(get_table_metadata_by_id(
             warehouse_id,
             table.table_id,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
@@ -2134,9 +2134,9 @@ pub(crate) mod tests {
         let ok = get_table_metadata_by_id(
             warehouse_id,
             table.table_id,
-            ListFlags {
+            TabularListFlags {
                 include_deleted: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             state.clone(),
         )
@@ -2155,9 +2155,9 @@ pub(crate) mod tests {
         assert!(get_table_metadata_by_id(
             warehouse_id,
             table.table_id,
-            ListFlags {
+            TabularListFlags {
                 include_deleted: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             state.clone(),
         )

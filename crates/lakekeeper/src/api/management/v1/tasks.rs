@@ -8,12 +8,13 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
-        task_queue::{
+        tasks::{
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME, TaskEntity,
             TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
             TaskStatus as TQTaskStatus,
         },
-        CatalogStore, Result, SecretStore, State, TableId, TabularId, Transaction, ViewId,
+        CatalogStore, CatalogTaskOps, Result, SecretStore, State, TableId, TabularId, Transaction,
+        ViewId,
     },
     WarehouseId,
 };
