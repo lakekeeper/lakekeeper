@@ -8,8 +8,8 @@ use lakekeeper::{
         views::authorized_view_ident_to_id,
     },
     service::{
-        authz::Authorizer, CatalogStore, TabularListFlags, NamespaceId, Result, SecretStore, State,
-        TableId, Transaction, ViewId,
+        authz::Authorizer, CatalogStore, NamespaceId, Result, SecretStore, State, TableId,
+        TabularListFlags, Transaction, ViewId,
     },
     ProjectId, WarehouseId,
 };

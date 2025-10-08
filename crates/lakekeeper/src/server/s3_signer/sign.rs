@@ -22,7 +22,7 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        CatalogStore, GetTableMetadataResponse, TabularListFlags, State, TableId, Transaction,
+        CatalogStore, GetTableMetadataResponse, State, TableId, TabularListFlags, Transaction,
     },
     WarehouseId,
 };

@@ -25,7 +25,8 @@ use crate::{
         },
     },
     service::{
-        ErrorModel, TabularListFlags, NamespaceId, Result, TableIdent, TableInfo, TabularInfo, ViewId,
+        ErrorModel, NamespaceId, Result, TableIdent, TableInfo, TabularInfo, TabularListFlags,
+        ViewId,
     },
     WarehouseId,
 };

@@ -954,8 +954,9 @@ impl std::fmt::Display for Status<'_> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use uuid::Uuid;
+
+    use super::*;
 
     #[test]
     fn test_task_entity_serde_table() {

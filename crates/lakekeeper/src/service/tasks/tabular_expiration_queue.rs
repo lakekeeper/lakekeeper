@@ -267,8 +267,8 @@ mod test {
             CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
         },
         service::{
-            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, TabularListFlags,
-            NamedEntity, Transaction,
+            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, NamedEntity,
+            TabularListFlags, Transaction,
         },
     };
 

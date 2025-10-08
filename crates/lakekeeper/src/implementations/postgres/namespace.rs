@@ -20,9 +20,9 @@ use crate::{
     },
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        storage::join_location, tasks::TaskId, CreateNamespaceRequest,
-        CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
-        NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceInfo, Result, TabularId,
+        storage::join_location, tasks::TaskId, CreateNamespaceRequest, CreateNamespaceResponse,
+        ErrorModel, GetNamespaceResponse, ListNamespacesQuery, NamespaceDropInfo, NamespaceId,
+        NamespaceIdent, NamespaceInfo, Result, TabularId,
     },
     WarehouseId, CONFIG,
 };

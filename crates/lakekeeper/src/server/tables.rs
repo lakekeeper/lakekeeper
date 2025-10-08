@@ -1,3 +1,9 @@
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr as _,
+    sync::Arc,
+};
+
 use futures::FutureExt;
 use fxhash::FxHashSet;
 use http::StatusCode;
@@ -15,11 +21,6 @@ use iceberg_ext::{
 use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr as _,
-    sync::Arc,
-};
 use uuid::Uuid;
 pub(crate) mod create_table;
 mod load_table;

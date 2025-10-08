@@ -15,8 +15,8 @@ use crate::{
         },
     },
     service::{
-        authz::Authorizer, secrets::SecretStore, CatalogStore, TabularListFlags,
-        LoadTableResponse as CatalogLoadTableResult, State, TableId, Transaction,
+        authz::Authorizer, secrets::SecretStore, CatalogStore,
+        LoadTableResponse as CatalogLoadTableResult, State, TableId, TabularListFlags, Transaction,
     },
     WarehouseId,
 };
