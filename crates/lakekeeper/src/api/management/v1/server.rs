@@ -45,7 +45,7 @@ pub struct BootstrapRequest {
 pub(crate) static APACHE_LICENSE_STATUS: LazyLock<LicenseStatus> =
     LazyLock::new(|| LicenseStatus {
         issuer: None,
-        audience: "lakekeeper-core".to_string(),
+        audience: Some("lakekeeper-core".to_string()),
         license_type: "Apache-2.0".to_string(),
         valid: true,
         customer: None,
@@ -61,7 +61,7 @@ pub struct LicenseStatus {
     /// Organization or entity that issued the license for Lakekeeper
     pub issuer: Option<String>,
     /// Audience or entity the license is issued to
-    pub audience: String,
+    pub audience: Option<String>,
     /// License type (e.g., "Apache-2.0", "Vakamo-Enterprise", etc.)
     pub license_type: String,
     /// If the license is valid and active
