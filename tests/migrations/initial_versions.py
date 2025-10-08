@@ -3,7 +3,7 @@ import tomllib
 def get_crate_version_parts():
     with open("../../Cargo.toml", "rb") as f:
         cargo_data = tomllib.load(f)
-    version_str = cargo_data["package"]["version"]
+    version_str = cargo_data["workspace"]["package"]["version"]
     version_parts = [ int(x) for x in version_str.split(".") ]
     if len(version_parts) < 2:
         raise ValueError(f"Minor version not specified in {version_str}")
