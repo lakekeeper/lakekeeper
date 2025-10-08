@@ -1,15 +1,13 @@
 import tomllib
 
-
 def get_crate_version_parts():
     with open("../../crates/lakekeeper/Cargo.toml", "rb") as f:
         cargo_data = tomllib.load(f)
-    version_str = cargo_data["workspace"]["package"]["version"]
-    version_parts = [int(x) for x in version_str.split(".")]
+    version_str = cargo_data["package"]["version"]
+    version_parts = [ int(x) for x in version_str.split(".") ]
     if len(version_parts) < 2:
         raise ValueError(f"Minor version not specified in {version_str}")
     return version_parts
-
 
 def previous_minor_version_of(major, minor):
     if minor - 1 >= 0:
@@ -20,13 +18,14 @@ def previous_minor_version_of(major, minor):
         # Assume the latest release of the previous major version is tagged on quay as follows.
         return f"{major - 1}"
 
-
 if __name__ == "__main__":
-    crate_version_parts = get_crate_version_parts()
-    prev_minor = previous_minor_version_of(
-        crate_version_parts[0], crate_version_parts[1]
-    )
+    crate_version_parts  = get_crate_version_parts()
+    prev_minor = previous_minor_version_of(crate_version_parts[0], crate_version_parts[1])
     # Referencing tags for quay.io/lakekeeper/catalog
-    versions = ["latest", f"v{prev_minor}"]  # the latest version released to quay.io
+    versions = [
+        "latest", # the latest version released to quay.io
+        f"v{prev_minor}"
+    ]
     # Print in the format expected by the migrations workflow.
     print(f"initial-versions={versions}")
+
