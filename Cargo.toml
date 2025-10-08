@@ -10,7 +10,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-homepage = "https://github.com/lakekeeper/lakekeeper"
+version = "0.10.2"
+homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
 rust-version = "1.87.0"
 license = "Apache-2.0"

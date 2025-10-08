@@ -3996,7 +3996,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-authz-openfga"
-version = "0.10.0"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "fastrand 2.3.0",
@@ -4051,7 +4051,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-io"
-version = "0.9.3"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "async-stream",

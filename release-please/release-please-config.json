@@ -1,38 +1,15 @@
 {
     "packages": {
-        "crates/lakekeeper": {
-            "release-type": "rust",
-            "component": "lakekeeper"
-        },
-        "crates/lakekeeper-bin": {
-            "release-type": "rust",
-            "component": "lakekeeper-bin"
-        },
-        "crates/iceberg-ext": {
-            "release-type": "rust",
-            "component": "iceberg-ext"
-        },
-        "crates/authz-openfga": {
-            "release-type": "rust",
-            "component": "lakekeeper-authz-openfga"
-        }
-    },
-    "plugins": [
-        {
-            "type": "cargo-workspace",
-            "merge": false
-        },
-        {
-            "type": "linked-versions",
-            "groupName": "lakekeeper",
-            "components": [
-                "lakekeeper",
-                "lakekeeper-bin",
-                "iceberg-ext",
-                "lakekeeper-authz-openfga"
+        ".": {
+            "release-type": "simple",
+            "exclude-paths": [
+                ".github",
+                ".cargo",
+                "release-please",
+                ".gitignore"
             ]
         }
-    ],
+    },
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
     "include-component-in-tag": false,
@@ -41,28 +18,33 @@
             "type": "yaml",
             "path": "docs/docs/api/management-open-api.yaml",
             "jsonpath": "$.info.version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.toml",
+            "jsonpath": "$.workspace.package.version"
         }
     ],
     "changelog-sections": [
         {
-          "type": "feat",
-          "hidden": false,
-          "section": "Features"
+            "type": "feat",
+            "hidden": false,
+            "section": "Features"
         },
         {
-          "type": "fix",
-          "hidden": false,
-          "section": "Bug Fixes"
+            "type": "fix",
+            "hidden": false,
+            "section": "Bug Fixes"
         },
         {
-          "type": "docs",
-          "hidden": false,
-          "section": "Documentation"
+            "type": "docs",
+            "hidden": false,
+            "section": "Documentation"
         },
         {
-          "type": "chore",
-          "hidden": false,
-          "section": "Miscellaneous Chores"
+            "type": "chore",
+            "hidden": false,
+            "section": "Miscellaneous Chores"
         }
     ],
     "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
