@@ -69,7 +69,7 @@ iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
-jsonwebtoken = "9.3.0"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 jwks_client_rs = { workspace = true }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
@@ -124,7 +124,7 @@ openssl-src = { version = "300.4.2", features = [
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
-lakekeeper ={ path = ".", features = ["test-utils"] }
+lakekeeper = { path = ".", features = ["test-utils"] }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }

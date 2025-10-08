@@ -610,6 +610,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b756939cb2f8dc900aa6dcd505e6e2428e9cae7ff7b028c49e3946efa70878"
 dependencies = [
  "aws-lc-sys",
+ "untrusted 0.7.1",
  "zeroize",
 ]
 
@@ -2754,7 +2755,7 @@ dependencies = [
  "hex",
  "hmac",
  "home",
- "jsonwebtoken",
+ "jsonwebtoken 9.3.1",
  "path-clean",
  "percent-encoding",
  "reqwest",
@@ -3756,6 +3757,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1417155a38e99d7704ddb3ea7445fe57fdbd5d756d727740a9ed8b9ebaed6e1"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.15",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature 2.2.0",
+ "simple_asn1",
+]
+
+[[package]]
 name = "jwks_client_rs"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3763,7 +3781,7 @@ checksum = "f688d134ca08600e638312d8d442f0c0a5bdabd5ef398f817bb03a7c4eefd97d"
 dependencies = [
  "async-trait",
  "chrono",
- "jsonwebtoken",
+ "jsonwebtoken 9.3.1",
  "reqwest",
  "serde",
  "serde_json",
@@ -3901,7 +3919,7 @@ dependencies = [
  "iceberg-ext",
  "iso8601",
  "itertools 0.14.0",
- "jsonwebtoken",
+ "jsonwebtoken 10.0.0",
  "jwks_client_rs",
  "lakekeeper",
  "lakekeeper-io",
@@ -4221,7 +4239,7 @@ checksum = "0d566edade23f0ce72e5abbaefa56e04888ea8eb6fa5a810f8ad130da87cb4e1"
 dependencies = [
  "axum 0.8.4",
  "axum-extra",
- "jsonwebtoken",
+ "jsonwebtoken 9.3.1",
  "jwks_client_rs",
  "k8s-openapi",
  "kube",
@@ -5895,7 +5913,7 @@ dependencies = [
  "hmac",
  "home",
  "http 1.3.1",
- "jsonwebtoken",
+ "jsonwebtoken 9.3.1",
  "log",
  "percent-encoding",
  "quick-xml 0.37.5",
@@ -6024,7 +6042,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.15",
  "libc",
- "untrusted",
+ "untrusted 0.9.0",
  "windows-sys 0.52.0",
 ]
 
@@ -6336,7 +6354,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b6275d1ee7a1cd780b64aca7726599a1dbc893b1e64144529e55c3c2f745765"
 dependencies = [
  "ring",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -6346,7 +6364,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9"
 dependencies = [
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -6358,7 +6376,7 @@ dependencies = [
  "aws-lc-rs",
  "ring",
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -6461,7 +6479,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
  "ring",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -7975,6 +7993,12 @@ name = "unsafe-libyaml-norway"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
+
+[[package]]
+name = "untrusted"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
 
 [[package]]
 name = "untrusted"
