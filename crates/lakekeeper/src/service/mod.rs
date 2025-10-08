@@ -30,7 +30,7 @@ use task_queue::RegisteredTaskQueues;
 use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
 use crate::{
-    api::{management::v1::bootstrap::LicenseStatus, ThreadSafe as ServiceState},
+    api::{management::v1::server::LicenseStatus, ThreadSafe as ServiceState},
     service::{contract_verification::ContractVerifiers, endpoint_hooks::EndpointHookCollection},
 };
 

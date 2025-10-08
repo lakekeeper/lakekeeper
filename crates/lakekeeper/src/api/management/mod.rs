@@ -3,7 +3,7 @@
 pub mod v1 {
     #![allow(clippy::needless_for_each)]
 
-    pub mod bootstrap;
+    pub mod server;
     pub mod namespace;
     pub mod project;
     pub mod role;
@@ -22,7 +22,7 @@ pub mod v1 {
         routing::{get, post},
         Extension, Json, Router,
     };
-    use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
+    use server::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     use namespace::NamespaceManagementService as _;

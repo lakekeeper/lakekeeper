@@ -7,7 +7,7 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::{
     api::{
-        management::v1::bootstrap::{LicenseStatus, APACHE_LICENSE_STATUS},
+        management::v1::server::{LicenseStatus, APACHE_LICENSE_STATUS},
         router::{new_full_router, serve as service_serve, RouterArgs},
         shutdown_signal, ApiContext,
     },

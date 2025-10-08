@@ -3507,9 +3507,13 @@ components:
       type: object
       description: Status of license validation
       required:
+        - audience
         - license-type
         - valid
       properties:
+        audience:
+          type: string
+          description: Audience or entity the license is issued to
         customer:
           type:
             - string
@@ -3526,6 +3530,11 @@ components:
             - 'null'
           format: date-time
           description: License expiration date (None for perpetual licenses like Apache)
+        issuer:
+          type:
+            - string
+            - 'null'
+          description: Organization or entity that issued the license for Lakekeeper
         license-id:
           type:
             - string

@@ -1,7 +1,7 @@
 use crate::{
     api::{
         management::v1::{
-            bootstrap::{BootstrapRequest, Service as _, APACHE_LICENSE_STATUS},
+            server::{BootstrapRequest, Service as _, APACHE_LICENSE_STATUS},
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
             ApiServer,
         },
