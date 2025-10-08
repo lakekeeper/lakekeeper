@@ -1,7 +1,7 @@
 import tomllib
 
 def get_crate_version_parts():
-    with open("../../crates/lakekeeper/Cargo.toml", "rb") as f:
+    with open("../../Cargo.toml", "rb") as f:
         cargo_data = tomllib.load(f)
     version_str = cargo_data["package"]["version"]
     version_parts = [ int(x) for x in version_str.split(".") ]
