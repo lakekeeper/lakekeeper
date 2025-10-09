@@ -380,20 +380,23 @@ impl StorageProfile {
         };
 
         let (direct_result, vended_result) = tokio::join!(direct_validation, vended_validation);
-
-        direct_result?;
-        vended_result?;
-
+        let validation_err = match (direct_result, vended_result) {
+            (Ok(()), Ok(())) => None,
+            (Err(e), Ok(()) | Err(_)) | (Ok(()), Err(e)) => Some(e),
+        };
         tracing::debug!("Cleanup started");
-        io.remove_all(&test_location).await?;
-        tracing::debug!("Cleanup finished");
+        if let Err(e) = io.remove_all(&test_location).await {
+            tracing::warn!("Cleanup failed after validation: {e}");
+        } else {
+            tracing::debug!("Cleanup finished");
+        }
+        if let Some(e) = validation_err {
+            return Err(e);
+        }
 
         match is_empty(&io, &test_location).await {
             Err(ValidationError::IoOperationFailed(io_error)) => {
-                tracing::info!(
-                    ?io_error,
-                    "Error while checking location is empty: {io_error}"
-                );
+                tracing::info!("Error while checking location is empty: {io_error}");
                 Err(ValidationError::IoOperationFailed(io_error))
             }
             Ok(false) => Err(InvalidLocationError::new(
