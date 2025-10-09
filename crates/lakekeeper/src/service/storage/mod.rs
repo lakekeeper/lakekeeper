@@ -649,15 +649,11 @@ impl StorageProfile {
         match file_io
             .new_output(&test_file_write)
             .map_err(IcebergFileIoError::IcebergError)
-            .and_then(|output| {
-                // If we can create the output, try to write to it
-                let output = output;
-                Ok(output)
-            }) {
+        {
             Ok(output) => {
                 // If we got an output, try to write - this should fail
                 match output.write("forbidden-content".into()).await {
-                    Ok(_) => {
+                    Ok(()) => {
                         // If write succeeded, this is an error - we should not be able to write here
                         // Try to clean up the file we shouldn't have been able to create
                         let _ = file_io.delete(&test_file_write).await;
