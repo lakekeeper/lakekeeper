@@ -426,6 +426,10 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         tracing::debug!("Validating vended credentials access to: {test_location}");
 
+        // Create a sub-location for testing vended credentials access
+        let mut sub_location = test_location.clone();
+        sub_location.without_trailing_slash().push("vended-test");
+
         let tbl_config = self
             .generate_table_config(
                 DataAccess {
@@ -434,7 +438,7 @@ impl StorageProfile {
                 }
                 .into(),
                 credential,
-                test_location,
+                &sub_location,
                 StoragePermissions::ReadWriteDelete,
                 // The following arguments are used only for generating the remote signing configuration
                 // and are not used in the vended credentials case.
@@ -449,23 +453,54 @@ impl StorageProfile {
                 tracing::debug!("Getting s3 file io from table config for vended credentials.");
                 let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
                 tracing::debug!(
-                    "Validating read/write access to: {test_location} using vended credentials"
+                    "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
                 );
-                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
-                    .await?;
+
+                // Run both validations in parallel
+                let read_write_validation =
+                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
+                let no_write_validation =
+                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
+
+                let (read_write_result, no_write_result) =
+                    tokio::join!(read_write_validation, no_write_validation);
+                read_write_result?;
+                no_write_result?;
             }
             StorageProfile::Adls(_) => {
-                tracing::debug!("Validating adls vended credentials access to: {test_location}");
+                tracing::debug!(
+                    "Validating adls vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
+                );
                 let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config)?;
-                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
-                    .await?;
+
+                // Run both validations in parallel
+                let read_write_validation =
+                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
+                let no_write_validation =
+                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
+
+                let (read_write_result, no_write_result) =
+                    tokio::join!(read_write_validation, no_write_validation);
+                read_write_result?;
+                no_write_result?;
             }
             StorageProfile::Gcs(_) => {
                 tracing::debug!("Getting gcs file io from table config for vended credentials.");
                 let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
-                tracing::debug!("Validating gcs vended credentials access to: {test_location}");
-                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
-                    .await?;
+                tracing::debug!(
+                    "Validating gcs vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
+                );
+
+                // Run both validations in parallel
+                let read_write_validation =
+                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
+                let no_write_validation =
+                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
+
+                let (read_write_result, no_write_result) =
+                    tokio::join!(read_write_validation, no_write_validation);
+                read_write_result?;
+                no_write_result?;
             }
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => {
@@ -581,6 +616,77 @@ impl StorageProfile {
 
         tracing::debug!(
             "Successfully wrote, read and deleted file at `{test_file_write}` with Iceberg FileIO and vended credentials."
+        );
+
+        Ok(())
+    }
+
+    /// Validate that we cannot write to a location with vended credentials
+    ///
+    /// # Errors
+    /// Fails if we can write to the location (which should not be allowed).
+    async fn validate_no_write_access_iceberg(
+        &self,
+        file_io: &FileIO,
+        test_location: &Location,
+    ) -> Result<(), ValidationError> {
+        let compression_codec = CompressionCodec::Gzip;
+
+        let mut test_file_write = self.default_metadata_location(
+            test_location,
+            &compression_codec,
+            uuid::Uuid::now_v7(),
+            0,
+        );
+        test_file_write.pop().push("forbidden-write-test");
+
+        tracing::debug!(
+            "Validating that write access is denied to: {}",
+            test_file_write
+        );
+
+        // Test that write should fail
+        match file_io
+            .new_output(&test_file_write)
+            .map_err(IcebergFileIoError::IcebergError)
+            .and_then(|output| {
+                // If we can create the output, try to write to it
+                let output = output;
+                Ok(output)
+            }) {
+            Ok(output) => {
+                // If we got an output, try to write - this should fail
+                match output.write("forbidden-content".into()).await {
+                    Ok(_) => {
+                        // If write succeeded, this is an error - we should not be able to write here
+                        // Try to clean up the file we shouldn't have been able to create
+                        let _ = file_io.delete(&test_file_write).await;
+                        return Err(CredentialsError::ShortTermCredential {
+                            reason: "Downscoped credentials allow write access to parent location."
+                                .to_string(),
+                            source: None,
+                        }
+                        .into());
+                    }
+                    Err(_) => {
+                        // Expected - write should fail
+                        tracing::debug!(
+                            "Write correctly failed for forbidden location: {test_file_write}"
+                        );
+                    }
+                }
+            }
+            Err(_) => {
+                // Expected - creating output should fail
+                tracing::debug!(
+                    "Output creation correctly failed for forbidden location: {test_file_write}"
+                );
+            }
+        }
+
+        tracing::debug!(
+            "Successfully validated that write access is denied to: {}",
+            test_file_write
         );
 
         Ok(())
