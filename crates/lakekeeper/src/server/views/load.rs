@@ -14,8 +14,8 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         storage::{StorageCredential, StoragePermissions},
-        CatalogStore, GetWarehouseResponse, Result, SecretStore, State, Transaction,
-        ViewMetadataWithLocation,
+        CatalogStore, CatalogWarehouseOps, GetWarehouseResponse, Result, SecretStore, State,
+        Transaction, ViewMetadataWithLocation,
     },
 };
 
@@ -53,7 +53,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             CatalogWarehouseAction::CanUse,
         )
         .await?;
-    let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
     let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // We can't fail before AuthZ
     let view_id = authorizer
         .require_view_action(
@@ -75,7 +75,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         status,
         tabular_delete_profile: _,
         protected: _,
-    } = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    } = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
     require_active_warehouse(status)?;
 
     let ViewMetadataWithLocation {

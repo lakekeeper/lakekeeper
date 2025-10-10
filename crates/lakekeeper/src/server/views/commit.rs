@@ -30,7 +30,7 @@ use crate::{
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        CatalogStore, NamespaceId, State, Transaction, ViewCommit, ViewId,
+        CatalogStore, CatalogWarehouseOps, NamespaceId, State, Transaction, ViewCommit, ViewId,
         ViewMetadataWithLocation,
     },
     SecretIdent, WarehouseId,
@@ -91,7 +91,8 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             None,
         ))?;
 
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
     require_active_warehouse(warehouse.status)?;

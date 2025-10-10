@@ -612,35 +612,6 @@ impl TableQueryStruct {
     }
 }
 
-pub(crate) async fn load_storage_profile(
-    warehouse_id: WarehouseId,
-    table: TableId,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<(Option<SecretIdent>, StorageProfile)> {
-    let secret = sqlx::query!(
-        r#"
-        SELECT w.storage_secret_id,
-        w.storage_profile as "storage_profile: Json<StorageProfile>"
-        FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1
-            AND t."table_id" = $2
-            AND w.status = 'active'
-        "#,
-        *warehouse_id,
-        *table
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| e.into_error_model("Error fetching storage secret".to_string()))?;
-
-    Ok((
-        secret.storage_secret_id.map(SecretIdent::from),
-        secret.storage_profile.0,
-    ))
-}
-
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn load_tables(
     warehouse_id: WarehouseId,

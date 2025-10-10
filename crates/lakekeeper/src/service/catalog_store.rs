@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use iceberg::spec::ViewMetadata;
-use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
+use iceberg_ext::catalog::rest::ErrorModel;
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
@@ -32,7 +32,6 @@ use crate::{
             DeleteWarehouseQuery, ProtectionResponse,
         },
     },
-    request_metadata::RequestMetadata,
     service::{
         authn::UserId,
         health::HealthExt,
@@ -58,6 +57,8 @@ mod user;
 pub use user::*;
 mod tasks;
 pub use tasks::*;
+mod error;
+pub use error::*;
 
 #[async_trait::async_trait]
 pub trait Transaction<D>
@@ -136,14 +137,54 @@ where
 
     // ---------------- Warehouse Management ----------------
     /// Create a warehouse.
-    async fn create_warehouse<'a>(
+    async fn create_warehouse_impl<'a>(
         warehouse_name: String,
         project_id: &ProjectId,
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<WarehouseId>;
+    ) -> std::result::Result<WarehouseId, CatalogCreateWarehouseError>;
+
+    /// Delete a warehouse.
+    async fn delete_warehouse_impl<'a>(
+        warehouse_id: WarehouseId,
+        query: DeleteWarehouseQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogDeleteWarehouseError>;
+
+    /// Rename a warehouse.
+    async fn rename_warehouse_impl<'a>(
+        warehouse_id: WarehouseId,
+        new_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogRenameWarehouseError>;
+
+    /// Return a list of all warehouse in a project
+    async fn list_warehouses_impl(
+        project_id: &ProjectId,
+        // If None, return only active warehouses
+        // If Some, return only warehouses with any of the statuses in the set
+        status_filter: Option<Vec<WarehouseStatus>>,
+        state: Self::State,
+    ) -> std::result::Result<Vec<GetWarehouseResponse>, CatalogListWarehousesError>;
+
+    /// Get the warehouse metadata. Return only active warehouses.
+    ///
+    /// Return Ok(None) if the warehouse does not exist or is not active.
+    async fn get_warehouse_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        state: Self::State,
+    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByIdError>;
+
+    /// Get the warehouse metadata. Return only active warehouses.
+    ///
+    /// Return Ok(None) if the warehouse does not exist or is not active.
+    async fn get_warehouse_by_name_impl(
+        warehouse_name: &str,
+        project_id: &ProjectId,
+        catalog_state: Self::State,
+    ) -> Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError>;
 
     async fn get_warehouse_stats(
         warehouse_id: WarehouseId,
@@ -151,110 +192,12 @@ where
         state: Self::State,
     ) -> Result<WarehouseStatisticsResponse>;
 
-    /// Delete a warehouse.
-    async fn delete_warehouse<'a>(
-        warehouse_id: WarehouseId,
-        query: DeleteWarehouseQuery,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
-
-    /// Rename a warehouse.
-    async fn rename_warehouse<'a>(
-        warehouse_id: WarehouseId,
-        new_name: &str,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
-
     /// Set warehouse deletion profile
     async fn set_warehouse_deletion_profile<'a>(
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
-
-    /// Return a list of all warehouse in a project
-    async fn list_warehouses(
-        project_id: &ProjectId,
-        // If None, return only active warehouses
-        // If Some, return only warehouses with any of the statuses in the set
-        include_inactive: Option<Vec<WarehouseStatus>>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<GetWarehouseResponse>>;
-
-    /// Get the warehouse metadata - should only return active warehouses.
-    ///
-    /// Return Ok(None) if the warehouse does not exist.
-    async fn get_warehouse<'a>(
-        warehouse_id: WarehouseId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<GetWarehouseResponse>>;
-
-    /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
-    async fn require_warehouse<'a>(
-        warehouse_id: WarehouseId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<GetWarehouseResponse> {
-        Self::get_warehouse(warehouse_id, transaction).await?.ok_or(
-            ErrorModel::not_found(
-                format!("Warehouse {warehouse_id} not found"),
-                "WarehouseNotFound",
-                None,
-            )
-            .into(),
-        )
-    }
-
-    // Should only return a warehouse if the warehouse is active.
-    async fn get_warehouse_by_name(
-        warehouse_name: &str,
-        project_id: &ProjectId,
-        catalog_state: Self::State,
-    ) -> Result<Option<WarehouseId>>;
-
-    /// Wrapper around `get_warehouse_by_name` that returns
-    /// not found error if the warehouse does not exist.
-    async fn require_warehouse_by_name(
-        warehouse_name: &str,
-        project_id: &ProjectId,
-        catalog_state: Self::State,
-    ) -> Result<WarehouseId> {
-        Self::get_warehouse_by_name(warehouse_name, project_id, catalog_state)
-            .await?
-            .ok_or(
-                ErrorModel::not_found(
-                    format!("Warehouse {warehouse_name} not found"),
-                    "WarehouseNotFound",
-                    None,
-                )
-                .into(),
-            )
-    }
-
-    // Should only return a warehouse if the warehouse is active.
-    async fn get_config_for_warehouse(
-        warehouse_id: WarehouseId,
-        catalog_state: Self::State,
-        request_metadata: &RequestMetadata,
-    ) -> Result<Option<CatalogConfig>>;
-
-    /// Wrapper around `get_config_for_warehouse` that returns
-    /// not found error if the warehouse does not exist.
-    async fn require_config_for_warehouse(
-        warehouse_id: WarehouseId,
-        request_metadata: &RequestMetadata,
-        catalog_state: Self::State,
-    ) -> Result<CatalogConfig> {
-        Self::get_config_for_warehouse(warehouse_id, catalog_state, request_metadata)
-            .await?
-            .ok_or(
-                ErrorModel::not_found(
-                    format!("Warehouse {warehouse_id} not found"),
-                    "WarehouseNotFound",
-                    None,
-                )
-                .into(),
-            )
-    }
 
     /// Set the status of a warehouse.
     async fn set_warehouse_status<'a>(
@@ -275,12 +218,6 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
-
-    async fn load_storage_profile(
-        warehouse_id: WarehouseId,
-        tabular_id: TableId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.

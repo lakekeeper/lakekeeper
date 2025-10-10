@@ -10,16 +10,7 @@ pub mod secrets;
 pub mod storage;
 pub mod tasks;
 pub use authn::{Actor, UserId};
-pub use catalog_store::{
-    CatalogStore, CatalogTaskOps, CommitTableResponse, CreateNamespaceRequest,
-    CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse,
-    DeletionDetails, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
-    GetTableMetadataResponse, GetWarehouseResponse, ListNamespacesQuery, ListNamespacesResponse,
-    LoadTableResponse, NamespaceDropInfo, NamespaceIdent, NamespaceInfo, Result, ServerInfo,
-    TableCommit, TableCreation, TableIdent, TableInfo, TabularInfo, TabularListFlags, Transaction,
-    UndropTabularResponse, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
-    ViewCommit, ViewMetadataWithLocation, WarehouseStatus,
-};
+pub use catalog_store::*;
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 #[allow(unused_imports)]
 pub(crate) use identifier::tabular::TabularIdentBorrowed;

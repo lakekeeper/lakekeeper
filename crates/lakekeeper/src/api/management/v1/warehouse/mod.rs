@@ -32,7 +32,8 @@ use crate::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
         tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        CatalogStore, CatalogTaskOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
+        CatalogStore, CatalogTaskOps, CatalogWarehouseOps, NamespaceId, State, TabularId,
+        TabularListFlags, Transaction,
     },
     ProjectId, WarehouseId,
 };
@@ -318,11 +319,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let validation_future =
             storage_profile.validate_access(storage_credential.as_ref(), None, &request_metadata);
         let overlap_check_future = async {
-            let mut transaction =
-                C::Transaction::begin_read(context.v1_state.catalog.clone()).await?;
             let warehouses =
-                C::list_warehouses(&project_id, None, transaction.transaction()).await?;
-            transaction.commit().await?;
+                C::list_warehouses(&project_id, None, context.v1_state.catalog.clone()).await?;
 
             for w in &warehouses {
                 if storage_profile.is_overlapping_location(&w.storage_profile) {
@@ -399,11 +397,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
-
-        let warehouses =
-            C::list_warehouses(&project_id, request.warehouse_status, trx.transaction()).await?;
-        trx.commit().await?;
+        let warehouses = C::list_warehouses(
+            &project_id,
+            request.warehouse_status,
+            context.v1_state.catalog,
+        )
+        .await?;
 
         let warehouses = futures::future::try_join_all(warehouses.iter().map(|w| {
             authorizer.is_allowed_warehouse_action(
@@ -443,9 +442,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let warehouses = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
-        transaction.commit().await?;
+        let warehouses = C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog).await?;
         Ok(warehouses.into())
     }
 
@@ -673,8 +670,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
         .await?;
 
+        let warehouse =
+            C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
         let storage_profile = warehouse.storage_profile.update_with(storage_profile)?;
         let old_secret_id = warehouse.storage_secret_id;
 
@@ -736,9 +734,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let UpdateWarehouseCredentialRequest {
             new_storage_credential,
         } = request;
-
+        let warehouse =
+            C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
         let old_secret_id = warehouse.storage_secret_id;
         let storage_profile = warehouse.storage_profile;
 

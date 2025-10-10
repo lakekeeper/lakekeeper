@@ -23,7 +23,8 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, ValidationError},
-        CatalogStore, CreateTableResponse, State, TableCreation, TableId, TabularId, Transaction,
+        CatalogStore, CatalogWarehouseOps, CreateTableResponse, State, TableCreation, TableId,
+        TabularId, Transaction,
     },
     WarehouseId,
 };
@@ -150,7 +151,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
     let namespace_id = authorized_namespace_ident_to_id::<C, _>(
         authorizer.clone(),
         &request_metadata,
@@ -166,7 +167,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let tabular_id = TabularId::Table(table_id);
 
     let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
     let storage_profile = &warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 

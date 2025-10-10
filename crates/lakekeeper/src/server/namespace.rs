@@ -28,8 +28,8 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskFilter, TaskMetadata,
         },
-        CatalogStore, CatalogTaskOps, GetWarehouseResponse, NamedEntity, NamespaceId, State,
-        Transaction,
+        CatalogStore, CatalogTaskOps, CatalogWarehouseOps, GetWarehouseResponse, NamedEntity,
+        NamespaceId, State, Transaction,
     },
     WarehouseId, CONFIG,
 };
@@ -238,7 +238,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
         }
 
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         let parent_id = if let Some(namespace_parent) = namespace.parent() {
             let parent_namespace_id =
                 C::namespace_to_id(warehouse_id, &namespace_parent, t.transaction()).await;
@@ -263,7 +263,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = NamespaceId::new_random();
-        let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+        let warehouse = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
@@ -380,6 +380,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
+
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         let namespace_id = authorized_namespace_ident_to_id::<C, _>(
             authorizer.clone(),
@@ -391,17 +392,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
+        let warehouse =
+            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
+
         //  ------------------- BUSINESS LOGIC -------------------
         if flags.recursive {
-            try_recursive_drop(
-                flags,
-                state,
-                warehouse_id,
-                t,
-                namespace_id,
-                &request_metadata,
-            )
-            .await
+            try_recursive_drop(flags, state, warehouse, t, namespace_id, &request_metadata).await
         } else {
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
             authorizer
@@ -464,12 +460,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
     flags: NamespaceDropFlags,
     state: ApiContext<State<A, C, S>>,
-    warehouse_id: WarehouseId,
+    warehouse: GetWarehouseResponse,
     mut t: <C as CatalogStore>::Transaction,
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
 ) -> Result<()> {
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
     if matches!(
         warehouse.tabular_delete_profile,
         TabularDeleteProfile::Hard {}
@@ -480,7 +475,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
         ))
     {
         let drop_info =
-            C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
+            C::drop_namespace(warehouse.id, namespace_id, flags, t.transaction()).await?;
 
         C::cancel_scheduled_tasks(
             None,
@@ -494,7 +489,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
             for (tabular_id, tabular_location, tabular_ident) in drop_info.child_tables {
                 TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
-                        warehouse_id,
+                        warehouse_id: warehouse.id,
                         entity_id: EntityId::from(tabular_id),
                         parent_task_id: None,
                         schedule_for: None,

@@ -16,7 +16,8 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        CatalogStore, NamedEntity, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        CatalogStore, CatalogWarehouseOps, NamedEntity, Result, SecretStore, State, TabularId,
+        Transaction, ViewId,
     },
 };
 
@@ -44,7 +45,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             CatalogWarehouseAction::CanUse,
         )
         .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
     let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
 
     let view_id: ViewId = authorizer
@@ -59,7 +60,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     // ------------------- BUSINESS LOGIC -------------------
 
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
 
     state
         .v1_state

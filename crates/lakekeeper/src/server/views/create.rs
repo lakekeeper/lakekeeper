@@ -20,7 +20,8 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
         storage::{StorageLocations as _, StoragePermissions},
-        CatalogStore, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        CatalogStore, CatalogWarehouseOps, Result, SecretStore, State, TabularId, Transaction,
+        ViewId,
     },
 };
 
@@ -73,7 +74,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- BUSINESS LOGIC -------------------
     let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
