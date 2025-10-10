@@ -21,7 +21,7 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
-# Migrate db
+# Migrate db (make sure you have sqlx installed `cargo install sqlx-cli`)
 cd crates/lakekeeper
 sqlx database create && sqlx migrate run
 cd ../..
