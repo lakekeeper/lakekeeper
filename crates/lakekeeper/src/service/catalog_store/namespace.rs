@@ -5,9 +5,11 @@ use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
+    api::iceberg::v1::PaginatedMapping,
     service::{
         impl_error_stack_methods, impl_from_with_detail, tasks::TaskId, CatalogBackendError,
-        CatalogStore, DatabaseIntegrityError, NamespaceId, TableIdent, TabularId,
+        CatalogStore, DatabaseIntegrityError, InvalidPaginationToken, ListNamespacesQuery,
+        NamespaceId, TableIdent, TabularId, Transaction,
     },
     WarehouseId,
 };
@@ -118,12 +120,12 @@ impl CatalogGetNamespaceError {
 
     #[must_use]
     pub fn not_found(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
-        Self::NamespaceNotFound(NamespaceNotFound::new(warehouse_id, namespace))
+        NamespaceNotFound::new(warehouse_id, namespace).into()
     }
 
     #[must_use]
     pub fn database_integrity(message: impl Into<String>) -> Self {
-        Self::DatabaseIntegrityError(DatabaseIntegrityError::new(message))
+        DatabaseIntegrityError::new(message).into()
     }
 
     #[must_use]
@@ -134,6 +136,7 @@ impl CatalogGetNamespaceError {
 const GET_BY_NAME_ERROR_STACK: &str = "Error getting namespace in catalog";
 impl_from_with_detail!(CatalogBackendError => CatalogGetNamespaceError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
 impl_from_with_detail!(NamespaceNotFound => CatalogGetNamespaceError::NamespaceNotFound, GET_BY_NAME_ERROR_STACK);
+impl_from_with_detail!(DatabaseIntegrityError => CatalogGetNamespaceError::DatabaseIntegrityError, GET_BY_NAME_ERROR_STACK);
 
 impl From<CatalogGetNamespaceError> for ErrorModel {
     fn from(err: CatalogGetNamespaceError) -> Self {
@@ -146,6 +149,44 @@ impl From<CatalogGetNamespaceError> for ErrorModel {
 }
 impl From<CatalogGetNamespaceError> for IcebergErrorResponse {
     fn from(err: CatalogGetNamespaceError) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+// --------------------------- List Error ---------------------------
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum CatalogListNamespaceError {
+    #[error(transparent)]
+    CatalogBackendError(CatalogBackendError),
+    #[error(transparent)]
+    DatabaseIntegrityError(DatabaseIntegrityError),
+    #[error(transparent)]
+    InvalidPaginationToken(InvalidPaginationToken),
+}
+
+impl CatalogListNamespaceError {
+    #[must_use]
+    pub fn invalid_pagination_token(message: impl Into<String>, token: impl Into<String>) -> Self {
+        InvalidPaginationToken::new(message, token).into()
+    }
+}
+
+const LIST_ERROR_STACK: &str = "Error listing namespaces in catalog";
+impl_from_with_detail!(CatalogBackendError => CatalogListNamespaceError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
+impl_from_with_detail!(InvalidPaginationToken => CatalogListNamespaceError::InvalidPaginationToken, GET_BY_NAME_ERROR_STACK);
+impl_from_with_detail!(DatabaseIntegrityError => CatalogListNamespaceError::DatabaseIntegrityError, LIST_ERROR_STACK);
+
+impl From<CatalogListNamespaceError> for ErrorModel {
+    fn from(err: CatalogListNamespaceError) -> Self {
+        match err {
+            CatalogListNamespaceError::CatalogBackendError(e) => e.into(),
+            CatalogListNamespaceError::DatabaseIntegrityError(e) => e.into(),
+            CatalogListNamespaceError::InvalidPaginationToken(e) => e.into(),
+        }
+    }
+}
+impl From<CatalogListNamespaceError> for IcebergErrorResponse {
+    fn from(err: CatalogListNamespaceError) -> Self {
         ErrorModel::from(err).into()
     }
 }
@@ -165,7 +206,7 @@ where
 
         match ns {
             Ok(ns) => Ok(Some(ns)),
-            Err(CatalogGetNamespaceError::NamespaceNotFound { .. }) => Ok(None),
+            Err(CatalogGetNamespaceError::NamespaceNotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -179,6 +220,17 @@ where
     ) -> Result<GetNamespaceResponse, CatalogGetNamespaceError> {
         let ns = Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await?;
         Ok(ns)
+    }
+
+    async fn list_namespaces<'a>(
+        warehouse_id: WarehouseId,
+        query: &ListNamespacesQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<
+        PaginatedMapping<NamespaceId, GetNamespaceResponse>,
+        CatalogListNamespaceError,
+    > {
+        Self::list_namespaces_impl(warehouse_id, query, transaction).await
     }
 }
 

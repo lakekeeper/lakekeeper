@@ -281,14 +281,15 @@ mod tests {
 
     // Name is important for test profile
     mod openfga_integration_tests {
+        use http::StatusCode;
+        use lakekeeper::{api::ErrorModel, tokio, ProjectId};
+        use openfga_client::client::{TupleKey, TupleKeyWithoutCondition};
+
         use super::super::*;
         use crate::{
             authorizer::tests::openfga_integration_tests::new_authorizer_in_empty_store,
             entities::OpenFgaEntity as _, relations::WarehouseRelation,
         };
-        use http::StatusCode;
-        use lakekeeper::{api::ErrorModel, tokio, ProjectId};
-        use openfga_client::client::{TupleKey, TupleKeyWithoutCondition};
 
         #[tokio::test]
         async fn test_delete_non_existing_tuple_err_parsed_correctly() {

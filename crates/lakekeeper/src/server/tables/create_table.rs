@@ -161,7 +161,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             warehouse_id,
             provided_ns,
             namespace,
-            CatalogNamespaceAction::CanCreateView,
+            CatalogNamespaceAction::CanCreateTable,
         )
         .await?;
 

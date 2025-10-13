@@ -221,11 +221,14 @@ where
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
-    async fn list_namespaces<'a>(
+    async fn list_namespaces_impl<'a>(
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceId, GetNamespaceResponse>>;
+    ) -> std::result::Result<
+        PaginatedMapping<NamespaceId, GetNamespaceResponse>,
+        CatalogListNamespaceError,
+    >;
 
     async fn create_namespace<'a>(
         warehouse_id: WarehouseId,

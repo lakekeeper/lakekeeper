@@ -2,7 +2,6 @@ use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use http::StatusCode;
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use itertools::izip;
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -19,9 +18,10 @@ use crate::{
     },
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        storage::join_location, tasks::TaskId, CatalogGetNamespaceError, CreateNamespaceRequest,
-        CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
-        NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceIdentOrId, Result, TabularId,
+        storage::join_location, tasks::TaskId, CatalogGetNamespaceError, CatalogListNamespaceError,
+        CreateNamespaceRequest, CreateNamespaceResponse, DatabaseIntegrityError, ErrorModel,
+        GetNamespaceResponse, ListNamespacesQuery, NamespaceDropInfo, NamespaceId, NamespaceIdent,
+        NamespaceIdentOrId, Result, TabularId,
     },
     WarehouseId, CONFIG,
 };
@@ -72,11 +72,11 @@ pub(crate) async fn get_namespace_by_id<
     })?;
 
     Ok(GetNamespaceResponse {
-        namespace_ident: NamespaceIdent::from_vec(row.namespace_name.clone()).map_err(|_e| {
-            CatalogGetNamespaceError::database_integrity(format!(
-                "Namespace with id '{namespace_id}' in Warehouse with id '{warehouse_id}' has empty identifier name."
-            ))
-        })?,
+        namespace_ident: to_namespace_or_integrity_error(
+            row.namespace_name,
+            warehouse_id,
+            namespace_id,
+        )?,
         protected: row.protected,
         properties: row.properties.deref().clone().map(Arc::new),
         namespace_id,
@@ -140,7 +140,10 @@ pub(crate) async fn list_namespaces(
         return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<PaginatedMapping<NamespaceId, GetNamespaceResponse>> {
+) -> std::result::Result<
+    PaginatedMapping<NamespaceId, GetNamespaceResponse>,
+    CatalogListNamespaceError,
+> {
     let page_size = CONFIG.page_size_or_pagination_max(*page_size);
 
     // Treat empty parent as None
@@ -149,7 +152,10 @@ pub(crate) async fn list_namespaces(
         .and_then(|p| if p.is_empty() { None } else { Some(p.clone()) });
     let token = page_token
         .as_option()
-        .map(PaginateToken::try_from)
+        .map(|s| {
+            PaginateToken::try_from(s)
+                .map_err(|e| CatalogListNamespaceError::invalid_pagination_token(e.message, s))
+        })
         .transpose()?;
 
     let (token_ts, token_id) = token
@@ -199,7 +205,7 @@ pub(crate) async fn list_namespaces(
         )
         .fetch_all(&mut **transaction)
         .await
-        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
         .into_iter()
         .map(|r| {
             (
@@ -238,7 +244,7 @@ pub(crate) async fn list_namespaces(
         )
         .fetch_all(&mut **transaction)
         .await
-        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
         .into_iter()
         .map(|r| {
             (
@@ -259,28 +265,20 @@ pub(crate) async fn list_namespaces(
     for ns_result in namespaces
         .into_iter()
         .map(|(id, n, ts, protected, properties, updated_at)| {
-            NamespaceIdent::from_vec(n.clone())
-                .map_err(|e| {
-                    IcebergErrorResponse::from(ErrorModel::internal(
-                        "Error converting namespace",
-                        "NamespaceConversionError",
-                        Some(Box::new(e)),
-                    ))
-                })
-                .map(|n| {
-                    (
-                        id.into(),
-                        GetNamespaceResponse {
-                            warehouse_id,
-                            namespace_id: id.into(),
-                            namespace_ident: n,
-                            protected,
-                            properties: properties.map(Arc::new),
-                            updated_at,
-                        },
-                        ts,
-                    )
-                })
+            to_namespace_or_integrity_error(n, warehouse_id, id.into()).map(|n| {
+                (
+                    id.into(),
+                    GetNamespaceResponse {
+                        warehouse_id,
+                        namespace_id: id.into(),
+                        namespace_ident: n,
+                        protected,
+                        properties: properties.map(Arc::new),
+                        updated_at,
+                    },
+                    ts,
+                )
+            })
         })
     {
         let (id, ns, created_at) = ns_result?;
@@ -561,6 +559,17 @@ pub(crate) async fn drop_namespace(
             .map(TaskId::from)
             .collect(),
     })
+}
+
+fn to_namespace_or_integrity_error(
+    namespace: Vec<String>,
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+) -> std::result::Result<NamespaceIdent, DatabaseIntegrityError> {
+    NamespaceIdent::from_vec(namespace)
+        .map_err(|_e| DatabaseIntegrityError::new(format!(
+                "Namespace with id '{namespace_id}' in Warehouse with id '{warehouse_id}' has empty identifier name."
+            )))
 }
 
 fn json_value_to_namespace_ident(v: serde_json::Value) -> Result<NamespaceIdent, ErrorModel> {

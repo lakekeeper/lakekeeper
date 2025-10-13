@@ -312,7 +312,7 @@ pub(super) async fn get_warehouse_by_name(
     warehouse_name: &str,
     project_id: &ProjectId,
     catalog_state: CatalogState,
-) -> Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError> {
+) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError> {
     let warehouse = sqlx::query!(
         r#"
         SELECT

@@ -50,8 +50,8 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .await?;
 
     let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-
     let source_id = C::view_to_id(warehouse_id, &request.source, t_read.transaction()).await; // We can't fail before AuthZ;
+    t_read.commit().await?;
     let source_id = authorizer
         .require_view_action(
             &request_metadata,

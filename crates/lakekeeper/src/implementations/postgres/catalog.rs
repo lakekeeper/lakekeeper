@@ -70,14 +70,14 @@ use crate::{
             TaskQueueName,
         },
         CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
-        CatalogRenameWarehouseError, CatalogStore, CreateNamespaceRequest, CreateNamespaceResponse,
-        CreateOrUpdateUserResponse, CreateTableResponse, GetNamespaceResponse, GetProjectResponse,
-        GetTableMetadataResponse, GetWarehouseResponse, ListNamespacesQuery, LoadTableResponse,
-        NamespaceDropInfo, NamespaceId, NamespaceIdentOrId, ProjectId, Result, RoleId, ServerInfo,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
-        TabularListFlags, Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId,
-        WarehouseStatus,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
+        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogStore,
+        CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
+        CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
+        GetWarehouseResponse, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
+        NamespaceId, NamespaceIdentOrId, ProjectId, Result, RoleId, ServerInfo, TableCommit,
+        TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo, TabularListFlags,
+        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -105,15 +105,18 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_name: &str,
         project_id: &ProjectId,
         catalog_state: CatalogState,
-    ) -> Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError> {
+    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError> {
         get_warehouse_by_name(warehouse_name, project_id, catalog_state).await
     }
 
-    async fn list_namespaces<'a>(
+    async fn list_namespaces_impl<'a>(
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceId, GetNamespaceResponse>> {
+    ) -> std::result::Result<
+        PaginatedMapping<NamespaceId, GetNamespaceResponse>,
+        CatalogListNamespaceError,
+    > {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
@@ -469,7 +472,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<(), CatalogDeleteWarehouseError> {
+    ) -> std::result::Result<(), CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 

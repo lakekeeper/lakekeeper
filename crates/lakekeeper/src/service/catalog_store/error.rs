@@ -220,10 +220,67 @@ impl From<DatabaseIntegrityError> for ErrorModel {
     fn from(err: DatabaseIntegrityError) -> Self {
         let DatabaseIntegrityError { message, stack } = err;
 
-        crate::service::ErrorModel {
+        ErrorModel {
             r#type: "DatabaseIntegrityError".to_string(),
             code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             message: format!("Database integrity error: {message}"),
+            stack,
+            source: None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct InvalidPaginationToken {
+    pub message: String,
+    pub value: String,
+    pub stack: Vec<String>,
+}
+
+impl_error_stack_methods!(InvalidPaginationToken);
+
+impl StdError for InvalidPaginationToken {}
+
+impl Display for InvalidPaginationToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "Invalid pagination token - {}. Got: `{}`",
+            self.message, self.value
+        )?;
+
+        if !self.stack.is_empty() {
+            writeln!(f, "Stack:")?;
+            for detail in &self.stack {
+                writeln!(f, "  {detail}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl InvalidPaginationToken {
+    pub fn new(message: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            value: value.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+
+impl From<InvalidPaginationToken> for ErrorModel {
+    fn from(err: InvalidPaginationToken) -> Self {
+        let InvalidPaginationToken {
+            message,
+            value,
+            stack,
+        } = err;
+
+        ErrorModel {
+            r#type: "InvalidPaginationToken".to_string(),
+            code: StatusCode::BAD_REQUEST.as_u16(),
+            message: format!("Invalid pagination token - {message}. Got: `{value}`"),
             stack,
             source: None,
         }
