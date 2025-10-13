@@ -304,6 +304,7 @@ impl S3Profile {
         self.normalize_endpoint()?;
         self.normalize_assume_role_arn();
         self.normalize_sts_role_arn();
+        self.normalize_kms_key_arn();
 
         if let Some(S3Credential::CloudflareR2(cloudflare_r2_credential)) = s3_credential {
             self.normalize_r2(cloudflare_r2_credential)?;
@@ -613,7 +614,7 @@ impl S3Profile {
         role_arn: Option<&str>,
         storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        let policy = self.get_aws_policy_string(table_location, storage_permissions)?;
+        let policy = self.get_sts_policy_string(table_location, storage_permissions)?;
         self.assume_role_with_sts(s3_credential, role_arn, Some(policy))
             .await
     }
@@ -786,7 +787,7 @@ impl S3Profile {
         }
     }
 
-    fn get_aws_policy_string(
+    fn get_sts_policy_string(
         &self,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -942,6 +943,14 @@ impl S3Profile {
         if let Some(sts_role_arn) = self.sts_role_arn.as_ref() {
             if sts_role_arn.is_empty() {
                 self.sts_role_arn = None;
+            }
+        }
+    }
+
+    fn normalize_kms_key_arn(&mut self) {
+        if let Some(aws_kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            if aws_kms_key_arn.is_empty() {
+                self.aws_kms_key_arn = None;
             }
         }
     }
@@ -1617,7 +1626,7 @@ pub(crate) mod test {
             .sts_enabled(true)
             .build();
         let policy = profile
-            .get_aws_policy_string(
+            .get_sts_policy_string(
                 &table_location.parse().unwrap(),
                 StoragePermissions::ReadWriteDelete,
             )
