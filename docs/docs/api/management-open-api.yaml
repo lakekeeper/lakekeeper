@@ -3775,8 +3775,12 @@ components:
         - type: object
           required:
             - namespace-id
+            - warehouse-id
           properties:
             namespace-id:
+              type: string
+              format: uuid
+            warehouse-id:
               type: string
               format: uuid
         - type: object

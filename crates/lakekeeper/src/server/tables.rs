@@ -4033,6 +4033,12 @@ pub(crate) mod test {
             "from_ns".to_string(),
         )
         .await;
+        let to_ns = crate::server::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "to_ns".to_string(),
+        )
+        .await;
         let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
         let table_name = "from_table".to_string();
 
@@ -4045,7 +4051,7 @@ pub(crate) mod test {
                     name: table_name.clone(),
                 },
                 destination: TableIdent {
-                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    namespace: to_ns.namespace.clone(),
                     name: table_name,
                 },
             },
