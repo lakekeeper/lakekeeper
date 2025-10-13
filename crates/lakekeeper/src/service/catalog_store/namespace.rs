@@ -7,9 +7,9 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::iceberg::v1::PaginatedMapping,
     service::{
-        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId, CatalogBackendError,
-        CatalogStore, DatabaseIntegrityError, InvalidPaginationToken, ListNamespacesQuery,
-        NamespaceId, TableIdent, TabularId, Transaction,
+        define_transparent_error, impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
+        CatalogBackendError, CatalogStore, DatabaseIntegrityError, InvalidPaginationToken,
+        ListNamespacesQuery, NamespaceId, TableIdent, TabularId, Transaction,
     },
     WarehouseId,
 };
@@ -91,33 +91,17 @@ impl From<NamespaceNotFound> for ErrorModel {
 }
 
 // --------------------------- GET ERROR ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogGetNamespaceError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    NamespaceNotFound(NamespaceNotFound),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
+define_transparent_error! {
+    pub enum CatalogGetNamespaceError,
+    stack_message: "Error getting namespace in catalog",
+    variants: [
+        CatalogBackendError,
+        NamespaceNotFound,
+        DatabaseIntegrityError,
+    ]
 }
 
 impl CatalogGetNamespaceError {
-    #[must_use]
-    pub fn append_detail(mut self, detail: String) -> Self {
-        match &mut self {
-            CatalogGetNamespaceError::CatalogBackendError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetNamespaceError::DatabaseIntegrityError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetNamespaceError::NamespaceNotFound(e) => {
-                e.append_detail_mut(detail);
-            }
-        }
-        self
-    }
-
     #[must_use]
     pub fn not_found(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
         NamespaceNotFound::new(warehouse_id, namespace).into()
@@ -133,61 +117,22 @@ impl CatalogGetNamespaceError {
         matches!(self, CatalogGetNamespaceError::NamespaceNotFound(_))
     }
 }
-const GET_BY_NAME_ERROR_STACK: &str = "Error getting namespace in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogGetNamespaceError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(NamespaceNotFound => CatalogGetNamespaceError::NamespaceNotFound, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogGetNamespaceError::DatabaseIntegrityError, GET_BY_NAME_ERROR_STACK);
-
-impl From<CatalogGetNamespaceError> for ErrorModel {
-    fn from(err: CatalogGetNamespaceError) -> Self {
-        match err {
-            CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
-            CatalogGetNamespaceError::NamespaceNotFound(e) => e.into(),
-            CatalogGetNamespaceError::DatabaseIntegrityError(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogGetNamespaceError> for IcebergErrorResponse {
-    fn from(err: CatalogGetNamespaceError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
 
 // --------------------------- List Error ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogListNamespaceError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
-    #[error(transparent)]
-    InvalidPaginationToken(InvalidPaginationToken),
+define_transparent_error! {
+    pub enum CatalogListNamespaceError,
+    stack_message: "Error listing namespaces in catalog",
+    variants: [
+        CatalogBackendError,
+        DatabaseIntegrityError,
+        InvalidPaginationToken,
+    ]
 }
 
 impl CatalogListNamespaceError {
     #[must_use]
     pub fn invalid_pagination_token(message: impl Into<String>, token: impl Into<String>) -> Self {
         InvalidPaginationToken::new(message, token).into()
-    }
-}
-
-const LIST_ERROR_STACK: &str = "Error listing namespaces in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogListNamespaceError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(InvalidPaginationToken => CatalogListNamespaceError::InvalidPaginationToken, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogListNamespaceError::DatabaseIntegrityError, LIST_ERROR_STACK);
-
-impl From<CatalogListNamespaceError> for ErrorModel {
-    fn from(err: CatalogListNamespaceError) -> Self {
-        match err {
-            CatalogListNamespaceError::CatalogBackendError(e) => e.into(),
-            CatalogListNamespaceError::DatabaseIntegrityError(e) => e.into(),
-            CatalogListNamespaceError::InvalidPaginationToken(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogListNamespaceError> for IcebergErrorResponse {
-    fn from(err: CatalogListNamespaceError) -> Self {
-        ErrorModel::from(err).into()
     }
 }
 

@@ -7,7 +7,10 @@ use crate::{
         warehouse::TabularDeleteProfile, DeleteWarehouseQuery, ProtectionResponse,
     },
     service::{
-        catalog_store::{impl_error_stack_methods, impl_from_with_detail, CatalogBackendError},
+        catalog_store::{
+            define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
+            CatalogBackendError,
+        },
         define_simple_error,
         storage::StorageProfile,
         DatabaseIntegrityError, Result as ServiceResult,
@@ -334,267 +337,85 @@ impl From<CatalogDeleteWarehouseError> for IcebergErrorResponse {
 }
 
 // --------------------------- RENAME ERROR ---------------------------
-#[derive(thiserror::Error, Debug)]
-pub enum CatalogRenameWarehouseError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    WarehouseIdNotFound(WarehouseIdNotFound),
-}
-const RENAME_ERROR_STACK: &str = "Error renaming warehouse in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogRenameWarehouseError::CatalogBackendError, RENAME_ERROR_STACK);
-impl_from_with_detail!(WarehouseIdNotFound => CatalogRenameWarehouseError::WarehouseIdNotFound, RENAME_ERROR_STACK);
-
-impl From<CatalogRenameWarehouseError> for ErrorModel {
-    fn from(err: CatalogRenameWarehouseError) -> Self {
-        match err {
-            CatalogRenameWarehouseError::WarehouseIdNotFound(e) => e.into(),
-            CatalogRenameWarehouseError::CatalogBackendError(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogRenameWarehouseError> for IcebergErrorResponse {
-    fn from(err: CatalogRenameWarehouseError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum CatalogRenameWarehouseError,
+    stack_message: "Error renaming warehouse in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+    ]
 }
 
 // --------------------------- LIST ERROR ---------------------------
-
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogListWarehousesError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
-}
-
-const LIST_ERROR_STACK: &str = "Error listing warehouses in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogListWarehousesError::CatalogBackendError, LIST_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogListWarehousesError::DatabaseIntegrityError, LIST_ERROR_STACK);
-
-impl From<CatalogListWarehousesError> for ErrorModel {
-    fn from(err: CatalogListWarehousesError) -> Self {
-        match err {
-            CatalogListWarehousesError::DatabaseIntegrityError(e) => e.into(),
-            CatalogListWarehousesError::CatalogBackendError(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogListWarehousesError> for IcebergErrorResponse {
-    fn from(err: CatalogListWarehousesError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum CatalogListWarehousesError,
+    stack_message: "Error listing warehouses in catalog",
+    variants: [
+        CatalogBackendError,
+        DatabaseIntegrityError,
+    ]
 }
 
 // --------------------------- GET ERROR ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogGetWarehouseByIdError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
-    #[error(transparent)]
-    WarehouseIdNotFound(WarehouseIdNotFound),
-}
-impl CatalogGetWarehouseByIdError {
-    #[must_use]
-    pub fn append_detail(mut self, detail: String) -> Self {
-        match &mut self {
-            CatalogGetWarehouseByIdError::CatalogBackendError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetWarehouseByIdError::DatabaseIntegrityError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetWarehouseByIdError::WarehouseIdNotFound(e) => {
-                e.append_detail_mut(detail);
-            }
-        }
-        self
-    }
-}
-const GET_ERROR_STACK: &str = "Error getting warehouse by id in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogGetWarehouseByIdError::CatalogBackendError, GET_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogGetWarehouseByIdError::DatabaseIntegrityError, GET_ERROR_STACK);
-impl_from_with_detail!(WarehouseIdNotFound => CatalogGetWarehouseByIdError::WarehouseIdNotFound, GET_ERROR_STACK);
-
-impl From<CatalogGetWarehouseByIdError> for ErrorModel {
-    fn from(err: CatalogGetWarehouseByIdError) -> Self {
-        match err {
-            CatalogGetWarehouseByIdError::DatabaseIntegrityError(e) => e.into(),
-            CatalogGetWarehouseByIdError::CatalogBackendError(e) => e.into(),
-            CatalogGetWarehouseByIdError::WarehouseIdNotFound(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogGetWarehouseByIdError> for IcebergErrorResponse {
-    fn from(err: CatalogGetWarehouseByIdError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum CatalogGetWarehouseByIdError,
+    stack_message: "Error getting warehouse by id in catalog",
+    variants: [
+        CatalogBackendError,
+        DatabaseIntegrityError,
+        WarehouseIdNotFound,
+    ]
 }
 
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogGetWarehouseByNameError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
-    #[error(transparent)]
-    WarehouseNameNotFound(WarehouseNameNotFound),
-}
-impl CatalogGetWarehouseByNameError {
-    #[must_use]
-    pub fn append_detail(mut self, detail: String) -> Self {
-        match &mut self {
-            CatalogGetWarehouseByNameError::CatalogBackendError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetWarehouseByNameError::DatabaseIntegrityError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetWarehouseByNameError::WarehouseNameNotFound(e) => {
-                e.append_detail_mut(detail);
-            }
-        }
-        self
-    }
-}
-const GET_BY_NAME_ERROR_STACK: &str = "Error getting warehouse by name in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogGetWarehouseByNameError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogGetWarehouseByNameError::DatabaseIntegrityError, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(WarehouseNameNotFound => CatalogGetWarehouseByNameError::WarehouseNameNotFound, GET_BY_NAME_ERROR_STACK);
-
-impl From<CatalogGetWarehouseByNameError> for ErrorModel {
-    fn from(err: CatalogGetWarehouseByNameError) -> Self {
-        match err {
-            CatalogGetWarehouseByNameError::DatabaseIntegrityError(e) => e.into(),
-            CatalogGetWarehouseByNameError::CatalogBackendError(e) => e.into(),
-            CatalogGetWarehouseByNameError::WarehouseNameNotFound(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogGetWarehouseByNameError> for IcebergErrorResponse {
-    fn from(err: CatalogGetWarehouseByNameError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum CatalogGetWarehouseByNameError,
+    stack_message: "Error getting warehouse by name in catalog",
+    variants: [
+        CatalogBackendError,
+        DatabaseIntegrityError,
+        WarehouseNameNotFound,
+    ]
 }
 
 // --------------------------- Set Warehouse Delete Profile Error ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum SetWarehouseDeletionProfileError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    WarehouseIdNotFound(WarehouseIdNotFound),
-}
-const SET_WAREHOUSE_DELETION_PROFILE_ERROR_STACK: &str =
-    "Error setting warehouse deletion profile in catalog";
-impl_from_with_detail!(CatalogBackendError => SetWarehouseDeletionProfileError::CatalogBackendError,
-    SET_WAREHOUSE_DELETION_PROFILE_ERROR_STACK);
-impl_from_with_detail!(WarehouseIdNotFound => SetWarehouseDeletionProfileError::WarehouseIdNotFound,
-    SET_WAREHOUSE_DELETION_PROFILE_ERROR_STACK);
-
-impl From<SetWarehouseDeletionProfileError> for ErrorModel {
-    fn from(err: SetWarehouseDeletionProfileError) -> Self {
-        match err {
-            SetWarehouseDeletionProfileError::WarehouseIdNotFound(e) => e.into(),
-            SetWarehouseDeletionProfileError::CatalogBackendError(e) => e.into(),
-        }
-    }
-}
-impl From<SetWarehouseDeletionProfileError> for IcebergErrorResponse {
-    fn from(err: SetWarehouseDeletionProfileError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum SetWarehouseDeletionProfileError,
+    stack_message: "Error setting warehouse deletion profile in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+    ]
 }
 
 // --------------------------- Set Warehouse Status Error ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum SetWarehouseStatusError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    WarehouseIdNotFound(WarehouseIdNotFound),
-}
-const SET_WAREHOUSE_STATUS_ERROR_STACK: &str = "Error setting warehouse status in catalog";
-impl_from_with_detail!(CatalogBackendError => SetWarehouseStatusError::CatalogBackendError,
-    SET_WAREHOUSE_STATUS_ERROR_STACK);
-impl_from_with_detail!(WarehouseIdNotFound => SetWarehouseStatusError::WarehouseIdNotFound,
-    SET_WAREHOUSE_STATUS_ERROR_STACK);
-
-impl From<SetWarehouseStatusError> for ErrorModel {
-    fn from(err: SetWarehouseStatusError) -> Self {
-        match err {
-            SetWarehouseStatusError::WarehouseIdNotFound(e) => e.into(),
-            SetWarehouseStatusError::CatalogBackendError(e) => e.into(),
-        }
-    }
-}
-impl From<SetWarehouseStatusError> for IcebergErrorResponse {
-    fn from(err: SetWarehouseStatusError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum SetWarehouseStatusError,
+    stack_message: "Error setting warehouse status in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+    ]
 }
 
 // --------------------------- Set Warehouse Status Error ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum UpdateWarehouseStorageProfileError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    WarehouseIdNotFound(WarehouseIdNotFound),
-    #[error(transparent)]
-    StorageProfileSerializationError(StorageProfileSerializationError),
-}
-const UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK: &str =
-    "Error updating warehouse storage profile in catalog";
-impl_from_with_detail!(CatalogBackendError => UpdateWarehouseStorageProfileError::CatalogBackendError,
-    UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK);
-impl_from_with_detail!(WarehouseIdNotFound => UpdateWarehouseStorageProfileError::WarehouseIdNotFound,
-    UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK);
-impl_from_with_detail!(StorageProfileSerializationError => UpdateWarehouseStorageProfileError::StorageProfileSerializationError,
-    UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK);
-impl From<UpdateWarehouseStorageProfileError> for ErrorModel {
-    fn from(err: UpdateWarehouseStorageProfileError) -> Self {
-        match err {
-            UpdateWarehouseStorageProfileError::WarehouseIdNotFound(e) => e.into(),
-            UpdateWarehouseStorageProfileError::CatalogBackendError(e) => e.into(),
-            UpdateWarehouseStorageProfileError::StorageProfileSerializationError(e) => e.into(),
-        }
-    }
-}
-impl From<UpdateWarehouseStorageProfileError> for IcebergErrorResponse {
-    fn from(err: UpdateWarehouseStorageProfileError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum UpdateWarehouseStorageProfileError,
+    stack_message: "Error updating warehouse storage profile in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+        StorageProfileSerializationError,
+    ]
 }
 
 // --------------------------- Set Warehouse Protected Error ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum SetWarehouseProtectedError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    WarehouseIdNotFound(WarehouseIdNotFound),
-}
-const SET_WAREHOUSE_PROTECTED_ERROR_STACK: &str = "Error setting warehouse protected in catalog";
-impl_from_with_detail!(CatalogBackendError => SetWarehouseProtectedError::CatalogBackendError,
-    SET_WAREHOUSE_PROTECTED_ERROR_STACK);
-impl_from_with_detail!(WarehouseIdNotFound => SetWarehouseProtectedError::WarehouseIdNotFound,
-    SET_WAREHOUSE_PROTECTED_ERROR_STACK);
-impl From<SetWarehouseProtectedError> for ErrorModel {
-    fn from(err: SetWarehouseProtectedError) -> Self {
-        match err {
-            SetWarehouseProtectedError::WarehouseIdNotFound(e) => e.into(),
-            SetWarehouseProtectedError::CatalogBackendError(e) => e.into(),
-        }
-    }
-}
-impl From<SetWarehouseProtectedError> for IcebergErrorResponse {
-    fn from(err: SetWarehouseProtectedError) -> Self {
-        ErrorModel::from(err).into()
-    }
+define_transparent_error! {
+    pub enum SetWarehouseProtectedError,
+    stack_message: "Error setting warehouse protected in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+    ]
 }
 
 #[async_trait::async_trait]

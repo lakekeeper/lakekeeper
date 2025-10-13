@@ -43,6 +43,71 @@ macro_rules! impl_from_with_detail {
     };
 }
 
+/// Defines a fully transparent error enum with automatic conversion implementations.
+///
+/// This macro generates:
+/// - An enum with all variants marked as `#[error(transparent)]`
+/// - `impl_from_with_detail!` for each variant to add stack context
+/// - `From<ErrorType> for ErrorModel` that delegates to variant conversions
+/// - `From<ErrorType> for IcebergErrorResponse` via `ErrorModel`
+macro_rules! define_transparent_error {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $error_name:ident,
+        stack_message: $stack_msg:expr,
+        variants: [
+            $($variant:ident),* $(,)?
+        ]
+    ) => {
+        $(#[$meta])*
+        #[derive(thiserror::Error, Debug, PartialEq)]
+        $vis enum $error_name {
+            $(
+                #[error(transparent)]
+                $variant($variant),
+            )*
+        }
+
+        paste::paste! {
+            const [<$error_name:snake:upper _STACK>]: &str = $stack_msg;
+
+            $(
+                impl_from_with_detail!($variant => $error_name::$variant, [<$error_name:snake:upper _STACK>]);
+            )*
+
+            impl $error_name {
+                #[must_use]
+                pub fn append_detail(mut self, detail: String) -> Self {
+                    match &mut self {
+                        $(
+                            $error_name::$variant(e) => {
+                                e.append_detail_mut(detail);
+                            }
+                        )*
+                    }
+                    self
+                }
+            }
+
+            impl From<$error_name> for ErrorModel {
+                fn from(err: $error_name) -> Self {
+                    match err {
+                        $(
+                            $error_name::$variant(e) => e.into(),
+                        )*
+                    }
+                }
+            }
+
+            impl From<$error_name> for IcebergErrorResponse {
+                fn from(err: $error_name) -> Self {
+                    ErrorModel::from(err).into()
+                }
+            }
+        }
+    };
+}
+
 macro_rules! define_simple_error {
     ($error_name:ident, $error_message:literal) => {
         #[derive(thiserror::Error, Debug, PartialEq, Eq)]
@@ -69,6 +134,7 @@ macro_rules! define_simple_error {
 }
 
 pub(crate) use define_simple_error;
+pub(crate) use define_transparent_error;
 pub(crate) use impl_error_stack_methods;
 pub(crate) use impl_from_with_detail;
 
