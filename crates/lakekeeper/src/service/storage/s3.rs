@@ -864,7 +864,7 @@ impl S3Profile {
 
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {
         if let Some(key_prefix) = self.key_prefix.as_mut() {
-            *key_prefix = key_prefix.trim_matches('/').to_string();
+            *key_prefix = key_prefix.trim().trim_matches('/').to_string();
         }
 
         if let Some(key_prefix) = self.key_prefix.as_ref() {
@@ -933,24 +933,30 @@ impl S3Profile {
 
     fn normalize_assume_role_arn(&mut self) {
         if let Some(assume_role_arn) = self.assume_role_arn.as_ref() {
-            if assume_role_arn.is_empty() {
+            if assume_role_arn.trim().is_empty() {
                 self.assume_role_arn = None;
+            } else {
+                self.assume_role_arn = Some(assume_role_arn.trim().to_string());
             }
         }
     }
 
     fn normalize_sts_role_arn(&mut self) {
         if let Some(sts_role_arn) = self.sts_role_arn.as_ref() {
-            if sts_role_arn.is_empty() {
+            if sts_role_arn.trim().is_empty() {
                 self.sts_role_arn = None;
+            } else {
+                self.sts_role_arn = Some(sts_role_arn.trim().to_string());
             }
         }
     }
 
     fn normalize_kms_key_arn(&mut self) {
         if let Some(aws_kms_key_arn) = self.aws_kms_key_arn.as_ref() {
-            if aws_kms_key_arn.is_empty() {
+            if aws_kms_key_arn.trim().is_empty() {
                 self.aws_kms_key_arn = None;
+            } else {
+                self.aws_kms_key_arn = Some(aws_kms_key_arn.trim().to_string());
             }
         }
     }
