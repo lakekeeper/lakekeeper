@@ -1,6 +1,5 @@
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
-use chrono::Utc;
 use http::StatusCode;
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
@@ -20,25 +19,43 @@ use crate::{
     },
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        storage::join_location, tasks::TaskId, CreateNamespaceRequest, CreateNamespaceResponse,
-        ErrorModel, GetNamespaceResponse, ListNamespacesQuery, NamespaceDropInfo, NamespaceId,
-        NamespaceIdent, NamespaceInfo, Result, TabularId,
+        storage::join_location, tasks::TaskId, CatalogGetNamespaceError, CreateNamespaceRequest,
+        CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
+        NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceIdentOrId, Result, TabularId,
     },
     WarehouseId, CONFIG,
 };
 
-pub(crate) async fn get_namespace(
+pub(crate) async fn get_namespace<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdentOrId,
+    connection: E,
+) -> std::result::Result<GetNamespaceResponse, CatalogGetNamespaceError> {
+    match namespace {
+        NamespaceIdentOrId::Id(id) => get_namespace_by_id(warehouse_id, id, connection).await,
+        NamespaceIdentOrId::Name(name) => {
+            get_namespace_by_name(warehouse_id, &name, connection).await
+        }
+    }
+}
+
+pub(crate) async fn get_namespace_by_id<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<GetNamespaceResponse> {
+    connection: E,
+) -> std::result::Result<GetNamespaceResponse, CatalogGetNamespaceError> {
     let row = sqlx::query!(
         r#"
         SELECT 
             namespace_name as "namespace_name: Vec<String>",
-            n.namespace_id,
             n.warehouse_id,
-            namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
+            n.protected,
+            namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+            n.updated_at
         FROM namespace n
         INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE n.warehouse_id = $1 AND n.namespace_id = $2
@@ -47,30 +64,68 @@ pub(crate) async fn get_namespace(
         *warehouse_id,
         *namespace_id
     )
-    .fetch_one(&mut **transaction)
+    .fetch_one(connection)
     .await
     .map_err(|e| match e {
-        sqlx::Error::RowNotFound => ErrorModel::builder()
-            .code(StatusCode::NOT_FOUND.into())
-            .message(format!(
-                "Namespace with id {namespace_id} not found in warehouse {warehouse_id}"
-            ))
-            .r#type("NamespaceNotFound".to_string())
-            .build(),
-        _ => e.into_error_model("Error fetching namespace".to_string()),
+        sqlx::Error::RowNotFound => CatalogGetNamespaceError::not_found(warehouse_id, namespace_id),
+        _ => e.into_catalog_backend_error().into(),
     })?;
 
     Ok(GetNamespaceResponse {
-        namespace: NamespaceIdent::from_vec(row.namespace_name.clone()).map_err(|e| {
-            ErrorModel::internal(
-                "Error converting namespace",
-                "NamespaceConversionError",
-                Some(Box::new(e)),
-            )
+        namespace_ident: NamespaceIdent::from_vec(row.namespace_name.clone()).map_err(|_e| {
+            CatalogGetNamespaceError::database_integrity(format!(
+                "Namespace with id '{namespace_id}' in Warehouse with id '{warehouse_id}' has empty identifier name."
+            ))
         })?,
-        properties: row.properties.deref().clone(),
+        protected: row.protected,
+        properties: row.properties.deref().clone().map(Arc::new),
+        namespace_id,
+        warehouse_id: row.warehouse_id.into(),
+        updated_at: row.updated_at,
+    })
+}
+
+pub(crate) async fn get_namespace_by_name<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    warehouse_id: WarehouseId,
+    namespace: &NamespaceIdent,
+    connection: E,
+) -> std::result::Result<GetNamespaceResponse, CatalogGetNamespaceError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT 
+            n.namespace_id,
+            n.warehouse_id,
+            n.protected,
+            namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+            n.updated_at
+        FROM namespace n
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE n.warehouse_id = $1 AND n.namespace_name = $2
+        AND w.status = 'active'
+        "#,
+        *warehouse_id,
+        &**namespace
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => {
+            CatalogGetNamespaceError::not_found(warehouse_id, namespace.clone())
+        }
+        _ => e.into_catalog_backend_error().into(),
+    })?;
+
+    Ok(GetNamespaceResponse {
+        namespace_ident: namespace.clone(),
+        protected: row.protected,
+        properties: row.properties.deref().clone().map(Arc::new),
         namespace_id: row.namespace_id.into(),
         warehouse_id: row.warehouse_id.into(),
+        updated_at: row.updated_at,
     })
 }
 
@@ -85,7 +140,7 @@ pub(crate) async fn list_namespaces(
         return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>> {
+) -> Result<PaginatedMapping<NamespaceId, GetNamespaceResponse>> {
     let page_size = CONFIG.page_size_or_pagination_max(*page_size);
 
     // Treat empty parent as None
@@ -106,23 +161,24 @@ pub(crate) async fn list_namespaces(
         )
         .unzip();
 
-    let namespaces: Vec<(Uuid, Vec<String>, chrono::DateTime<Utc>, bool)> =
-        if let Some(parent) = parent {
-            // If it doesn't fit in a i32 it is way too large. Validation would have failed
-            // already in the catalog.
-            let parent_len: i32 = parent.len().try_into().unwrap_or(MAX_NAMESPACE_DEPTH + 1);
+    let namespaces: Vec<_> = if let Some(parent) = parent {
+        // If it doesn't fit in a i32 it is way too large. Validation would have failed
+        // already in the catalog.
+        let parent_len: i32 = parent.len().try_into().unwrap_or(MAX_NAMESPACE_DEPTH + 1);
 
-            // Namespace name field is an array.
-            // Get all namespaces where the "name" array has
-            // length(parent) + 1 elements, and the first length(parent)
-            // elements are equal to parent.
-            sqlx::query!(
-                r#"
+        // Namespace name field is an array.
+        // Get all namespaces where the "name" array has
+        // length(parent) + 1 elements, and the first length(parent)
+        // elements are equal to parent.
+        sqlx::query!(
+            r#"
             SELECT
                 n.namespace_id,
                 "namespace_name" as "namespace_name: Vec<String>",
                 n.created_at,
-                n.protected
+                n.protected,
+                namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+                n.updated_at
             FROM namespace n
             INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
@@ -134,27 +190,38 @@ pub(crate) async fn list_namespaces(
             ORDER BY n.created_at, n.namespace_id ASC
             LIMIT $6
             "#,
-                *warehouse_id,
-                parent_len,
-                &*parent,
-                token_ts,
-                token_id,
-                page_size
+            *warehouse_id,
+            parent_len,
+            &*parent,
+            token_ts,
+            token_id,
+            page_size
+        )
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
+        .into_iter()
+        .map(|r| {
+            (
+                r.namespace_id,
+                r.namespace_name,
+                r.created_at,
+                r.protected,
+                r.properties.deref().clone(),
+                r.updated_at,
             )
-            .fetch_all(&mut **transaction)
-            .await
-            .map_err(|e| e.into_error_model("Error fetching Namespace"))?
-            .into_iter()
-            .map(|r| (r.namespace_id, r.namespace_name, r.created_at, r.protected))
-            .collect()
-        } else {
-            sqlx::query!(
-                r#"
+        })
+        .collect()
+    } else {
+        sqlx::query!(
+            r#"
             SELECT
                 n.namespace_id,
                 "namespace_name" as "namespace_name: Vec<String>",
                 n.created_at,
-                n.protected
+                n.protected,
+                namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+                n.updated_at
             FROM namespace n
             INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
@@ -164,42 +231,58 @@ pub(crate) async fn list_namespaces(
             ORDER BY n.created_at, n.namespace_id ASC
             LIMIT $4
             "#,
-                *warehouse_id,
-                token_ts,
-                token_id,
-                page_size
+            *warehouse_id,
+            token_ts,
+            token_id,
+            page_size
+        )
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
+        .into_iter()
+        .map(|r| {
+            (
+                r.namespace_id,
+                r.namespace_name,
+                r.created_at,
+                r.protected,
+                r.properties.deref().clone(),
+                r.updated_at,
             )
-            .fetch_all(&mut **transaction)
-            .await
-            .map_err(|e| e.into_error_model("Error fetching Namespace"))?
-            .into_iter()
-            .map(|r| (r.namespace_id, r.namespace_name, r.created_at, r.protected))
-            .collect()
-        };
+        })
+        .collect()
+    };
 
     // Convert Vec<Vec<String>> to Vec<NamespaceIdent>
-    let mut namespace_map: PaginatedMapping<NamespaceId, NamespaceInfo> =
+    let mut namespace_map: PaginatedMapping<NamespaceId, GetNamespaceResponse> =
         PaginatedMapping::with_capacity(namespaces.len());
-    for ns_result in namespaces.into_iter().map(|(id, n, ts, protected)| {
-        NamespaceIdent::from_vec(n.clone())
-            .map_err(|e| {
-                IcebergErrorResponse::from(ErrorModel::internal(
-                    "Error converting namespace",
-                    "NamespaceConversionError",
-                    Some(Box::new(e)),
-                ))
-            })
-            .map(|n| {
-                (
-                    id.into(),
-                    NamespaceInfo {
-                        namespace_ident: n,
-                        protected,
-                    },
-                    ts,
-                )
-            })
-    }) {
+    for ns_result in namespaces
+        .into_iter()
+        .map(|(id, n, ts, protected, properties, updated_at)| {
+            NamespaceIdent::from_vec(n.clone())
+                .map_err(|e| {
+                    IcebergErrorResponse::from(ErrorModel::internal(
+                        "Error converting namespace",
+                        "NamespaceConversionError",
+                        Some(Box::new(e)),
+                    ))
+                })
+                .map(|n| {
+                    (
+                        id.into(),
+                        GetNamespaceResponse {
+                            warehouse_id,
+                            namespace_id: id.into(),
+                            namespace_ident: n,
+                            protected,
+                            properties: properties.map(Arc::new),
+                            updated_at,
+                        },
+                        ts,
+                    )
+                })
+        })
+    {
         let (id, ns, created_at) = ns_result?;
         namespace_map.insert(
             id,
@@ -298,36 +381,6 @@ pub(crate) async fn create_namespace(
         // Return None if properties is empty
         properties,
     })
-}
-
-pub(crate) async fn namespace_to_id(
-    warehouse_id: WarehouseId,
-    namespace: &NamespaceIdent,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Option<NamespaceId>> {
-    let namespace_id = sqlx::query_scalar!(
-        r#"
-        SELECT namespace_id
-        FROM namespace n
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE n.warehouse_id = $1 AND namespace_name = $2
-        AND w.status = 'active'
-        "#,
-        *warehouse_id,
-        &**namespace
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| match e {
-        sqlx::Error::RowNotFound => None,
-        _ => Some(e.into_error_model("Error fetching namespace".to_string())),
-    });
-
-    match namespace_id {
-        Ok(namespace_id) => Ok(Some(namespace_id.into())),
-        Err(Some(e)) => Err(e.into()),
-        Err(None) => Ok(None),
-    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -584,41 +637,6 @@ pub(crate) async fn set_namespace_protected(
     })
 }
 
-pub(crate) async fn get_namespace_protected(
-    namespace_id: NamespaceId,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<ProtectionResponse> {
-    let row = sqlx::query!(
-        r#"
-        SELECT protected, updated_at
-        FROM namespace
-        WHERE namespace_id = $1 AND warehouse_id IN (
-            SELECT warehouse_id FROM warehouse WHERE status = 'active'
-        )
-        "#,
-        *namespace_id
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            ErrorModel::not_found(
-                format!("Namespace {namespace_id} not found"),
-                "NamespaceNotFound",
-                None,
-            )
-        } else {
-            tracing::error!("Error getting namespace protection status: {e:?}");
-            e.into_error_model("Error getting namespace protection status".to_string())
-        }
-    })?;
-
-    Ok(ProtectionResponse {
-        protected: row.protected,
-        updated_at: row.updated_at,
-    })
-}
-
 pub(crate) async fn update_namespace_properties(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
@@ -671,7 +689,7 @@ pub(crate) mod tests {
             },
             CatalogState, PostgresTransaction,
         },
-        service::{CatalogStore as _, Transaction as _},
+        service::{CatalogNamespaceOps, CatalogStore as _, Transaction as _},
     };
 
     pub(crate) async fn initialize_namespace(
@@ -710,47 +728,46 @@ pub(crate) mod tests {
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
-        let properties = Some(HashMap::from_iter(vec![
+        let properties = HashMap::from_iter(vec![
             ("key1".to_string(), "value1".to_string()),
             ("key2".to_string(), "value2".to_string()),
-        ]));
+        ]);
 
-        let response =
-            initialize_namespace(state.clone(), warehouse_id, &namespace, properties.clone()).await;
+        let response = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &namespace,
+            Some(properties.clone()),
+        )
+        .await;
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
         let namespace_id =
-            PostgresBackend::namespace_to_id(warehouse_id, &namespace, transaction.transaction())
+            PostgresBackend::require_namespace(warehouse_id, &namespace, state.clone())
                 .await
                 .unwrap()
-                .expect("Namespace not found");
+                .namespace_id;
 
         assert_eq!(response.1.namespace, namespace);
-        assert_eq!(response.1.properties, properties);
+        assert_eq!(response.1.properties.unwrap(), properties);
 
         let response =
-            PostgresBackend::get_namespace(warehouse_id, namespace_id, transaction.transaction())
+            PostgresBackend::require_namespace(warehouse_id, namespace_id, state.clone())
                 .await
                 .unwrap();
 
-        drop(transaction);
-
-        assert_eq!(response.namespace, namespace);
-        assert_eq!(response.properties, properties);
+        assert_eq!(response.namespace_ident, namespace);
+        assert_eq!(
+            Arc::unwrap_or_clone(response.properties.unwrap()),
+            properties
+        );
 
         let mut transaction = PostgresTransaction::begin_read(state.clone())
             .await
             .unwrap();
 
-        let response =
-            PostgresBackend::namespace_to_id(warehouse_id, &namespace, transaction.transaction())
-                .await
-                .unwrap()
-                .is_some();
-
-        assert!(response);
+        let _response = PostgresBackend::require_namespace(warehouse_id, &namespace, state.clone())
+            .await
+            .unwrap();
 
         let response = PostgresBackend::list_namespaces(
             warehouse_id,
@@ -764,18 +781,11 @@ pub(crate) mod tests {
             transaction.transaction(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_hashmap();
 
-        assert_eq!(
-            response.into_hashmap(),
-            HashMap::from_iter(vec![(
-                namespace_id,
-                NamespaceInfo {
-                    namespace_ident: namespace.clone(),
-                    protected: false
-                }
-            )])
-        );
+        assert_eq!(response.len(), 1);
+        assert_eq!(response[&namespace_id].namespace_ident, namespace);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -796,14 +806,11 @@ pub(crate) mod tests {
 
         transaction.commit().await.unwrap();
 
-        let mut t = PostgresTransaction::begin_read(state.clone())
-            .await
-            .unwrap();
-        let response = PostgresBackend::get_namespace(warehouse_id, namespace_id, t.transaction())
-            .await
-            .unwrap();
-        drop(t);
-        assert_eq!(response.properties, Some(new_props));
+        let response =
+            PostgresBackend::require_namespace(warehouse_id, namespace_id, state.clone())
+                .await
+                .unwrap();
+        assert_eq!(&*response.properties.unwrap(), &new_props);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -867,16 +874,12 @@ pub(crate) mod tests {
         .unwrap();
         let next_page_token = namespaces.next_token().map(ToString::to_string);
         assert_eq!(namespaces.len(), 1);
+        let namespaces = namespaces.into_hashmap();
         assert_eq!(
-            namespaces.into_hashmap(),
-            HashMap::from_iter(vec![(
-                response1.0,
-                NamespaceInfo {
-                    namespace_ident: response1.1.namespace,
-                    protected: false
-                }
-            )])
+            namespaces[&response1.0].namespace_ident,
+            response1.1.namespace
         );
+        assert!(!namespaces[&response1.0].protected);
 
         let mut t = PostgresTransaction::begin_read(state.clone())
             .await
@@ -901,25 +904,18 @@ pub(crate) mod tests {
         let next_page_token = namespaces.next_token().map(ToString::to_string);
         assert_eq!(namespaces.len(), 2);
         assert!(next_page_token.is_some());
+        let namespaces = namespaces.into_hashmap();
+
         assert_eq!(
-            namespaces.into_hashmap(),
-            HashMap::from_iter(vec![
-                (
-                    response2.0,
-                    NamespaceInfo {
-                        namespace_ident: response2.1.namespace,
-                        protected: false
-                    }
-                ),
-                (
-                    response3.0,
-                    NamespaceInfo {
-                        namespace_ident: response3.1.namespace,
-                        protected: false,
-                    }
-                )
-            ])
+            namespaces[&response2.0].namespace_ident,
+            response2.1.namespace
         );
+        assert!(!namespaces[&response2.0].protected);
+        assert_eq!(
+            namespaces[&response3.0].namespace_ident,
+            response3.1.namespace
+        );
+        assert!(!namespaces[&response3.0].protected);
 
         // last page is empty
         let namespaces = PostgresBackend::list_namespaces(
@@ -973,14 +969,13 @@ pub(crate) mod tests {
         let staged = false;
         let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
+        let namespace_id = get_namespace(warehouse_id, table.namespace.into(), &state.read_pool())
+            .await
+            .unwrap()
+            .namespace_id;
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let namespace_id =
-            namespace_to_id(warehouse_id, &table.namespace, transaction.transaction())
-                .await
-                .unwrap()
-                .expect("Namespace not found");
         let result = drop_namespace(
             warehouse_id,
             namespace_id,
@@ -1001,14 +996,14 @@ pub(crate) mod tests {
         let staged = false;
         let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
+        let namespace_id = get_namespace(warehouse_id, table.namespace.into(), &state.read_pool())
+            .await
+            .unwrap()
+            .namespace_id;
+
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let namespace_id =
-            namespace_to_id(warehouse_id, &table.namespace, transaction.transaction())
-                .await
-                .unwrap()
-                .expect("Namespace not found");
         let drop_info = drop_namespace(
             warehouse_id,
             namespace_id,

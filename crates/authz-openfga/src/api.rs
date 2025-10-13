@@ -1633,6 +1633,8 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
+    use lakekeeper::service::{GetNamespaceResponse, NamespaceIdent};
+
     use super::*;
 
     #[test]
@@ -1644,18 +1646,26 @@ mod tests {
         );
     }
 
+    fn random_namespace(namespace_id: NamespaceId) -> GetNamespaceResponse {
+        GetNamespaceResponse {
+            namespace_ident: NamespaceIdent::new(format!("ns-{namespace_id}")),
+            namespace_id,
+            protected: false,
+            warehouse_id: uuid::Uuid::nil().into(),
+            properties: None,
+            updated_at: None,
+        }
+    }
+
     mod openfga_integration_tests {
         use lakekeeper::{
-            service::{
-                authn::UserId,
-                authz::{Authorizer, CatalogNamespaceAction},
-            },
+            service::{authn::UserId, authz::Authorizer},
             tokio,
         };
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
-        use super::super::*;
+        use super::{super::*, *};
         use crate::migration::tests::authorizer_for_empty_store;
 
         #[tokio::test]
@@ -1765,17 +1775,21 @@ mod tests {
             }
 
             // Initially assignee can not delete any of the namespaces.
+            let namespaces = namespace_ids
+                .iter()
+                .copied()
+                .map(random_namespace)
+                .collect::<Vec<_>>();
             let res = authorizer
-                .are_allowed_namespace_actions(
+                .are_allowed_namespace_actions_impl(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespace_ids
+                    &namespaces
                         .iter()
-                        .map(|id| (*id, CatalogNamespaceAction::CanDelete))
-                        .collect(),
+                        .map(|id| (id, AllNamespaceRelations::CanDelete))
+                        .collect::<Vec<_>>(),
                 )
                 .await
-                .unwrap()
-                .into_inner();
+                .unwrap();
             assert_eq!(res, vec![false; namespace_ids.len()]);
 
             for grant_chunk in to_grant.chunks(write_chunk_size) {
@@ -1788,16 +1802,15 @@ mod tests {
             // The response matches the randomly granted permissions.
             // Note: `are_allowed_namespace_actions` calls `batch_check` internally.
             let res = authorizer
-                .are_allowed_namespace_actions(
+                .are_allowed_namespace_actions_impl(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespace_ids
+                    &namespaces
                         .iter()
-                        .map(|id| (*id, CatalogNamespaceAction::CanDelete))
-                        .collect(),
+                        .map(|id| (id, AllNamespaceRelations::CanDelete))
+                        .collect::<Vec<_>>(),
                 )
                 .await
-                .unwrap()
-                .into_inner();
+                .unwrap();
             assert_eq!(res, permissions);
         }
 

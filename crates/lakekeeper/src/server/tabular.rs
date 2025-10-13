@@ -29,7 +29,7 @@ pub(super) fn determine_tabular_location(
         location
     } else {
         let namespace_props = NamespaceProperties::from_props_unchecked(
-            namespace.properties.clone().unwrap_or_default(),
+            (*namespace.properties.clone().unwrap_or_default()).clone(),
         );
 
         let namespace_location = match namespace_props.get_location() {
@@ -53,24 +53,25 @@ pub(super) fn determine_tabular_location(
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $namespace:ident, $namespace_id:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident) => {
+    ($entity:ident, $list_fn:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
         |ps, page_token, trx| {
             use ::paste::paste;
             paste! {
                 use crate::server::tabular::[<default_ $entity:snake _flags>] as default_flags;
             }
             use crate::server::UnfilteredPage;
-            let namespace = $namespace.clone();
+            // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
+            let warehouse_id = $namespace_response.warehouse_id;
+            let namespace_response = $namespace_response.clone();
             async move {
                 let query = crate::api::iceberg::v1::PaginationQuery {
                     page_size: Some(ps),
                     page_token: page_token.into(),
                 };
                 let entities = C::$list_fn(
-                    $warehouse_id,
-                    &namespace,
+                    &namespace_response,
                     default_flags(),
                     trx.transaction(),
                     query,
@@ -79,7 +80,7 @@ macro_rules! list_entities {
                 let can_list_everything = authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
-                        $namespace_id,
+                        &namespace_response,
                         CatalogNamespaceAction::CanListEverything,
                     )
                     .await?
@@ -96,7 +97,7 @@ macro_rules! list_entities {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions>](
                             &request_metadata,
-                            $warehouse_id,
+                            warehouse_id,
                             ids.iter().map(|id| (
                                 *id,
                                 [<Catalog $entity Action>]::CanIncludeInList)

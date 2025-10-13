@@ -225,7 +225,7 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>>;
+    ) -> Result<PaginatedMapping<NamespaceId, GetNamespaceResponse>>;
 
     async fn create_namespace<'a>(
         warehouse_id: WarehouseId,
@@ -235,22 +235,11 @@ where
     ) -> Result<CreateNamespaceResponse>;
 
     // Should only return a namespace if the warehouse is active.
-    async fn get_namespace<'a>(
+    async fn get_namespace_impl<'a>(
         warehouse_id: WarehouseId,
-        namespace_id: NamespaceId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<GetNamespaceResponse>;
-
-    /// Return Err only on unexpected errors, not if the namespace does not exist.
-    /// If the namespace does not exist, return Ok(false).
-    ///
-    /// We use this function also to handle the `namespace_exists` endpoint.
-    /// Also return Ok(false) if the warehouse is not active.
-    async fn namespace_to_id<'a>(
-        warehouse_id: WarehouseId,
-        namespace: &NamespaceIdent,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<NamespaceId>>;
+        namespace_id: NamespaceIdentOrId,
+        state: Self::State,
+    ) -> std::result::Result<GetNamespaceResponse, CatalogGetNamespaceError>;
 
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseId,
@@ -273,11 +262,6 @@ where
     async fn set_namespace_protected(
         namespace_id: NamespaceId,
         protect: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse>;
-
-    async fn get_namespace_protected(
-        namespace_id: NamespaceId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
@@ -316,8 +300,7 @@ where
     ) -> Result<CreateTableResponse>;
 
     async fn list_tables<'a>(
-        warehouse_id: WarehouseId,
-        namespace: &NamespaceIdent,
+        namespace: &GetNamespaceResponse,
         list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
@@ -465,8 +448,7 @@ where
     ) -> Result<ViewMetadataWithLocation>;
 
     async fn list_views<'a>(
-        warehouse_id: WarehouseId,
-        namespace: &NamespaceIdent,
+        namespace: &GetNamespaceResponse,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,

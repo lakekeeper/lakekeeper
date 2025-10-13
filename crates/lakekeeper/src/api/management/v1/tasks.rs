@@ -7,7 +7,10 @@ use crate::{
     api::{management::v1::ApiServer, ApiContext},
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
+        authz::{
+            AuthZCannotUseWarehouseId, Authorizer, AuthzWarehouseOps, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction,
+        },
         tasks::{
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME, TaskEntity,
             TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
@@ -339,21 +342,20 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
-        let (authz_can_use, authz_warehouse) = tokio::join!(
-            authorizer.require_warehouse_action(
+        let [authz_can_use, authz_get_all_warehouse] = authorizer
+            .are_allowed_warehouse_actions_arr(
                 &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            ),
-            authorizer.is_allowed_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION
+                &[
+                    (warehouse_id, CatalogWarehouseAction::CanUse),
+                    (warehouse_id, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
+                ],
             )
-        );
-        authz_can_use
-            .map_err(|e| e.append_detail("Not authorized to get tasks in the Warehouse."))?;
-        let authz_warehouse = authz_warehouse?.into_inner();
+            .await?
+            .into_inner();
+
+        if !authz_can_use {
+            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        }
 
         // -------------------- Business Logic --------------------
         let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
@@ -384,7 +386,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into());
         }
 
-        if !authz_warehouse {
+        if !authz_get_all_warehouse {
             authorize_get_task_details_for_entity(
                 &authorizer,
                 &request_metadata,
@@ -417,21 +419,20 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
-        let (authz_can_use, authz_warehouse) = tokio::join!(
-            authorizer.require_warehouse_action(
+        let [authz_can_use, authz_control_all] = authorizer
+            .are_allowed_warehouse_actions_arr(
                 &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            ),
-            authorizer.is_allowed_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                CONTROL_TASK_WAREHOUSE_PERMISSION
+                &[
+                    (warehouse_id, CatalogWarehouseAction::CanUse),
+                    (warehouse_id, CONTROL_TASK_WAREHOUSE_PERMISSION),
+                ],
             )
-        );
-        authz_can_use?;
-        let authz_warehouse = authz_warehouse?.into_inner();
+            .await?
+            .into_inner();
 
+        if !authz_can_use {
+            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        }
         if query.task_ids.is_empty() {
             return Ok(());
         }
@@ -457,7 +458,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 }
             })
             .collect_vec();
-        if !authz_warehouse {
+        if !authz_control_all {
             let (table_tasks, view_tasks): (Vec<_>, Vec<_>) =
                 entities
                     .into_iter()

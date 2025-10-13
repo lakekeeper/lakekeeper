@@ -166,6 +166,7 @@ impl StorageProfile {
                         .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
                         .map_err(CredentialsError::from)?,
                 )
+                .await
                 .map(Into::into),
             StorageProfile::Gcs(prof) => prof
                 .lakekeeper_io(

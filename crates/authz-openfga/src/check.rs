@@ -3,13 +3,11 @@ use lakekeeper::{
     api::{ApiContext, RequestMetadata},
     axum::{extract::State as AxumState, Extension, Json},
     iceberg::{NamespaceIdent, TableIdent},
-    server::{
-        namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
-        views::authorized_view_ident_to_id,
-    },
+    server::{tables::authorized_table_ident_to_id, views::authorized_view_ident_to_id},
     service::{
-        authz::Authorizer, CatalogStore, NamespaceId, Result, SecretStore, State, TableId,
-        TabularListFlags, Transaction, ViewId,
+        authz::{Authorizer, AuthzNamespaceOps as _},
+        CatalogNamespaceOps, CatalogStore, NamespaceId, NamespaceIdentOrId, Result, SecretStore,
+        State, TableId, TabularListFlags, Transaction, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -208,34 +206,28 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
     let action = for_principal.map_or(AllNamespaceRelations::CanGetMetadata, |_| {
         AllNamespaceRelations::CanReadAssignments
     });
-    Ok(match namespace {
+
+    let (warehouse_id, user_provided_ns) = match namespace {
         NamespaceIdentOrUuid::Id {
-            namespace_id: identifier,
-        } => {
-            authorizer
-                .require_namespace_action(metadata, Ok(Some(*identifier)), action)
-                .await?;
-            *identifier
-        }
-        NamespaceIdentOrUuid::Name {
-            namespace: name,
+            namespace_id,
             warehouse_id,
-        } => {
-            let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
-            let namespace_id = authorized_namespace_ident_to_id::<C, _>(
-                authorizer.clone(),
-                metadata,
-                warehouse_id,
-                name,
-                action,
-                t.transaction(),
-            )
-            .await?;
-            t.commit().await.ok();
-            namespace_id
-        }
-    }
-    .to_openfga())
+        } => (*warehouse_id, NamespaceIdentOrId::from(*namespace_id)),
+        NamespaceIdentOrUuid::Name {
+            namespace,
+            warehouse_id,
+        } => (*warehouse_id, NamespaceIdentOrId::from(namespace.clone())),
+    };
+    let namespace = C::require_namespace(
+        warehouse_id,
+        user_provided_ns.clone(),
+        api_context.v1_state.catalog,
+    )
+    .await;
+    let namespace = authorizer
+        .require_namespace_action(metadata, warehouse_id, user_provided_ns, namespace, action)
+        .await?;
+
+    Ok(namespace.namespace_id.to_openfga())
 }
 
 async fn check_table<C: CatalogStore, S: SecretStore>(
@@ -377,6 +369,8 @@ pub(super) enum NamespaceIdentOrUuid {
     Id {
         #[schema(value_type = uuid::Uuid)]
         namespace_id: NamespaceId,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
@@ -438,6 +432,10 @@ mod tests {
         let action = CheckOperation::Namespace {
             action: NamespaceAction::CreateTable,
             namespace: NamespaceIdentOrUuid::Id {
+                warehouse_id: WarehouseId::from_str_or_internal(
+                    "490cbf7a-cbfe-11ef-84c5-178606d4cab3",
+                )
+                .unwrap(),
                 namespace_id: NamespaceId::from_str_or_internal(
                     "00000000-0000-0000-0000-000000000000",
                 )
@@ -450,7 +448,8 @@ mod tests {
             serde_json::json!({
                 "namespace": {
                     "action": "create_table",
-                    "namespace-id": "00000000-0000-0000-0000-000000000000"
+                    "namespace-id": "00000000-0000-0000-0000-000000000000",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
                 }
             })
         );
@@ -716,7 +715,10 @@ mod tests {
                 warehouse_id: warehouse.warehouse_id,
             });
             let namespace_ids = &[
-                NamespaceIdentOrUuid::Id { namespace_id },
+                NamespaceIdentOrUuid::Id {
+                    namespace_id,
+                    warehouse_id: warehouse.warehouse_id,
+                },
                 NamespaceIdentOrUuid::Name {
                     namespace: namespace.namespace,
                     warehouse_id: warehouse.warehouse_id,

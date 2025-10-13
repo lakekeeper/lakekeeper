@@ -434,7 +434,6 @@ pub(crate) async fn create_tabular(
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) async fn list_tabulars<'e, 'c, E>(
     warehouse_id: WarehouseId,
-    namespace: Option<&NamespaceIdent>,
     namespace_id: Option<NamespaceId>,
     list_flags: crate::service::TabularListFlags,
     catalog_state: E,
@@ -477,8 +476,7 @@ where
         INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
         WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND (t.tabular_namespace_name = $2 OR $2 IS NULL)
-            AND (t.namespace_id = $10 OR $10 IS NULL)
+            AND (t.namespace_id = $2 OR $2 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted
@@ -490,15 +488,14 @@ where
             LIMIT $9
         "#,
         *warehouse_id,
-        namespace.as_deref().map(|n| n.as_ref().as_slice()),
+        namespace_id.map(|n| *n),
         typ as _,
         list_flags.include_active,
         list_flags.include_deleted,
         list_flags.include_staged,
         token_ts,
         token_id,
-        page_size,
-        namespace_id.map(|n| *n),
+        page_size
     )
     .fetch_all(catalog_state)
     .await

@@ -28,7 +28,7 @@ use super::{
     commit_tables::apply_commit,
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
-    namespace::{authorized_namespace_ident_to_id, validate_namespace_ident},
+    namespace::validate_namespace_ident,
     require_warehouse_id, CatalogServer,
 };
 use crate::{
@@ -53,7 +53,10 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogTableAction,
+            CatalogWarehouseAction,
+        },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
@@ -62,9 +65,9 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        CatalogStore, CatalogWarehouseOps, CreateTableResponse, NamedEntity, State, TableCommit,
-        TableCreation, TableId, TabularDetails, TabularId, TabularListFlags, Transaction,
-        WarehouseStatus,
+        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, CreateTableResponse, NamedEntity,
+        State, TableCommit, TableCreation, TableId, TabularDetails, TabularId, TabularListFlags,
+        Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -90,37 +93,35 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<ListTablesResponse> {
         let return_uuids = query.return_uuids;
         // ------------------- VALIDATIONS -------------------
-        let NamespaceParameters { namespace, prefix } = parameters;
+        let NamespaceParameters {
+            namespace: provided_ns,
+            prefix,
+        } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-        validate_namespace_ident(&namespace)?;
+        validate_namespace_ident(&provided_ns)?;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let namespace_id = authorized_namespace_ident_to_id::<C, _>(
-            authorizer.clone(),
-            &request_metadata,
-            &warehouse_id,
-            &namespace,
-            CatalogNamespaceAction::CanListTables,
-            t.transaction(),
-        )
-        .await?;
+
+        let namespace =
+            C::require_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
+        let namespace = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                provided_ns,
+                namespace,
+                CatalogNamespaceAction::CanListTables,
+            )
+            .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
         let (identifiers, table_uuids, next_page_token) =
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
-                list_entities!(
-                    Table,
-                    list_tables,
-                    namespace,
-                    namespace_id,
-                    authorizer,
-                    request_metadata,
-                    warehouse_id
-                ),
+                list_entities!(Table, list_tables, namespace, authorizer, request_metadata),
                 &mut t,
             )
             .await?;
@@ -161,27 +162,32 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
         // ------------------- VALIDATIONS -------------------
-        let NamespaceParameters { namespace, prefix } = &parameters;
+        let NamespaceParameters {
+            namespace: provided_ns,
+            prefix,
+        } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-        let table = TableIdent::new(namespace.clone(), request.name.clone());
+        let table = TableIdent::new(provided_ns.clone(), request.name.clone());
         validate_table_or_view_ident(&table)?;
         let metadata_location =
             parse_location(&request.metadata_location, StatusCode::BAD_REQUEST)?;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-        let namespace_id = authorized_namespace_ident_to_id::<C, _>(
-            authorizer.clone(),
-            &request_metadata,
-            &warehouse_id,
-            namespace,
-            CatalogNamespaceAction::CanCreateTable,
-            t_read.transaction(),
-        )
-        .await?;
+        let namespace =
+            C::require_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
+        let namespace = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                provided_ns,
+                namespace,
+                CatalogNamespaceAction::CanCreateTable,
+            )
+            .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
+        let namespace_id = namespace.namespace_id;
         let warehouse =
             C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
         let storage_profile = &warehouse.storage_profile;
@@ -209,7 +215,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     include_staged: true,
                     include_deleted: false,
                 },
-                t_read.transaction(),
+                t_write.transaction(),
             )
             .await?;
 
@@ -235,7 +241,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 // We don't drop the files for the previous table on overwrite
             }
         }
-        t_read.commit().await?;
 
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
@@ -483,7 +488,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let include_deleted = false;
         let include_active = true;
 
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+        let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
         let table_details = C::table_to_id(
             warehouse_id,
             table,
@@ -492,7 +497,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 include_staged,
                 include_deleted,
             },
-            t.transaction(),
+            t_read.transaction(),
         )
         .await; // We can't fail before AuthZ
 
@@ -504,9 +509,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 CatalogTableAction::CanDrop,
             )
             .await?;
+        t_read.commit().await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let warehouse = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
+        let warehouse =
+            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
+
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
         state
             .v1_state
@@ -657,15 +666,36 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         // Authorization is required for:
-        // * renaming the old table
-        // * creating a table in the destination namespace
+        // 1) creating a table in the destination namespace
+        // 2) renaming the old table
         let authorizer = state.v1_state.authz;
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+
+        // Check 1)
+        let destination_namespace = C::require_namespace(
+            warehouse_id,
+            &destination.namespace,
+            state.v1_state.catalog.clone(),
+        )
+        .await;
+        let user_provided_namespace = &destination.namespace;
+        let _ = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                user_provided_namespace,
+                destination_namespace,
+                CatalogNamespaceAction::CanCreateTable,
+            )
+            .await?;
+
+        // Check 2)
         let list_flags = TabularListFlags {
             include_staged: false,
             include_deleted: false,
             include_active: true,
         };
+
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let source_table_id = authorized_table_ident_to_id::<C, _>(
             authorizer.clone(),
             &request_metadata,
@@ -677,26 +707,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
-        let destination_namespace_id =
-            C::namespace_to_id(warehouse_id, &destination.namespace, t.transaction())
-                .await?
-                .ok_or_else(|| {
-                    ErrorModel::not_found(
-                        "Destination namespace not found",
-                        "NoSuchNamespaceException",
-                        None,
-                    )
-                })?;
-
-        authorizer
-            .require_namespace_action(
-                &request_metadata,
-                Ok(Some(destination_namespace_id)),
-                CatalogNamespaceAction::CanCreateTable,
-            )
-            .await?;
-
         // ------------------- BUSINESS LOGIC -------------------
+
         if source == destination {
             return Ok(());
         }
@@ -3822,6 +3834,12 @@ pub(crate) mod test {
             "from_ns".to_string(),
         )
         .await;
+        let to_ns = crate::server::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "to_ns".to_string(),
+        )
+        .await;
         let ns_params = NamespaceParameters {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: from_ns.namespace.clone(),
@@ -3851,7 +3869,7 @@ pub(crate) mod test {
                     name: table_name.clone(),
                 },
                 destination: TableIdent {
-                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    namespace: to_ns.namespace.clone(),
                     name: table_name,
                 },
             },
@@ -3885,6 +3903,12 @@ pub(crate) mod test {
             "from_ns".to_string(),
         )
         .await;
+        let to_ns = crate::server::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "to_ns".to_string(),
+        )
+        .await;
         let ns_params = NamespaceParameters {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: from_ns.namespace.clone(),
@@ -3905,7 +3929,8 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(format!("table:{}", CatalogNamespaceAction::CanCreateTable).as_str());
+        authz
+            .block_action(format!("namespace:{}", CatalogNamespaceAction::CanCreateTable).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {
@@ -3914,7 +3939,7 @@ pub(crate) mod test {
                     name: table_name.clone(),
                 },
                 destination: TableIdent {
-                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    namespace: to_ns.namespace.clone(),
                     name: table_name,
                 },
             },
@@ -3924,8 +3949,8 @@ pub(crate) mod test {
         .await
         .unwrap_err();
 
-        assert_eq!(response.error.code, StatusCode::NOT_FOUND);
-        assert_eq!(response.error.r#type, "NoSuchNamespaceException");
+        assert_eq!(response.error.code, StatusCode::FORBIDDEN);
+        assert_eq!(response.error.r#type, "NamespaceActionForbidden");
     }
 
     #[sqlx::test]

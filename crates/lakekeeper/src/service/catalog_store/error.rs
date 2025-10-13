@@ -201,15 +201,13 @@ impl From<CatalogBackendError> for ErrorModel {
         } = err;
 
         let code = match r#type {
-            CatalogBackendErrorType::Unexpected => StatusCode::INTERNAL_SERVER_ERROR,
+            CatalogBackendErrorType::Unexpected => StatusCode::SERVICE_UNAVAILABLE,
             CatalogBackendErrorType::ConcurrentModification => StatusCode::CONFLICT,
         }
         .as_u16();
 
         crate::service::ErrorModel {
             r#type: "CatalogBackendError".to_string(),
-            // Eventually we should switch to 503, however older
-            // iceberg clients retry 503, which can lead to unexpected behavior.
             code,
             message: format!("Catalog backend error ({type}): {source}"),
             stack,

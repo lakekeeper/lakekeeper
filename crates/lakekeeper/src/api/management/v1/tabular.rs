@@ -5,7 +5,10 @@ use super::ApiServer;
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{Authorizer, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction},
+        authz::{
+            AuthZCannotUseWarehouseId, Authorizer, AuthzWarehouseOps, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction,
+        },
         CatalogStore, SecretStore, State, TabularId,
     },
     WarehouseId,
@@ -30,21 +33,20 @@ where
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
-        let (authz_can_use, authz_list_all) = tokio::join!(
-            authorizer.require_warehouse_action(
+        let [authz_can_use, authz_list_all] = authorizer
+            .are_allowed_warehouse_actions_arr(
                 &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            ),
-            authorizer.is_allowed_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanListEverything,
+                &[
+                    (warehouse_id, CatalogWarehouseAction::CanUse),
+                    (warehouse_id, CatalogWarehouseAction::CanListEverything),
+                ],
             )
-        );
-        authz_can_use
-            .map_err(|e| e.append_detail("Not authorized to search tabulars in the Warehouse."))?;
-        let authz_list_all = authz_list_all?.into_inner();
+            .await?
+            .into_inner();
+
+        if !authz_can_use {
+            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        }
 
         // -------------------- Business Logic & Tabular level AuthZ filters --------------------
         let mut search = request.search;

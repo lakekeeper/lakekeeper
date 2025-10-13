@@ -29,7 +29,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
+        authz::{Authorizer, AuthzWarehouseOps, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
         tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
         CatalogStore, CatalogTaskOps, CatalogWarehouseOps, NamespaceId, State, TabularId,
@@ -404,24 +404,26 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
 
-        let warehouses = futures::future::try_join_all(warehouses.iter().map(|w| {
-            authorizer.is_allowed_warehouse_action(
+        let warehouses = authorizer
+            .are_allowed_warehouse_actions_vec(
                 &request_metadata,
-                w.id,
-                CatalogWarehouseAction::CanIncludeInList,
+                &warehouses
+                    .iter()
+                    .map(|w| (w.id, CatalogWarehouseAction::CanIncludeInList))
+                    .collect::<Vec<_>>(),
             )
-        }))
-        .await?
-        .into_iter()
-        .zip(warehouses)
-        .filter_map(|(allowed, warehouse)| {
-            if allowed.into_inner() {
-                Some(warehouse.into())
-            } else {
-                None
-            }
-        })
-        .collect();
+            .await?
+            .into_inner()
+            .into_iter()
+            .zip(warehouses)
+            .filter_map(|(allowed, warehouse)| {
+                if allowed {
+                    Some(warehouse.into())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         Ok(ListWarehousesResponse { warehouses })
     }

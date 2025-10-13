@@ -98,6 +98,11 @@ impl From<WarehouseIdNotFound> for ErrorModel {
         }
     }
 }
+impl From<WarehouseIdNotFound> for IcebergErrorResponse {
+    fn from(err: WarehouseIdNotFound) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("A warehouse '{warehouse_name}' does not exist")]
@@ -125,6 +130,11 @@ impl From<WarehouseNameNotFound> for ErrorModel {
             stack: err.stack,
             source: None,
         }
+    }
+}
+impl From<WarehouseNameNotFound> for IcebergErrorResponse {
+    fn from(err: WarehouseNameNotFound) -> Self {
+        ErrorModel::from(err).into()
     }
 }
 
