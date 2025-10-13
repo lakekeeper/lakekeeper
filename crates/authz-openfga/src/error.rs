@@ -275,3 +275,70 @@ impl CannotDeleteTupleNotFound {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    // Name is important for test profile
+    mod openfga_integration_tests {
+        use super::super::*;
+        use crate::{
+            authorizer::tests::openfga_integration_tests::new_authorizer_in_empty_store,
+            entities::OpenFgaEntity as _, relations::WarehouseRelation,
+        };
+        use http::StatusCode;
+        use lakekeeper::{api::ErrorModel, tokio, ProjectId};
+        use openfga_client::client::{TupleKey, TupleKeyWithoutCondition};
+
+        #[tokio::test]
+        async fn test_delete_non_existing_tuple_err_parsed_correctly() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let err = authorizer
+                .write(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                    }]),
+                )
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, OpenFGAError::CannotDeleteTupleNotFound(_)));
+            let err_model = ErrorModel::from(err);
+            assert_eq!(err_model.code, StatusCode::NOT_FOUND.as_u16());
+            assert_eq!(err_model.r#type, "TupleNotFoundError");
+        }
+
+        #[tokio::test]
+        async fn test_write_existing_tuple_err_parsed_correctly() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let tuple = TupleKey {
+                user: project_id.to_openfga(),
+                relation: WarehouseRelation::Project.to_string(),
+                object: "warehouse:my_warehouse".to_string(),
+                condition: None,
+            };
+            // First write should succeed
+            authorizer
+                .write(Some(vec![tuple.clone()]), None)
+                .await
+                .unwrap();
+            // Second write should fail with tuple already exists
+            let err = authorizer
+                .write(Some(vec![tuple.clone()]), None)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                OpenFGAError::CannotWriteTupleAlreadyExists(_)
+            ));
+            let err_model = ErrorModel::from(err);
+            assert_eq!(err_model.code, StatusCode::CONFLICT.as_u16());
+            assert_eq!(err_model.r#type, "TupleAlreadyExistsError");
+        }
+    }
+}

@@ -29,7 +29,11 @@ pub(super) fn determine_tabular_location(
         location
     } else {
         let namespace_props = NamespaceProperties::from_props_unchecked(
-            (*namespace.properties.clone().unwrap_or_default()).clone(),
+            namespace
+                .properties
+                .as_ref()
+                .map(|arc| (**arc).clone())
+                .unwrap_or_default(),
         );
 
         let namespace_location = match namespace_props.get_location() {

@@ -1754,7 +1754,6 @@ mod tests {
             let namespace_ids: Vec<_> = (0..1000).map(|_| NamespaceId::new_random()).collect();
             let mut permissions = Vec::with_capacity(namespace_ids.len());
             let mut to_grant = vec![];
-            let mut to_check = Vec::with_capacity(namespace_ids.len());
             let mut rng = fastrand::Rng::with_seed(42);
             for ns in &namespace_ids {
                 let may_modify: bool = rng.bool();
@@ -1767,11 +1766,6 @@ mod tests {
                         condition: None,
                     });
                 }
-                to_check.push(CheckRequestTupleKey {
-                    user: Actor::Principal(user_id_assignee.clone()).to_openfga(),
-                    relation: NamespaceAction::Delete.to_openfga().to_string(),
-                    object: ns.to_openfga(),
-                });
             }
 
             // Initially assignee can not delete any of the namespaces.

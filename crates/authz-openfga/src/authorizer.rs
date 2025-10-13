@@ -1099,7 +1099,8 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    mod openfga_integration_tests {
+    // Name is important for test profile
+    pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
         use lakekeeper::tokio;
         use openfga_client::client::ConsistencyPreference;
@@ -1112,7 +1113,7 @@ pub(crate) mod tests {
 
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 
-        async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
+        pub(crate) async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
             let client = new_client_from_default_config()
                 .await
                 .expect("Failed to create OpenFGA client");

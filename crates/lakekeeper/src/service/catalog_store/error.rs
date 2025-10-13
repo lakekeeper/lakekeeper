@@ -206,7 +206,7 @@ impl From<CatalogBackendError> for ErrorModel {
         }
         .as_u16();
 
-        crate::service::ErrorModel {
+        ErrorModel {
             r#type: "CatalogBackendError".to_string(),
             code,
             message: format!("Catalog backend error ({type}): {source}"),

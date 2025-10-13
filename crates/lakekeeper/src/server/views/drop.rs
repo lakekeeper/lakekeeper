@@ -45,8 +45,9 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             CatalogWarehouseAction::CanUse,
         )
         .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
     let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
+    t.commit().await?;
 
     let view_id: ViewId = authorizer
         .require_view_action(
@@ -60,7 +61,8 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     // ------------------- BUSINESS LOGIC -------------------
 
-    let warehouse = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
     state
         .v1_state
@@ -71,6 +73,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     tracing::debug!("Proceeding to delete view");
 
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
             let location = C::drop_view(warehouse_id, view_id, force, t.transaction()).await?;

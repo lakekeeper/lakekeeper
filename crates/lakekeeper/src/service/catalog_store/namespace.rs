@@ -155,7 +155,7 @@ pub trait CatalogNamespaceOps
 where
     Self: CatalogStore,
 {
-    /// Get a namespace by its ID.
+    /// Get a namespace by its ID or name.
     async fn get_namespace<'a>(
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId> + Send,
@@ -170,7 +170,7 @@ where
         }
     }
 
-    /// Get a namespace by its ID.
+    /// Get a namespace by its ID or name.
     /// Only returns the namespace if the warehouse is active.
     async fn require_namespace<'a>(
         warehouse_id: WarehouseId,

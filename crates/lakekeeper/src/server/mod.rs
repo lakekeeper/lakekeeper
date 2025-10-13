@@ -393,15 +393,14 @@ pub(crate) mod test {
         assert_eq!(wh_ids.len(), num_warehouses);
 
         let mut wh_ns_data = Vec::with_capacity(num_warehouses);
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for wh_id in wh_ids {
             crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
                 .await;
-
-            let state = CatalogState::from_pools(pool.clone(), pool.clone());
             let namespace = PostgresBackend::require_namespace(
                 wh_id,
                 NamespaceIdent::new("myns".to_string()),
-                state,
+                state.clone(),
             )
             .await
             .unwrap();

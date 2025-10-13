@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use futures::future::join_all;
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::CreateNamespaceRequest;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
@@ -34,23 +34,7 @@ use crate::{
 };
 
 #[sqlx::test]
-async fn test_soft_deletion(pool_options: PgPoolOptions, connection_options: PgConnectOptions) {
-    // Check if we're running in a multi-threaded runtime
-    println!(
-        "Available parallelism: {:?}",
-        std::thread::available_parallelism()
-    );
-    println!(
-        "Current tokio runtime flavor: {:?}",
-        tokio::runtime::Handle::current().runtime_flavor()
-    );
-
-    let pool = pool_options
-        .max_connections(5)
-        .connect_with(connection_options)
-        .await
-        .unwrap();
-
+async fn test_soft_deletion(pool: PgPool) {
     let storage_profile = crate::tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
 
@@ -99,7 +83,7 @@ async fn test_soft_deletion(pool_options: PgPoolOptions, connection_options: PgC
         let ns_name = ns_ident.to_string();
         let table_name = format!("table_{i}");
         tokio::spawn(async move {
-            let r = (
+            (
                 table_name.clone(),
                 crate::tests::create_table(
                     api_context.clone(),
@@ -112,8 +96,7 @@ async fn test_soft_deletion(pool_options: PgPoolOptions, connection_options: PgC
                 .unwrap()
                 .metadata
                 .uuid(),
-            );
-            r
+            )
         })
     });
     let table_name_to_uuid = join_all(create_futs)

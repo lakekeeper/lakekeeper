@@ -144,6 +144,12 @@ where
         api_key.map_or(OpenFGAAuth::Anonymous, OpenFGAAuth::ApiKey)
     };
 
+    if max_batch_check_size == 0 {
+        return Err(serde::de::Error::custom(
+            "openfga max_batch_check_size must be greater than zero",
+        ));
+    }
+
     Ok(Some(OpenFGAConfig {
         endpoint,
         store_name,
