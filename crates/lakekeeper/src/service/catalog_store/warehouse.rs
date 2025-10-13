@@ -3,7 +3,9 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{CatalogStore, Transaction};
 use crate::{
-    api::management::v1::{warehouse::TabularDeleteProfile, DeleteWarehouseQuery},
+    api::management::v1::{
+        warehouse::TabularDeleteProfile, DeleteWarehouseQuery, ProtectionResponse,
+    },
     service::{
         catalog_store::{impl_error_stack_methods, impl_from_with_detail, CatalogBackendError},
         define_simple_error,
@@ -138,6 +140,41 @@ impl From<WarehouseNameNotFound> for IcebergErrorResponse {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+#[error("Error serializing storage profile: {source}")]
+pub struct StorageProfileSerializationError {
+    source: serde_json::Error,
+    stack: Vec<String>,
+}
+impl_error_stack_methods!(StorageProfileSerializationError);
+impl From<serde_json::Error> for StorageProfileSerializationError {
+    fn from(source: serde_json::Error) -> Self {
+        Self {
+            source,
+            stack: Vec::new(),
+        }
+    }
+}
+impl PartialEq for StorageProfileSerializationError {
+    fn eq(&self, other: &Self) -> bool {
+        self.source.to_string() == other.source.to_string() && self.stack == other.stack
+    }
+}
+impl From<StorageProfileSerializationError> for ErrorModel {
+    fn from(err: StorageProfileSerializationError) -> Self {
+        let message = err.to_string();
+        let StorageProfileSerializationError { source, stack } = err;
+
+        ErrorModel {
+            r#type: "StorageProfileSerializationError".to_string(),
+            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            message,
+            stack,
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
 // --------------------------- CREATE ERROR ---------------------------
 #[derive(thiserror::Error, Debug)]
 pub enum CatalogCreateWarehouseError {
@@ -179,22 +216,6 @@ impl WarehouseAlreadyExists {
 impl_error_stack_methods!(WarehouseAlreadyExists);
 
 #[derive(thiserror::Error, Debug)]
-#[error("Error serializing storage profile: {source}")]
-pub struct StorageProfileSerializationError {
-    source: serde_json::Error,
-    stack: Vec<String>,
-}
-impl_error_stack_methods!(StorageProfileSerializationError);
-impl From<serde_json::Error> for StorageProfileSerializationError {
-    fn from(source: serde_json::Error) -> Self {
-        Self {
-            source,
-            stack: Vec::new(),
-        }
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
 #[error("Project with id '{project_id}' not found")]
 pub struct ProjectIdNotFoundError {
     project_id: ProjectId,
@@ -222,13 +243,7 @@ impl From<CatalogCreateWarehouseError> for ErrorModel {
                 source: None,
             },
             CatalogCreateWarehouseError::CatalogBackendError(e) => e.into(),
-            CatalogCreateWarehouseError::StorageProfileSerializationError(e) => ErrorModel {
-                r#type: "StorageProfileSerializationError".to_string(),
-                code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                message: e.to_string(),
-                stack: e.stack,
-                source: Some(Box::new(e.source)),
-            },
+            CatalogCreateWarehouseError::StorageProfileSerializationError(e) => e.into(),
             CatalogCreateWarehouseError::ProjectIdNotFoundError(e) => ErrorModel {
                 r#type: "ProjectNotFound".to_string(),
                 code: StatusCode::NOT_FOUND.as_u16(),
@@ -465,6 +480,123 @@ impl From<CatalogGetWarehouseByNameError> for IcebergErrorResponse {
     }
 }
 
+// --------------------------- Set Warehouse Delete Profile Error ---------------------------
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum SetWarehouseDeletionProfileError {
+    #[error(transparent)]
+    CatalogBackendError(CatalogBackendError),
+    #[error(transparent)]
+    WarehouseIdNotFound(WarehouseIdNotFound),
+}
+const SET_WAREHOUSE_DELETION_PROFILE_ERROR_STACK: &str =
+    "Error setting warehouse deletion profile in catalog";
+impl_from_with_detail!(CatalogBackendError => SetWarehouseDeletionProfileError::CatalogBackendError,
+    SET_WAREHOUSE_DELETION_PROFILE_ERROR_STACK);
+impl_from_with_detail!(WarehouseIdNotFound => SetWarehouseDeletionProfileError::WarehouseIdNotFound,
+    SET_WAREHOUSE_DELETION_PROFILE_ERROR_STACK);
+
+impl From<SetWarehouseDeletionProfileError> for ErrorModel {
+    fn from(err: SetWarehouseDeletionProfileError) -> Self {
+        match err {
+            SetWarehouseDeletionProfileError::WarehouseIdNotFound(e) => e.into(),
+            SetWarehouseDeletionProfileError::CatalogBackendError(e) => e.into(),
+        }
+    }
+}
+impl From<SetWarehouseDeletionProfileError> for IcebergErrorResponse {
+    fn from(err: SetWarehouseDeletionProfileError) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+// --------------------------- Set Warehouse Status Error ---------------------------
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum SetWarehouseStatusError {
+    #[error(transparent)]
+    CatalogBackendError(CatalogBackendError),
+    #[error(transparent)]
+    WarehouseIdNotFound(WarehouseIdNotFound),
+}
+const SET_WAREHOUSE_STATUS_ERROR_STACK: &str = "Error setting warehouse status in catalog";
+impl_from_with_detail!(CatalogBackendError => SetWarehouseStatusError::CatalogBackendError,
+    SET_WAREHOUSE_STATUS_ERROR_STACK);
+impl_from_with_detail!(WarehouseIdNotFound => SetWarehouseStatusError::WarehouseIdNotFound,
+    SET_WAREHOUSE_STATUS_ERROR_STACK);
+
+impl From<SetWarehouseStatusError> for ErrorModel {
+    fn from(err: SetWarehouseStatusError) -> Self {
+        match err {
+            SetWarehouseStatusError::WarehouseIdNotFound(e) => e.into(),
+            SetWarehouseStatusError::CatalogBackendError(e) => e.into(),
+        }
+    }
+}
+impl From<SetWarehouseStatusError> for IcebergErrorResponse {
+    fn from(err: SetWarehouseStatusError) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+// --------------------------- Set Warehouse Status Error ---------------------------
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum UpdateWarehouseStorageProfileError {
+    #[error(transparent)]
+    CatalogBackendError(CatalogBackendError),
+    #[error(transparent)]
+    WarehouseIdNotFound(WarehouseIdNotFound),
+    #[error(transparent)]
+    StorageProfileSerializationError(StorageProfileSerializationError),
+}
+const UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK: &str =
+    "Error updating warehouse storage profile in catalog";
+impl_from_with_detail!(CatalogBackendError => UpdateWarehouseStorageProfileError::CatalogBackendError,
+    UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK);
+impl_from_with_detail!(WarehouseIdNotFound => UpdateWarehouseStorageProfileError::WarehouseIdNotFound,
+    UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK);
+impl_from_with_detail!(StorageProfileSerializationError => UpdateWarehouseStorageProfileError::StorageProfileSerializationError,
+    UPDATE_WAREHOUSE_STORAGE_PROFILE_ERROR_STACK);
+impl From<UpdateWarehouseStorageProfileError> for ErrorModel {
+    fn from(err: UpdateWarehouseStorageProfileError) -> Self {
+        match err {
+            UpdateWarehouseStorageProfileError::WarehouseIdNotFound(e) => e.into(),
+            UpdateWarehouseStorageProfileError::CatalogBackendError(e) => e.into(),
+            UpdateWarehouseStorageProfileError::StorageProfileSerializationError(e) => e.into(),
+        }
+    }
+}
+impl From<UpdateWarehouseStorageProfileError> for IcebergErrorResponse {
+    fn from(err: UpdateWarehouseStorageProfileError) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+// --------------------------- Set Warehouse Protected Error ---------------------------
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum SetWarehouseProtectedError {
+    #[error(transparent)]
+    CatalogBackendError(CatalogBackendError),
+    #[error(transparent)]
+    WarehouseIdNotFound(WarehouseIdNotFound),
+}
+const SET_WAREHOUSE_PROTECTED_ERROR_STACK: &str = "Error setting warehouse protected in catalog";
+impl_from_with_detail!(CatalogBackendError => SetWarehouseProtectedError::CatalogBackendError,
+    SET_WAREHOUSE_PROTECTED_ERROR_STACK);
+impl_from_with_detail!(WarehouseIdNotFound => SetWarehouseProtectedError::WarehouseIdNotFound,
+    SET_WAREHOUSE_PROTECTED_ERROR_STACK);
+impl From<SetWarehouseProtectedError> for ErrorModel {
+    fn from(err: SetWarehouseProtectedError) -> Self {
+        match err {
+            SetWarehouseProtectedError::WarehouseIdNotFound(e) => e.into(),
+            SetWarehouseProtectedError::CatalogBackendError(e) => e.into(),
+        }
+    }
+}
+impl From<SetWarehouseProtectedError> for IcebergErrorResponse {
+    fn from(err: SetWarehouseProtectedError) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
 #[async_trait::async_trait]
 pub trait CatalogWarehouseOps
 where
@@ -560,6 +692,46 @@ where
         Self::get_warehouse_by_name(warehouse_name, project_id, catalog_state)
             .await?
             .ok_or(WarehouseNameNotFound::new(warehouse_name.to_string()).into())
+    }
+
+    /// Set warehouse deletion profile
+    async fn set_warehouse_deletion_profile<'a>(
+        warehouse_id: WarehouseId,
+        deletion_profile: &TabularDeleteProfile,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), SetWarehouseDeletionProfileError> {
+        Self::set_warehouse_deletion_profile_impl(warehouse_id, deletion_profile, transaction).await
+    }
+
+    async fn set_warehouse_status<'a>(
+        warehouse_id: WarehouseId,
+        status: WarehouseStatus,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), SetWarehouseStatusError> {
+        Self::set_warehouse_status_impl(warehouse_id, status, transaction).await
+    }
+
+    async fn update_storage_profile<'a>(
+        warehouse_id: WarehouseId,
+        storage_profile: StorageProfile,
+        storage_secret_id: Option<SecretIdent>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), UpdateWarehouseStorageProfileError> {
+        Self::update_storage_profile_impl(
+            warehouse_id,
+            storage_profile,
+            storage_secret_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn set_warehouse_protected(
+        warehouse_id: WarehouseId,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ProtectionResponse, SetWarehouseProtectedError> {
+        Self::set_warehouse_protected_impl(warehouse_id, protect, transaction).await
     }
 }
 

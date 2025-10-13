@@ -25,25 +25,17 @@ use super::{
     CatalogState, PostgresTransaction,
 };
 use crate::{
-    api::{
+    SecretIdent, api::{
         iceberg::v1::{
-            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
-            PaginationQuery,
+            PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags, tables::LoadTableFilters
         },
         management::v1::{
-            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse},
-            tabular::SearchTabularResponse,
-            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
-            user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
-            warehouse::{
+            DeleteWarehouseQuery, ProtectionResponse, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse}, tabular::SearchTabularResponse, tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
                 WarehouseStatisticsResponse,
-            },
-            DeleteWarehouseQuery, ProtectionResponse,
+            }
         },
-    },
-    implementations::postgres::{
+    }, implementations::postgres::{
         endpoint_statistics::list::list_statistics,
         namespace::set_namespace_protected,
         role::search_role,
@@ -61,25 +53,12 @@ use crate::{
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
-    },
-    service::{
-        authn::UserId,
-        storage::StorageProfile,
-        tasks::{
+    }, service::{
+        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogStore, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceId, NamespaceIdentOrId, ProjectId, Result, RoleId, ServerInfo, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo, TabularListFlags, Transaction, UndropTabularResponse, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
-        },
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogStore,
-        CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
-        CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
-        GetWarehouseResponse, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
-        NamespaceId, NamespaceIdentOrId, ProjectId, Result, RoleId, ServerInfo, TableCommit,
-        TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo, TabularListFlags,
-        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
-    },
-    SecretIdent,
+        }
+    }
 };
 
 #[async_trait::async_trait]
@@ -484,11 +463,11 @@ impl CatalogStore for super::PostgresBackend {
         rename_warehouse(warehouse_id, new_name, transaction).await
     }
 
-    async fn set_warehouse_deletion_profile<'a>(
+    async fn set_warehouse_deletion_profile_impl<'a>(
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), SetWarehouseDeletionProfileError> {
         set_warehouse_deletion_profile(warehouse_id, deletion_profile, &mut **transaction).await
     }
 
@@ -500,20 +479,20 @@ impl CatalogStore for super::PostgresBackend {
         rename_project(project_id, new_name, transaction).await
     }
 
-    async fn set_warehouse_status<'a>(
+    async fn set_warehouse_status_impl<'a>(
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), SetWarehouseStatusError> {
         set_warehouse_status(warehouse_id, status, transaction).await
     }
 
-    async fn update_storage_profile<'a>(
+    async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), UpdateWarehouseStorageProfileError> {
         update_storage_profile(
             warehouse_id,
             storage_profile,
@@ -679,11 +658,11 @@ impl CatalogStore for super::PostgresBackend {
         set_namespace_protected(namespace_id, protect, transaction).await
     }
 
-    async fn set_warehouse_protected(
+    async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse> {
+    ) -> std::result::Result<ProtectionResponse, SetWarehouseProtectedError> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 

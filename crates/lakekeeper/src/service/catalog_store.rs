@@ -193,31 +193,31 @@ where
     ) -> Result<WarehouseStatisticsResponse>;
 
     /// Set warehouse deletion profile
-    async fn set_warehouse_deletion_profile<'a>(
+    async fn set_warehouse_deletion_profile_impl<'a>(
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> std::result::Result<(), SetWarehouseDeletionProfileError>;
 
     /// Set the status of a warehouse.
-    async fn set_warehouse_status<'a>(
+    async fn set_warehouse_status_impl<'a>(
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> std::result::Result<(), SetWarehouseStatusError>;
 
-    async fn update_storage_profile<'a>(
+    async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> std::result::Result<(), UpdateWarehouseStorageProfileError>;
 
-    async fn set_warehouse_protected(
+    async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse>;
+    ) -> std::result::Result<ProtectionResponse, SetWarehouseProtectedError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
