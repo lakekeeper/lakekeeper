@@ -159,7 +159,7 @@ mod test {
         service::{
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
-            CatalogStore, GetNamespaceResponse, State, ViewId,
+            CatalogStore, Namespace, State, ViewId,
         },
         WarehouseId,
     };
@@ -192,7 +192,7 @@ mod test {
         )
         .await
         .1
-        .namespace;
+        .namespace_ident;
         (api_context, namespace, warehouse_id)
     }
 
@@ -221,7 +221,7 @@ mod test {
     async fn assert_view_exists(
         ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         view_id: ViewId,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         include_deleted: bool,
         expected_num_views: usize,
         assert_msg: &str,
@@ -247,7 +247,7 @@ mod test {
     async fn assert_view_doesnt_exist(
         ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         view_id: ViewId,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         include_deleted: bool,
         expected_num_views: usize,
         assert_msg: &str,

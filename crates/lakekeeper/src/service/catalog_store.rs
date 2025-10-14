@@ -225,48 +225,46 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<
-        PaginatedMapping<NamespaceId, GetNamespaceResponse>,
-        CatalogListNamespaceError,
-    >;
+    ) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError>;
 
-    async fn create_namespace<'a>(
+    async fn create_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<CreateNamespaceResponse>;
+    ) -> std::result::Result<Namespace, CatalogCreateNamespaceError>;
 
     // Should only return a namespace if the warehouse is active.
     async fn get_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceIdentOrId,
         state: Self::State,
-    ) -> std::result::Result<GetNamespaceResponse, CatalogGetNamespaceError>;
+    ) -> std::result::Result<Namespace, CatalogGetNamespaceError>;
 
-    async fn drop_namespace<'a>(
+    async fn drop_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<NamespaceDropInfo>;
+    ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError>;
 
     /// Update the properties of a namespace.
     ///
     /// The properties are the final key-value properties that should
     /// be persisted as-is in the catalog.
-    async fn update_namespace_properties<'a>(
+    async fn update_namespace_properties_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError>;
 
-    async fn set_namespace_protected(
+    async fn set_namespace_protected_impl(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse>;
+    ) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError>;
 
     // ---------------- Tabular Management ----------------
     async fn list_tabulars(
@@ -303,7 +301,7 @@ where
     ) -> Result<CreateTableResponse>;
 
     async fn list_tables<'a>(
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
@@ -451,7 +449,7 @@ where
     ) -> Result<ViewMetadataWithLocation>;
 
     async fn list_views<'a>(
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,

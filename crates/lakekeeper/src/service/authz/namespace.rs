@@ -7,8 +7,8 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CatalogNamespaceAction, MustUse,
         },
-        Actor, CatalogBackendError, CatalogGetNamespaceError, DatabaseIntegrityError,
-        GetNamespaceResponse, NamespaceIdentOrId, NamespaceNotFound,
+        Actor, CatalogBackendError, CatalogGetNamespaceError, DatabaseIntegrityError, Namespace,
+        NamespaceIdentOrId, NamespaceNotFound,
     },
     WarehouseId,
 };
@@ -167,9 +167,9 @@ pub trait AuthzNamespaceOps: Authorizer {
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         user_provided_namespace: impl Into<NamespaceIdentOrId> + Send,
-        namespace: Result<GetNamespaceResponse, CatalogGetNamespaceError>,
+        namespace: Result<Namespace, CatalogGetNamespaceError>,
         action: impl Into<Self::NamespaceAction> + Send,
-    ) -> Result<GetNamespaceResponse, RequireNamespaceActionError> {
+    ) -> Result<Namespace, RequireNamespaceActionError> {
         let actor = metadata.actor();
         let namespace = namespace?;
         let namespace_name = namespace.namespace_ident.clone();
@@ -212,7 +212,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     async fn is_allowed_namespace_action(
         &self,
         metadata: &RequestMetadata,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         action: impl Into<Self::NamespaceAction> + Send,
     ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
@@ -230,7 +230,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         actions: &[A; N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let actions = actions
@@ -253,7 +253,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&GetNamespaceResponse, A)],
+        actions: &[(&Namespace, A)],
     ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])

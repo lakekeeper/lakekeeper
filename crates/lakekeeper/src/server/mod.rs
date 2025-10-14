@@ -267,7 +267,7 @@ pub(crate) mod test {
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile,
             },
-            CatalogNamespaceOps as _, CreateNamespaceResponse, GetNamespaceResponse, State, UserId,
+            CatalogNamespaceOps as _, CreateNamespaceResponse, Namespace, State, UserId,
         },
         WarehouseId,
     };
@@ -369,7 +369,7 @@ pub(crate) mod test {
         delete_profile: TabularDeleteProfile,
     ) -> (
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        Vec<(WarehouseId, GetNamespaceResponse, NamespaceParameters)>,
+        Vec<(WarehouseId, Namespace, NamespaceParameters)>,
         String,
     ) {
         let prof = crate::server::test::memory_io_profile();

@@ -12,8 +12,8 @@ use lakekeeper::{
             ListProjectsResponse, NamespaceParent,
         },
         health::Health,
-        Actor, CatalogStore, ErrorModel, GetNamespaceResponse, NamespaceId, RoleId, SecretStore,
-        ServerId, State, TableId, UserId, ViewId,
+        Actor, CatalogStore, ErrorModel, Namespace, NamespaceId, RoleId, SecretStore, ServerId,
+        State, TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
     utoipa, ProjectId, WarehouseId,
@@ -318,7 +318,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         action: Self::NamespaceAction,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
@@ -333,7 +333,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&GetNamespaceResponse, Self::NamespaceAction)],
+        actions: &[(&Namespace, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = actions
             .iter()

@@ -2,7 +2,7 @@ use crate::{
     server::tables::parse_location,
     service::{
         storage::{StorageLocations as _, StorageProfile},
-        GetNamespaceResponse, TabularId, TabularListFlags,
+        Namespace, TabularId, TabularListFlags,
     },
 };
 
@@ -15,7 +15,7 @@ pub(crate) fn default_table_flags() -> TabularListFlags {
 }
 
 pub(super) fn determine_tabular_location(
-    namespace: &GetNamespaceResponse,
+    namespace: &Namespace,
     request_table_location: Option<String>,
     table_id: TabularId,
     storage_profile: &StorageProfile,

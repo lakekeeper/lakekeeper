@@ -16,8 +16,8 @@ use crate::{
             NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, CatalogStore, GetNamespaceResponse, NamespaceId, ProjectId, RoleId, SecretStore,
-        ServerId, State, TableId, ViewId, WarehouseId,
+        Actor, CatalogStore, Namespace, NamespaceId, ProjectId, RoleId, SecretStore, ServerId,
+        State, TableId, ViewId, WarehouseId,
     },
 };
 
@@ -140,7 +140,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_namespace_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _namespace: &GetNamespaceResponse,
+        _namespace: &Namespace,
         _action: Self::NamespaceAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
