@@ -18,7 +18,7 @@ use crate::{
         CatalogGetNamespaceError, CatalogListNamespaceError, CatalogNamespaceDropError,
         CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
         ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
-        DatabaseIntegrityError, ListNamespacesQuery, Namespace, NamespaceAlreadyExists,
+        InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace, NamespaceAlreadyExists,
         NamespaceDropInfo, NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent,
         NamespaceIdentOrId, NamespaceNotEmpty, NamespaceNotFound,
         NamespacePropertiesSerializationError, NamespaceProtected, Result, TabularId,
@@ -73,8 +73,8 @@ pub(crate) async fn get_namespace_by_id<
     })?;
 
     Ok(Namespace {
-        namespace_ident: to_namespace_or_integrity_error(
-            row.namespace_name,
+        namespace_ident: parse_namespace_identifier_from_vec(
+            &row.namespace_name,
             warehouse_id,
             namespace_id,
         )?,
@@ -263,7 +263,7 @@ pub(crate) async fn list_namespaces(
     for ns_result in namespaces
         .into_iter()
         .map(|(id, n, ts, protected, properties, updated_at)| {
-            to_namespace_or_integrity_error(n, warehouse_id, id.into()).map(|n| {
+            parse_namespace_identifier_from_vec(&n, warehouse_id, id.into()).map(|n| {
                 (
                     id.into(),
                     Namespace {
@@ -422,7 +422,7 @@ pub(crate) async fn drop_namespace(
         }
     )?;
     let namespace_ident =
-        to_namespace_or_integrity_error(info.namespace_name.clone(), warehouse_id, namespace_id)?;
+        parse_namespace_identifier_from_vec(&info.namespace_name, warehouse_id, namespace_id)?;
 
     if !recursive && (!info.child_tabulars.is_empty() || !info.child_namespaces.is_empty()) {
         return Err(
@@ -502,18 +502,20 @@ pub(crate) async fn drop_namespace(
             info.child_tabulars_namespace_names,
             info.child_tabulars_table_names
         )
-        .map(|(id, protocol, fs_location, typ, ns_name, t_name)| {
-            let ns_ident = json_value_to_namespace_ident(ns_name)?;
-            let table_ident = TableIdent::new(ns_ident, t_name);
-            Ok::<_, CatalogNamespaceDropError>((
-                match typ {
-                    TabularType::Table => TabularId::Table(id.into()),
-                    TabularType::View => TabularId::View(id.into()),
-                },
-                join_location(protocol.as_str(), fs_location.as_str()),
-                table_ident,
-            ))
-        })
+        .map(
+            |(tabular_id, protocol, fs_location, typ, ns_name, t_name)| {
+                let ns_ident = json_value_to_namespace_ident(warehouse_id, &ns_name)?;
+                let table_ident = TableIdent::new(ns_ident, t_name);
+                Ok::<_, CatalogNamespaceDropError>((
+                    match typ {
+                        TabularType::Table => TabularId::Table(tabular_id.into()),
+                        TabularType::View => TabularId::View(tabular_id.into()),
+                    },
+                    join_location(protocol.as_str(), fs_location.as_str()),
+                    table_ident,
+                ))
+            },
+        )
         .collect::<std::result::Result<Vec<_>, _>>()?,
         open_tasks: info
             .child_tabular_task_id
@@ -523,48 +525,45 @@ pub(crate) async fn drop_namespace(
     })
 }
 
-fn to_namespace_or_integrity_error(
-    namespace: Vec<String>,
+fn parse_namespace_identifier_from_vec(
+    namespace: &[String],
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-) -> std::result::Result<NamespaceIdent, DatabaseIntegrityError> {
-    NamespaceIdent::from_vec(namespace)
-        .map_err(|_e| DatabaseIntegrityError::new(format!(
-                "Namespace with id '{namespace_id}' in Warehouse with id '{warehouse_id}' has empty identifier name."
-            )))
+) -> std::result::Result<NamespaceIdent, InvalidNamespaceIdentifier> {
+    NamespaceIdent::from_vec(namespace.to_owned()).map_err(|_e| {
+        InvalidNamespaceIdentifier::new(warehouse_id, format!("{namespace:?}"))
+            .with_id(namespace_id)
+            .append_detail("Namespace identifier can't be empty")
+    })
 }
 
 fn json_value_to_namespace_ident(
-    v: serde_json::Value,
-) -> Result<NamespaceIdent, DatabaseIntegrityError> {
-    if let serde_json::Value::Array(arr) = v {
-        let str_vec: Result<Vec<String>, DatabaseIntegrityError> = arr
+    warehouse_id: WarehouseId,
+    v: &serde_json::Value,
+) -> Result<NamespaceIdent, InvalidNamespaceIdentifier> {
+    if let serde_json::Value::Array(arr) = v.clone() {
+        let str_vec: Result<Vec<String>, InvalidNamespaceIdentifier> = arr
             .into_iter()
             .map(|item| {
                 if let serde_json::Value::String(s) = item {
                     Ok(s)
                 } else {
-                    Err(DatabaseIntegrityError::new(
-                        "Invalid namespace identifier encountered".to_string(),
+                    Err(
+                        InvalidNamespaceIdentifier::new(warehouse_id, format!("{v:?}"))
+                            .append_detail("Expected array of strings for namespace identifier"),
                     )
-                    .append_detail(format!(
-                        "Expected string for namespace part, found: {item:?}"
-                    )))
                 }
             })
             .collect();
         NamespaceIdent::from_vec(str_vec?).map_err(|_e| {
-            DatabaseIntegrityError::new(
-                "Encountered namespace which has empty identifier name.".to_string(),
-            )
+            InvalidNamespaceIdentifier::new(warehouse_id, format!("{v:?}"))
+                .append_detail("Namespace identifier can't be empty")
         })
     } else {
-        Err(DatabaseIntegrityError::new(
-            "Invalid namespace identifier encountered for namespace".to_string(),
+        Err(
+            InvalidNamespaceIdentifier::new(warehouse_id, format!("{v:?}"))
+                .append_detail("Expected array for namespace identifier"),
         )
-        .append_detail(format!(
-            "Expected array for namespace identifier, found: {v:?}"
-        )))
     }
 }
 
@@ -598,8 +597,8 @@ pub(crate) async fn set_namespace_protected(
     })?;
 
     Ok(Namespace {
-        namespace_ident: to_namespace_or_integrity_error(
-            row.namespace_name,
+        namespace_ident: parse_namespace_identifier_from_vec(
+            &row.namespace_name,
             warehouse_id,
             namespace_id,
         )?,
@@ -642,8 +641,8 @@ pub(crate) async fn update_namespace_properties(
     })?;
 
     Ok(Namespace {
-        namespace_ident: to_namespace_or_integrity_error(
-            row.namespace_name,
+        namespace_ident: parse_namespace_identifier_from_vec(
+            &row.namespace_name,
             warehouse_id,
             namespace_id,
         )?,

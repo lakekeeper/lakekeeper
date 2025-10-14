@@ -7,8 +7,8 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CatalogNamespaceAction, MustUse,
         },
-        Actor, CatalogBackendError, CatalogGetNamespaceError, DatabaseIntegrityError, Namespace,
-        NamespaceIdentOrId, NamespaceNotFound,
+        Actor, CatalogBackendError, CatalogGetNamespaceError, InvalidNamespaceIdentifier,
+        Namespace, NamespaceIdentOrId, NamespaceNotFound,
     },
     WarehouseId,
 };
@@ -119,7 +119,7 @@ pub enum RequireNamespaceActionError {
     AuthZCannotSeeNamespace(AuthZCannotSeeNamespace),
     // Propagated directly
     CatalogBackendError(CatalogBackendError),
-    DatabaseIntegrityError(DatabaseIntegrityError),
+    InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireNamespaceActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
@@ -133,7 +133,7 @@ impl From<CatalogGetNamespaceError> for RequireNamespaceActionError {
     fn from(err: CatalogGetNamespaceError) -> Self {
         match err {
             CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
-            CatalogGetNamespaceError::DatabaseIntegrityError(e) => e.into(),
+            CatalogGetNamespaceError::InvalidNamespaceIdentifier(e) => e.into(),
             CatalogGetNamespaceError::NamespaceNotFound(e) => {
                 AuthZCannotSeeNamespace::from(e).into()
             }
@@ -145,7 +145,7 @@ impl From<RequireNamespaceActionError> for ErrorModel {
         match err {
             RequireNamespaceActionError::AuthZCannotSeeNamespace(e) => e.into(),
             RequireNamespaceActionError::CatalogBackendError(e) => e.into(),
-            RequireNamespaceActionError::DatabaseIntegrityError(e) => e.into(),
+            RequireNamespaceActionError::InvalidNamespaceIdentifier(e) => e.into(),
             RequireNamespaceActionError::AuthorizationBackendUnavailable(e) => e.into(),
             RequireNamespaceActionError::AuthZNamespaceActionForbidden(e) => e.into(),
             RequireNamespaceActionError::AuthorizationCountMismatch(e) => e.into(),

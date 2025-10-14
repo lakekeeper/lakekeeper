@@ -8,8 +8,8 @@ use crate::{
     api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
     service::{
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
-        CatalogBackendError, CatalogStore, DatabaseIntegrityError, InvalidPaginationToken,
-        ListNamespacesQuery, NamespaceId, TableIdent, TabularId, Transaction, WarehouseIdNotFound,
+        CatalogBackendError, CatalogStore, InvalidPaginationToken, ListNamespacesQuery,
+        NamespaceId, TableIdent, TabularId, Transaction, WarehouseIdNotFound,
     },
     WarehouseId,
 };
@@ -67,6 +67,7 @@ macro_rules! define_simple_namespace_err {
     };
 }
 
+// --------------------------- GENERAL ERROR ---------------------------
 #[derive(thiserror::Error, Debug)]
 #[error("Error serializing properties of namespace {namespace}: {source}")]
 pub struct NamespacePropertiesSerializationError {
@@ -114,7 +115,48 @@ impl From<NamespacePropertiesSerializationError> for ErrorModel {
     }
 }
 
-// --------------------------- GENERAL ERROR ---------------------------
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("Encountered invalid namespace identifier in warehouse {warehouse_id}: {found}")]
+pub struct InvalidNamespaceIdentifier {
+    warehouse_id: WarehouseId,
+    namespace_id: Option<NamespaceId>,
+    found: String,
+    stack: Vec<String>,
+}
+impl InvalidNamespaceIdentifier {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId, found: impl Into<String>) -> Self {
+        Self {
+            warehouse_id,
+            namespace_id: None,
+            found: found.into(),
+            stack: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_id(mut self, namespace_id: NamespaceId) -> Self {
+        self.namespace_id = Some(namespace_id);
+        self
+    }
+}
+impl_error_stack_methods!(InvalidNamespaceIdentifier);
+
+impl From<InvalidNamespaceIdentifier> for ErrorModel {
+    fn from(err: InvalidNamespaceIdentifier) -> Self {
+        let message = err.to_string();
+        let InvalidNamespaceIdentifier { stack, .. } = err;
+
+        ErrorModel {
+            r#type: "InvalidNamespaceIdentifier".to_string(),
+            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            message,
+            stack,
+            source: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum NamespaceIdentOrId {
     Id(NamespaceId),
@@ -157,7 +199,7 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         NamespaceNotFound,
-        DatabaseIntegrityError,
+        InvalidNamespaceIdentifier,
     ]
 }
 
@@ -165,11 +207,6 @@ impl CatalogGetNamespaceError {
     #[must_use]
     pub fn not_found(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
         NamespaceNotFound::new(warehouse_id, namespace).into()
-    }
-
-    #[must_use]
-    pub fn database_integrity(message: impl Into<String>) -> Self {
-        DatabaseIntegrityError::new(message).into()
     }
 
     #[must_use]
@@ -184,7 +221,7 @@ define_transparent_error! {
     stack_message: "Error listing namespaces in catalog",
     variants: [
         CatalogBackendError,
-        DatabaseIntegrityError,
+        InvalidNamespaceIdentifier,
         InvalidPaginationToken,
     ]
 }
@@ -246,7 +283,7 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         NamespaceNotFound,
-        DatabaseIntegrityError,
+        InvalidNamespaceIdentifier,
         NamespaceProtected,
         NamespaceNotEmpty,
         ChildNamespaceProtected,
@@ -348,7 +385,7 @@ define_transparent_error! {
         CatalogBackendError,
         NamespacePropertiesSerializationError,
         NamespaceNotFound,
-        DatabaseIntegrityError,
+        InvalidNamespaceIdentifier,
     ]
 }
 
@@ -359,7 +396,7 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         NamespaceNotFound,
-        DatabaseIntegrityError,
+        InvalidNamespaceIdentifier,
     ]
 }
 
