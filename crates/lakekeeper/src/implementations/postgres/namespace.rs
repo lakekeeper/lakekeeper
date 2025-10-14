@@ -431,7 +431,7 @@ pub(crate) async fn drop_namespace(
                 info.child_tabulars_deleted.len(),
                 info.child_namespaces.len()
         )
-            
+
     ).append_detail("Use 'recursive' flag to delete all content.").into()
         );
     }
