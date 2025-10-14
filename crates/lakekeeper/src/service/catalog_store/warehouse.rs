@@ -364,7 +364,7 @@ define_transparent_error! {
     ]
 }
 
-// --------------------------- Set Warehouse Status Error ---------------------------
+// --------------------------- Update Warehouse Storage Profile ----------------------
 define_transparent_error! {
     pub enum UpdateWarehouseStorageProfileError,
     stack_message: "Error updating warehouse storage profile in catalog",

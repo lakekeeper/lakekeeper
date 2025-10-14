@@ -920,6 +920,26 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
+    async fn test_get_nonexistent_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let result = PostgresBackend::require_namespace(
+            warehouse_id,
+            NamespaceId::new_random(),
+            state.clone(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            result,
+            CatalogGetNamespaceError::NamespaceNotFound(_)
+        ));
+    }
+
+    #[sqlx::test]
     async fn test_drop_nonexistent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
