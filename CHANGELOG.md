@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.3](https://github.com/lakekeeper/lakekeeper/compare/v0.10.3...v0.10.3) (2025-10-15)
+
+
+### Bug Fixes
+
+* **ci:** Revert 0.10.3 release ([dfdbdcf](https://github.com/lakekeeper/lakekeeper/commit/dfdbdcf77923f36b1d2ea1a84cd494dad9f4bc9d))
+
+
+### Miscellaneous Chores
+
+* **main:** release 0.10.3 ([#1446](https://github.com/lakekeeper/lakekeeper/issues/1446)) ([b8fcf54](https://github.com/lakekeeper/lakekeeper/commit/b8fcf54c627d48a547ef0baf6863949b68579388))
+
 ## [0.10.3](https://github.com/lakekeeper/lakekeeper/compare/v0.10.2...v0.10.3) (2025-10-15)
 
 
