@@ -10,13 +10,14 @@ use crate::{
     service::{
         authn::UserId,
         authz::{
-            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-            CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+            AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, ListProjectsResponse,
+            NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, ServerId, State, TableId,
-        ViewId, WarehouseId,
+        Actor, CatalogStore, Namespace, NamespaceId, ProjectId, RoleId, SecretStore, ServerId,
+        State, TableId, ViewId, WarehouseId,
     },
 };
 
@@ -50,6 +51,9 @@ pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
+    type WarehouseAction = CatalogWarehouseAction;
+    type NamespaceAction = CatalogNamespaceAction;
+
     fn implementation_name() -> &'static str {
         "allow-all"
     }
@@ -128,20 +132,17 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _warehouse_id: WarehouseId,
-        _action: CatalogWarehouseAction,
-    ) -> Result<bool> {
+        _action: Self::WarehouseAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
-    async fn is_allowed_namespace_action_impl<A>(
+    async fn is_allowed_namespace_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _namespace_id: NamespaceId,
-        _action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
+        _namespace: &Namespace,
+        _action: Self::NamespaceAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 

@@ -200,7 +200,7 @@ impl AdlsProfile {
         }
     }
 
-    fn blob_service_client(
+    async fn blob_service_client(
         &self,
         credential: &AzCredential,
     ) -> Result<BlobServiceClient, CredentialsError> {
@@ -208,6 +208,7 @@ impl AdlsProfile {
 
         self.azure_settings()
             .get_blob_service_client(&azure_auth)
+            .await
             .map_err(Into::into)
     }
 
@@ -216,13 +217,14 @@ impl AdlsProfile {
     /// # Errors
     /// - If system identity is requested but not enabled in the configuration.
     /// - If the client could not be initialized.
-    pub fn lakekeeper_io(
+    pub async fn lakekeeper_io(
         &self,
         credential: &AzCredential,
     ) -> Result<AdlsStorage, CredentialsError> {
         let azure_auth = AzureAuth::try_from(credential.clone())?;
         self.azure_settings()
             .get_storage_client(&azure_auth)
+            .await
             .map_err(Into::into)
     }
 
@@ -246,7 +248,7 @@ impl AdlsProfile {
 
         let sas = match credential {
             AzCredential::ClientCredentials { .. } => {
-                let client = self.blob_service_client(credential)?;
+                let client = self.blob_service_client(credential).await?;
                 self.sas_via_delegation_key(table_location, client, permissions)
                     .await?
             }
@@ -259,7 +261,7 @@ impl AdlsProfile {
                 azure_core::auth::Secret::new(key.to_string()),
             )?,
             AzCredential::AzureSystemIdentity {} => {
-                let client = self.blob_service_client(credential)?;
+                let client = self.blob_service_client(credential).await?;
                 self.sas_via_delegation_key(table_location, client, permissions)
                     .await
                     .map_err(|e| {

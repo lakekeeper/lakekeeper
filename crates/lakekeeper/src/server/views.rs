@@ -159,7 +159,7 @@ mod test {
         service::{
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
-            CatalogStore, State, ViewId,
+            CatalogStore, Namespace, State, ViewId,
         },
         WarehouseId,
     };
@@ -192,7 +192,7 @@ mod test {
         )
         .await
         .1
-        .namespace;
+        .namespace_ident;
         (api_context, namespace, warehouse_id)
     }
 
@@ -220,16 +220,14 @@ mod test {
 
     async fn assert_view_exists(
         ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        warehouse_id: WarehouseId,
         view_id: ViewId,
-        namespace: &NamespaceIdent,
+        namespace: &Namespace,
         include_deleted: bool,
         expected_num_views: usize,
         assert_msg: &str,
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
         let views = PostgresBackend::list_views(
-            warehouse_id,
             namespace,
             include_deleted,
             &mut read_tx,
@@ -248,16 +246,14 @@ mod test {
 
     async fn assert_view_doesnt_exist(
         ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        warehouse_id: WarehouseId,
         view_id: ViewId,
-        namespace: &NamespaceIdent,
+        namespace: &Namespace,
         include_deleted: bool,
         expected_num_views: usize,
         assert_msg: &str,
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
         let views = PostgresBackend::list_views(
-            warehouse_id,
             namespace,
             include_deleted,
             &mut read_tx,
@@ -288,7 +284,7 @@ mod test {
         let v_name = "v1".to_string();
 
         // Create views with the same table ID across different warehouses.
-        for (wh_id, ns_id, ns_params) in &wh_ns_data {
+        for (wh_id, namespace, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
             let meta = view_request(Some(*v_id), &location);
             let ident = TableIdent {
@@ -298,7 +294,7 @@ mod test {
             let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
             PostgresBackend::create_view(
                 *wh_id,
-                *ns_id,
+                namespace.namespace_id,
                 &ident,
                 meta,
                 &meta_location,
@@ -312,9 +308,8 @@ mod test {
             // Verify view creation.
             assert_view_exists(
                 ctx.clone(),
-                *wh_id,
                 v_id,
-                &ns_params.namespace,
+                namespace,
                 false,
                 1,
                 "view should be created",
@@ -345,9 +340,8 @@ mod test {
         // Deleted view cannot be accessed anymore.
         assert_view_doesnt_exist(
             ctx.clone(),
-            deleted_view_data.0,
             v_id,
-            &deleted_view_data.2.namespace,
+            &deleted_view_data.1,
             true,
             0,
             "view should be deleted",
@@ -356,12 +350,11 @@ mod test {
 
         // Views in other warehouses are still there.
         assert!(!wh_ns_data.is_empty());
-        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+        for (_wh_id, namespace, _ns_params) in &wh_ns_data {
             assert_view_exists(
                 ctx.clone(),
-                *wh_id,
                 v_id,
-                &ns_params.namespace,
+                namespace,
                 false,
                 1,
                 "view should still exist",
@@ -379,7 +372,7 @@ mod test {
         let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
         PostgresBackend::create_view(
             deleted_view_data.0,
-            deleted_view_data.1,
+            deleted_view_data.1.namespace_id,
             &ident,
             meta,
             &meta_location,
@@ -392,9 +385,8 @@ mod test {
 
         assert_view_exists(
             ctx.clone(),
-            deleted_view_data.0,
             v_id,
-            &deleted_view_data.2.namespace,
+            &deleted_view_data.1,
             false,
             1,
             "view should be recreated",
@@ -418,7 +410,7 @@ mod test {
         let v_name = "v1".to_string();
 
         // Create views with the same table ID across different warehouses.
-        for (wh_id, ns_id, ns_params) in &wh_ns_data {
+        for (wh_id, namespace, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
             let meta = view_request(Some(*v_id), &location);
             let ident = TableIdent {
@@ -428,7 +420,7 @@ mod test {
             let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
             PostgresBackend::create_view(
                 *wh_id,
-                *ns_id,
+                namespace.namespace_id,
                 &ident,
                 meta,
                 &meta_location,
@@ -442,9 +434,8 @@ mod test {
             // Verify view creation.
             assert_view_exists(
                 ctx.clone(),
-                *wh_id,
                 v_id,
-                &ns_params.namespace,
+                namespace,
                 false,
                 1,
                 "view should be created",
@@ -475,9 +466,8 @@ mod test {
         // Whether the view is still available depends on query params.
         assert_view_doesnt_exist(
             ctx.clone(),
-            deleted_view_data.0,
             v_id,
-            &deleted_view_data.2.namespace,
+            &deleted_view_data.1,
             false,
             0,
             "soft deleted view should not be shown",
@@ -485,9 +475,8 @@ mod test {
         .await;
         assert_view_exists(
             ctx.clone(),
-            deleted_view_data.0,
             v_id,
-            &deleted_view_data.2.namespace,
+            &deleted_view_data.1,
             true,
             1,
             "soft deleted view should be shown",
@@ -496,12 +485,11 @@ mod test {
 
         // Views in other warehouses are still there.
         assert!(!wh_ns_data.is_empty());
-        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+        for (_wh_id, namespace, _ns_params) in &wh_ns_data {
             assert_view_exists(
                 ctx.clone(),
-                *wh_id,
                 v_id,
-                &ns_params.namespace,
+                namespace,
                 false,
                 1,
                 "view should still exist",

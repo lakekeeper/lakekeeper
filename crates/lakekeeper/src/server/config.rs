@@ -12,7 +12,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        CatalogStore, ProjectId, SecretStore, State, Transaction,
+        CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
     },
     CONFIG,
 };
@@ -31,7 +31,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone()).await?;
 
         // Arg takes precedence over auth
-        let warehouse_id = if let Some(query_warehouse) = query.warehouse {
+        let warehouse = if let Some(query_warehouse) = query.warehouse {
             let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
             let project_id = request_metadata.require_project_id(project_from_arg)?;
             authorizer
@@ -54,22 +54,20 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         authorizer
             .require_warehouse_action(
                 &request_metadata,
-                warehouse_id,
+                warehouse.id,
                 CatalogWarehouseAction::CanGetConfig,
             )
             .await?;
 
-        // Get config from DB and new token from AuthHandler simultaneously
-        let mut config = C::require_config_for_warehouse(
-            warehouse_id,
+        let mut config = warehouse.storage_profile.generate_catalog_config(
+            warehouse.id,
             &request_metadata,
-            api_context.v1_state.catalog,
-        )
-        .await?;
+            warehouse.tabular_delete_profile,
+        );
 
         config
             .defaults
-            .insert("prefix".to_string(), CONFIG.warehouse_prefix(warehouse_id));
+            .insert("prefix".to_string(), CONFIG.warehouse_prefix(warehouse.id));
         config.defaults.insert(
             "rest-page-size".to_string(),
             CONFIG.pagination_size_default.to_string(),

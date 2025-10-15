@@ -7,13 +7,13 @@ use lakekeeper::{
     axum::Router,
     service::{
         authz::{
-            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+            AuthorizationBackendUnavailable, Authorizer, CatalogProjectAction, CatalogRoleAction,
             CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+            ListProjectsResponse, NamespaceParent,
         },
         health::Health,
-        Actor, CatalogStore, ErrorModel, NamespaceId, RoleId, SecretStore, ServerId, State,
-        TableId, UserId, ViewId,
+        Actor, CatalogStore, ErrorModel, Namespace, NamespaceId, RoleId, SecretStore, ServerId,
+        State, TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
     utoipa, ProjectId, WarehouseId,
@@ -30,11 +30,13 @@ use utoipa::OpenApi as _;
 
 use crate::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
-    error::{OpenFGAError, OpenFGAResult},
+    error::{
+        BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
+        OpenFGAResult, UnexpectedCorrelationId,
+    },
     models::OpenFgaType,
-    relations,
     relations::{
-        NamespaceRelation, OpenFgaRelation, ProjectRelation, RoleRelation, ServerRelation,
+        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, RoleRelation, ServerRelation,
         TableRelation, ViewRelation, WarehouseRelation,
     },
     FgaType, AUTH_CONFIG, MAX_TUPLES_PER_WRITE,
@@ -67,6 +69,9 @@ impl OpenFGAAuthorizer {
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
+    type WarehouseAction = WarehouseRelation;
+    type NamespaceAction = NamespaceRelation;
+
     fn implementation_name() -> &'static str {
         "openfga"
     }
@@ -283,8 +288,8 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
-        action: CatalogWarehouseAction,
-    ) -> AuthorizerResult<bool> {
+        action: Self::WarehouseAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -294,41 +299,51 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_namespace_action_impl<A>(
+    async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceId,
-        action: A,
-    ) -> AuthorizerResult<bool>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: namespace_id.to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn are_allowed_namespace_actions_impl<A>(
-        &self,
-        metadata: &RequestMetadata,
-        namespaces_with_actions: Vec<(NamespaceId, A)>,
-    ) -> AuthorizerResult<Vec<bool>>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
-        let items: Vec<_> = namespaces_with_actions
-            .into_iter()
+        warehouses_with_actions: &[(WarehouseId, Self::WarehouseAction)],
+    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let items: Vec<_> = warehouses_with_actions
+            .iter()
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
                 object: id.to_openfga(),
             })
             .collect();
-        self.batch_check(items).await
+        self.batch_check(items).await.map_err(Into::into)
+    }
+
+    async fn is_allowed_namespace_action_impl(
+        &self,
+        metadata: &RequestMetadata,
+        namespace: &Namespace,
+        action: Self::NamespaceAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
+            relation: action.to_string(),
+            object: namespace.namespace_id.to_openfga(),
+        })
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn are_allowed_namespace_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        actions: &[(&Namespace, Self::NamespaceAction)],
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let items: Vec<_> = actions
+            .iter()
+            .map(|(namespace, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: namespace.namespace_id.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
     }
 
     async fn is_allowed_table_action_impl<A>(
@@ -367,7 +382,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 object: (warehouse_id, table_id).to_openfga(),
             })
             .collect();
-        self.batch_check(items).await
+        self.batch_check(items).await.map_err(Into::into)
     }
 
     async fn is_allowed_view_action_impl<A>(
@@ -406,7 +421,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 object: (warehouse_id, view_id).to_openfga(),
             })
             .collect();
-        self.batch_check(items).await
+        self.batch_check(items).await.map_err(Into::into)
     }
 
     async fn delete_user(
@@ -821,7 +836,7 @@ impl OpenFGAAuthorizer {
     pub(crate) async fn check(
         &self,
         tuple_key: impl Into<CheckRequestTupleKey>,
-    ) -> OpenFGAResult<bool> {
+    ) -> Result<bool, OpenFGABackendUnavailable> {
         self.client
             .check(tuple_key, None, None, false)
             .await
@@ -835,7 +850,7 @@ impl OpenFGAAuthorizer {
     async fn batch_check(
         &self,
         tuple_keys: Vec<impl Into<CheckRequestTupleKey>>,
-    ) -> AuthorizerResult<Vec<bool>> {
+    ) -> Result<Vec<bool>, OpenFGABackendUnavailable> {
         // Using index into tuple_keys as correlation_id.
         let num_tuples = tuple_keys.len();
         let items: Vec<BatchCheckItem> = tuple_keys
@@ -851,44 +866,34 @@ impl OpenFGAAuthorizer {
 
         let chunks: Vec<_> = items.chunks(AUTH_CONFIG.max_batch_check_size).collect();
         let chunked_raw_results =
-            try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec())))
-                .await
-                .inspect_err(|e| {
-                    tracing::error!("Failed to check batch with OpenFGA: {e}");
-                })
-                .map_err(Into::<OpenFGAError>::into)
-                .map_err(Into::<IcebergErrorResponse>::into)?;
+            try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec()))).await?;
 
         let mut results = vec![false; num_tuples];
         let mut idxs_seen = vec![false; num_tuples];
-        let batch_check_err_type = "OpenFGABatchCheckError";
         for raw_results_chunk in chunked_raw_results {
             for (idx, check_result) in raw_results_chunk {
-                let idx: usize = idx.parse().map_err(|e| {
-                    let msg =
-                        format!("OpenFGA batch check correlation id should be usize, got {idx}");
-                    tracing::error!(msg);
-                    ErrorModel::internal(msg, batch_check_err_type, Some(Box::new(e)))
-                })?;
+                let idx: usize = idx
+                    .parse()
+                    .map_err(|_e| UnexpectedCorrelationId::new(idx))?;
                 match check_result {
                     CheckResult::Allowed(allowed) => {
                         results[idx] = allowed;
                     }
                     CheckResult::Error(e) => {
-                        let msg = format!("One of the checks in a batch returned an error: {e:?}");
-                        tracing::error!(msg);
-                        let err = ErrorModel::internal(msg, batch_check_err_type, None);
-                        return Err(err.into());
+                        return Err(BatchCheckError::from(e).into());
                     }
                 }
                 idxs_seen[idx] = true;
             }
         }
 
-        if !idxs_seen.into_iter().all(|idx_was_seen| idx_was_seen) {
-            let msg = "Missing response for one of the items in an OpenFGA batch check";
-            tracing::error!(msg);
-            let err = ErrorModel::internal(msg, batch_check_err_type, None);
+        if !idxs_seen.iter().all(|idx_was_seen| *idx_was_seen) {
+            let missing_indexes = idxs_seen
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, seen)| if seen { None } else { Some(i) })
+                .collect::<Vec<_>>();
+            let err = MissingItemInBatchCheck { missing_indexes };
             return Err(err.into());
         }
         Ok(results)
@@ -1094,7 +1099,8 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    mod openfga_integration_tests {
+    // Name is important for test profile
+    pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
         use lakekeeper::tokio;
         use openfga_client::client::ConsistencyPreference;
@@ -1107,7 +1113,7 @@ pub(crate) mod tests {
 
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 
-        async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
+        pub(crate) async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
             let client = new_client_from_default_config()
                 .await
                 .expect("Failed to create OpenFGA client");

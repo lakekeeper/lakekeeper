@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
-use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
+use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 
 use super::{
     bootstrap::{bootstrap, get_validation_data},
     namespace::{
-        create_namespace, drop_namespace, get_namespace, list_namespaces, namespace_to_id,
+        create_namespace, drop_namespace, get_namespace, list_namespaces,
         update_namespace_properties,
     },
     role::{create_role, delete_role, list_roles, update_role},
@@ -17,10 +17,10 @@ use super::{
         load_tables, rename_table, resolve_table_ident, table_idents_to_ids,
     },
     warehouse::{
-        create_project, create_warehouse, delete_project, delete_warehouse,
-        get_config_for_warehouse, get_project, get_warehouse, get_warehouse_by_name, list_projects,
-        list_warehouses, rename_project, rename_warehouse, set_warehouse_deletion_profile,
-        set_warehouse_status, update_storage_profile,
+        create_project, create_warehouse, delete_project, delete_warehouse, get_project,
+        get_warehouse_by_id, get_warehouse_by_name, list_projects, list_warehouses, rename_project,
+        rename_warehouse, set_warehouse_deletion_profile, set_warehouse_status,
+        update_storage_profile,
     },
     CatalogState, PostgresTransaction,
 };
@@ -45,12 +45,12 @@ use crate::{
     },
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
-        namespace::{get_namespace_protected, set_namespace_protected},
+        namespace::set_namespace_protected,
         role::search_role,
         tabular::{
             clear_tabular_deleted_at, get_tabular_protected, list_tabulars,
             mark_tabular_as_deleted, search_tabular, set_tabular_protected,
-            table::{commit_table_transaction, create_table, load_storage_profile},
+            table::{commit_table_transaction, create_table},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
         tasks::{
@@ -62,7 +62,6 @@ use crate::{
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
-    request_metadata::RequestMetadata,
     service::{
         authn::UserId,
         storage::StorageProfile,
@@ -70,13 +69,18 @@ use crate::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
-        CatalogStore, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
-        CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
-        GetWarehouseResponse, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
-        NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, ServerInfo,
+        CatalogCreateNamespaceError, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
+        CatalogListNamespaceError, CatalogListWarehousesError, CatalogNamespaceDropError,
+        CatalogRenameWarehouseError, CatalogSetNamespaceProtectedError, CatalogStore,
+        CatalogUpdateNamespacePropertiesError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
+        CreateTableResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
+        ListNamespacesQuery, LoadTableResponse, Namespace, NamespaceDropInfo, NamespaceId,
+        NamespaceIdentOrId, ProjectId, Result, RoleId, ServerInfo,
+        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
         TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
-        TabularListFlags, Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId,
-        WarehouseStatus,
+        TabularListFlags, Transaction, UndropTabularResponse, UpdateWarehouseStorageProfileError,
+        ViewCommit, ViewId, WarehouseId, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -100,70 +104,55 @@ impl CatalogStore for super::PostgresBackend {
         bootstrap(terms_accepted, &mut **transaction).await
     }
 
-    async fn get_warehouse_by_name(
+    async fn get_warehouse_by_name_impl(
         warehouse_name: &str,
         project_id: &ProjectId,
         catalog_state: CatalogState,
-    ) -> Result<Option<WarehouseId>> {
+    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError> {
         get_warehouse_by_name(warehouse_name, project_id, catalog_state).await
     }
 
-    async fn get_config_for_warehouse(
-        warehouse_id: WarehouseId,
-        catalog_state: CatalogState,
-        request_metadata: &RequestMetadata,
-    ) -> Result<Option<CatalogConfig>> {
-        get_config_for_warehouse(warehouse_id, catalog_state, request_metadata).await
-    }
-
-    async fn list_namespaces<'a>(
+    async fn list_namespaces_impl<'a>(
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>> {
+    ) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError>
+    {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
-    async fn create_namespace<'a>(
+    async fn create_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<CreateNamespaceResponse> {
+    ) -> std::result::Result<Namespace, CatalogCreateNamespaceError> {
         create_namespace(warehouse_id, namespace_id, request, transaction).await
     }
 
-    async fn get_namespace<'a>(
+    async fn get_namespace_impl<'a>(
         warehouse_id: WarehouseId,
-        namespace_id: NamespaceId,
-        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<GetNamespaceResponse> {
-        get_namespace(warehouse_id, namespace_id, transaction).await
+        namespace: NamespaceIdentOrId,
+        state: Self::State,
+    ) -> std::result::Result<Namespace, CatalogGetNamespaceError> {
+        get_namespace(warehouse_id, namespace, &state.read_pool()).await
     }
 
-    async fn namespace_to_id<'a>(
-        warehouse_id: WarehouseId,
-        namespace: &NamespaceIdent,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<NamespaceId>> {
-        namespace_to_id(warehouse_id, namespace, transaction).await
-    }
-
-    async fn drop_namespace<'a>(
+    async fn drop_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<NamespaceDropInfo> {
+    ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
         drop_namespace(warehouse_id, namespace_id, flags, transaction).await
     }
 
-    async fn update_namespace_properties<'a>(
+    async fn update_namespace_properties_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError> {
         update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
     }
 
@@ -175,15 +164,14 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn list_tables<'a>(
-        warehouse_id: WarehouseId,
-        namespace: &NamespaceIdent,
+        namespace: &Namespace,
         list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<TableId, TableInfo>> {
         list_tables(
-            warehouse_id,
-            namespace,
+            namespace.warehouse_id,
+            Some(namespace.namespace_id),
             list_flags,
             &mut **transaction,
             pagination_query,
@@ -390,14 +378,14 @@ impl CatalogStore for super::PostgresBackend {
         delete_user(user_id, &mut **transaction).await
     }
 
-    async fn create_warehouse<'a>(
+    async fn create_warehouse_impl<'a>(
         warehouse_name: String,
         project_id: &ProjectId,
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<WarehouseId> {
+    ) -> std::result::Result<WarehouseId, CatalogCreateWarehouseError> {
         create_warehouse(
             warehouse_name,
             project_id,
@@ -458,19 +446,19 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn list_warehouses(
+    async fn list_warehouses_impl(
         project_id: &ProjectId,
-        include_inactive: Option<Vec<WarehouseStatus>>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<GetWarehouseResponse>> {
-        list_warehouses(project_id, include_inactive, &mut **transaction).await
+        status_filter: Option<Vec<WarehouseStatus>>,
+        catalog_state: Self::State,
+    ) -> std::result::Result<Vec<GetWarehouseResponse>, CatalogListWarehousesError> {
+        list_warehouses(project_id, status_filter, &catalog_state.read_pool()).await
     }
 
-    async fn get_warehouse<'a>(
+    async fn get_warehouse_by_id_impl<'a>(
         warehouse_id: WarehouseId,
-        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<Option<GetWarehouseResponse>> {
-        get_warehouse(warehouse_id, transaction).await
+        state: Self::State,
+    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByIdError> {
+        get_warehouse_by_id(warehouse_id, &state.read_pool()).await
     }
 
     async fn get_warehouse_stats(
@@ -481,27 +469,27 @@ impl CatalogStore for super::PostgresBackend {
         get_warehouse_stats(state.read_pool(), warehouse_id, pagination_query).await
     }
 
-    async fn delete_warehouse<'a>(
+    async fn delete_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 
-    async fn rename_warehouse<'a>(
+    async fn rename_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), CatalogRenameWarehouseError> {
         rename_warehouse(warehouse_id, new_name, transaction).await
     }
 
-    async fn set_warehouse_deletion_profile<'a>(
+    async fn set_warehouse_deletion_profile_impl<'a>(
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), SetWarehouseDeletionProfileError> {
         set_warehouse_deletion_profile(warehouse_id, deletion_profile, &mut **transaction).await
     }
 
@@ -513,20 +501,20 @@ impl CatalogStore for super::PostgresBackend {
         rename_project(project_id, new_name, transaction).await
     }
 
-    async fn set_warehouse_status<'a>(
+    async fn set_warehouse_status_impl<'a>(
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), SetWarehouseStatusError> {
         set_warehouse_status(warehouse_id, status, transaction).await
     }
 
-    async fn update_storage_profile<'a>(
+    async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), UpdateWarehouseStorageProfileError> {
         update_storage_profile(
             warehouse_id,
             storage_profile,
@@ -575,15 +563,14 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn list_views<'a>(
-        warehouse_id: WarehouseId,
-        namespace: &NamespaceIdent,
+        namespace: &Namespace,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<ViewId, TableInfo>> {
         list_views(
-            warehouse_id,
-            namespace,
+            namespace.warehouse_id,
+            Some(namespace.namespace_id),
             include_deleted,
             &mut **transaction,
             pagination_query,
@@ -660,7 +647,6 @@ impl CatalogStore for super::PostgresBackend {
     ) -> Result<PaginatedMapping<TabularId, TabularInfo>> {
         list_tabulars(
             warehouse_id,
-            None,
             namespace_id,
             list_flags,
             &mut **transaction,
@@ -669,15 +655,6 @@ impl CatalogStore for super::PostgresBackend {
         )
         .await
     }
-
-    async fn load_storage_profile(
-        warehouse_id: WarehouseId,
-        tabular_id: TableId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<(Option<SecretIdent>, StorageProfile)> {
-        load_storage_profile(warehouse_id, tabular_id, transaction).await
-    }
-
     async fn set_tabular_protected(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
@@ -695,26 +672,20 @@ impl CatalogStore for super::PostgresBackend {
         get_tabular_protected(warehouse_id, tabular_id, transaction).await
     }
 
-    async fn set_namespace_protected(
+    async fn set_namespace_protected_impl(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse> {
-        set_namespace_protected(namespace_id, protect, transaction).await
+    ) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError> {
+        set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
     }
 
-    async fn get_namespace_protected(
-        namespace_id: NamespaceId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse> {
-        get_namespace_protected(namespace_id, transaction).await
-    }
-
-    async fn set_warehouse_protected(
+    async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse> {
+    ) -> std::result::Result<ProtectionResponse, SetWarehouseProtectedError> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 

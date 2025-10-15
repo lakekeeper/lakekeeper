@@ -4,10 +4,7 @@ use std::{collections::HashMap, default::Default};
 
 use chrono::{DateTime, Utc};
 use http::StatusCode;
-use iceberg::{
-    spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef},
-    NamespaceIdent,
-};
+use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
 use lakekeeper_io::Location;
 pub(crate) use load::load_view;
 use serde::Deserialize;
@@ -479,7 +476,7 @@ pub(crate) async fn set_current_view_metadata_version(
 
 pub(crate) async fn list_views<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
-    namespace: &NamespaceIdent,
+    namespace_id: Option<NamespaceId>,
     include_deleted: bool,
     transaction: E,
     paginate_query: PaginationQuery,
@@ -489,8 +486,7 @@ where
 {
     let page = list_tabulars(
         warehouse_id,
-        Some(namespace),
-        None,
+        namespace_id,
         TabularListFlags {
             include_deleted,
             include_staged: false,
@@ -785,7 +781,7 @@ pub(crate) mod tests {
 
         let views = super::list_views(
             warehouse_id,
-            &namespace,
+            Some(namespace_id),
             false,
             &state.read_pool(),
             PaginationQuery::empty(),

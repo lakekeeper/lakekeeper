@@ -241,7 +241,7 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
-    use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
+    use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -256,7 +256,7 @@ pub(crate) mod test {
             ApiContext,
         },
         implementations::{
-            postgres::{tabular::table::tests::get_namespace_id, PostgresBackend, SecretsState},
+            postgres::{PostgresBackend, SecretsState},
             CatalogState,
         },
         request_metadata::RequestMetadata,
@@ -267,7 +267,7 @@ pub(crate) mod test {
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile,
             },
-            NamespaceId, State, UserId,
+            CatalogNamespaceOps as _, CreateNamespaceResponse, Namespace, State, UserId,
         },
         WarehouseId,
     };
@@ -369,7 +369,7 @@ pub(crate) mod test {
         delete_profile: TabularDeleteProfile,
     ) -> (
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        Vec<(WarehouseId, NamespaceId, NamespaceParameters)>,
+        Vec<(WarehouseId, Namespace, NamespaceParameters)>,
         String,
     ) {
         let prof = crate::server::test::memory_io_profile();
@@ -393,17 +393,22 @@ pub(crate) mod test {
         assert_eq!(wh_ids.len(), num_warehouses);
 
         let mut wh_ns_data = Vec::with_capacity(num_warehouses);
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for wh_id in wh_ids {
-            let ns =
-                crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
-                    .await;
+            crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
+                .await;
+            let namespace = PostgresBackend::require_namespace(
+                wh_id,
+                NamespaceIdent::new("myns".to_string()),
+                state.clone(),
+            )
+            .await
+            .unwrap();
             let ns_params = NamespaceParameters {
                 prefix: Some(Prefix(wh_id.to_string())),
-                namespace: ns.namespace.clone(),
+                namespace: namespace.namespace_ident.clone(),
             };
-            let state = CatalogState::from_pools(pool.clone(), pool.clone());
-            let ns_id = get_namespace_id(state.clone(), wh_id, &ns.namespace).await;
-            wh_ns_data.push((wh_id, ns_id, ns_params));
+            wh_ns_data.push((wh_id, namespace, ns_params));
         }
 
         (ctx, wh_ns_data, base_loc)

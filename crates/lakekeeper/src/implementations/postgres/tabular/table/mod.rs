@@ -20,7 +20,7 @@ use iceberg::{
     },
     TableUpdate,
 };
-use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
+use iceberg_ext::spec::TableMetadata;
 use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -41,8 +41,8 @@ use crate::{
     },
     service::{
         storage::{join_location, split_location, StorageProfile},
-        ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result, TableId, TableIdent,
-        TableInfo, TabularDetails, TabularInfo,
+        ErrorModel, GetTableMetadataResponse, LoadTableResponse, NamespaceId, Result, TableId,
+        TableIdent, TableInfo, TabularDetails, TabularInfo,
     },
     SecretIdent, WarehouseId,
 };
@@ -208,7 +208,7 @@ impl From<FormatVersion> for DbTableFormatVersion {
 
 pub(crate) async fn list_tables<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
-    namespace: &NamespaceIdent,
+    namespace_id: Option<NamespaceId>,
     list_flags: crate::service::TabularListFlags,
     transaction: E,
     pagination_query: PaginationQuery,
@@ -218,8 +218,7 @@ where
 {
     let tabulars = list_tabulars(
         warehouse_id,
-        Some(namespace),
-        None,
+        namespace_id,
         list_flags,
         transaction,
         Some(TabularType::Table),
@@ -610,35 +609,6 @@ impl TableQueryStruct {
 
         Ok(table_metadata)
     }
-}
-
-pub(crate) async fn load_storage_profile(
-    warehouse_id: WarehouseId,
-    table: TableId,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<(Option<SecretIdent>, StorageProfile)> {
-    let secret = sqlx::query!(
-        r#"
-        SELECT w.storage_secret_id,
-        w.storage_profile as "storage_profile: Json<StorageProfile>"
-        FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1
-            AND t."table_id" = $2
-            AND w.status = 'active'
-        "#,
-        *warehouse_id,
-        *table
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| e.into_error_model("Error fetching storage secret".to_string()))?;
-
-    Ok((
-        secret.storage_secret_id.map(SecretIdent::from),
-        secret.storage_profile.0,
-    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1808,10 +1778,11 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let tables = list_tables(
             warehouse_id,
-            &namespace,
+            Some(namespace_id),
             TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
@@ -1824,7 +1795,7 @@ pub(crate) mod tests {
 
         let tables = list_tables(
             warehouse_id,
-            &table1.namespace,
+            Some(table1.namespace_id),
             TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
@@ -1840,7 +1811,7 @@ pub(crate) mod tests {
         let table2 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
         let tables = list_tables(
             warehouse_id,
-            &table2.namespace,
+            Some(table2.namespace_id),
             TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
@@ -1850,7 +1821,7 @@ pub(crate) mod tests {
         assert_eq!(tables.len(), 0);
         let tables = list_tables(
             warehouse_id,
-            &table2.namespace,
+            Some(table2.namespace_id),
             TabularListFlags {
                 include_staged: true,
                 ..TabularListFlags::active()
@@ -1873,10 +1844,11 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let tables = list_tables(
             warehouse_id,
-            &namespace,
+            Some(namespace_id),
             TabularListFlags::active(),
             &state.read_pool(),
             PaginationQuery::empty(),
@@ -1915,7 +1887,7 @@ pub(crate) mod tests {
 
         let tables = list_tables(
             warehouse_id,
-            &namespace,
+            Some(namespace_id),
             TabularListFlags {
                 include_staged: true,
                 ..TabularListFlags::active()
@@ -1937,7 +1909,7 @@ pub(crate) mod tests {
 
         let tables = list_tables(
             warehouse_id,
-            &namespace,
+            Some(namespace_id),
             TabularListFlags {
                 include_staged: true,
                 ..TabularListFlags::active()
@@ -1959,7 +1931,7 @@ pub(crate) mod tests {
 
         let tables = list_tables(
             warehouse_id,
-            &namespace,
+            Some(namespace_id),
             TabularListFlags {
                 include_staged: true,
                 ..TabularListFlags::active()

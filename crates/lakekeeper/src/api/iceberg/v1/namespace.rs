@@ -351,7 +351,6 @@ impl PaginationQuery {
 }
 
 // Deliberately not ser / de so that it can't be used in the router directly
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceParameters {
     /// The prefix of the namespace

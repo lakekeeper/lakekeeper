@@ -30,8 +30,8 @@ use crate::{
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        CatalogStore, NamespaceId, State, Transaction, ViewCommit, ViewId,
-        ViewMetadataWithLocation,
+        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceId, State, Transaction,
+        ViewCommit, ViewId, ViewMetadataWithLocation,
     },
     SecretIdent, WarehouseId,
 };
@@ -61,6 +61,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
+
     authorizer
         .require_warehouse_action(
             &request_metadata,
@@ -68,8 +69,8 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             CatalogWarehouseAction::CanUse,
         )
         .await?;
-    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-    let view_id = C::view_to_id(warehouse_id, &identifier, t.transaction()).await; // We can't fail before AuthZ;
+    let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
+    let view_id = C::view_to_id(warehouse_id, &identifier, t_read.transaction()).await;
     let view_id = authorizer
         .require_view_action(
             &request_metadata,
@@ -78,24 +79,25 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             CatalogViewAction::CanCommit,
         )
         .await?;
+    t_read.commit().await?;
 
     // ------------------- BUSINESS LOGIC -------------------
     validate_view_updates(updates)?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
     // These operations only need to happen once before retries
-    let namespace_id = C::namespace_to_id(warehouse_id, identifier.namespace(), t.transaction())
-        .await?
-        .ok_or(ErrorModel::not_found(
-            "Namespace does not exist",
-            "NamespaceNotFound",
-            None,
-        ))?;
+    let namespace = C::require_namespace(
+        warehouse_id,
+        identifier.namespace(),
+        state.v1_state.catalog.clone(),
+    )
+    .await?;
+    let namespace_id = namespace.namespace_id;
 
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
     require_active_warehouse(warehouse.status)?;
-    t.commit().await?;
 
     // Verify assertions (only needed once)
     check_asserts(requirements.as_ref(), view_id)?;

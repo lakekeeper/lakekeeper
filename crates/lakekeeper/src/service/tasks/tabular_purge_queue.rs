@@ -10,7 +10,7 @@ use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecution
 use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
-    service::{tasks::TaskQueueName, CatalogStore, SecretStore, Transaction},
+    service::{tasks::TaskQueueName, CatalogStore, CatalogWarehouseOps, SecretStore},
 };
 
 const QN_STR: &str = "tabular_purge";
@@ -133,21 +133,13 @@ where
 {
     let tabular_location_str = &task.data.tabular_location;
     let warehouse_id = task.task_metadata.warehouse_id;
-    let mut trx = C::Transaction::begin_read(catalog_state.clone())
-        .await
-        .map_err(|e| e.append_detail("Failed to start DB transaction for Tabular Purge Queue"))?;
-
-    let warehouse = C::require_warehouse(warehouse_id, trx.transaction())
+    let warehouse = C::require_warehouse_by_id(warehouse_id, catalog_state)
         .await
         .map_err(|e| {
             e.append_detail(format!(
                 "Failed to get warehouse {warehouse_id} for Tabular Purge task."
             ))
         })?;
-
-    if let Err(e) = trx.commit().await {
-        tracing::warn!("Failed to commit read transaction for `{QN_STR}` before IO. {e}");
-    }
 
     let tabular_location = Location::from_str(tabular_location_str).map_err(|e| {
         ErrorModel::internal(

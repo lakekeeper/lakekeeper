@@ -8,12 +8,10 @@ use crate::{
         ApiContext, Result,
     },
     request_metadata::RequestMetadata,
-    server::{
-        namespace::authorized_namespace_ident_to_id, require_warehouse_id, tabular::list_entities,
-    },
+    server::{require_warehouse_id, tabular::list_entities},
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction},
-        CatalogStore, SecretStore, State, Transaction,
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction},
+        CatalogNamespaceOps, CatalogStore, SecretStore, State, Transaction,
     },
 };
 
@@ -25,39 +23,40 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
 ) -> Result<ListTablesResponse> {
     let return_uuids = query.return_uuids;
     // ------------------- VALIDATIONS -------------------
-    let NamespaceParameters { namespace, prefix } = parameters;
+    let NamespaceParameters {
+        namespace: provided_namespace,
+        prefix,
+    } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let mut t: <C as CatalogStore>::Transaction =
-        C::Transaction::begin_read(state.v1_state.catalog).await?;
-
-    let namespace_id = authorized_namespace_ident_to_id::<C, _>(
-        authorizer.clone(),
-        &request_metadata,
-        &warehouse_id,
-        &namespace,
-        CatalogNamespaceAction::CanListViews,
-        t.transaction(),
+    let namespace = C::require_namespace(
+        warehouse_id,
+        &provided_namespace,
+        state.v1_state.catalog.clone(),
     )
-    .await?;
+    .await;
+
+    let namespace = authorizer
+        .require_namespace_action(
+            &request_metadata,
+            warehouse_id,
+            provided_namespace,
+            namespace,
+            CatalogNamespaceAction::CanListViews,
+        )
+        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
+    let mut t: <C as CatalogStore>::Transaction =
+        C::Transaction::begin_read(state.v1_state.catalog).await?;
     let (identifiers, view_uuids, next_page_token) =
         crate::server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token,
-            list_entities!(
-                View,
-                list_views,
-                namespace,
-                namespace_id,
-                authorizer,
-                request_metadata,
-                warehouse_id
-            ),
+            list_entities!(View, list_views, namespace, authorizer, request_metadata),
             &mut t,
         )
         .await?;

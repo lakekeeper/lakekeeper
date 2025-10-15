@@ -9,12 +9,21 @@ use super::{
     health::HealthExt, Actor, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State,
     TableId, TabularDetails, ViewId, WarehouseId,
 };
-use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata, service::ServerId};
+use crate::{
+    api::iceberg::v1::Result,
+    request_metadata::RequestMetadata,
+    service::{Namespace, ServerId},
+};
 
+mod error;
 pub mod implementations;
-
+pub use error::*;
+mod warehouse;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use implementations::allow_all::AllowAllAuthorizer;
+pub use warehouse::*;
+mod namespace;
+pub use namespace::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
@@ -180,7 +189,6 @@ impl<T> MustUse<T> {
         self.0
     }
 }
-
 #[async_trait::async_trait]
 /// Interface to provide Authorization functions to the catalog.
 /// The provided `Actor` argument of all methods except `check_actor`
@@ -202,6 +210,9 @@ pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
+    type WarehouseAction: WarehouseAction;
+    type NamespaceAction: NamespaceAction;
+
     fn implementation_name() -> &'static str;
 
     /// The server ID that was passed to the authorizer during initialization.
@@ -346,96 +357,57 @@ where
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
-        action: CatalogWarehouseAction,
-    ) -> Result<bool>;
-
-    async fn is_allowed_warehouse_action(
-        &self,
-        metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        action: CatalogWarehouseAction,
-    ) -> Result<MustUse<bool>> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.is_allowed_warehouse_action_impl(metadata, warehouse_id, action)
-                .await
-        }
-        .map(MustUse::from)
-    }
+        action: Self::WarehouseAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_namespace_action_impl<A>(
+    async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceId,
-        action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send;
+        namespace: &Namespace,
+        action: Self::NamespaceAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
-    async fn is_allowed_namespace_action<A>(
+    async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceId,
-        action: A,
-    ) -> Result<MustUse<bool>>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.is_allowed_namespace_action_impl(metadata, namespace_id, action)
-                .await
-        }
-        .map(MustUse::from)
+        warehouses_with_actions: &[(WarehouseId, Self::WarehouseAction)],
+    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let n_inputs = warehouses_with_actions.len();
+        let futures: Vec<_> = warehouses_with_actions
+            .iter()
+            .map(|(id, a)| async move {
+                self.is_allowed_warehouse_action(metadata, *id, *a)
+                    .await
+                    .map(MustUse::into_inner)
+            })
+            .collect();
+        let results = try_join_all(futures).await?;
+        debug_assert_eq!(
+            results.len(),
+            n_inputs,
+            "are_allowed_warehouse_actions_impl to return as many results as provided inputs"
+        );
+        Ok(results)
     }
 
-    /// Checks if actions are allowed on namespaces. If supported by the concrete implementation,
-    /// these checks may happen in batches to avoid sending a separate request for each tuple.
-    ///
-    /// Returns `Vec<Ok<bool>>` indicating for each tuple whether the action is allowed. Returns
-    /// `Err` for internal errors.
-    ///
-    /// The default implementation is provided for backwards compatibility and does not support
-    /// batch requests.
-    async fn are_allowed_namespace_actions_impl<A>(
+    async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        namespaces_with_actions: Vec<(NamespaceId, A)>,
-    ) -> Result<Vec<bool>>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
-        try_join_all(
-            namespaces_with_actions
-                .into_iter()
-                .map(|(id, a)| async move {
-                    self.is_allowed_namespace_action(metadata, id, a)
-                        .await
-                        .map(MustUse::into_inner)
-                }),
-        )
-        .await
-    }
+        actions: &[(&Namespace, Self::NamespaceAction)],
+    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let futures: Vec<_> = actions
+            .iter()
+            .map(|(ns, a)| async move {
+                let namespace = (*ns).clone();
+                self.is_allowed_namespace_action(metadata, &namespace, *a)
+                    .await
+                    .map(MustUse::into_inner)
+            })
+            .collect();
 
-    async fn are_allowed_namespace_actions<A>(
-        &self,
-        metadata: &RequestMetadata,
-        namespaces_with_actions: Vec<(NamespaceId, A)>,
-    ) -> Result<MustUse<Vec<bool>>>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
-        if metadata.has_admin_privileges() {
-            Ok(vec![true; namespaces_with_actions.len()])
-        } else {
-            self.are_allowed_namespace_actions_impl(metadata, namespaces_with_actions)
-                .await
-        }
-        .map(MustUse::from)
+        try_join_all(futures).await
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -810,46 +782,6 @@ where
         }
     }
 
-    async fn require_namespace_action(
-        &self,
-        metadata: &RequestMetadata,
-        // Outer error: Internal error that failed to fetch the namespace.
-        // Ok(None): Namespace does not exist.
-        // Ok(Some(namespace_id)): Namespace exists.
-        namespace_id: Result<Option<NamespaceId>>,
-        action: impl From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    ) -> Result<NamespaceId> {
-        // It is important to throw the same error if the namespace does not exist (None) or if the action is not allowed,
-        // to avoid leaking information about the existence of the namespace.
-        let actor = metadata.actor();
-        let msg = format!("Namespace not found or action {action} forbidden for {actor}");
-        let typ = "NamespaceActionForbidden";
-
-        match namespace_id {
-            Ok(None) => {
-                tracing::debug!("Namespace not found.");
-                Err(ErrorModel::forbidden(msg, typ, None).into())
-            }
-            Ok(Some(namespace_id)) => {
-                if self
-                    .is_allowed_namespace_action(metadata, namespace_id, action)
-                    .await?
-                    .into_inner()
-                {
-                    Ok(namespace_id)
-                } else {
-                    tracing::trace!("Namespace action forbidden.");
-                    Err(ErrorModel::forbidden(msg, typ, None).into())
-                }
-            }
-            Err(e) => Err(ErrorModel::internal(msg, typ, e.error.source)
-                .append_detail(format!("Original Type: {}", e.error.r#type))
-                .append_detail(e.error.message)
-                .append_details(e.error.stack)
-                .into()),
-        }
-    }
-
     async fn require_table_action<T: AsTableId + Send>(
         &self,
         metadata: &RequestMetadata,
@@ -935,6 +867,7 @@ pub(crate) mod tests {
         sync::{Arc, RwLock},
     };
 
+    use iceberg::NamespaceIdent;
     use paste::paste;
 
     use super::*;
@@ -1084,6 +1017,9 @@ pub(crate) mod tests {
     }
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
+        type WarehouseAction = CatalogWarehouseAction;
+        type NamespaceAction = CatalogNamespaceAction;
+
         fn implementation_name() -> &'static str {
             "test-hiding-authorizer"
         }
@@ -1170,26 +1106,24 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             warehouse_id: WarehouseId,
-            action: CatalogWarehouseAction,
-        ) -> Result<bool> {
+            action: Self::WarehouseAction,
+        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("warehouse:{action}").as_str()) {
                 return Ok(false);
             }
             Ok(self.check_available(format!("warehouse:{warehouse_id}").as_str()))
         }
 
-        async fn is_allowed_namespace_action_impl<A>(
+        async fn is_allowed_namespace_action_impl(
             &self,
             _metadata: &RequestMetadata,
-            namespace_id: NamespaceId,
-            action: A,
-        ) -> Result<bool>
-        where
-            A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-        {
+            namespace: &Namespace,
+            action: Self::NamespaceAction,
+        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("namespace:{action}").as_str()) {
                 return Ok(false);
             }
+            let namespace_id = namespace.namespace_id;
             Ok(self.check_available(format!("namespace:{namespace_id}").as_str()))
         }
 
@@ -1212,7 +1146,6 @@ pub(crate) mod tests {
         async fn is_allowed_view_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
-
             warehouse_id: WarehouseId,
             view_id: ViewId,
             action: A,
@@ -1360,7 +1293,7 @@ pub(crate) mod tests {
     }
 
     // Tabular actions require a warehouse id.
-    macro_rules! test_block_tabular_action {
+    macro_rules! test_block_with_warehouse_id {
         ($entity:ident, $action:path, $warehouse_id:expr, $object_id:expr) => {
             paste! {
                 #[tokio::test]
@@ -1398,6 +1331,43 @@ pub(crate) mod tests {
             }
         };
     }
+    // Tabular actions require a warehouse id.
+    macro_rules! test_block_namespace_action {
+        ($action:path, $object_id:expr) => {
+            paste! {
+                #[tokio::test]
+                async fn test_block_namespace_action() {
+                    let authz = HidingAuthorizer::new();
+
+                    // Nothing is hidden, so the action is allowed.
+                    assert!(authz
+                        .is_allowed_namespace_action(
+                            &RequestMetadata::new_unauthenticated(),
+                            $object_id,
+                            $action
+                        )
+                        .await
+                        .unwrap()
+                        .into_inner());
+
+                    // Generates "namespace:can_list_everything" for macro invoked with
+                    // (namespace, CatalogNamespaceAction::CanListEverything)
+                    authz.block_action(format!("namespace:{}", $action).as_str());
+
+                    // After blocking the action it must not be allowed anymore.
+                    assert!(!authz
+                        .is_allowed_namespace_action(
+                            &RequestMetadata::new_unauthenticated(),
+                            $object_id,
+                            $action
+                        )
+                        .await
+                        .unwrap()
+                        .into_inner());
+                }
+            }
+        };
+    }
     test_block_action!(role, CatalogRoleAction::CanDelete, RoleId::new_random());
     test_block_action!(
         project,
@@ -1409,18 +1379,24 @@ pub(crate) mod tests {
         CatalogWarehouseAction::CanCreateNamespace,
         WarehouseId::new_random()
     );
-    test_block_action!(
-        namespace,
+    test_block_namespace_action!(
         CatalogNamespaceAction::CanListViews,
-        NamespaceId::new_random()
+        &Namespace {
+            namespace_ident: NamespaceIdent::new("test".to_string()),
+            namespace_id: NamespaceId::new_random(),
+            warehouse_id: WarehouseId::new_random(),
+            protected: false,
+            properties: None,
+            updated_at: Some(chrono::Utc::now()),
+        }
     );
-    test_block_tabular_action!(
+    test_block_with_warehouse_id!(
         table,
         CatalogTableAction::CanDrop,
         WarehouseId::new_random(),
         TableId::new_random()
     );
-    test_block_tabular_action!(
+    test_block_with_warehouse_id!(
         view,
         CatalogViewAction::CanDrop,
         WarehouseId::new_random(),

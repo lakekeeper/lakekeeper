@@ -8,9 +8,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction},
         contract_verification::ContractVerification,
-        CatalogStore, Result, SecretStore, State, TabularId, Transaction,
+        CatalogNamespaceOps, CatalogStore, Result, SecretStore, State, TabularId, Transaction,
     },
 };
 
@@ -31,16 +31,27 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
-    authorizer
-        .require_warehouse_action(
+
+    let destination_namespace = C::require_namespace(
+        warehouse_id,
+        &destination.namespace,
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+
+    let _destination_namespace = authorizer
+        .require_namespace_action(
             &request_metadata,
             warehouse_id,
-            CatalogWarehouseAction::CanUse,
+            &destination.namespace,
+            destination_namespace,
+            CatalogNamespaceAction::CanCreateView,
         )
         .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
-    let source_id = C::view_to_id(warehouse_id, &request.source, t.transaction()).await; // We can't fail before AuthZ;
+    let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
+    let source_id = C::view_to_id(warehouse_id, &request.source, t_read.transaction()).await; // We can't fail before AuthZ;
+    t_read.commit().await?;
     let source_id = authorizer
         .require_view_action(
             &request_metadata,
@@ -53,21 +64,13 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             e.error.code = StatusCode::NOT_FOUND.into();
             e
         })?;
-    // We need to be allowed to delete the old table and create the new one
-    let namespace_id = C::namespace_to_id(warehouse_id, &source.namespace, t.transaction()).await; // We can't fail before AuthZ
-                                                                                                   // We need to be allowed to delete the old table and create the new one
-    authorizer
-        .require_namespace_action(
-            &request_metadata,
-            namespace_id,
-            CatalogNamespaceAction::CanCreateTable,
-        )
-        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
     if source == destination {
         return Ok(());
     }
+
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
     C::rename_view(
         warehouse_id,
@@ -183,7 +186,7 @@ mod test {
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
                 .1
-                .namespace;
+                .namespace_ident;
 
         let view_name = "my-view";
         let rq: CreateViewRequest = create_view_request(Some(view_name), None);

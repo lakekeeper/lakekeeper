@@ -2,7 +2,8 @@ use lakekeeper::service::{
     authn::UserId,
     authz::{
         CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-        CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+        CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, NamespaceAction,
+        WarehouseAction,
     },
     Actor, RoleId,
 };
@@ -617,7 +618,7 @@ impl ReducedRelation for CatalogProjectAction {
 
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum WarehouseRelation {
+pub enum WarehouseRelation {
     // -- Hierarchical relations --
     Project,
     Namespace,
@@ -661,8 +662,15 @@ pub(super) enum WarehouseRelation {
     CanGetAllTasks,
     CanControlAllTasks,
 }
+impl WarehouseAction for WarehouseRelation {}
 
 impl OpenFgaRelation for WarehouseRelation {}
+
+impl From<CatalogWarehouseAction> for WarehouseRelation {
+    fn from(action: CatalogWarehouseAction) -> Self {
+        action.to_openfga()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
 #[serde(rename_all = "snake_case")]
@@ -881,7 +889,7 @@ impl ReducedRelation for CatalogWarehouseAction {
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum NamespaceRelation {
+pub enum NamespaceRelation {
     // -- Hierarchical relations --
     Parent,
     Child,
@@ -921,15 +929,17 @@ pub(super) enum NamespaceRelation {
 
 impl OpenFgaRelation for NamespaceRelation {}
 
+impl NamespaceAction for NamespaceRelation {}
+
 impl From<CatalogNamespaceAction> for NamespaceRelation {
-    fn from(namespace: CatalogNamespaceAction) -> Self {
-        namespace.to_openfga()
+    fn from(action: CatalogNamespaceAction) -> Self {
+        action.to_openfga()
     }
 }
 
 impl From<&CatalogNamespaceAction> for NamespaceRelation {
-    fn from(namespace: &CatalogNamespaceAction) -> Self {
-        namespace.to_openfga()
+    fn from(action: &CatalogNamespaceAction) -> Self {
+        action.to_openfga()
     }
 }
 

@@ -18,9 +18,10 @@ use crate::{
         views::validate_view_properties,
     },
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         storage::{StorageLocations as _, StoragePermissions},
-        CatalogStore, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, Result, SecretStore, State,
+        TabularId, Transaction, ViewId,
     },
 };
 
@@ -36,9 +37,12 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 ) -> Result<LoadViewResult> {
     let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
-    let NamespaceParameters { namespace, prefix } = &parameters;
+    let NamespaceParameters {
+        namespace: provided_ns,
+        prefix,
+    } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let view = TableIdent::new(namespace.clone(), request.name.clone());
+    let view = TableIdent::new(provided_ns.clone(), request.name.clone());
 
     validate_table_or_view_ident(&view)?;
     validate_view_properties(request.properties.keys())?;
@@ -54,26 +58,25 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- AUTHZ -------------------
     let authorizer = &state.v1_state.authz;
-    authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-    let namespace_id = C::namespace_to_id(warehouse_id, namespace, t.transaction()).await; // Cannot fail before authz;
-    let namespace_id = authorizer
+
+    let namespace =
+        C::require_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
+
+    let namespace = authorizer
         .require_namespace_action(
             &request_metadata,
-            namespace_id,
+            warehouse_id,
+            provided_ns,
+            namespace,
             CatalogNamespaceAction::CanCreateView,
         )
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
+
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
@@ -121,7 +124,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     C::create_view(
         warehouse_id,
-        namespace_id,
+        namespace.namespace_id,
         &view,
         metadata.metadata.clone(),
         &metadata_location,
@@ -168,7 +171,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             ViewId::from(metadata.metadata.uuid()),
-            namespace_id,
+            namespace.namespace_id,
         )
         .await?;
 
@@ -284,7 +287,7 @@ pub(crate) mod test {
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
                 .1
-                .namespace;
+                .namespace_ident;
 
         let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))
             .await

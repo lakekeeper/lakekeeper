@@ -22,7 +22,8 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        CatalogStore, GetTableMetadataResponse, State, TableId, TabularListFlags, Transaction,
+        CatalogStore, CatalogWarehouseOps, GetTableMetadataResponse, State, TableId,
+        TabularListFlags,
     },
     WarehouseId,
 };
@@ -232,8 +233,7 @@ async fn s3_url_style_detection<C: CatalogStore>(
     let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
         .try_get_with(warehouse_id, async {
             tracing::trace!("No cache hit for {warehouse_id}");
-            let mut tx = C::Transaction::begin_read(state).await?;
-            let result = C::require_warehouse(warehouse_id, tx.transaction())
+            let result = C::require_warehouse_by_id(warehouse_id, state)
                 .await
                 .map(|w| {
                     w.storage_profile
@@ -247,7 +247,6 @@ async fn s3_url_style_detection<C: CatalogStore>(
                             ))
                         })
                 })?;
-            tx.commit().await?;
             result
         })
         .await
