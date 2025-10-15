@@ -282,8 +282,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request.properties = Some(namespace_props.into());
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let mut r =
-            C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
         let authz_parent = if let Some(parent_id) = parent_namespace {
             NamespaceParent::Namespace(parent_id)
         } else {
@@ -293,10 +292,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(&request_metadata, namespace_id, authz_parent)
             .await?;
         t.commit().await?;
-        r.properties
-            .as_mut()
-            .map(|p| p.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string()));
-        Ok(r)
+        let mut properties = r.properties.map(Arc::unwrap_or_clone).unwrap_or_default();
+        properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
+        Ok(CreateNamespaceResponse {
+            namespace: r.namespace_ident,
+            properties: Some(properties),
+        })
     }
 
     /// Return all stored metadata properties for a given namespace
@@ -327,12 +328,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id;
-        let mut properties = namespace.properties.map(Arc::unwrap_or_clone);
-        properties
-            .as_mut()
-            .map(|p| p.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string()));
+        let mut properties = namespace
+            .properties
+            .map(Arc::unwrap_or_clone)
+            .unwrap_or_default();
+        properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(GetNamespaceResponse {
-            properties,
+            properties: Some(properties),
             namespace: namespace.namespace_ident,
             namespace_uuid: return_uuid.then_some(*namespace_id),
         })

@@ -287,7 +287,7 @@ pub(crate) mod test {
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
                 .1
-                .namespace;
+                .namespace_ident;
 
         let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))
             .await

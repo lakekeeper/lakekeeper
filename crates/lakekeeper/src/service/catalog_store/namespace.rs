@@ -2,20 +2,20 @@ use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel, IcebergErrorResponse};
 
 use crate::{
-    api::iceberg::v1::PaginatedMapping,
+    api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
     service::{
-        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId, CatalogBackendError,
-        CatalogStore, DatabaseIntegrityError, InvalidPaginationToken, ListNamespacesQuery,
-        NamespaceId, TableIdent, TabularId, Transaction,
+        define_transparent_error, impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
+        CatalogBackendError, CatalogStore, InvalidPaginationToken, ListNamespacesQuery,
+        NamespaceId, TableIdent, TabularId, Transaction, WarehouseIdNotFound,
     },
     WarehouseId,
 };
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct GetNamespaceResponse {
+pub struct Namespace {
     /// Reference to one or more levels of a namespace
     pub namespace_ident: NamespaceIdent,
     pub protected: bool,
@@ -39,7 +39,124 @@ pub struct NamespaceDropInfo {
     pub open_tasks: Vec<TaskId>,
 }
 
+macro_rules! define_simple_namespace_err {
+    ($error_name:ident, $error_message:literal) => {
+        #[derive(thiserror::Error, Debug, PartialEq)]
+        #[error($error_message)]
+        pub struct $error_name {
+            pub warehouse_id: $crate::WarehouseId,
+            pub namespace: NamespaceIdentOrId,
+            pub stack: Vec<String>,
+        }
+
+        impl $error_name {
+            #[must_use]
+            pub fn new(
+                warehouse_id: $crate::WarehouseId,
+                namespace: impl Into<NamespaceIdentOrId>,
+            ) -> Self {
+                Self {
+                    warehouse_id,
+                    namespace: namespace.into(),
+                    stack: Vec::new(),
+                }
+            }
+        }
+
+        impl_error_stack_methods!($error_name);
+    };
+}
+
 // --------------------------- GENERAL ERROR ---------------------------
+#[derive(thiserror::Error, Debug)]
+#[error("Error serializing properties of namespace {namespace}: {source}")]
+pub struct NamespacePropertiesSerializationError {
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdentOrId,
+    source: serde_json::Error,
+    stack: Vec<String>,
+}
+impl NamespacePropertiesSerializationError {
+    #[must_use]
+    pub fn new(
+        warehouse_id: WarehouseId,
+        namespace: impl Into<NamespaceIdentOrId>,
+        source: serde_json::Error,
+    ) -> Self {
+        Self {
+            warehouse_id,
+            namespace: namespace.into(),
+            source,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(NamespacePropertiesSerializationError);
+impl PartialEq for NamespacePropertiesSerializationError {
+    fn eq(&self, other: &Self) -> bool {
+        self.warehouse_id == other.warehouse_id
+            && self.namespace == other.namespace
+            && self.source.to_string() == other.source.to_string()
+            && self.stack == other.stack
+    }
+}
+impl From<NamespacePropertiesSerializationError> for ErrorModel {
+    fn from(err: NamespacePropertiesSerializationError) -> Self {
+        let message = err.to_string();
+        let NamespacePropertiesSerializationError { stack, source, .. } = err;
+
+        ErrorModel {
+            r#type: "NamespacePropertiesSerializationError".to_string(),
+            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            message,
+            stack,
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("Encountered invalid namespace identifier in warehouse {warehouse_id}: {found}")]
+pub struct InvalidNamespaceIdentifier {
+    warehouse_id: WarehouseId,
+    namespace_id: Option<NamespaceId>,
+    found: String,
+    stack: Vec<String>,
+}
+impl InvalidNamespaceIdentifier {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId, found: impl Into<String>) -> Self {
+        Self {
+            warehouse_id,
+            namespace_id: None,
+            found: found.into(),
+            stack: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_id(mut self, namespace_id: NamespaceId) -> Self {
+        self.namespace_id = Some(namespace_id);
+        self
+    }
+}
+impl_error_stack_methods!(InvalidNamespaceIdentifier);
+
+impl From<InvalidNamespaceIdentifier> for ErrorModel {
+    fn from(err: InvalidNamespaceIdentifier) -> Self {
+        let message = err.to_string();
+        let InvalidNamespaceIdentifier { stack, .. } = err;
+
+        ErrorModel {
+            r#type: "InvalidNamespaceIdentifier".to_string(),
+            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            message,
+            stack,
+            source: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum NamespaceIdentOrId {
     Id(NamespaceId),
@@ -59,25 +176,10 @@ impl From<&NamespaceIdent> for NamespaceIdentOrId {
     }
 }
 
-#[derive(thiserror::Error, Debug, PartialEq)]
-#[error("Namespace with {namespace} does not exist in warehouse '{warehouse_id}'")]
-pub struct NamespaceNotFound {
-    pub warehouse_id: WarehouseId,
-    pub namespace: NamespaceIdentOrId,
-    pub stack: Vec<String>,
-}
-impl NamespaceNotFound {
-    #[must_use]
-    pub fn new(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
-        Self {
-            warehouse_id,
-            namespace: namespace.into(),
-            stack: Vec::new(),
-        }
-    }
-}
-impl_error_stack_methods!(NamespaceNotFound);
-
+define_simple_namespace_err!(
+    NamespaceNotFound,
+    "Namespace with {namespace} does not exist in warehouse '{warehouse_id}'"
+);
 impl From<NamespaceNotFound> for ErrorModel {
     fn from(err: NamespaceNotFound) -> Self {
         ErrorModel {
@@ -91,41 +193,20 @@ impl From<NamespaceNotFound> for ErrorModel {
 }
 
 // --------------------------- GET ERROR ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogGetNamespaceError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    NamespaceNotFound(NamespaceNotFound),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
+define_transparent_error! {
+    pub enum CatalogGetNamespaceError,
+    stack_message: "Error getting namespace in catalog",
+    variants: [
+        CatalogBackendError,
+        NamespaceNotFound,
+        InvalidNamespaceIdentifier,
+    ]
 }
 
 impl CatalogGetNamespaceError {
     #[must_use]
-    pub fn append_detail(mut self, detail: String) -> Self {
-        match &mut self {
-            CatalogGetNamespaceError::CatalogBackendError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetNamespaceError::DatabaseIntegrityError(e) => {
-                e.append_detail_mut(detail);
-            }
-            CatalogGetNamespaceError::NamespaceNotFound(e) => {
-                e.append_detail_mut(detail);
-            }
-        }
-        self
-    }
-
-    #[must_use]
     pub fn not_found(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
         NamespaceNotFound::new(warehouse_id, namespace).into()
-    }
-
-    #[must_use]
-    pub fn database_integrity(message: impl Into<String>) -> Self {
-        DatabaseIntegrityError::new(message).into()
     }
 
     #[must_use]
@@ -133,35 +214,16 @@ impl CatalogGetNamespaceError {
         matches!(self, CatalogGetNamespaceError::NamespaceNotFound(_))
     }
 }
-const GET_BY_NAME_ERROR_STACK: &str = "Error getting namespace in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogGetNamespaceError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(NamespaceNotFound => CatalogGetNamespaceError::NamespaceNotFound, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogGetNamespaceError::DatabaseIntegrityError, GET_BY_NAME_ERROR_STACK);
-
-impl From<CatalogGetNamespaceError> for ErrorModel {
-    fn from(err: CatalogGetNamespaceError) -> Self {
-        match err {
-            CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
-            CatalogGetNamespaceError::NamespaceNotFound(e) => e.into(),
-            CatalogGetNamespaceError::DatabaseIntegrityError(e) => e.into(),
-        }
-    }
-}
-impl From<CatalogGetNamespaceError> for IcebergErrorResponse {
-    fn from(err: CatalogGetNamespaceError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
 
 // --------------------------- List Error ---------------------------
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum CatalogListNamespaceError {
-    #[error(transparent)]
-    CatalogBackendError(CatalogBackendError),
-    #[error(transparent)]
-    DatabaseIntegrityError(DatabaseIntegrityError),
-    #[error(transparent)]
-    InvalidPaginationToken(InvalidPaginationToken),
+define_transparent_error! {
+    pub enum CatalogListNamespaceError,
+    stack_message: "Error listing namespaces in catalog",
+    variants: [
+        CatalogBackendError,
+        InvalidNamespaceIdentifier,
+        InvalidPaginationToken,
+    ]
 }
 
 impl CatalogListNamespaceError {
@@ -171,24 +233,171 @@ impl CatalogListNamespaceError {
     }
 }
 
-const LIST_ERROR_STACK: &str = "Error listing namespaces in catalog";
-impl_from_with_detail!(CatalogBackendError => CatalogListNamespaceError::CatalogBackendError, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(InvalidPaginationToken => CatalogListNamespaceError::InvalidPaginationToken, GET_BY_NAME_ERROR_STACK);
-impl_from_with_detail!(DatabaseIntegrityError => CatalogListNamespaceError::DatabaseIntegrityError, LIST_ERROR_STACK);
+// --------------------------- Create Error ---------------------------
+define_transparent_error! {
+    pub enum CatalogCreateNamespaceError,
+    stack_message: "Error creating Namespace in catalog",
+    variants: [
+        CatalogBackendError,
+        NamespacePropertiesSerializationError,
+        NamespaceAlreadyExists,
+        WarehouseIdNotFound
+    ]
+}
 
-impl From<CatalogListNamespaceError> for ErrorModel {
-    fn from(err: CatalogListNamespaceError) -> Self {
-        match err {
-            CatalogListNamespaceError::CatalogBackendError(e) => e.into(),
-            CatalogListNamespaceError::DatabaseIntegrityError(e) => e.into(),
-            CatalogListNamespaceError::InvalidPaginationToken(e) => e.into(),
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("Namespace name '{namespace}' already exist in warehouse '{warehouse_id}'")]
+pub struct NamespaceAlreadyExists {
+    pub warehouse_id: WarehouseId,
+    pub namespace: NamespaceIdent,
+    pub stack: Vec<String>,
+}
+impl NamespaceAlreadyExists {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId, namespace: NamespaceIdent) -> Self {
+        Self {
+            warehouse_id,
+            namespace,
+            stack: Vec::new(),
         }
     }
 }
-impl From<CatalogListNamespaceError> for IcebergErrorResponse {
-    fn from(err: CatalogListNamespaceError) -> Self {
-        ErrorModel::from(err).into()
+impl_error_stack_methods!(NamespaceAlreadyExists);
+
+impl From<NamespaceAlreadyExists> for ErrorModel {
+    fn from(err: NamespaceAlreadyExists) -> Self {
+        ErrorModel {
+            r#type: "AlreadyExistsException".to_string(),
+            code: StatusCode::CONFLICT.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
     }
+}
+
+// --------------------------- Drop Error ---------------------------
+define_transparent_error! {
+    pub enum CatalogNamespaceDropError,
+    stack_message: "Error dropping Namespace in catalog",
+    variants: [
+        CatalogBackendError,
+        NamespaceNotFound,
+        InvalidNamespaceIdentifier,
+        NamespaceProtected,
+        NamespaceNotEmpty,
+        ChildNamespaceProtected,
+        ChildTabularProtected,
+        NamespaceHasRunningTabularExpirations
+    ]
+}
+
+define_simple_namespace_err!(
+    NamespaceProtected,
+    "Namespace with {namespace} is protected and force flag not set. Cannot delete protected namespace."
+);
+
+impl From<NamespaceProtected> for ErrorModel {
+    fn from(err: NamespaceProtected) -> Self {
+        ErrorModel {
+            r#type: "NamespaceProtected".to_string(),
+            code: StatusCode::CONFLICT.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+define_simple_namespace_err!(
+    ChildNamespaceProtected,
+    "Namespace with {namespace} has protected child namespaces and force flag was not specified."
+);
+
+impl From<ChildNamespaceProtected> for ErrorModel {
+    fn from(err: ChildNamespaceProtected) -> Self {
+        ErrorModel {
+            r#type: "ChildNamespaceProtected".to_string(),
+            code: StatusCode::CONFLICT.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+define_simple_namespace_err!(
+    ChildTabularProtected,
+    "Namespace with {namespace} has protected child tables or views and force flag was not specified."
+);
+
+impl From<ChildTabularProtected> for ErrorModel {
+    fn from(err: ChildTabularProtected) -> Self {
+        ErrorModel {
+            r#type: "ChildTabularProtected".to_string(),
+            code: StatusCode::CONFLICT.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+define_simple_namespace_err!(
+    NamespaceNotEmpty,
+    "Namespace with {namespace} is not empty."
+);
+
+impl From<NamespaceNotEmpty> for ErrorModel {
+    fn from(err: NamespaceNotEmpty) -> Self {
+        ErrorModel {
+            r#type: "NamespaceNotEmptyException".to_string(),
+            code: StatusCode::CONFLICT.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+define_simple_namespace_err!(
+    NamespaceHasRunningTabularExpirations,
+    "Namespace with {namespace} has a running tabular expiration, please retry after the expiration task is done."
+);
+
+impl From<NamespaceHasRunningTabularExpirations> for ErrorModel {
+    fn from(err: NamespaceHasRunningTabularExpirations) -> Self {
+        ErrorModel {
+            r#type: "NamespaceHasRunningTabularExpirations".to_string(),
+            code: StatusCode::CONFLICT.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+// --------------------------- Update Properties Error ---------------------------
+define_transparent_error! {
+    pub enum CatalogUpdateNamespacePropertiesError,
+    stack_message: "Error updating Namespace properties in catalog",
+    variants: [
+        CatalogBackendError,
+        NamespacePropertiesSerializationError,
+        NamespaceNotFound,
+        InvalidNamespaceIdentifier,
+    ]
+}
+
+// --------------------------- Set Namespace Protected Error ---------------------------
+define_transparent_error! {
+    pub enum CatalogSetNamespaceProtectedError,
+    stack_message: "Error setting Namespace protection in catalog",
+    variants: [
+        CatalogBackendError,
+        NamespaceNotFound,
+        InvalidNamespaceIdentifier,
+    ]
 }
 
 #[async_trait::async_trait]
@@ -201,7 +410,7 @@ where
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId> + Send,
         catalog_state: Self::State,
-    ) -> Result<Option<GetNamespaceResponse>, CatalogGetNamespaceError> {
+    ) -> Result<Option<Namespace>, CatalogGetNamespaceError> {
         let ns = Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await;
 
         match ns {
@@ -217,7 +426,7 @@ where
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId> + Send,
         catalog_state: Self::State,
-    ) -> Result<GetNamespaceResponse, CatalogGetNamespaceError> {
+    ) -> Result<Namespace, CatalogGetNamespaceError> {
         let ns = Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await?;
         Ok(ns)
     }
@@ -226,11 +435,46 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<
-        PaginatedMapping<NamespaceId, GetNamespaceResponse>,
-        CatalogListNamespaceError,
-    > {
+    ) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError>
+    {
         Self::list_namespaces_impl(warehouse_id, query, transaction).await
+    }
+
+    async fn create_namespace<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        request: CreateNamespaceRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Namespace, CatalogCreateNamespaceError> {
+        Self::create_namespace_impl(warehouse_id, namespace_id, request, transaction).await
+    }
+
+    async fn drop_namespace<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        flags: NamespaceDropFlags,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
+        Self::drop_namespace_impl(warehouse_id, namespace_id, flags, transaction).await
+    }
+
+    async fn update_namespace_properties<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        properties: HashMap<String, String>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError> {
+        Self::update_namespace_properties_impl(warehouse_id, namespace_id, properties, transaction)
+            .await
+    }
+
+    async fn set_namespace_protected(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError> {
+        Self::set_namespace_protected_impl(warehouse_id, namespace_id, protect, transaction).await
     }
 }
 

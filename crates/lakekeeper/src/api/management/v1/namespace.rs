@@ -46,9 +46,15 @@ where
             "Setting protection status for namespace: {:?} to {protected}",
             namespace_id
         );
-        let status = C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
+        let status =
+            C::set_namespace_protected(warehouse_id, namespace_id, protected, t.transaction())
+                .await?;
         t.commit().await?;
-        Ok(status)
+        let protection_response = ProtectionResponse {
+            protected: status.protected,
+            updated_at: status.updated_at,
+        };
+        Ok(protection_response)
     }
 
     async fn get_namespace_protection(

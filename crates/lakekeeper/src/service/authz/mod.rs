@@ -12,7 +12,7 @@ use super::{
 use crate::{
     api::iceberg::v1::Result,
     request_metadata::RequestMetadata,
-    service::{GetNamespaceResponse, ServerId},
+    service::{Namespace, ServerId},
 };
 
 mod error;
@@ -365,7 +365,7 @@ where
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         action: Self::NamespaceAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
@@ -395,7 +395,7 @@ where
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&GetNamespaceResponse, Self::NamespaceAction)],
+        actions: &[(&Namespace, Self::NamespaceAction)],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let futures: Vec<_> = actions
             .iter()
@@ -1117,7 +1117,7 @@ pub(crate) mod tests {
         async fn is_allowed_namespace_action_impl(
             &self,
             _metadata: &RequestMetadata,
-            namespace: &GetNamespaceResponse,
+            namespace: &Namespace,
             action: Self::NamespaceAction,
         ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("namespace:{action}").as_str()) {
@@ -1381,7 +1381,7 @@ pub(crate) mod tests {
     );
     test_block_namespace_action!(
         CatalogNamespaceAction::CanListViews,
-        &GetNamespaceResponse {
+        &Namespace {
             namespace_ident: NamespaceIdent::new("test".to_string()),
             namespace_id: NamespaceId::new_random(),
             warehouse_id: WarehouseId::new_random(),

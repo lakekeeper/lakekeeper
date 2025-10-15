@@ -1633,7 +1633,7 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::{GetNamespaceResponse, NamespaceIdent};
+    use lakekeeper::service::{Namespace, NamespaceIdent};
 
     use super::*;
 
@@ -1646,8 +1646,8 @@ mod tests {
         );
     }
 
-    fn random_namespace(namespace_id: NamespaceId) -> GetNamespaceResponse {
-        GetNamespaceResponse {
+    fn random_namespace(namespace_id: NamespaceId) -> Namespace {
+        Namespace {
             namespace_ident: NamespaceIdent::new(format!("ns-{namespace_id}")),
             namespace_id,
             protected: false,

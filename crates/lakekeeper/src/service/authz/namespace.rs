@@ -7,8 +7,8 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CatalogNamespaceAction, MustUse,
         },
-        Actor, CatalogBackendError, CatalogGetNamespaceError, DatabaseIntegrityError,
-        GetNamespaceResponse, NamespaceIdentOrId, NamespaceNotFound,
+        Actor, CatalogBackendError, CatalogGetNamespaceError, InvalidNamespaceIdentifier,
+        Namespace, NamespaceIdentOrId, NamespaceNotFound,
     },
     WarehouseId,
 };
@@ -119,7 +119,7 @@ pub enum RequireNamespaceActionError {
     AuthZCannotSeeNamespace(AuthZCannotSeeNamespace),
     // Propagated directly
     CatalogBackendError(CatalogBackendError),
-    DatabaseIntegrityError(DatabaseIntegrityError),
+    InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireNamespaceActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
@@ -133,7 +133,7 @@ impl From<CatalogGetNamespaceError> for RequireNamespaceActionError {
     fn from(err: CatalogGetNamespaceError) -> Self {
         match err {
             CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
-            CatalogGetNamespaceError::DatabaseIntegrityError(e) => e.into(),
+            CatalogGetNamespaceError::InvalidNamespaceIdentifier(e) => e.into(),
             CatalogGetNamespaceError::NamespaceNotFound(e) => {
                 AuthZCannotSeeNamespace::from(e).into()
             }
@@ -145,7 +145,7 @@ impl From<RequireNamespaceActionError> for ErrorModel {
         match err {
             RequireNamespaceActionError::AuthZCannotSeeNamespace(e) => e.into(),
             RequireNamespaceActionError::CatalogBackendError(e) => e.into(),
-            RequireNamespaceActionError::DatabaseIntegrityError(e) => e.into(),
+            RequireNamespaceActionError::InvalidNamespaceIdentifier(e) => e.into(),
             RequireNamespaceActionError::AuthorizationBackendUnavailable(e) => e.into(),
             RequireNamespaceActionError::AuthZNamespaceActionForbidden(e) => e.into(),
             RequireNamespaceActionError::AuthorizationCountMismatch(e) => e.into(),
@@ -167,9 +167,9 @@ pub trait AuthzNamespaceOps: Authorizer {
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         user_provided_namespace: impl Into<NamespaceIdentOrId> + Send,
-        namespace: Result<GetNamespaceResponse, CatalogGetNamespaceError>,
+        namespace: Result<Namespace, CatalogGetNamespaceError>,
         action: impl Into<Self::NamespaceAction> + Send,
-    ) -> Result<GetNamespaceResponse, RequireNamespaceActionError> {
+    ) -> Result<Namespace, RequireNamespaceActionError> {
         let actor = metadata.actor();
         let namespace = namespace?;
         let namespace_name = namespace.namespace_ident.clone();
@@ -212,7 +212,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     async fn is_allowed_namespace_action(
         &self,
         metadata: &RequestMetadata,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         action: impl Into<Self::NamespaceAction> + Send,
     ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
@@ -230,7 +230,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        namespace: &GetNamespaceResponse,
+        namespace: &Namespace,
         actions: &[A; N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let actions = actions
@@ -253,7 +253,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&GetNamespaceResponse, A)],
+        actions: &[(&Namespace, A)],
     ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
