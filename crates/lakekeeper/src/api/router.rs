@@ -4,6 +4,7 @@ use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderName, HeaderValue, Method};
+use jsonwebtoken::Header;
 use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -234,6 +235,7 @@ fn get_cors_layer(
                 header::ACCEPT,
                 header::USER_AGENT,
                 HeaderName::from_static(X_PROJECT_ID_HEADER),
+                HeaderName::from_static("x-user-agent"),
             ])
             .allow_methods(vec![
                 Method::GET,
