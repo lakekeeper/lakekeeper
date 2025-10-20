@@ -21,7 +21,7 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
-# Migrate db
+# Migrate db (make sure you have sqlx installed `cargo install sqlx-cli`)
 cd crates/lakekeeper
 sqlx database create && sqlx migrate run
 cd ../..
@@ -31,7 +31,8 @@ cargo nextest run --all-features
 
 # run clippy
 just check-clippy
-# formatting the code. You may have to install nightly rust toolchain
+# formatting the code (make sure you have cargo-sort installed, `cargo install cargo-sort`)
+# You may have to install nightly rust toolchain
 just fix-format
 ```
 Keep in mind that some tests are excluded by the `default-filter` in `.config/nextest.toml`. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for modules whose name contains `_integration_tests` within files ending with `.rs`.

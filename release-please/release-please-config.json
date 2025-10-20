@@ -6,18 +6,45 @@
                 ".github",
                 ".cargo",
                 "release-please",
-                ".gitignore"
+                ".gitignore",
+                "renovate.json"
             ]
         }
     },
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
     "include-component-in-tag": false,
+    "release-as": "0.10.3",
     "extra-files": [
         {
             "type": "toml",
             "path": "Cargo.toml",
             "jsonpath": "$.workspace.package.version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"iceberg-ext\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-authz-openfga\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-bin\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-io\")].version"
         }
     ],
     "changelog-sections": [
