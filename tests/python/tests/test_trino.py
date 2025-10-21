@@ -32,11 +32,14 @@ def test_information_schema_tables(trino, warehouse: conftest.Warehouse):
     r = cur.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_schema='test_information_schema_tables_trino'"
     ).fetchall()
+    # Trino returns tables and views in arbitrary order
+    assert len(r) == 2
     assert ["my_table"] in r
-    cur.execute(
+    assert ["my_view"] in r
+    r = cur.execute(
         "SELECT table_name FROM information_schema.views WHERE table_schema='test_information_schema_tables_trino'"
     ).fetchall()
-    assert ["my_view"] in r
+    assert r == [["my_view"]]
     cur.execute("SELECT table_name FROM information_schema.tables").fetchall()
 
 
