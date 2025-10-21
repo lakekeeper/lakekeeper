@@ -381,7 +381,7 @@ pub struct TableParameters {
 }
 
 pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
-pub const IF_NON_MATCH_HEADER: &str = "If-None-Match";
+pub const IF_NONE_MATCH_HEADER: &str = "If-None-Match";
 pub const ETAG_HEADER: &str = "ETag";
 
 #[derive(Debug, Clone, PartialEq, Copy)]
