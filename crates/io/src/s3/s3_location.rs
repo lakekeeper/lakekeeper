@@ -61,7 +61,7 @@ impl S3Location {
         })
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn set_s3_scheme(mut self) -> Self {
         self.location.set_scheme_unchecked_mut("s3");
         self
