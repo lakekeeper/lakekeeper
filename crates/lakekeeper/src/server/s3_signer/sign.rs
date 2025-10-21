@@ -441,13 +441,26 @@ fn validate_uri(
     // i.e. s3://bucket/key
     table_location: &Location,
 ) -> Result<()> {
-    let table_location =
-        S3Location::try_from_location(table_location, false).map_err(ValidationError::from)?;
+    let table_location = S3Location::try_from_location(table_location, true)
+        .map_err(|e| ValidationError::from(e.with_context("Error signing request")))?;
+
+    let normalized_table_location = if table_location.scheme() != "s3" {
+        Some(table_location.clone().set_s3_scheme())
+    } else {
+        None
+    };
 
     for url_location in &parsed_url.locations {
-        if !url_location
+        if !(url_location
             .location()
             .is_sublocation_of(table_location.location())
+            || normalized_table_location
+                .as_ref()
+                .is_some_and(|normalized| {
+                    url_location
+                        .location()
+                        .is_sublocation_of(normalized.location())
+                }))
         {
             return Err(SignError::RequestUriMismatch {
                 request_uri: parsed_url.url.to_string(),

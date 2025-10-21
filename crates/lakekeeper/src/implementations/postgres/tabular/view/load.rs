@@ -132,7 +132,7 @@ SELECT v.view_id,
        vs.schemas                       as "schemas: Vec<Json<Schema>>",
        vp.view_properties_keys,
        vp.view_properties_values,
-       vvr.version_ids                  as "version_ids!: Json<Vec<ViewVersionId>>",
+       vvr.version_ids                  as "version_ids!: Vec<ViewVersionId>",
        vvr.version_schema_ids,
        vvr.version_timestamps,
        vvr.version_default_namespace_ids AS "version_default_namespace_ids!: Vec<Option<Uuid>>",
@@ -169,7 +169,7 @@ FROM view v
                     GROUP BY view_id) vp
                     ON v.view_id = vp.view_id
          LEFT JOIN (SELECT vv.view_id,
-                           JSONB_AGG(version_id)           AS version_ids,
+                           ARRAY_AGG(version_id)           AS version_ids,
                            ARRAY_AGG(summary)              AS summaries,
                            ARRAY_AGG(schema_id)            AS version_schema_ids,
                            ARRAY_AGG(timestamp)            AS version_timestamps,
@@ -218,7 +218,7 @@ async fn prepare_versions(
         view_representation_dialect,
     }: VersionsPrep,
 ) -> Result<HashMap<ViewVersionId, Arc<ViewVersion>>, LoadViewError> {
-    let version_ids = version_ids.0;
+    let version_ids = version_ids;
     let version_schema_ids = version_schema_ids.ok_or_else(|| {
         RequiredViewComponentMissing::new(warehouse_id, view_id)
             .append_detail("Version Schema IDs missing")
@@ -369,7 +369,7 @@ async fn get_default_namespace_ident(
     let namespace_ident = namespace.map_or_else(
         || {
             tracing::warn!(
-                "Default namespace id '{default_namespace}' of namespace {default_namespace} not found. Returning empty NamespaceIdent."
+                "efault namespace id '{default_namespace}' not found; returning empty default namespace."
             );
             EMPTY_NAMESPACE_IDENT.clone()
         },
@@ -390,7 +390,7 @@ struct Query {
     schemas: Option<Vec<Json<Schema>>>,
     view_properties_keys: Option<Vec<String>>,
     view_properties_values: Option<Vec<String>>,
-    version_ids: Json<Vec<ViewVersionId>>,
+    version_ids: Vec<ViewVersionId>,
     version_schema_ids: Option<Vec<i32>>,
     version_timestamps: Option<Vec<chrono::DateTime<Utc>>>,
     version_default_namespace_ids: Vec<Option<Uuid>>,
@@ -404,7 +404,7 @@ struct Query {
 }
 
 struct VersionsPrep {
-    version_ids: Json<Vec<ViewVersionId>>,
+    version_ids: Vec<ViewVersionId>,
     version_schema_ids: Option<Vec<i32>>,
     version_timestamps: Option<Vec<DateTime<Utc>>>,
     version_default_namespace_ids: Vec<Option<Uuid>>,

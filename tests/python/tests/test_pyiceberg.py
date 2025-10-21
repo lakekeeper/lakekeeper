@@ -202,7 +202,7 @@ def test_drop_table(namespace: conftest.Namespace):
 
 def test_drop_unknown_table(namespace: conftest.Namespace):
     catalog = namespace.pyiceberg_catalog
-    with pytest.raises(exc.ForbiddenError):
+    with pytest.raises(exc.NoSuchTableError):
         catalog.drop_table((*namespace.name, "missing_table"))
 
 

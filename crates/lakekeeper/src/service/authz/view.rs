@@ -86,7 +86,7 @@ impl From<AuthZViewActionForbidden> for ErrorModel {
         } = err;
         ErrorModel::forbidden(
             format!(
-                "View action `{action}` forbidden for `{actor}` on namespace with {view} in warehouse `{warehouse_id}`"
+                "View action `{action}` forbidden for `{actor}` on view {view} in warehouse `{warehouse_id}`"
             ),
             "ViewActionForbidden",
             None,

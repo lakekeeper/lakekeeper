@@ -306,7 +306,14 @@ fn verify_commit_completeness(
 }
 
 fn validate_commit_count(commits: &[TableCommit]) -> Result<(), TooManyUpdatesInCommit> {
-    if commits.len() > (MAX_PARAMETERS / 7) {
+    // Per-commit bind counts
+    const PER_COMMIT_TABLE_BINDS: usize = 8;
+    const PER_COMMIT_TABULAR_BINDS: usize = 6;
+    // Limit is dictated by the larger of the two queries; table is the bottleneck.
+    let max_commits_table = MAX_PARAMETERS / PER_COMMIT_TABLE_BINDS;
+    let max_commits_tabular = MAX_PARAMETERS / PER_COMMIT_TABULAR_BINDS;
+    let max_commits = max_commits_table.min(max_commits_tabular);
+    if commits.len() > max_commits {
         return Err(TooManyUpdatesInCommit::new());
     }
     Ok(())

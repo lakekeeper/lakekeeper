@@ -41,7 +41,7 @@ pub(crate) async fn create_table(
         Location::from_str(table_metadata.location()).map_err(InternalParseLocationError::from)?;
 
     let staged_table_id =
-        maybe_delete_staged_table(warehouse_id, namespace_id, transaction, name).await?;
+        maybe_delete_staged_tabular(warehouse_id, namespace_id, transaction, name).await?;
 
     let tabular_info = create_tabular(
         CreateTabular {
@@ -163,7 +163,7 @@ pub(crate) async fn create_table(
     Ok((table_info, staged_table_id))
 }
 
-async fn maybe_delete_staged_table(
+async fn maybe_delete_staged_tabular(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     transaction: &mut Transaction<'_, Postgres>,

@@ -1029,9 +1029,7 @@ pub(crate) async fn clear_tabular_deleted_at(
         .iter()
         .map(|r| r.tabular_id)
         .collect::<std::collections::HashSet<Uuid>>();
-    let mut missing_ids = tabular_ids.iter().filter(|id| !found_ids.contains(id));
-
-    if let Some(missing_id) = missing_ids.next() {
+    if let Some(missing_id) = tabular_ids.iter().find(|id| !found_ids.contains(&**id)) {
         return Err(TabularNotFound::new(warehouse_id, *missing_id).into());
     }
 
