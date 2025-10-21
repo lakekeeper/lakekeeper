@@ -28,10 +28,10 @@ jobs:
     if: ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'lakekeeper/lakekeeper') || (github.event_name == 'pull_request' && github.repository == 'lakekeeper/lakekeeper' && github.event.pull_request.head.repo.full_name == github.repository)
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
-      tag_name: ${{ steps.release.outputs['crates/lakekeeper--tag_name'] }}
-      major: ${{ steps.release.outputs['crates/lakekeeper--major'] }}
-      minor: ${{ steps.release.outputs['crates/lakekeeper--minor'] }}
-      patch: ${{ steps.release.outputs['crates/lakekeeper--patch'] }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+      patch: ${{ steps.release.outputs.patch }}
     steps:
       - name: echo repository and branch
         run: |

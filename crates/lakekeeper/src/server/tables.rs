@@ -690,6 +690,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
+
         if source == destination {
             return Ok(());
         }
