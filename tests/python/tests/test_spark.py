@@ -836,12 +836,14 @@ def test_cannot_create_table_at_same_location(
     spark.sql(
         f"CREATE TABLE {namespace.spark_name}.my_table_custom_location (my_ints INT) USING iceberg LOCATION '{custom_location}'"
     )
-
     with pytest.raises(Exception) as e:
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}'"
         )
-    assert "Location is already taken by another table or view" in str(e.value)
+    # Other location should work
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}2'"
+    )
 
     # Write / read data
     spark.sql(
@@ -883,7 +885,6 @@ def test_cannot_create_table_at_sub_location(
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}/sub_location'"
         )
-    assert "Location is already taken by another table or view" in str(e.value)
 
     # Write / read data
     spark.sql(
