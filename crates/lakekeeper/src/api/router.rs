@@ -4,7 +4,6 @@ use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderName, HeaderValue, Method};
-use jsonwebtoken::Header;
 use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
