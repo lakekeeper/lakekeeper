@@ -163,7 +163,7 @@ services:
       iceberg_net:
 
   trino:
-    image: trinodb/trino:467
+    image: trinodb/trino:477
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:
@@ -180,7 +180,7 @@ services:
   starrocks:
     image: starrocks/allin1-ubuntu:3.3.7
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      test: ["CMD", "curl", "-I", "http://starrocks:8030/api/health"]
       interval: 2s
       timeout: 10s
       retries: 2

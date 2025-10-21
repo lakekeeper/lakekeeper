@@ -11,10 +11,21 @@ services:
       iceberg_net:
     ports:
       - "8888:8888"
-  
+
   opa:
     image: openpolicyagent/opa:1.0.0
-    command: ["run", "--server", "--log-format", "text", "--log-level", "debug", "--addr", "0.0.0.0:8181", "/policies"]
+    command:
+      [
+        "run",
+        "--server",
+        "--log-format",
+        "text",
+        "--log-level",
+        "debug",
+        "--addr",
+        "0.0.0.0:8181",
+        "/policies",
+      ]
     volumes:
       - ../../authz/opa-bridge/policies:/policies
     networks:
@@ -44,14 +55,27 @@ services:
     volumes:
       - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
+      test:
+        [
+          "CMD-SHELL",
+          'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3',
+        ]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 60s
     ports:
       - "30080:8080"
-    command: [ "start-dev", "--metrics-enabled=true", "--health-enabled=true", "--import-realm", "--verbose", "--log-level=INFO", "--features=token-exchange" ]
+    command:
+      [
+        "start-dev",
+        "--metrics-enabled=true",
+        "--health-enabled=true",
+        "--import-realm",
+        "--verbose",
+        "--log-level=INFO",
+        "--features=token-exchange",
+      ]
     networks:
       iceberg_net:
 
@@ -70,9 +94,9 @@ services:
       - LAKEKEEPER__UI__OPENID_CLIENT_ID=lakekeeper
       - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
       - RUST_LOG=info
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -90,11 +114,11 @@ services:
       iceberg_net:
 
   trino-opa:
-    image: trinodb/trino:467
+    image: trinodb/trino:477
     environment:
       - OIDC_ISSUER=http://localhost:30080/realms/iceberg
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -130,7 +154,7 @@ services:
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - RUST_LOG=info
     restart: "no"
-    entrypoint: [ "/home/nonroot/lakekeeper", "migrate" ]
+    entrypoint: ["/home/nonroot/lakekeeper", "migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -150,7 +174,7 @@ services:
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -163,7 +187,7 @@ services:
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -176,9 +200,9 @@ services:
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-    command: [ "server", "--console-address", ":9001", "/data" ]
+    command: ["server", "--console-address", ":9001", "/data"]
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -230,12 +254,7 @@ services:
     networks:
       iceberg_net:
     healthcheck:
-      test:
-        [
-          "CMD",
-          "/usr/local/bin/grpc_health_probe",
-          "-addr=openfga:8081"
-        ]
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
       interval: 5s
       timeout: 30s
       retries: 3
