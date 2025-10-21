@@ -1,6 +1,5 @@
 use std::{sync::LazyLock, time::Duration};
 
-use iceberg::ErrorKind;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
@@ -13,7 +12,7 @@ use crate::{
         tasks::{
             tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData, TaskQueueName,
         },
-        CatalogStore, Transaction,
+        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
     },
     CancellationToken,
 };
@@ -146,7 +145,7 @@ where
 
     let tabular_location = match entity_id {
         EntityId::Table(table_id) => {
-            let drop_result = C::drop_table(
+            let drop_result = C::drop_tabular(
                 task.task_metadata.warehouse_id,
                 table_id,
                 true,
@@ -155,16 +154,18 @@ where
             .await;
 
             let location = match drop_result {
-                Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
+                Err(DropTabularError::TabularNotFound(..)) => {
                     tracing::warn!(
                         "Table with id `{table_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
                     );
                     None
                 }
                 Err(e) => {
-                    return Err(e.append_detail(format!(
+                    return Err(e
+                        .append_detail(format!(
                     "Failed to drop table with id `{table_id}` from catalog for `{QN_STR}` task."
-                )))
+                ))
+                        .into())
                 }
                 Ok(loc) => Some(loc),
             };
@@ -181,7 +182,7 @@ where
             location
         }
         EntityId::View(view_id) => {
-            let location = match C::drop_view(
+            let location = match C::drop_tabular(
                 task.task_metadata.warehouse_id,
                 view_id,
                 true,
@@ -189,16 +190,18 @@ where
             )
             .await
             {
-                Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
+                Err(DropTabularError::TabularNotFound(..)) => {
                     tracing::warn!(
                         "View with id `{view_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
                     );
                     None
                 }
                 Err(e) => {
-                    return Err(e.append_detail(format!(
+                    return Err(e
+                        .append_detail(format!(
                         "Failed to drop view with id `{view_id}` from catalog for `{QN_STR}` task."
-                    )))
+                    ))
+                        .into())
                 }
                 Ok(loc) => Some(loc),
             };
@@ -226,7 +229,7 @@ where
                     schedule_for: None,
                     entity_name: task.task_metadata.entity_name.clone(),
                 },
-                TabularPurgePayload::new(tabular_location),
+                TabularPurgePayload::new(tabular_location.to_string()),
                 trx.transaction(),
             )
             .await
@@ -267,8 +270,8 @@ mod test {
             CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
         },
         service::{
-            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, NamedEntity,
-            TabularListFlags, Transaction,
+            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, CatalogTabularOps,
+            NamedEntity, TabularListFlags, Transaction,
         },
     };
 
@@ -317,7 +320,7 @@ mod test {
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
             .await
             .unwrap();
-        let _ = <PostgresBackend as CatalogStore>::list_tabulars(
+        let _ = PostgresBackend::list_tabulars(
             warehouse,
             None,
             TabularListFlags {
@@ -326,6 +329,7 @@ mod test {
                 include_deleted: true,
             },
             trx.transaction(),
+            None,
             PaginationQuery::empty(),
         )
         .await
@@ -353,9 +357,9 @@ mod test {
         .await
         .unwrap();
 
-        <PostgresBackend as CatalogStore>::mark_tabular_as_deleted(
+        PostgresBackend::mark_tabular_as_deleted(
             warehouse,
-            table.table_id.into(),
+            table.table_id,
             false,
             trx.transaction(),
         )
@@ -368,7 +372,7 @@ mod test {
             .await
             .unwrap();
 
-        let del = <PostgresBackend as CatalogStore>::list_tabulars(
+        let deletion_info = PostgresBackend::list_tabulars(
             warehouse,
             None,
             TabularListFlags {
@@ -377,14 +381,15 @@ mod test {
                 include_deleted: true,
             },
             trx.transaction(),
+            None,
             PaginationQuery::empty(),
         )
         .await
         .unwrap()
         .remove(&table.table_id.into())
-        .unwrap()
-        .deletion_details;
-        del.unwrap();
+        .unwrap();
+        assert!(deletion_info.expiration_task().is_some());
+        assert!(deletion_info.deleted_at().is_some());
         trx.commit().await.unwrap();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -392,7 +397,7 @@ mod test {
             let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
                 .await
                 .unwrap();
-            let gone = <PostgresBackend as CatalogStore>::list_tabulars(
+            let gone = PostgresBackend::list_tabulars(
                 warehouse,
                 None,
                 TabularListFlags {
@@ -401,6 +406,7 @@ mod test {
                     include_deleted: true,
                 },
                 trx.transaction(),
+                None,
                 PaginationQuery::empty(),
             )
             .await
@@ -418,7 +424,7 @@ mod test {
             .await
             .unwrap();
 
-        assert!(<PostgresBackend as CatalogStore>::list_tabulars(
+        assert!(PostgresBackend::list_tabulars(
             warehouse,
             None,
             TabularListFlags {
@@ -427,6 +433,7 @@ mod test {
                 include_deleted: true,
             },
             trx.transaction(),
+            None,
             PaginationQuery::empty(),
         )
         .await

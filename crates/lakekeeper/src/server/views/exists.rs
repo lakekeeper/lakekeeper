@@ -1,14 +1,11 @@
-use iceberg::TableIdent;
-
 use crate::{
-    api::{iceberg::v1::ViewParameters, set_not_found_status_code, ApiContext},
+    api::{iceberg::v1::ViewParameters, ApiContext},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
-        CatalogStore, Result, SecretStore, State, Transaction, ViewId,
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        CatalogStore, CatalogTabularOps, Result, SecretStore, State,
     },
-    WarehouseId,
 };
 
 pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
@@ -23,38 +20,25 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
-    let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-    let _view_id = authorized_view_ident_to_id::<C, _>(
-        authorizer.clone(),
-        &request_metadata,
-        warehouse_id,
-        &view,
-        CatalogViewAction::CanGetMetadata,
-        t.transaction(),
-    )
-    .await?;
 
-    t.commit().await?;
+    let view_info = C::get_view_info(
+        warehouse_id,
+        view.clone(),
+        crate::service::TabularListFlags::active(),
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+    let _view_info = authorizer
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view.clone(),
+            view_info,
+            CatalogViewAction::CanGetMetadata,
+        )
+        .await?;
 
     Ok(())
-}
-
-pub async fn authorized_view_ident_to_id<C: CatalogStore, A: Authorizer>(
-    authorizer: A,
-    metadata: &RequestMetadata,
-    warehouse_id: WarehouseId,
-    view_ident: &TableIdent,
-    action: impl From<CatalogViewAction> + std::fmt::Display + Send,
-    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<ViewId> {
-    authorizer
-        .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
-        .await?;
-    let view_id = C::view_to_id(warehouse_id, view_ident, transaction).await; // We can't fail before AuthZ
-    authorizer
-        .require_view_action(metadata, warehouse_id, view_id, action)
-        .await
-        .map_err(set_not_found_status_code)
 }
 
 #[cfg(test)]

@@ -3,13 +3,14 @@ use std::{collections::HashMap, sync::Arc};
 use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel, IcebergErrorResponse};
+use lakekeeper_io::Location;
 
 use crate::{
     api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
     service::{
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
-        CatalogBackendError, CatalogStore, InvalidPaginationToken, ListNamespacesQuery,
-        NamespaceId, TableIdent, TabularId, Transaction, WarehouseIdNotFound,
+        CatalogBackendError, CatalogStore, InternalParseLocationError, InvalidPaginationToken,
+        ListNamespacesQuery, NamespaceId, TableIdent, TabularId, Transaction, WarehouseIdNotFound,
     },
     WarehouseId,
 };
@@ -35,7 +36,7 @@ pub struct ListNamespacesResponse {
 pub struct NamespaceDropInfo {
     pub child_namespaces: Vec<NamespaceId>,
     // table-id, location, table-ident
-    pub child_tables: Vec<(TabularId, String, TableIdent)>,
+    pub child_tables: Vec<(TabularId, Location, TableIdent)>,
     pub open_tasks: Vec<TaskId>,
 }
 
@@ -92,14 +93,6 @@ impl NamespacePropertiesSerializationError {
     }
 }
 impl_error_stack_methods!(NamespacePropertiesSerializationError);
-impl PartialEq for NamespacePropertiesSerializationError {
-    fn eq(&self, other: &Self) -> bool {
-        self.warehouse_id == other.warehouse_id
-            && self.namespace == other.namespace
-            && self.source.to_string() == other.source.to_string()
-            && self.stack == other.stack
-    }
-}
 impl From<NamespacePropertiesSerializationError> for ErrorModel {
     fn from(err: NamespacePropertiesSerializationError) -> Self {
         let message = err.to_string();
@@ -115,7 +108,7 @@ impl From<NamespacePropertiesSerializationError> for ErrorModel {
     }
 }
 
-#[derive(thiserror::Error, PartialEq, Debug)]
+#[derive(thiserror::Error, Debug)]
 #[error("Encountered invalid namespace identifier in warehouse {warehouse_id}: {found}")]
 pub struct InvalidNamespaceIdentifier {
     warehouse_id: WarehouseId,
@@ -198,21 +191,8 @@ define_transparent_error! {
     stack_message: "Error getting namespace in catalog",
     variants: [
         CatalogBackendError,
-        NamespaceNotFound,
         InvalidNamespaceIdentifier,
     ]
-}
-
-impl CatalogGetNamespaceError {
-    #[must_use]
-    pub fn not_found(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
-        NamespaceNotFound::new(warehouse_id, namespace).into()
-    }
-
-    #[must_use]
-    pub fn is_not_found(&self) -> bool {
-        matches!(self, CatalogGetNamespaceError::NamespaceNotFound(_))
-    }
 }
 
 // --------------------------- List Error ---------------------------
@@ -224,13 +204,6 @@ define_transparent_error! {
         InvalidNamespaceIdentifier,
         InvalidPaginationToken,
     ]
-}
-
-impl CatalogListNamespaceError {
-    #[must_use]
-    pub fn invalid_pagination_token(message: impl Into<String>, token: impl Into<String>) -> Self {
-        InvalidPaginationToken::new(message, token).into()
-    }
 }
 
 // --------------------------- Create Error ---------------------------
@@ -288,7 +261,8 @@ define_transparent_error! {
         NamespaceNotEmpty,
         ChildNamespaceProtected,
         ChildTabularProtected,
-        NamespaceHasRunningTabularExpirations
+        NamespaceHasRunningTabularExpirations,
+        InternalParseLocationError
     ]
 }
 
@@ -411,24 +385,7 @@ where
         namespace: impl Into<NamespaceIdentOrId> + Send,
         catalog_state: Self::State,
     ) -> Result<Option<Namespace>, CatalogGetNamespaceError> {
-        let ns = Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await;
-
-        match ns {
-            Ok(ns) => Ok(Some(ns)),
-            Err(CatalogGetNamespaceError::NamespaceNotFound(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Get a namespace by its ID or name.
-    /// Only returns the namespace if the warehouse is active.
-    async fn require_namespace<'a>(
-        warehouse_id: WarehouseId,
-        namespace: impl Into<NamespaceIdentOrId> + Send,
-        catalog_state: Self::State,
-    ) -> Result<Namespace, CatalogGetNamespaceError> {
-        let ns = Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await?;
-        Ok(ns)
+        Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await
     }
 
     async fn list_namespaces<'a>(

@@ -378,7 +378,7 @@ define_transparent_error! {
 // --------------------------- Set Warehouse Protected Error ---------------------------
 define_transparent_error! {
     pub enum SetWarehouseProtectedError,
-    stack_message: "Error setting warehouse protected in catalog",
+    stack_message: "Error setting warehouse protection in catalog",
     variants: [
         CatalogBackendError,
         WarehouseIdNotFound,

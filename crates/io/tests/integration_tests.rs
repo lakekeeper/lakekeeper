@@ -1325,7 +1325,7 @@ async fn test_list_prefix_boundaries_impl(
         }
 
         // Debug output
-        println!("Listed {} items in {}", listed_locations.len(), list_dir);
+        // println!("Listed {} items in {}", listed_locations.len(), list_dir);
         for loc in &listed_locations {
             println!("  Found: {loc}");
         }

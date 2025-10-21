@@ -12,7 +12,7 @@ use iceberg::{
         MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataRef,
         PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
     },
-    ErrorKind, NamespaceIdent, TableUpdate,
+    NamespaceIdent, TableUpdate,
 };
 use iceberg_ext::{
     catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
@@ -44,7 +44,6 @@ use crate::{
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
-        set_not_found_status_code,
     },
     request_metadata::RequestMetadata,
     server::{
@@ -54,8 +53,8 @@ use crate::{
     },
     service::{
         authz::{
-            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogTableAction,
-            CatalogWarehouseAction,
+            AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         secrets::SecretStore,
@@ -65,9 +64,10 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, CreateTableResponse, NamedEntity,
-        State, TableCommit, TableCreation, TableId, TabularDetails, TabularId, TabularListFlags,
-        Transaction, WarehouseStatus,
+        AuthZTableInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps,
+        CatalogWarehouseOps, NamedEntity, State, TableCommit, TableCreation, TableId,
+        TableIdentOrId, TableInfo, TabularId, TabularListFlags, TabularNotFound, Transaction,
+        WarehouseStatus, CONCURRENT_UPDATE_ERROR_TYPE,
     },
     WarehouseId,
 };
@@ -76,7 +76,6 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
     "write.metadata.delete-after-commit.enabled";
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
-pub(crate) const CONCURRENT_UPDATE_ERROR_TYPE: &str = "ConcurrentUpdateError";
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
 #[async_trait::async_trait]
@@ -104,7 +103,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let authorizer = state.v1_state.authz;
 
         let namespace =
-            C::require_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
+            C::get_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
@@ -117,7 +116,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let (identifiers, table_uuids, next_page_token) =
+        let (table_infos, table_uuids, next_page_token) =
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
@@ -126,16 +125,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
         t.commit().await?;
-        let mut idents = Vec::with_capacity(identifiers.len());
-        let mut protection_status = Vec::with_capacity(identifiers.len());
-        for ident in identifiers {
-            idents.push(ident.table_ident);
-            protection_status.push(ident.protected);
+        let mut identifiers = Vec::with_capacity(table_infos.len());
+        let mut protection_status = Vec::with_capacity(table_infos.len());
+        for table_info in table_infos {
+            identifiers.push(table_info.tabular.tabular_ident);
+            protection_status.push(table_info.tabular.protected);
         }
 
         Ok(ListTablesResponse {
             next_page_token,
-            identifiers: idents,
+            identifiers,
             table_uuids: return_uuids.then_some(table_uuids.into_iter().map(|u| *u).collect()),
             protection_status: query.return_protection_status.then_some(protection_status),
         })
@@ -167,15 +166,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             prefix,
         } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-        let table = TableIdent::new(provided_ns.clone(), request.name.clone());
-        validate_table_or_view_ident(&table)?;
+        let table_ident = TableIdent::new(provided_ns.clone(), request.name.clone());
+        validate_table_or_view_ident(&table_ident)?;
         let metadata_location =
             parse_location(&request.metadata_location, StatusCode::BAD_REQUEST)?;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
         let namespace =
-            C::require_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
+            C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
@@ -200,62 +199,63 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
         let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
-
-        // Check if we need to handle overwrite
-        let mut previous_table = None;
-
-        let mut t_write = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        if request.overwrite {
-            // Check if table exists
-            previous_table = C::table_to_id(
-                warehouse_id,
-                &table,
-                TabularListFlags {
-                    include_active: true,
-                    include_staged: true,
-                    include_deleted: false,
-                },
-                t_write.transaction(),
-            )
-            .await?;
-
-            if let Some(previous_table) = previous_table {
-                tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table} for overwrite operation",
-                    table.name, table.namespace, warehouse.name
-                );
-                // Verify authorization to drop the table first
-                authorizer
-                    .require_table_action(
-                        &request_metadata,
-                        warehouse_id,
-                        Ok(Some(previous_table)),
-                        CatalogTableAction::CanDrop,
-                    )
-                    .await?;
-
-                // Drop the existing table to overwrite it
-                let _previous_table_location =
-                    C::drop_table(warehouse_id, previous_table, false, t_write.transaction())
-                        .await?;
-                // We don't drop the files for the previous table on overwrite
-            }
-        }
-
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
 
+        let table_metadata = Arc::new(table_metadata);
+
+        // Check if we need to handle overwrite
+        // Drop the existing table to overwrite it
+        // We don't drop the files for the previous table on overwrite
+        let mut previous_table_to_drop = None;
+        if request.overwrite {
+            // Check if table exists
+            let previous_table_info = C::get_table_info(
+                warehouse_id,
+                table_ident.clone(),
+                TabularListFlags::active_and_staged(),
+                state.v1_state.catalog.clone(),
+            )
+            .await;
+
+            if let Ok(Some(_)) = &previous_table_info {
+                tracing::debug!(
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' for overwrite operation",
+                    table_ident.name, table_ident.namespace, warehouse.name
+                );
+                // Verify authorization to drop the table first
+                previous_table_to_drop = Some(
+                    authorizer
+                        .require_table_action(
+                            &request_metadata,
+                            warehouse_id,
+                            table_ident.clone(),
+                            previous_table_info,
+                            CatalogTableAction::CanDrop,
+                        )
+                        .await?,
+                );
+            }
+        }
+        let mut t_write = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        if let Some(previous_table_to_drop) = &previous_table_to_drop {
+            let _previous_table_location = C::drop_tabular(
+                warehouse_id,
+                previous_table_to_drop.table_id(),
+                false,
+                t_write.transaction(),
+            )
+            .await?;
+        }
+
         let tabular_id = TableId::from(table_metadata.uuid());
 
-        let CreateTableResponse {
-            table_metadata,
-            staged_table_id,
-        } = C::create_table(
+        let (_table_info, staged_table_id) = C::create_table(
             TableCreation {
                 warehouse_id: warehouse.id,
                 namespace_id,
-                table_ident: &table,
-                table_metadata,
+                table_ident: &table_ident,
+                table_metadata: &table_metadata,
                 metadata_location: Some(&metadata_location),
             },
             t_write.transaction(),
@@ -276,8 +276,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut auth_needs_delete = false;
         // Delete the previous table from authorizer if it exists and differs from the new one
-        if let Some(previous_table) = previous_table {
-            if previous_table != tabular_id {
+        if let Some(previous_table_to_drop) = &previous_table_to_drop {
+            if previous_table_to_drop.tabular_id != tabular_id {
                 auth_needs_delete = true;
                 // Only create authorization for the new table if it's different
                 authorizer
@@ -296,12 +296,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete {
-            if let Some(previous_table) = previous_table {
-                authorizer.delete_table(warehouse_id, previous_table).await.map_err({
+            if let Some(previous_table) = &previous_table_to_drop {
+                authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
                     |e| {
                         tracing::warn!(
-                            "Failed to delete previous table {previous_table} from authorizer on overwrite via table register endpoint: {}",
-                            e.error
+                            "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
+                            previous_table.tabular_id, e.error
                         );
                     }
                 }).ok();
@@ -311,7 +311,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // If a staged table was overwritten, delete it from authorizer
         if let Some(staged_table_id) = staged_table_id {
             authorizer
-                .delete_table(warehouse_id, staged_table_id)
+                .delete_table(warehouse_id, staged_table_id.0)
                 .await
                 .ok();
         }
@@ -324,7 +324,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 warehouse_id,
                 parameters,
                 Arc::new(request),
-                Arc::new(table_metadata.clone()),
+                table_metadata.clone(),
                 Arc::new(metadata_location.clone()),
                 Arc::new(request_metadata),
             )
@@ -360,22 +360,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-        let (tabular_details, storage_permissions) = resolve_and_authorize_table_access::<C, A>(
+        let (tabular_details, storage_permissions) = authorize_load_table::<C, A>(
             &request_metadata,
-            &table,
+            table,
             warehouse_id,
-            TabularListFlags {
-                include_active: true,
-                include_staged: false,
-                include_deleted: false,
-            },
+            TabularListFlags::active_and_staged(),
             state.v1_state.authz,
-            t.transaction(),
+            state.v1_state.catalog.clone(),
         )
         .await?;
-        t.commit().await?;
-        let storage_permission = storage_permissions.ok_or(ErrorModel::unauthorized(
+        let storage_permission = storage_permissions.ok_or(ErrorModel::forbidden(
             "No storage permissions for table",
             "NoStoragePermissions",
             None,
@@ -398,7 +392,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 storage_permission,
                 &request_metadata,
                 warehouse_id,
-                tabular_details.table_id.into(),
+                tabular_details.table_id().into(),
             )
             .await?;
 
@@ -406,7 +400,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             vec![]
         } else {
             vec![StorageCredential {
-                prefix: tabular_details.location.clone(),
+                prefix: tabular_details.location.to_string(),
                 config: storage_config.creds.into(),
             }]
         };
@@ -477,52 +471,40 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
         authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            )
+            .require_warehouse_use(&request_metadata, warehouse_id)
             .await?;
 
-        let include_staged = true;
-        let include_deleted = false;
-        let include_active = true;
-
-        let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-        let table_details = C::table_to_id(
+        let table_info = C::get_table_info(
             warehouse_id,
-            table,
-            TabularListFlags {
-                include_active,
-                include_staged,
-                include_deleted,
-            },
-            t_read.transaction(),
+            table.clone(),
+            TabularListFlags::active_and_staged(),
+            state.v1_state.catalog.clone(),
         )
         .await; // We can't fail before AuthZ
 
-        let table_id = authorizer
+        let table_info = authorizer
             .require_table_action(
                 &request_metadata,
                 warehouse_id,
-                table_details,
+                table.clone(),
+                table_info,
                 CatalogTableAction::CanDrop,
             )
             .await?;
-        t_read.commit().await?;
+        let table_id = table_info.tabular_id;
 
         // ------------------- BUSINESS LOGIC -------------------
         let warehouse =
             C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-
         state
             .v1_state
             .contract_verifiers
-            .check_drop(TabularId::Table(table_id))
+            .check_drop(table_id.into())
             .await?
             .into_result()?;
+
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
         let delete_profile = if force {
             TabularDeleteProfile::Hard {}
@@ -533,7 +515,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         match delete_profile {
             TabularDeleteProfile::Hard {} => {
                 let location =
-                    C::drop_table(warehouse_id, table_id, force, t.transaction()).await?;
+                    C::drop_tabular(warehouse_id, table_id, force, t.transaction()).await?;
 
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
@@ -545,7 +527,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             entity_name: table.clone().into_name_parts(),
                         },
                         TabularPurgePayload {
-                            tabular_location: location,
+                            tabular_location: location.to_string(),
                         },
                         t.transaction(),
                     )
@@ -626,23 +608,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let list_flags = TabularListFlags {
-            include_staged: false,
-            include_deleted: false,
-            include_active: true,
-        };
-        let _table_id = authorized_table_ident_to_id::<C, _>(
-            authorizer,
-            &request_metadata,
+        let table_info = C::get_table_info(
             warehouse_id,
-            &table,
-            list_flags,
-            CatalogTableAction::CanGetMetadata,
-            t.transaction(),
+            table.clone(),
+            TabularListFlags::active(),
+            state.v1_state.catalog,
         )
-        .await?;
-        t.commit().await?;
+        .await;
+
+        authorizer
+            .require_table_action(
+                &request_metadata,
+                warehouse_id,
+                table,
+                table_info,
+                CatalogTableAction::CanGetMetadata,
+            )
+            .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
         Ok(())
@@ -671,7 +653,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let authorizer = state.v1_state.authz;
 
         // Check 1)
-        let destination_namespace = C::require_namespace(
+        let destination_namespace = C::get_namespace(
             warehouse_id,
             &destination.namespace,
             state.v1_state.catalog.clone(),
@@ -689,23 +671,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // Check 2)
-        let list_flags = TabularListFlags {
-            include_staged: false,
-            include_deleted: false,
-            include_active: true,
-        };
-
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let source_table_id = authorized_table_ident_to_id::<C, _>(
-            authorizer.clone(),
-            &request_metadata,
+        let source_table_info = C::get_table_info(
             warehouse_id,
-            source,
-            list_flags,
-            CatalogTableAction::CanRename,
-            t.transaction(),
+            source.clone(),
+            TabularListFlags::active(),
+            state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await;
+
+        let source_table_info = authorizer
+            .require_table_action(
+                &request_metadata,
+                warehouse_id,
+                source.clone(),
+                source_table_info,
+                CatalogTableAction::CanRename,
+            )
+            .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
 
@@ -713,9 +695,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             return Ok(());
         }
 
-        C::rename_table(
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        C::rename_tabular(
             warehouse_id,
-            source_table_id,
+            source_table_info.table_id(),
             source,
             destination,
             t.transaction(),
@@ -725,7 +708,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_rename(TabularId::Table(source_table_id), destination)
+            .check_rename(source_table_info.table_id().into(), destination)
             .await?
             .into_result()?;
 
@@ -736,7 +719,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .hooks
             .rename_table(
                 warehouse_id,
-                source_table_id,
+                source_table_info.table_id(),
                 Arc::new(request),
                 Arc::new(request_metadata),
             )
@@ -759,52 +742,36 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-async fn resolve_and_authorize_table_access<C: CatalogStore, A: Authorizer + Clone>(
+async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
-    table: &TableIdent,
+    table: impl Into<TableIdentOrId> + Send,
     warehouse_id: WarehouseId,
     list_flags: TabularListFlags,
     authorizer: A,
-    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<(TabularDetails, Option<StoragePermissions>)> {
-    authorizer
-        .require_warehouse_action(
-            request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-
-    // We can't fail before AuthZ.
-    let tabular_details =
-        C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
-
-    let tabular_details = authorizer
-        .require_table_action(
-            request_metadata,
-            warehouse_id,
-            tabular_details,
-            CatalogTableAction::CanGetMetadata,
-        )
+    state: C::State,
+) -> Result<(TableInfo, Option<StoragePermissions>)> {
+    let table = table.into();
+    let table_infos = C::get_table_info(warehouse_id, table.clone(), list_flags, state)
         .await
-        .map_err(set_not_found_status_code)?;
+        .map_err(RequireTableActionError::from)?
+        .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, table.clone()))?;
 
-    let (read_access, write_access) = futures::try_join!(
-        authorizer.is_allowed_table_action(
+    let [can_get_metadata, can_read, can_write] = authorizer
+        .are_allowed_table_actions_arr(
             request_metadata,
-            warehouse_id,
-            tabular_details.table_id,
-            CatalogTableAction::CanReadData,
-        ),
-        authorizer.is_allowed_table_action(
-            request_metadata,
-            warehouse_id,
-            tabular_details.table_id,
-            CatalogTableAction::CanWriteData,
-        ),
-    )?;
-    let can_read = read_access.into_inner();
-    let can_write = write_access.into_inner();
+            &table_infos,
+            &[
+                CatalogTableAction::CanGetMetadata,
+                CatalogTableAction::CanReadData,
+                CatalogTableAction::CanWriteData,
+            ],
+        )
+        .await?
+        .into_inner();
+
+    if !can_get_metadata {
+        return Err(AuthZCannotSeeTable::new(warehouse_id, table).into());
+    }
 
     let storage_permissions = if can_write {
         Some(StoragePermissions::ReadWriteDelete)
@@ -813,7 +780,7 @@ async fn resolve_and_authorize_table_access<C: CatalogStore, A: Authorizer + Clo
     } else {
         None
     };
-    Ok((tabular_details, storage_permissions))
+    Ok((table_infos, storage_permissions))
 }
 
 /// Validate commit table requests
@@ -887,7 +854,7 @@ async fn commit_tables_inner<
 >(
     warehouse_id: WarehouseId,
     request: CommitTransactionRequest,
-    table_ids: Arc<HashMap<TableIdent, TableId, H>>,
+    table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<Vec<CommitContext>> {
@@ -899,7 +866,7 @@ async fn commit_tables_inner<
         let result = try_commit_tables::<C, A, S, _>(
             &request,
             warehouse_id,
-            table_ids.clone(),
+            table_ident_map.clone(),
             &state,
             include_deleted,
         )
@@ -915,7 +882,7 @@ async fn commit_tables_inner<
                         warehouse_id,
                         Arc::new(request),
                         Arc::new(commits.clone()),
-                        table_ids,
+                        table_ident_map,
                         Arc::new(request_metadata),
                     )
                     .await;
@@ -928,7 +895,7 @@ async fn commit_tables_inner<
                 attempt += 1;
                 tracing::info!(
                     warehouse_id = %warehouse_id,
-                    n_tables = %table_ids.len(),
+                    n_tables = %table_ident_map.len(),
                     attempt = attempt,
                     max_attempts = MAX_RETRIES_ON_CONCURRENT_UPDATE,
                     "Concurrent update detected, retrying commit operation"
@@ -945,7 +912,7 @@ async fn commit_tables_inner<
                 if attempt > 0 {
                     tracing::warn!(
                         warehouse_id = %warehouse_id,
-                        n_tables = %table_ids.len(),
+                        n_tables = %table_ident_map.len(),
                         attempt = attempt,
                         "Table commit operation failed after {} attempts. Operation was retried due to concurrent updates. {e}",
                         attempt + 1
@@ -977,65 +944,52 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
     authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
+        .require_warehouse_use(&request_metadata, warehouse_id)
         .await?;
-
-    let include_staged = true;
-    let include_deleted = false;
-    let include_active = true;
 
     let identifiers = request
         .table_changes
         .iter()
         .filter_map(|change| change.identifier.as_ref())
         .collect::<HashSet<_>>();
-    let table_ids = C::table_idents_to_ids(
+    let table_infos = C::get_table_infos_by_ident(
         warehouse_id,
-        identifiers,
-        TabularListFlags {
-            include_active,
-            include_staged,
-            include_deleted,
-        },
+        &identifiers.clone().into_iter().collect::<Vec<_>>(),
+        TabularListFlags::active_and_staged(),
         state.v1_state.catalog.clone(),
     )
     .await
-    .map_err(|e| {
-        ErrorModel::internal("Error fetching table ids", "TableIdsFetchError", None)
-            .append_detail(e.error.message)
-            .append_details(e.error.stack)
-    })?;
+    .map_err(RequireTableActionError::from)?;
 
-    // Build futures alongside their idents to preserve pairing
-    let authz_checks = table_ids
-        .iter()
-        .map(|(ident, id)| {
-            (
-                ident.clone(),
-                authorizer.require_table_action(
-                    &request_metadata,
-                    warehouse_id,
-                    Ok(*id),
-                    CatalogTableAction::CanCommit,
-                ),
-            )
-        })
-        .collect::<Vec<_>>();
-    // Resolve and re-associate
-    let resolved: Vec<(TableIdent, TableId)> = futures::future::try_join_all(
-        authz_checks
-            .into_iter()
-            .map(|(ident, fut)| async move { fut.await.map(|id| (ident, id)) }),
-    )
-    .await?;
-    let table_ids = Arc::new(resolved.into_iter().collect::<HashMap<_, _>>());
+    authorizer
+        .require_table_actions(
+            &request_metadata,
+            &table_infos
+                .iter()
+                .map(|ti| (ti, CatalogTableAction::CanCommit))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+
+    let table_ident_to_info = table_infos
+        .into_iter()
+        .map(|ti| (ti.tabular_ident.clone(), ti))
+        .collect::<HashMap<_, _>>();
+    for user_provided_ident in identifiers {
+        if !table_ident_to_info.contains_key(user_provided_ident) {
+            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
+        }
+    }
 
     // ------------------- BUSINESS LOGIC -------------------
-    commit_tables_inner(warehouse_id, request, table_ids, state, request_metadata).await
+    commit_tables_inner(
+        warehouse_id,
+        request,
+        Arc::new(table_ident_to_info),
+        state,
+        request_metadata,
+    )
+    .await
 }
 
 // Extract the core commit logic to a separate function for retry purposes
@@ -1048,7 +1002,7 @@ async fn try_commit_tables<
 >(
     request: &CommitTransactionRequest,
     warehouse_id: WarehouseId,
-    table_ids: Arc<HashMap<TableIdent, TableId, H>>,
+    table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
 ) -> Result<Vec<CommitContext>> {
@@ -1058,14 +1012,18 @@ async fn try_commit_tables<
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // Load old metadata
-    let mut previous_metadatas = C::load_tables(
+    let previous_metadatas = C::load_tables(
         warehouse_id,
-        table_ids.values().copied(),
+        table_ident_map.values().map(TableInfo::table_id),
         include_deleted,
         &LoadTableFilters::default(),
         transaction.transaction(),
     )
     .await?;
+    let mut previous_metadatas = previous_metadatas
+        .into_iter()
+        .map(|tm| (tm.table_id, tm))
+        .collect::<HashMap<_, _>>();
 
     transaction.commit().await?;
 
@@ -1083,9 +1041,15 @@ async fn try_commit_tables<
                         "ChangeWithoutIdentifier",
                         None,
                     ))?;
-            let table_id = require_table_id(table_ident, table_ids.get(table_ident).copied())?;
+            let table_id = table_ident_map
+                .get(table_ident)
+                .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, table_ident.clone()))?
+                .table_id();
             let previous_table_metadata =
-                take_table_metadata(&table_id, table_ident, &mut previous_metadatas)?;
+                previous_metadatas.remove(&table_id).ok_or_else(|| {
+                    TabularNotFound::new(warehouse_id, TableIdentOrId::from(table_ident.clone()))
+                        .append_detail("Table metadata not returned from table load".to_string())
+                })?;
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,
@@ -1099,7 +1063,7 @@ async fn try_commit_tables<
 
             let number_expired_metadata_log_entries = this_expired.len();
 
-            if get_delete_after_commit_enabled(new_metadata.properties()) {
+            if delete_after_commit_enabled(new_metadata.properties()) {
                 expired_metadata_logs.extend(this_expired);
             } else {
                 this_expired.clear();
@@ -1243,25 +1207,6 @@ async fn try_commit_tables<
     Ok(commits)
 }
 
-pub async fn authorized_table_ident_to_id<C: CatalogStore, A: Authorizer>(
-    authorizer: A,
-    metadata: &RequestMetadata,
-    warehouse_id: WarehouseId,
-    table_ident: &TableIdent,
-    list_flags: TabularListFlags,
-    action: impl From<CatalogTableAction> + std::fmt::Display + Send,
-    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<TableId> {
-    authorizer
-        .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
-        .await?;
-    let table_details = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
-    authorizer
-        .require_table_action(metadata, warehouse_id, table_details, action)
-        .await
-        .map_err(set_not_found_status_code)
-}
-
 pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
     let last_segment = location
         .as_str()
@@ -1313,7 +1258,7 @@ impl CommitContext {
 }
 
 #[allow(clippy::too_many_lines)]
-fn calculate_diffs(
+pub(crate) fn calculate_diffs(
     new_metadata: &TableMetadata,
     previous_metadata: &TableMetadata,
     added_metadata_log: usize,
@@ -1556,55 +1501,6 @@ pub(super) fn parse_location(location: &str, code: StatusCode) -> Result<Locatio
         .map_err(Into::into)
 }
 
-fn require_table_id(table_ident: &TableIdent, table_id: Option<TableId>) -> Result<TableId> {
-    table_id.ok_or_else(|| {
-        ErrorModel::not_found(
-            format!(
-                "Table '{}.{}' does not exist.",
-                table_ident.namespace.to_url_string(),
-                table_ident.name
-            ),
-            ErrorKind::TableNotFound.to_string(),
-            None,
-        )
-        .into()
-    })
-}
-
-fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
-    if metadata_location.is_none() {
-        return Err(ErrorModel::not_found(
-            "Table not found or staged.",
-            ErrorKind::TableNotFound.to_string(),
-            None,
-        )
-        .into());
-    }
-
-    Ok(())
-}
-
-fn take_table_metadata<T>(
-    table_id: &TableId,
-    table_ident: &TableIdent,
-    metadatas: &mut HashMap<TableId, T>,
-) -> Result<T> {
-    metadatas
-        .remove(table_id)
-        .ok_or_else(|| {
-            ErrorModel::not_found(
-                format!(
-                    "Table '{}.{}' does not exist.",
-                    table_ident.namespace.to_url_string(),
-                    table_ident.name
-                ),
-                ErrorKind::TableNotFound.to_string(),
-                None,
-            )
-        })
-        .map_err(Into::into)
-}
-
 pub(crate) fn require_active_warehouse(status: WarehouseStatus) -> Result<()> {
     if status != WarehouseStatus::Active {
         return Err(ErrorModel::builder()
@@ -1634,7 +1530,7 @@ fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn get_delete_after_commit_enabled(properties: &HashMap<String, String>) -> bool {
+pub(crate) fn delete_after_commit_enabled(properties: &HashMap<String, String>) -> bool {
     properties
         .get(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED)
         .map_or(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT, |v| {
@@ -1755,7 +1651,7 @@ pub(crate) mod test {
                 tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
                 CatalogTableAction,
             },
-            SecretStore, State, TableId, TabularListFlags, UserId,
+            CatalogTabularOps as _, SecretStore, State, TableId, TabularListFlags, UserId,
         },
         tests::{create_table_request as create_request, random_request_metadata},
         WarehouseId,
@@ -1976,8 +1872,8 @@ pub(crate) mod test {
     async fn test_set_properties_commit_table(pool: sqlx::PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
 
-        let table_metadata = table
-            .metadata
+        let table_metadata = (*table.metadata)
+            .clone()
             .into_builder(table.metadata_location)
             .set_properties(HashMap::from([
                 ("p1".into(), "v2".into()),
@@ -2133,8 +2029,8 @@ pub(crate) mod test {
             .unwrap()
             .build();
 
-        let table_metadata = table
-            .metadata
+        let table_metadata = (*table.metadata)
+            .clone()
             .into_builder(table.metadata_location)
             .add_schema(schema())
             .unwrap()
@@ -2195,8 +2091,8 @@ pub(crate) mod test {
             .unwrap()
             .build();
 
-        let table_metadata = table
-            .metadata
+        let table_metadata = (*table.metadata)
+            .clone()
             .into_builder(table.metadata_location)
             .add_partition_spec(added_spec)
             .unwrap()
@@ -2250,7 +2146,9 @@ pub(crate) mod test {
     async fn test_set_ref(pool: PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
         let last_updated = table.metadata.last_updated_ms();
-        let builder = table.metadata.into_builder(table.metadata_location);
+        let builder = (*table.metadata)
+            .clone()
+            .into_builder(table.metadata_location);
 
         let snapshot = Snapshot::builder()
             .with_snapshot_id(1)
@@ -2324,7 +2222,7 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_eq!(&*tab.metadata, &builder.metadata);
     }
 
     #[sqlx::test]
@@ -2334,8 +2232,8 @@ pub(crate) mod test {
             namespace: ns.namespace.clone(),
             name: "tab-1".to_string(),
         };
-        let builder = table
-            .metadata
+        let builder = (*table.metadata)
+            .clone()
             .into_builder(table.metadata_location)
             .set_properties(HashMap::from_iter([(
                 PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX.to_string(),
@@ -2698,7 +2596,9 @@ pub(crate) mod test {
 
         // Add a snapshot to the V2 table (without row_range)
         let last_updated = table.metadata.last_updated_ms();
-        let builder = table.metadata.into_builder(table.metadata_location);
+        let builder = (*table.metadata)
+            .clone()
+            .into_builder(table.metadata_location);
 
         let snapshot1 = Snapshot::builder()
             .with_snapshot_id(1)
@@ -2862,7 +2762,9 @@ pub(crate) mod test {
             name: "tab-1".to_string(),
         };
         let last_updated = table.metadata.last_updated_ms();
-        let builder = table.metadata.into_builder(table.metadata_location);
+        let builder = (*table.metadata)
+            .clone()
+            .into_builder(table.metadata_location);
 
         let snap = Snapshot::builder()
             .with_snapshot_id(1)
@@ -2930,7 +2832,7 @@ pub(crate) mod test {
         .await
         .unwrap();
         assert_eq!(tab.metadata.history(), builder.metadata.history());
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_eq!(&*tab.metadata, &builder.metadata);
 
         assert_json_diff::assert_json_eq!(
             serde_json::to_value(tab.metadata.clone()).unwrap(),
@@ -2993,7 +2895,7 @@ pub(crate) mod test {
         .await
         .unwrap();
 
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_eq!(&*tab.metadata, &builder.metadata);
 
         let last_updated = tab.metadata.last_updated_ms();
         let builder = builder.metadata.into_builder(tab.metadata_location);
@@ -3051,7 +2953,7 @@ pub(crate) mod test {
         .await
         .unwrap();
 
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_eq!(&*tab.metadata, &builder.metadata);
 
         let builder = builder
             .metadata
@@ -3248,7 +3150,7 @@ pub(crate) mod test {
         )
         .await
         .expect_err("Table was created at same location which should not be possible");
-        assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
@@ -3281,7 +3183,7 @@ pub(crate) mod test {
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
-        assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
@@ -3314,7 +3216,7 @@ pub(crate) mod test {
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
-        assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
@@ -3346,7 +3248,7 @@ pub(crate) mod test {
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
-        assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
@@ -3861,26 +3763,39 @@ pub(crate) mod test {
 
         // Not authorized to rename the source table
         authz.block_action(format!("table:{}", CatalogTableAction::CanRename).as_str());
-        let response = CatalogServer::rename_table(
-            prefix,
-            RenameTableRequest {
-                source: TableIdent {
-                    namespace: ns_params.namespace.clone(),
-                    name: table_name.clone(),
-                },
-                destination: TableIdent {
-                    namespace: to_ns.namespace.clone(),
-                    name: table_name,
-                },
+        let rename_table_request = RenameTableRequest {
+            source: TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: table_name.clone(),
             },
+            destination: TableIdent {
+                namespace: to_ns.namespace.clone(),
+                name: table_name.clone(),
+            },
+        };
+        let response = CatalogServer::rename_table(
+            prefix.clone(),
+            rename_table_request.clone(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap_err();
 
-        assert_eq!(response.error.code, StatusCode::NOT_FOUND);
-        assert_eq!(response.error.r#type, "TableActionForbidden");
+        assert_eq!(response.error.code, StatusCode::FORBIDDEN, "{response:?}");
+
+        // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
+        // thus, we should get a 404 instead.
+        authz.block_action(format!("table:{}", CatalogTableAction::CanGetMetadata).as_str());
+        let response = CatalogServer::rename_table(
+            prefix,
+            rename_table_request,
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(response.error.code, StatusCode::NOT_FOUND, "{response:?}");
     }
 
     #[sqlx::test]
@@ -4062,7 +3977,6 @@ pub(crate) mod test {
         .unwrap_err();
 
         assert_eq!(response.error.code, StatusCode::NOT_FOUND);
-        assert_eq!(response.error.r#type, "TableActionForbidden");
     }
 
     #[sqlx::test]
@@ -4212,7 +4126,7 @@ pub(crate) mod test {
             .await;
 
             // Verify table creation.
-            let _meta = PostgresBackend::get_table_metadata_by_id(
+            let _meta = PostgresBackend::get_table_info(
                 *wh_id,
                 t_id,
                 list_flags,
@@ -4244,7 +4158,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Deleted table cannot be accessed anymore.
-        let deleted_res = PostgresBackend::get_table_metadata_by_id(
+        let deleted_res = PostgresBackend::get_table_info(
             deleted_table_data.0,
             t_id,
             list_flags,
@@ -4257,15 +4171,10 @@ pub(crate) mod test {
         // Tables in other warehouses are still there.
         assert!(!wh_ns_data.is_empty());
         for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
-            PostgresBackend::get_table_metadata_by_id(
-                *wh_id,
-                t_id,
-                list_flags,
-                ctx.v1_state.catalog.clone(),
-            )
-            .await
-            .unwrap()
-            .expect("table and metadata should still exist");
+            PostgresBackend::get_table_info(*wh_id, t_id, list_flags, ctx.v1_state.catalog.clone())
+                .await
+                .unwrap()
+                .expect("table and metadata should still exist");
         }
 
         // As the delete was hard, the table can be recreated in the warehouse.
@@ -4278,7 +4187,7 @@ pub(crate) mod test {
             Some(t_name.clone()),
         )
         .await;
-        let _meta = PostgresBackend::get_table_metadata_by_id(
+        let _meta = PostgresBackend::get_table_info(
             deleted_table_data.0,
             t_id,
             list_flags,
@@ -4318,7 +4227,7 @@ pub(crate) mod test {
             .await;
 
             // Verify table creation.
-            let _meta = PostgresBackend::get_table_metadata_by_id(
+            let _meta = PostgresBackend::get_table_info(
                 *wh_id,
                 t_id,
                 list_flags_active,
@@ -4350,7 +4259,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Check availability depending on list flags.
-        let deleted_res = PostgresBackend::get_table_metadata_by_id(
+        let deleted_res = PostgresBackend::get_table_info(
             deleted_table_data.0,
             t_id,
             list_flags_active,
@@ -4359,7 +4268,7 @@ pub(crate) mod test {
         .await
         .unwrap();
         assert!(deleted_res.is_none(), "Table should be soft deleted");
-        let deleted_res = PostgresBackend::get_table_metadata_by_id(
+        let deleted_res = PostgresBackend::get_table_info(
             deleted_table_data.0,
             t_id,
             TabularListFlags::all(), // include soft deleted
@@ -4372,7 +4281,7 @@ pub(crate) mod test {
         // Tables in other warehouses are still there.
         assert!(!wh_ns_data.is_empty());
         for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
-            PostgresBackend::get_table_metadata_by_id(
+            PostgresBackend::get_table_info(
                 *wh_id,
                 t_id,
                 list_flags_active,

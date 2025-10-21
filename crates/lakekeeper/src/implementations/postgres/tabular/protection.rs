@@ -1,21 +1,28 @@
-use iceberg::TableIdent;
-
-use super::super::namespace::parse_namespace_identifier_from_vec;
 use super::TabularType;
 use crate::{
-    implementations::postgres::dbutils::DBErrorHandler,
-    service::{
-        ExpirationTaskInfo, SetTabularProtectionError, TabularId, TabularInfo, TabularNotFound,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::{FromTabularRowError, TabularRow},
     },
+    service::{SetTabularProtectionError, TabularId, TabularNotFound, ViewOrTableInfo},
     WarehouseId,
 };
+
+impl From<FromTabularRowError> for SetTabularProtectionError {
+    fn from(err: FromTabularRowError) -> Self {
+        match err {
+            FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
+        }
+    }
+}
 
 pub(crate) async fn set_tabular_protected(
     warehouse_id: WarehouseId,
     tabular_id: TabularId,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<TabularInfo, SetTabularProtectionError> {
+) -> Result<ViewOrTableInfo, SetTabularProtectionError> {
     tracing::debug!(
         "Setting tabular protection for {} ({}) to {}",
         tabular_id,
@@ -24,7 +31,8 @@ pub(crate) async fn set_tabular_protected(
     );
     let tabular_type = TabularType::from(tabular_id);
 
-    let row = sqlx::query!(
+    let row = sqlx::query_as!(
+        TabularRow,
         r#"
         WITH selected_tabular AS (
             SELECT tabular_id
@@ -36,27 +44,22 @@ pub(crate) async fn set_tabular_protected(
             SELECT warehouse_id
             FROM warehouse
             WHERE warehouse_id = $1 AND status = 'active'
-        ),
-        et AS (
-            SELECT task_id, scheduled_for
-            FROM task
-            WHERE warehouse_id = $1 AND entity_id = $2 AND entity_type in ('table', 'view') AND queue_name = 'tabular_expiration'
         )
         UPDATE tabular t
         SET protected = $3
-        FROM selected_tabular as st, w, et
+        FROM selected_tabular as st, w
         WHERE t.tabular_id = st.tabular_id
         RETURNING 
-            t.metadata_location,
-            t.protected,
-            t.created_at,
-            t.updated_at,
-            t.deleted_at,
-            t.name,
-            t.tabular_namespace_name, 
+            t.tabular_id,
+            t.namespace_id,
+            t.name as tabular_name,
+            t.tabular_namespace_name as namespace_name,
             t.typ as "typ: TabularType",
-            et.scheduled_for as "cleanup_at?",
-            et.task_id as "cleanup_task_id?"
+            t.metadata_location,
+            t.updated_at,
+            t.protected,
+            t.fs_location,
+            t.fs_protocol
         "#,
         *warehouse_id,
         *tabular_id,
@@ -69,31 +72,9 @@ pub(crate) async fn set_tabular_protected(
         if let sqlx::Error::RowNotFound = e {
             SetTabularProtectionError::from(TabularNotFound::new(warehouse_id, tabular_id))
         } else {
-            tracing::warn!("Error setting tabular as protected: {}", e);
             e.into_catalog_backend_error().into()
         }
     })?;
 
-    let namespace_ident =
-        parse_namespace_identifier_from_vec(&row.tabular_namespace_name, warehouse_id, None)?;
-    let tabular_ident = TableIdent::new(namespace_ident, row.name.clone());
-
-    let expiration_info = match (row.cleanup_task_id, row.cleanup_at) {
-        (Some(task_id), Some(scheduled_for)) => Some(ExpirationTaskInfo {
-            expiration_task_id: task_id.into(),
-            expiration_date: scheduled_for,
-        }),
-        _ => None,
-    };
-
-    Ok(TabularInfo {
-        tabular_ident,
-        tabular_id,
-        metadata_location: row.metadata_location,
-        updated_at: row.updated_at,
-        created_at: row.created_at,
-        deleted_at: row.deleted_at,
-        protected: row.protected,
-        expiration_task: expiration_info,
-    })
+    row.try_into_table_or_view(warehouse_id).map_err(Into::into)
 }

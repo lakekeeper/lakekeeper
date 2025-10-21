@@ -999,10 +999,10 @@ pub(crate) mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             e,
-            CatalogDeleteWarehouseError::from(WarehouseProtected::new())
-        );
+            CatalogDeleteWarehouseError::WarehouseProtected(_)
+        ));
         set_warehouse_protection(warehouse_id, false, trx.transaction())
             .await
             .unwrap();
@@ -1162,9 +1162,9 @@ pub(crate) mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             e,
-            CatalogDeleteWarehouseError::from(WarehouseIdNotFound::new(warehouse_id))
-        );
+            CatalogDeleteWarehouseError::WarehouseIdNotFound(_)
+        ));
     }
 }

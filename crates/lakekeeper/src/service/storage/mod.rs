@@ -5,8 +5,7 @@ pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
 
-#[cfg(feature = "test-utils")]
-use std::{collections::HashMap, str::FromStr};
+use std::str::FromStr as _;
 
 pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
@@ -16,7 +15,8 @@ pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::io::FileIO;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
 use lakekeeper_io::{
-    s3::S3Location, InvalidLocationError, LakekeeperStorage, Location, StorageBackend,
+    s3::S3Location, InvalidLocationError, LakekeeperStorage, Location, LocationParseError,
+    StorageBackend,
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
@@ -107,8 +107,8 @@ impl StorageProfile {
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => CatalogConfig {
-                overrides: HashMap::new(),
-                defaults: HashMap::new(),
+                overrides: std::collections::HashMap::new(),
+                defaults: std::collections::HashMap::new(),
                 endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
             },
         }
@@ -971,33 +971,11 @@ impl StorageCredential {
     }
 }
 
-/// Split a location into a filesystem prefix and the path.
-/// Splits at "://"
-///
-/// # Errors
-/// Fails if the location does not contain "://"
-pub fn split_location(location: &str) -> Result<(&str, &str), ErrorModel> {
-    let mut split = location.splitn(2, "://");
-    let prefix = split.next().ok_or_else(|| {
-        ErrorModel::internal(
-            format!("Unexpected location: {location}"),
-            "UnexpectedLocationFormat",
-            None,
-        )
-    })?;
-    let path = split.next().ok_or_else(|| {
-        ErrorModel::internal(
-            format!("Unexpected location. Expected at least one `://`. Got: {location}"),
-            "UnexpectedLocationFormat",
-            None,
-        )
-    })?;
-    Ok((prefix, path))
-}
-
-#[must_use]
-pub fn join_location(prefix: &str, path: &str) -> String {
-    format!("{prefix}://{path}")
+pub fn join_location(
+    prefix: &str,
+    path: &str,
+) -> std::result::Result<Location, LocationParseError> {
+    Location::from_str(&format!("{prefix}://{path}"))
 }
 
 pub(crate) async fn is_empty(
@@ -1041,17 +1019,19 @@ mod tests {
 
     #[test]
     fn test_split_location() {
-        let location = "abfss://";
-        let (prefix, path) = split_location(location).unwrap();
+        let location = Location::from_str("abfss://").unwrap();
+        let prefix = location.scheme();
+        let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(path, "");
-        assert_eq!(join_location(prefix, path), location);
+        assert_eq!(full_path, "");
+        assert_eq!(join_location(prefix, full_path).unwrap(), location);
 
-        let location = "abfss://foo/bar";
-        let (prefix, path) = split_location(location).unwrap();
+        let location = Location::from_str("abfss://foo/bar").unwrap();
+        let prefix = location.scheme();
+        let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(path, "foo/bar");
-        assert_eq!(join_location(prefix, path), location);
+        assert_eq!(full_path, "foo/bar");
+        assert_eq!(join_location(prefix, full_path).unwrap(), location);
     }
 
     #[test]

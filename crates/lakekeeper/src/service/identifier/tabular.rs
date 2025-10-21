@@ -4,15 +4,25 @@ use std::{
 };
 
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::generic::{TableId, ViewId};
-use crate::service::Result;
 
-#[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize, ToSchema)]
+#[derive(
+    Hash,
+    PartialOrd,
+    PartialEq,
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    Deserialize,
+    Serialize,
+    ToSchema,
+    derive_more::From,
+)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 #[schema(as=TabularIdentUuid)]
 pub enum TabularId {
@@ -29,34 +39,6 @@ impl TabularId {
             TabularId::Table(_) => "Table",
             TabularId::View(_) => "View",
         }
-    }
-
-    /// Returns the inner [`TableId`] if this is a Table variant, otherwise returns an internal error.
-    ///
-    /// # Errors
-    /// Returns an Error if the variant is not a Table.
-    pub fn as_table_id_or_internal_error(&self) -> Result<&TableId> {
-        match self {
-            TabularId::Table(id) => Ok(id),
-            TabularId::View(_) => Err(ErrorModel::internal(
-                "Expected a table id, but got a view id",
-                "ExpectedTableIDButGotViewID",
-                None,
-            )
-            .into()),
-        }
-    }
-}
-
-impl From<TableId> for TabularId {
-    fn from(ident: TableId) -> Self {
-        TabularId::Table(ident)
-    }
-}
-
-impl From<ViewId> for TabularId {
-    fn from(ident: ViewId) -> Self {
-        TabularId::View(ident)
     }
 }
 
@@ -101,33 +83,25 @@ pub enum TabularIdentOwned {
 }
 
 impl TabularIdentOwned {
-    pub(crate) fn into_inner(self) -> TableIdent {
+    #[must_use]
+    pub fn into_inner(self) -> TableIdent {
         match self {
             TabularIdentOwned::Table(ident) | TabularIdentOwned::View(ident) => ident,
         }
     }
 
-    pub(crate) fn into_table(self) -> Result<TableIdent> {
+    #[must_use]
+    pub fn as_borrowed(&self) -> TabularIdentBorrowed<'_> {
         match self {
-            TabularIdentOwned::Table(ident) => Ok(ident),
-            TabularIdentOwned::View(_) => Err(ErrorModel::internal(
-                "Expected a table identifier, but got a view identifier",
-                "UnexpectedViewIdentifier",
-                None,
-            )
-            .into()),
+            TabularIdentOwned::Table(ident) => TabularIdentBorrowed::Table(ident),
+            TabularIdentOwned::View(ident) => TabularIdentBorrowed::View(ident),
         }
     }
 
-    pub(crate) fn into_view(self) -> Result<TableIdent> {
+    #[must_use]
+    pub fn as_table_ident(&self) -> &TableIdent {
         match self {
-            TabularIdentOwned::Table(_) => Err(ErrorModel::internal(
-                "Expected a view identifier, but got a table identifier",
-                "UnexpectedTableIdentifier",
-                None,
-            )
-            .into()),
-            TabularIdentOwned::View(ident) => Ok(ident),
+            TabularIdentOwned::Table(ident) | TabularIdentOwned::View(ident) => ident,
         }
     }
 }
@@ -142,7 +116,7 @@ impl<'a> From<TabularIdentBorrowed<'a>> for TabularIdentOwned {
 }
 
 impl TabularIdentBorrowed<'_> {
-    pub fn to_table_ident_tuple(&self) -> &TableIdent {
+    pub fn as_table_ident(&self) -> &TableIdent {
         match self {
             TabularIdentBorrowed::Table(ident) | TabularIdentBorrowed::View(ident) => ident,
         }

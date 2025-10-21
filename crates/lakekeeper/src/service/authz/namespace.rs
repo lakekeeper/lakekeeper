@@ -110,7 +110,7 @@ impl From<AuthZNamespaceActionForbidden> for IcebergErrorResponse {
     }
 }
 
-#[derive(Debug, PartialEq, derive_more::From)]
+#[derive(Debug, derive_more::From)]
 pub enum RequireNamespaceActionError {
     AuthZNamespaceActionForbidden(AuthZNamespaceActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
@@ -134,9 +134,6 @@ impl From<CatalogGetNamespaceError> for RequireNamespaceActionError {
         match err {
             CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
             CatalogGetNamespaceError::InvalidNamespaceIdentifier(e) => e.into(),
-            CatalogGetNamespaceError::NamespaceNotFound(e) => {
-                AuthZCannotSeeNamespace::from(e).into()
-            }
         }
     }
 }
@@ -160,23 +157,46 @@ impl From<RequireNamespaceActionError> for IcebergErrorResponse {
 
 #[async_trait::async_trait]
 pub trait AuthzNamespaceOps: Authorizer {
-    // You might wonder where the name is:
-    // It is elegantly hidden in the `CatalogGetNamespaceByNameError`.
     async fn require_namespace_action(
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         user_provided_namespace: impl Into<NamespaceIdentOrId> + Send,
-        namespace: Result<Namespace, CatalogGetNamespaceError>,
+        namespace: Result<Option<Namespace>, CatalogGetNamespaceError>,
         action: impl Into<Self::NamespaceAction> + Send,
     ) -> Result<Namespace, RequireNamespaceActionError> {
         let actor = metadata.actor();
+        // OK to return because this goes via the Into method
+        // of RequireNamespaceActionError
         let namespace = namespace?;
+        let Some(namespace) = namespace else {
+            return Err(
+                AuthZCannotSeeNamespace::new(warehouse_id, user_provided_namespace.into()).into(),
+            );
+        };
         let namespace_name = namespace.namespace_ident.clone();
         let user_provided_namespace = user_provided_namespace.into();
         let cant_see_err =
             AuthZCannotSeeNamespace::new(warehouse_id, user_provided_namespace.clone()).into();
         let action = action.into();
+
+        #[cfg(debug_assertions)]
+        {
+            match &user_provided_namespace {
+                NamespaceIdentOrId::Id(id) => {
+                    assert_eq!(
+                        *id, namespace.namespace_id,
+                        "Mismatched namespace ID: user provided {id}, got {namespace:?}"
+                    );
+                }
+                NamespaceIdentOrId::Name(ident) => {
+                    assert_eq!(
+                        ident, &namespace.namespace_ident,
+                        "Mismatched namespace ident: user provided {ident}, got {namespace:?}"
+                    );
+                }
+            }
+        }
 
         if action == CAN_SEE_PERMISSION.into() {
             let is_allowed = self

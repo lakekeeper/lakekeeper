@@ -73,11 +73,3 @@ pub async fn shutdown_signal(cancellation_token: crate::CancellationToken) {
         },
     }
 }
-
-pub(crate) fn set_not_found_status_code(
-    e: impl Into<IcebergErrorResponse>,
-) -> IcebergErrorResponse {
-    let mut e = e.into();
-    e.error.code = http::StatusCode::NOT_FOUND.into();
-    e
-}

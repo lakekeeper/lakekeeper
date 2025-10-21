@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use http::StatusCode;
 use iceberg_ext::catalog::rest::StorageCredential;
 
@@ -9,14 +11,12 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         maybe_get_secret, require_warehouse_id,
-        tables::{
-            parse_location, require_not_staged, resolve_and_authorize_table_access,
-            take_table_metadata, validate_table_or_view_ident,
-        },
+        tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
     },
     service::{
-        authz::Authorizer, secrets::SecretStore, CatalogStore,
-        LoadTableResponse as CatalogLoadTableResult, State, TableId, TabularListFlags, Transaction,
+        authz::Authorizer, secrets::SecretStore, AuthZTableInfo as _, CatalogStore,
+        CatalogTableOps, LoadTableResponse as CatalogLoadTableResult, State, TableId,
+        TableIdentOrId, TabularListFlags, TabularNotFound, Transaction,
     },
     WarehouseId,
 };
@@ -43,28 +43,22 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         return Err(e);
     }
 
-    let list_flags = TabularListFlags {
-        include_active: true,
-        include_staged: false,
-        include_deleted: false,
-    };
-
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
-    let catalog = state.v1_state.catalog;
-    let mut t = C::Transaction::begin_read(catalog).await?;
+    let catalog_state = state.v1_state.catalog;
 
-    let (tabular_details, storage_permissions) = resolve_and_authorize_table_access::<C, A>(
+    let (table_info, storage_permissions) = authorize_load_table::<C, A>(
         &request_metadata,
-        &table,
+        table,
         warehouse_id,
-        list_flags,
+        TabularListFlags::active(),
         authorizer,
-        t.transaction(),
+        catalog_state.clone(),
     )
     .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
+    let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
     let CatalogLoadTableResult {
         table_id,
         namespace_id: _,
@@ -74,9 +68,9 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         storage_profile,
     } = load_table_inner::<C>(
         warehouse_id,
-        tabular_details.table_id,
-        &table,
-        list_flags.include_deleted,
+        table_info.table_id(),
+        table_info.table_ident(),
+        false,
         &filters,
         &mut t,
     )
@@ -119,7 +113,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
 
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location.as_ref().map(ToString::to_string),
-        metadata: table_metadata,
+        metadata: Arc::new(table_metadata),
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
     };
@@ -146,10 +140,41 @@ async fn load_table_inner<C: CatalogStore>(
         load_table_filters,
         t.transaction(),
     )
-    .await?;
-    let result = take_table_metadata(&table_id, table_ident, &mut metadatas)?;
-    require_not_staged(result.metadata_location.as_ref())?;
+    .await?
+    .into_iter()
+    .map(|r| (r.table_id, r))
+    .collect::<HashMap<_, _>>();
+    let result = metadatas.remove(&table_id).ok_or_else(|| {
+        TabularNotFound::new(warehouse_id, TableIdentOrId::from(table_ident.clone()))
+            .append_detail("Table metadata not returned from table load".to_string())
+    })?;
+    if !metadatas.is_empty() {
+        tracing::error!(
+            "Unexpected extra table metadatas returned when loading table {:?} in warehouse {:?}: {:?}",
+            table_ident,
+            warehouse_id,
+            metadatas.keys()
+        );
+    }
+    require_not_staged(
+        warehouse_id,
+        table_ident.clone(),
+        result.metadata_location.as_ref(),
+    )?;
     Ok(result)
+}
+
+fn require_not_staged<T>(
+    warehouse_id: WarehouseId,
+    table_ident: impl Into<TableIdentOrId>,
+    metadata_location: Option<&T>,
+) -> std::result::Result<(), TabularNotFound> {
+    if metadata_location.is_none() {
+        return Err(TabularNotFound::new(warehouse_id, table_ident.into())
+            .append_detail("Table is in staged state; operation requires active table"));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

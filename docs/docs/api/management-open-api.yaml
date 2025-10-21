@@ -2771,18 +2771,18 @@ components:
         - type: object
           description: Stop the task gracefully. The task will be retried.
           required:
-            - action
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - stop
         - type: object
           description: Cancel the task permanently. The task is not retried.
           required:
-            - action
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - cancel
@@ -2791,9 +2791,9 @@ components:
             Run the task immediately, moving the `scheduled_for` time to now.
             Affects only tasks in `Scheduled` or `Stopping` state.
           required:
-            - action
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - run-now
@@ -2803,14 +2803,14 @@ components:
             Affects only tasks in `Scheduled` or `Stopping` state.
             Timestamps must be in RFC 3339 format.
           required:
-            - scheduled_for
-            - action
+            - scheduled-for
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - run-at
-            scheduled_for:
+            scheduled-for:
               type: string
               format: date-time
               description: The time to run the task at
@@ -4999,7 +4999,6 @@ components:
         - type: object
           required:
             - table-id
-            - warehouse-id
             - type
           properties:
             table-id:
@@ -5009,13 +5008,9 @@ components:
               type: string
               enum:
                 - table
-            warehouse-id:
-              type: string
-              format: uuid
         - type: object
           required:
             - view-id
-            - warehouse-id
             - type
           properties:
             type:
@@ -5023,9 +5018,6 @@ components:
               enum:
                 - view
             view-id:
-              type: string
-              format: uuid
-            warehouse-id:
               type: string
               format: uuid
     TaskStatus:

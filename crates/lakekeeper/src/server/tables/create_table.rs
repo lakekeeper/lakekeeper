@@ -23,7 +23,7 @@ use crate::{
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, ValidationError},
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, CreateTableResponse, State,
+        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogWarehouseOps, State,
         TableCreation, TableId, TabularId, Transaction,
     },
     WarehouseId,
@@ -153,7 +153,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let authorizer = state.v1_state.authz.clone();
 
     let namespace =
-        C::require_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
+        C::get_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
 
     let namespace = authorizer
         .require_namespace_action(
@@ -201,20 +201,18 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let CreateTableResponse {
-        table_metadata,
-        staged_table_id,
-    } = C::create_table(
+    let (_table_info, staged_table_id) = C::create_table(
         TableCreation {
             warehouse_id: warehouse.id,
             namespace_id: namespace.namespace_id,
             table_ident: &table,
-            table_metadata,
+            table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
         },
         t.transaction(),
     )
     .await?;
+    let table_metadata = Arc::new(table_metadata);
 
     // We don't commit the transaction yet, first we need to write the metadata file.
     let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
@@ -293,7 +291,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // If a staged table was overwritten, delete it from authorizer
     if let Some(staged_table_id) = staged_table_id {
         authorizer
-            .delete_table(warehouse_id, staged_table_id)
+            .delete_table(warehouse_id, staged_table_id.0)
             .await
             .ok();
     }
@@ -305,7 +303,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             warehouse_id,
             parameters,
             Arc::new(request),
-            Arc::new(table_metadata),
+            table_metadata.clone(),
             metadata_location.map(Arc::new),
             data_access,
             Arc::new(request_metadata),

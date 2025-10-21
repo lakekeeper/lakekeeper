@@ -12,10 +12,7 @@ use super::{
         update_namespace_properties,
     },
     role::{create_role, delete_role, list_roles, update_role},
-    tabular::table::{
-        drop_table, get_table_metadata_by_id, get_table_metadata_by_s3_location, list_tables,
-        load_tables, rename_table, resolve_table_ident, table_idents_to_ids,
-    },
+    tabular::table::load_tables,
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
         get_warehouse_by_id, get_warehouse_by_name, list_projects, list_warehouses, rename_project,
@@ -33,14 +30,13 @@ use crate::{
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
-            tabular::SearchTabularResponse,
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
                 WarehouseStatisticsResponse,
             },
-            DeleteWarehouseQuery, ProtectionResponse,
+            DeleteWarehouseQuery, ProtectionResponse, TabularType,
         },
     },
     implementations::postgres::{
@@ -48,10 +44,11 @@ use crate::{
         namespace::set_namespace_protected,
         role::search_role,
         tabular::{
-            clear_tabular_deleted_at, get_tabular_protected, list_tabulars,
-            mark_tabular_as_deleted, search_tabular, set_tabular_protected,
+            clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
+            get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
+            mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
             table::{commit_table_transaction, create_table},
-            view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
+            view::{create_view, load_view},
         },
         tasks::{
             cancel_scheduled_tasks, check_and_heartbeat_task, get_task_details,
@@ -66,21 +63,25 @@ use crate::{
         authn::UserId,
         storage::StorageProfile,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
-            TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
         },
         CatalogCreateNamespaceError, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
         CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
         CatalogListNamespaceError, CatalogListWarehousesError, CatalogNamespaceDropError,
-        CatalogRenameWarehouseError, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateTableResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
-        ListNamespacesQuery, LoadTableResponse, Namespace, NamespaceDropInfo, NamespaceId,
-        NamespaceIdentOrId, ProjectId, Result, RoleId, ServerInfo,
+        CatalogRenameWarehouseError, CatalogSearchTabularResponse,
+        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateTableError, CreateViewError,
+        DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
+        GetWarehouseResponse, ListNamespacesQuery, ListTabularsError, LoadTableError,
+        LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, Namespace, NamespaceDropInfo,
+        NamespaceId, NamespaceIdentOrId, ProjectId, RenameTabularError, ResolvedTask, Result,
+        RoleId, SearchTabularError, ServerInfo, SetTabularProtectionError,
         SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
-        TabularListFlags, Transaction, UndropTabularResponse, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, WarehouseId, WarehouseStatus,
+        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Transaction, UpdateWarehouseStorageProfileError,
+        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
+        WarehouseStatus,
     },
     SecretIdent,
 };
@@ -134,7 +135,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         namespace: NamespaceIdentOrId,
         state: Self::State,
-    ) -> std::result::Result<Namespace, CatalogGetNamespaceError> {
+    ) -> std::result::Result<Option<Namespace>, CatalogGetNamespaceError> {
         get_namespace(warehouse_id, namespace, &state.read_pool()).await
     }
 
@@ -156,117 +157,104 @@ impl CatalogStore for super::PostgresBackend {
         update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
     }
 
-    async fn create_table<'a>(
+    async fn create_table_impl<'a>(
         table_creation: TableCreation<'_>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<CreateTableResponse> {
+    ) -> std::result::Result<(TableInfo, Option<StagedTableId>), CreateTableError> {
         create_table(table_creation, transaction).await
     }
 
-    async fn list_tables<'a>(
-        namespace: &Namespace,
-        list_flags: TabularListFlags,
+    async fn rename_tabular_impl(
+        warehouse_id: WarehouseId,
+        source_id: TabularId,
+        source: &TableIdent,
+        destination: &TableIdent,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ViewOrTableInfo, RenameTabularError> {
+        rename_tabular(warehouse_id, source_id, source, destination, transaction).await
+    }
+
+    async fn drop_tabular_impl<'a>(
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TableId, TableInfo>> {
-        list_tables(
-            namespace.warehouse_id,
-            Some(namespace.namespace_id),
+    ) -> std::result::Result<Location, DropTabularError> {
+        drop_tabular(warehouse_id, tabular_id, force, None, transaction).await
+    }
+
+    async fn get_tabular_infos_by_ident_impl(
+        warehouse_id: WarehouseId,
+        tabulars: &[TabularIdentBorrowed<'_>],
+        list_flags: TabularListFlags,
+        catalog_state: Self::State,
+    ) -> std::result::Result<Vec<ViewOrTableInfo>, GetTabularInfoError> {
+        get_tabular_infos_by_idents(
+            warehouse_id,
+            tabulars,
             list_flags,
-            &mut **transaction,
-            pagination_query,
+            &catalog_state.read_pool(),
         )
         .await
     }
 
-    async fn resolve_table_ident<'a>(
+    async fn get_tabular_infos_by_id_impl(
         warehouse_id: WarehouseId,
-        table: &TableIdent,
-        list_flags: TabularListFlags,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<crate::service::TabularDetails>> {
-        resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction).await
-    }
-
-    async fn table_idents_to_ids(
-        warehouse_id: WarehouseId,
-        tables: HashSet<&TableIdent>,
+        tabulars: &[TabularId],
         list_flags: TabularListFlags,
         catalog_state: Self::State,
-    ) -> Result<HashMap<TableIdent, Option<TableId>>> {
-        table_idents_to_ids(warehouse_id, tables, list_flags, &catalog_state.read_pool()).await
+    ) -> std::result::Result<Vec<ViewOrTableInfo>, GetTabularInfoError> {
+        get_tabular_infos_by_ids(
+            warehouse_id,
+            tabulars,
+            list_flags,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn get_tabular_infos_by_s3_location_impl(
+        warehouse_id: WarehouseId,
+        location: &Location,
+        list_flags: TabularListFlags,
+        catalog_state: Self::State,
+    ) -> std::result::Result<Option<ViewOrTableInfo>, GetTabularInfoByLocationError> {
+        get_tabular_infos_by_s3_location(warehouse_id, location, list_flags, catalog_state).await
     }
 
     // Should also load staged tables but not tables of inactive warehouses
-    async fn load_tables<'a>(
+    async fn load_tables_impl<'a>(
         warehouse_id: WarehouseId,
         tables: impl IntoIterator<Item = TableId> + Send,
         include_deleted: bool,
         filters: &LoadTableFilters,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<HashMap<TableId, LoadTableResponse>> {
+    ) -> std::result::Result<Vec<LoadTableResponse>, LoadTableError> {
         load_tables(warehouse_id, tables, include_deleted, filters, transaction).await
     }
 
-    async fn get_table_metadata_by_id(
-        warehouse_id: WarehouseId,
-        table: TableId,
-        list_flags: TabularListFlags,
-        catalog_state: Self::State,
-    ) -> Result<Option<GetTableMetadataResponse>> {
-        get_table_metadata_by_id(warehouse_id, table, list_flags, catalog_state).await
-    }
-
-    async fn get_table_metadata_by_s3_location(
-        warehouse_id: WarehouseId,
-        location: &Location,
-        list_flags: TabularListFlags,
-        catalog_state: Self::State,
-    ) -> Result<Option<GetTableMetadataResponse>> {
-        get_table_metadata_by_s3_location(warehouse_id, location, list_flags, catalog_state).await
-    }
-
-    async fn rename_table<'a>(
-        warehouse_id: WarehouseId,
-        source_id: TableId,
-        source: &TableIdent,
-        destination: &TableIdent,
-        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
-        rename_table(warehouse_id, source_id, source, destination, transaction).await
-    }
-
-    async fn drop_table<'a>(
-        warehouse_id: WarehouseId,
-        table_id: TableId,
-        force: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<String> {
-        drop_table(warehouse_id, table_id, force, transaction).await
-    }
-
-    async fn clear_tabular_deleted_at(
+    async fn clear_tabular_deleted_at_impl(
         tabular_ids: &[TabularId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<UndropTabularResponse>> {
+    ) -> std::result::Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
         clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction).await
     }
 
-    async fn mark_tabular_as_deleted(
+    async fn mark_tabular_as_deleted_impl(
         warehouse_id: WarehouseId,
-        table_id: TabularId,
+        tabular_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
-        mark_tabular_as_deleted(warehouse_id, table_id, force, None, transaction).await
+    ) -> std::result::Result<ViewOrTableInfo, MarkTabularAsDeletedError> {
+        mark_tabular_as_deleted(warehouse_id, tabular_id, force, None, transaction).await
     }
 
-    async fn commit_table_transaction<'a>(
+    async fn commit_table_transaction_impl<'a>(
         warehouse_id: WarehouseId,
         commits: impl IntoIterator<Item = TableCommit> + Send,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<Vec<TableInfo>, CommitTableTransactionError> {
         commit_table_transaction(warehouse_id, commits, transaction).await
     }
 
@@ -524,152 +512,98 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn view_to_id<'a>(
-        warehouse_id: WarehouseId,
-        view: &TableIdent,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<ViewId>> {
-        view_ident_to_id(warehouse_id, view, false, &mut **transaction).await
-    }
-
-    async fn create_view<'a>(
+    async fn create_view_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
-        view: &TableIdent,
-        request: ViewMetadata,
-        metadata_location: &'_ Location,
-        location: &'_ Location,
+        view_ident: &TableIdent,
+        request: &ViewMetadata,
+        metadata_location: &Location,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> std::result::Result<ViewInfo, CreateViewError> {
         create_view(
             warehouse_id,
             namespace_id,
             metadata_location,
             transaction,
-            view.name.as_str(),
+            view_ident.name.as_str(),
             request,
-            location,
         )
         .await
     }
 
-    async fn load_view<'a>(
+    async fn load_view_impl<'a>(
         warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<crate::implementations::postgres::tabular::view::ViewMetadataWithLocation> {
+    ) -> std::result::Result<CatalogView, LoadViewError> {
         load_view(warehouse_id, view_id, include_deleted, &mut *transaction).await
     }
 
-    async fn list_views<'a>(
-        namespace: &Namespace,
-        include_deleted: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<ViewId, TableInfo>> {
-        list_views(
-            namespace.warehouse_id,
-            Some(namespace.namespace_id),
-            include_deleted,
-            &mut **transaction,
-            pagination_query,
-        )
-        .await
-    }
-
-    async fn update_view_metadata(
+    async fn commit_view_impl<'a>(
         ViewCommit {
-            warehouse_id,
-            namespace_id,
-            new_metadata_location,
-            previous_metadata_location,
-            new_location,
-            view_id,
             view_ident,
-            metadata,
-        }: ViewCommit<'_>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
-        drop_view(
+            namespace_id,
             warehouse_id,
-            view_id,
+            previous_view,
+            new_view,
+        }: ViewCommit<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<ViewInfo, CommitViewError> {
+        drop_tabular(
+            warehouse_id,
+            ViewId::from(previous_view.metadata.uuid()).into(),
             true,
-            Some(previous_metadata_location),
+            Some(&previous_view.metadata_location),
             transaction,
         )
         .await?;
         create_view(
             warehouse_id,
             namespace_id,
-            new_metadata_location,
+            &new_view.metadata_location,
             transaction,
             &view_ident.name,
-            metadata,
-            new_location,
+            &new_view.metadata,
         )
         .await
+        .map_err(Into::into)
     }
 
-    async fn drop_view<'a>(
-        warehouse_id: WarehouseId,
-        view_id: ViewId,
-        force: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<String> {
-        drop_view(warehouse_id, view_id, force, None, transaction).await
-    }
-
-    async fn rename_view(
-        warehouse_id: WarehouseId,
-        source_id: ViewId,
-        source: &TableIdent,
-        destination: &TableIdent,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
-        rename_view(warehouse_id, source_id, source, destination, transaction).await
-    }
-
-    async fn search_tabular(
+    async fn search_tabular_impl(
         warehouse_id: WarehouseId,
         search_term: &str,
         catalog_state: Self::State,
-    ) -> Result<SearchTabularResponse> {
+    ) -> std::result::Result<CatalogSearchTabularResponse, SearchTabularError> {
         search_tabular(warehouse_id, search_term, &catalog_state.read_pool()).await
     }
 
-    async fn list_tabulars(
+    async fn list_tabulars_impl(
         warehouse_id: WarehouseId,
         namespace_id: Option<NamespaceId>,
         list_flags: TabularListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        typ: Option<TabularType>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TabularId, TabularInfo>> {
+    ) -> std::result::Result<PaginatedMapping<TabularId, ViewOrTableDeletionInfo>, ListTabularsError>
+    {
         list_tabulars(
             warehouse_id,
             namespace_id,
             list_flags,
             &mut **transaction,
-            None,
+            typ.map(Into::into),
             pagination_query,
         )
         .await
     }
-    async fn set_tabular_protected(
+    async fn set_tabular_protected_impl(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse> {
+    ) -> std::result::Result<ViewOrTableInfo, SetTabularProtectionError> {
         set_tabular_protected(warehouse_id, tabular_id, protect, transaction).await
-    }
-
-    async fn get_tabular_protected(
-        warehouse_id: WarehouseId,
-        tabular_id: TabularId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ProtectionResponse> {
-        get_tabular_protected(warehouse_id, tabular_id, transaction).await
     }
 
     async fn set_namespace_protected_impl(
@@ -703,11 +637,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn resolve_tasks_impl(
-        warehouse_id: Option<WarehouseId>,
+        warehouse_id: WarehouseId,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
-        resolve_tasks(warehouse_id, task_ids, &state.read_pool()).await
+    ) -> Result<Vec<ResolvedTask>> {
+        resolve_tasks(Some(warehouse_id), task_ids, &state.read_pool()).await
     }
 
     async fn record_task_success_impl(

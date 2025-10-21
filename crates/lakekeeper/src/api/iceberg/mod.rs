@@ -94,11 +94,12 @@ pub mod v1 {
         pub fn map<
             NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
             NewVal: Debug + 'static,
+            E,
         >(
             self,
-            key_map: impl Fn(T) -> Result<NewKey>,
-            value_map: impl Fn(V) -> Result<NewVal>,
-        ) -> Result<PaginatedMapping<NewKey, NewVal>> {
+            key_map: impl Fn(T) -> std::result::Result<NewKey, E>,
+            value_map: impl Fn(V) -> std::result::Result<NewVal, E>,
+        ) -> std::result::Result<PaginatedMapping<NewKey, NewVal>, E> {
             let mut new_mapping = PaginatedMapping::with_capacity(self.len());
             for (key, value, token) in self.into_iter_with_page_tokens() {
                 let k = key_map(key)?;

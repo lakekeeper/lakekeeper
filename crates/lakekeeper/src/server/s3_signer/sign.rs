@@ -5,7 +5,8 @@ use aws_sigv4::{
     sign::v4,
     {self},
 };
-use lakekeeper_io::s3::S3Location;
+use iceberg::{NamespaceIdent, TableIdent};
+use lakekeeper_io::{s3::S3Location, Location};
 
 use super::{super::CatalogServer, error::SignError};
 use crate::{
@@ -16,14 +17,17 @@ use crate::{
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
-        authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
+        authz::{
+            AuthZTableOps, Authorizer, AuthzWarehouseOps, CatalogTableAction,
+            RequireTableActionError,
+        },
         secrets::SecretStore,
         storage::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        CatalogStore, CatalogWarehouseOps, GetTableMetadataResponse, State, TableId,
-        TabularListFlags,
+        AuthZTableInfo, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        GetTabularInfoByLocationError, State, TableId, TableInfo, TabularListFlags,
     },
     WarehouseId,
 };
@@ -61,11 +65,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let authorizer = state.v1_state.authz.clone();
         authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            )
+            .require_warehouse_use(&request_metadata, warehouse_id)
             .await?;
 
         let S3SignRequest {
@@ -76,9 +76,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             body: request_body,
         } = request.clone();
 
-        // Include staged tables as this might be a commit
-        let include_staged = true;
-
         let (parsed_url, operation) = s3_utils::parse_s3_url(
             &request_url,
             s3_url_style_detection::<C>(state.v1_state.catalog.clone(), warehouse_id).await?,
@@ -86,24 +83,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             request_body.as_deref(),
         )?;
 
-        let GetTableMetadataResponse {
-            table: _,
-            table_id,
-            namespace_id: _,
-            warehouse_id: _,
-            location,
-            metadata_location: _,
-            storage_secret_ident,
-            storage_profile,
-        } = if let Some(table_id) = path_table_id.map(Into::into) {
-            let metadata_by_id = get_unauthorized_table_metadata_by_id(
+        let first_location = parsed_url.locations.first().ok_or_else(|| {
+            ErrorModel::internal(
+                "Request URI does not contain a location",
+                "UriNoLocation",
+                None,
+            )
+        })?;
+
+        let table_info = if let Some(table_id) = path_table_id.map(TableId::from) {
+            tracing::debug!("Got S3 sign request for table {table_id} with URL {request_url}");
+            let metadata_by_id = C::get_table_info(
                 warehouse_id,
                 table_id,
-                include_staged,
-                &request_url,
-                &state,
+                // we were able to resolve the table to id so we know the table is not deleted
+                TabularListFlags::active_and_staged(),
+                state.v1_state.catalog.clone(),
             )
-            .await;
+            .await
+            .map_err(RequireTableActionError::from);
             // Can't fail here before AuthZ!
 
             // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
@@ -130,49 +128,44 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             }
 
             if fallback_to_location {
-                get_table_metadata_by_location(
-                    warehouse_id,
-                    &parsed_url,
-                    include_staged,
-                    &request_url,
-                    &state,
-                    &request_metadata,
-                    authorizer.clone(),
-                )
-                .await?
+                get_table_info_by_location(warehouse_id, first_location, &state)
+                    .await
+                    .map_err(RequireTableActionError::from)
             } else {
-                authorizer
-                    .require_table_action(
-                        &request_metadata,
-                        warehouse_id,
-                        metadata_by_id,
-                        CatalogTableAction::CanGetMetadata,
-                    )
-                    .await?
+                metadata_by_id
             }
         } else {
-            get_table_metadata_by_location(
-                warehouse_id,
-                &parsed_url,
-                include_staged,
-                &request_url,
-                &state,
-                &request_metadata,
-                authorizer.clone(),
-            )
-            .await?
+            tracing::debug!("Got S3 sign request for URL {request_url} without table id. Searching for table id by location");
+            get_table_info_by_location(warehouse_id, first_location, &state)
+                .await
+                .map_err(RequireTableActionError::from)
         };
 
+        let dummy_table_ident = TableIdent::new(
+            NamespaceIdent::new("unknown".to_string()),
+            format!("table at location '{first_location}'"),
+        );
+
+        let action = match operation {
+            Operation::Read => CatalogTableAction::CanReadData,
+            Operation::Write | Operation::Delete => CatalogTableAction::CanWriteData,
+        };
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        authorize_operation::<A>(
-            operation,
-            &request_metadata,
-            warehouse_id,
-            table_id,
-            authorizer,
-        )
-        .await?;
+        let (table_info, warehouse) = tokio::join!(
+            authorizer.require_table_action(
+                &request_metadata,
+                warehouse_id,
+                dummy_table_ident,
+                table_info,
+                action,
+            ),
+            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone())
+        );
+        let table_info = table_info?;
+        let warehouse = warehouse?;
+        let table_id = table_info.table_id();
+        let location = table_info.location;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -184,7 +177,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             e
         };
 
-        let storage_profile = storage_profile
+        let storage_profile = warehouse
+            .storage_profile
             .try_into_s3()
             .map_err(|e| extend_err(IcebergErrorResponse::from(e)))?;
 
@@ -192,12 +186,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         validate_uri(&parsed_url, &location).map_err(extend_err)?;
 
         // If all is good, we need the storage secret
-        let storage_secret = if let Some(storage_secret_ident) = storage_secret_ident {
+        let storage_secret = if let Some(storage_secret_id) = warehouse.storage_secret_id {
             Some(
                 state
                     .v1_state
                     .secrets
-                    .get_secret_by_id::<StorageCredential>(storage_secret_ident)
+                    .get_secret_by_id::<StorageCredential>(storage_secret_id)
                     .await?
                     .secret,
             )
@@ -412,120 +406,43 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
     Ok(())
 }
 
-async fn authorize_operation<A: Authorizer>(
-    method: Operation,
-    metadata: &RequestMetadata,
+/// Helper function for fetching table metadata by location
+async fn get_table_info_by_location<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     warehouse_id: WarehouseId,
-    table_id: TableId,
-    authorizer: A,
-) -> Result<()> {
-    // First check - fail fast if requested table is not allowed.
-    // We also need to check later if the path matches the table location.
-    match method {
-        Operation::Read => {
-            authorizer
-                .require_table_action(
-                    metadata,
-                    warehouse_id,
-                    Ok(Some(table_id)),
-                    CatalogTableAction::CanReadData,
-                )
-                .await?;
-        }
-        Operation::Write | Operation::Delete => {
-            authorizer
-                .require_table_action(
-                    metadata,
-                    warehouse_id,
-                    Ok(Some(table_id)),
-                    CatalogTableAction::CanWriteData,
-                )
-                .await?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Helper function for fetching table metadata by ID
-async fn get_unauthorized_table_metadata_by_id<
-    C: CatalogStore,
-    A: Authorizer + Clone,
-    S: SecretStore,
->(
-    warehouse_id: WarehouseId,
-    table_id: TableId,
-    include_staged: bool,
-    request_url: &url::Url,
+    first_location: &S3Location,
     state: &ApiContext<State<A, C, S>>,
-) -> Result<Option<GetTableMetadataResponse>> {
-    tracing::trace!("Got S3 sign request for table {table_id} with URL {request_url}");
-    C::get_table_metadata_by_id(
+) -> std::result::Result<Option<TableInfo>, GetTabularInfoByLocationError> {
+    let info = C::get_tabular_infos_by_s3_location(
         warehouse_id,
-        table_id,
-        TabularListFlags {
-            include_staged,
-            // we were able to resolve the table to id so we know the table is not deleted
-            include_deleted: false,
-            include_active: true,
-        },
+        first_location.location(),
+        // spark iceberg drops the table and then checks for existence of metadata files
+        // which in turn needs to sign HEAD requests for files reachable from the
+        // dropped table.
+        TabularListFlags::all(),
         state.v1_state.catalog.clone(),
     )
     .await
-}
+    .map(|opt| {
+        opt.and_then(|t| {
+            let info = t.into_table_info();
+            if info.is_none(){
+                tracing::warn!("Signer found view at location {first_location}, but views are not supported for signing");
+            }
+            info
+        })
+    });
 
-/// Helper function for fetching table metadata by location
-async fn get_table_metadata_by_location<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
-    warehouse_id: WarehouseId,
-    parsed_url: &s3_utils::ParsedSignRequest,
-    include_staged: bool,
-    request_url: &url::Url,
-    state: &ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
-    authorizer: A,
-) -> Result<GetTableMetadataResponse> {
-    tracing::trace!("Got S3 sign request for URL {request_url} without table id. Searching for table id by location");
-    let first_location = parsed_url.locations.first().ok_or_else(|| {
-        ErrorModel::internal(
-            "Request URI does not contain a location",
-            "UriNoLocation",
-            None,
-        )
-    })?;
-
-    let metadata = C::get_table_metadata_by_s3_location(
-        warehouse_id,
-        first_location.location(),
-        TabularListFlags {
-            include_staged,
-            // spark iceberg drops the table and then checks for existence of metadata files
-            // which in turn needs to sign HEAD requests for files reachable from the
-            // dropped table.
-            include_deleted: true,
-            include_active: true,
-        },
-        state.v1_state.catalog.clone(),
-    )
-    .await;
-
-    authorizer
-        .require_table_action(
-            request_metadata,
-            warehouse_id,
-            metadata,
-            CatalogTableAction::CanGetMetadata,
-        )
-        .await
+    info
 }
 
 fn validate_uri(
     // i.e. https://bucket.s3.region.amazonaws.com/key
     parsed_url: &s3_utils::ParsedSignRequest,
     // i.e. s3://bucket/key
-    table_location: &str,
+    table_location: &Location,
 ) -> Result<()> {
     let table_location =
-        S3Location::try_from_str(table_location, false).map_err(ValidationError::from)?;
+        S3Location::try_from_location(table_location, false).map_err(ValidationError::from)?;
 
     for url_location in &parsed_url.locations {
         if !url_location
@@ -934,6 +851,8 @@ mod test_delete_body_deserialization {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr as _;
+
     use itertools::Itertools as _;
 
     use super::*;
@@ -957,8 +876,8 @@ mod test {
             None,
         )
         .unwrap();
-        let table_location = test_case.table_location;
-        let result = validate_uri(&request_uri, table_location);
+        let table_location = Location::from_str(test_case.table_location).unwrap();
+        let result = validate_uri(&request_uri, &table_location);
         assert_eq!(
             result.is_ok(),
             test_case.expected_outcome,

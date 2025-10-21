@@ -17,7 +17,7 @@ use iceberg_ext::catalog::rest::{
 use lakekeeper_io::Location;
 use uuid::Uuid;
 
-use super::{TableId, UndropTabularResponse, ViewId, WarehouseId};
+use super::{TableId, ViewId, WarehouseId};
 use crate::{
     api::{
         iceberg::{
@@ -30,7 +30,7 @@ use crate::{
     server::tables::{maybe_body_to_json, CommitContext},
     service::{
         endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
-        TabularId,
+        TabularId, ViewOrTableInfo,
     },
     CONFIG,
 };
@@ -384,22 +384,22 @@ impl EndpointHook for CloudEventsPublisher {
         &self,
         warehouse_id: WarehouseId,
         _request: Arc<UndropTabularsRequest>,
-        responses: Arc<Vec<UndropTabularResponse>>,
+        responses: Arc<Vec<ViewOrTableInfo>>,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         let num_tabulars = responses.len();
         let mut futs = Vec::with_capacity(responses.len());
-        for (idx, utr) in responses.iter().enumerate() {
+        for (idx, tabular_info) in responses.iter().enumerate() {
             futs.push(
                 self.publish(
                     Uuid::now_v7(),
                     "undropTabulars",
                     serde_json::Value::Null,
                     EventMetadata {
-                        tabular_id: TabularId::from(utr.table_id),
+                        tabular_id: tabular_info.tabular_id(),
                         warehouse_id,
-                        name: utr.name.clone(),
-                        namespace: utr.namespace.to_url_string(),
+                        name: tabular_info.tabular_ident().name.clone(),
+                        namespace: tabular_info.tabular_ident().namespace.to_url_string(),
                         prefix: String::new(),
                         num_events: num_tabulars,
                         sequence_number: idx,

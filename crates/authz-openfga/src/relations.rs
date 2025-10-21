@@ -3,7 +3,7 @@ use lakekeeper::service::{
     authz::{
         CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
         CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, NamespaceAction,
-        WarehouseAction,
+        TableAction, ViewAction, WarehouseAction,
     },
     Actor, RoleId,
 };
@@ -1121,7 +1121,7 @@ impl ReducedRelation for CatalogNamespaceAction {
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum TableRelation {
+pub enum TableRelation {
     // -- Hierarchical relations --
     Parent,
     // -- Direct relations --
@@ -1150,6 +1150,8 @@ pub(super) enum TableRelation {
     CanGetTasks,
     CanControlTasks,
 }
+
+impl TableAction for TableRelation {}
 
 impl OpenFgaRelation for TableRelation {}
 
@@ -1337,7 +1339,7 @@ impl ReducedRelation for CatalogTableAction {
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum ViewRelation {
+pub enum ViewRelation {
     // -- Hierarchical relations --
     Parent,
     // -- Direct relations --
@@ -1362,6 +1364,8 @@ pub(super) enum ViewRelation {
     CanGetTasks,
     CanControlTasks,
 }
+
+impl ViewAction for ViewRelation {}
 
 impl OpenFgaRelation for ViewRelation {}
 

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -14,7 +14,7 @@ use crate::{
     },
     service::{
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
+            Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
         Result,
@@ -29,13 +29,27 @@ impl<K, V> moka::Expiry<K, V> for TasksCacheExpiry {
         Some(TASKS_CACHE_TTL)
     }
 }
-static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, (TaskEntity, TaskQueueName)>> =
+static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, Arc<ResolvedTask>>> =
     LazyLock::new(|| {
         moka::future::Cache::builder()
             .max_capacity(10000)
             .expire_after(TasksCacheExpiry)
             .build()
     });
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTask {
+    pub task_id: TaskId,
+    pub entity: TaskEntityNamed,
+    pub queue_name: TaskQueueName,
+}
+
+impl ResolvedTask {
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        self.entity.warehouse_id()
+    }
+}
 
 #[async_trait::async_trait]
 pub trait CatalogTaskOps
@@ -176,26 +190,18 @@ where
     /// Returns a map of `task_id` to `(TaskEntity, queue_name)`.
     /// If a task does not exist, it is not included in the map.
     async fn resolve_tasks(
-        warehouse_id: Option<WarehouseId>,
+        warehouse_id: WarehouseId,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+    ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
         if task_ids.is_empty() {
             return Ok(HashMap::new());
         }
         let mut cached_results = HashMap::new();
         for id in task_ids {
             if let Some(cached_value) = TASKS_CACHE.get(id).await {
-                if let Some(w) = warehouse_id {
-                    match &cached_value.0 {
-                        TaskEntity::Table {
-                            warehouse_id: wid, ..
-                        } if *wid != w => continue,
-                        TaskEntity::View {
-                            warehouse_id: wid, ..
-                        } if *wid != w => continue,
-                        TaskEntity::View { .. } | TaskEntity::Table { .. } => (),
-                    }
+                if cached_value.warehouse_id() != warehouse_id {
+                    continue;
                 }
                 cached_results.insert(*id, cached_value);
             }
@@ -210,18 +216,19 @@ where
         }
         let resolve_uncached_result =
             Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, state).await?;
-        for (id, value) in resolve_uncached_result {
-            cached_results.insert(id, value.clone());
-            TASKS_CACHE.insert(id, value).await;
+        for value in resolve_uncached_result {
+            let value = Arc::new(value);
+            cached_results.insert(value.task_id, value.clone());
+            TASKS_CACHE.insert(value.task_id, value).await;
         }
         Ok(cached_results)
     }
 
     async fn resolve_required_tasks(
-        warehouse_id: Option<WarehouseId>,
+        warehouse_id: WarehouseId,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+    ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
         let tasks = Self::resolve_tasks(warehouse_id, task_ids, state).await?;
 
         for task_id in task_ids {

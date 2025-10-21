@@ -48,15 +48,3 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> State<A, C, S> {
         self.authz.server_id()
     }
 }
-
-#[derive(Debug, Clone)]
-/// Metadata for a tabular dataset, including its `warehouse_id`, `table_id` and the storage
-/// `location` where its data lives.
-///
-/// Note that `table_id`s can be reused across warehouses. So `table_id` may not be unique, but
-/// `(warehouse_id, table_id)` is.
-pub struct TabularDetails {
-    pub warehouse_id: WarehouseId,
-    pub table_id: TableId,
-    pub location: String,
-}

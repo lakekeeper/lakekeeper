@@ -8,7 +8,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{CatalogStore, CatalogTaskOps, TableId, TabularId, ViewId};
+use crate::service::{
+    CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+};
 
 mod task_queues_runner;
 mod task_registry;
@@ -80,25 +82,26 @@ pub enum TaskEntity {
     Table {
         #[schema(value_type = uuid::Uuid)]
         table_id: TableId,
-        #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseId,
     },
     #[serde(rename_all = "kebab-case")]
     View {
         #[schema(value_type = uuid::Uuid)]
         view_id: ViewId,
-        #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseId,
     },
 }
 
-impl TaskEntity {
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
+pub enum TaskEntityNamed {
+    Table(TableNamed),
+    View(ViewNamed),
+}
+
+impl TaskEntityNamed {
     #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
         match self {
-            TaskEntity::Table { warehouse_id, .. } | TaskEntity::View { warehouse_id, .. } => {
-                *warehouse_id
-            }
+            TaskEntityNamed::Table(t) => t.warehouse_id,
+            TaskEntityNamed::View(v) => v.warehouse_id,
         }
     }
 }
@@ -122,6 +125,7 @@ pub trait TaskData: Clone + Serialize + DeserializeOwned + Send + Sync {}
 pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned + Send + Sync {}
 
 #[derive(Hash, Debug, Clone, PartialEq, Serialize, Deserialize, Copy, Eq)]
+#[serde(transparent)]
 pub struct TaskId(Uuid);
 
 impl std::fmt::Display for TaskId {
@@ -962,8 +966,7 @@ mod test {
     fn test_task_entity_serde_table() {
         let json = serde_json::json!({
             "type": "table",
-            "table-id": "550e8400-e29b-41d4-a716-446655440000",
-            "warehouse-id": "550e8400-e29b-41d4-a716-446655440001"
+            "table-id": "550e8400-e29b-41d4-a716-446655440000"
         });
         let deserialized: super::TaskEntity = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(
@@ -971,10 +974,7 @@ mod test {
             TaskEntity::Table {
                 table_id: TableId::from(
                     Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
-                ),
-                warehouse_id: WarehouseId::from(
-                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
-                ),
+                )
             }
         );
 

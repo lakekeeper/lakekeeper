@@ -29,11 +29,15 @@ use crate::{
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        authz::{Authorizer, AuthzWarehouseOps, CatalogProjectAction, CatalogWarehouseAction},
+        authz::{
+            AuthZCannotUseWarehouseId, AuthZTableOps, AuthZWarehouseActionForbidden, Authorizer,
+            AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction,
+        },
         secrets::SecretStore,
         tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        CatalogStore, CatalogTaskOps, CatalogWarehouseOps, NamespaceId, State, TabularId,
-        TabularListFlags, Transaction,
+        CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, NamespaceId, State,
+        TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
     },
     ProjectId, WarehouseId,
 };
@@ -793,6 +797,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
     ) -> Result<()> {
+        if request.targets.is_empty() {
+            return Ok(());
+        }
         // ------------------- AuthZ -------------------
         context
             .v1_state
@@ -804,10 +811,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
-        undrop::require_undrop_permissions(
-            &warehouse_id,
+        undrop::require_undrop_permissions::<A, C>(
+            warehouse_id,
             &request,
             &context.v1_state.authz,
+            context.v1_state.catalog.clone(),
             &request_metadata,
         )
         .await?;
@@ -824,13 +832,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 undrop_tabular_responses
                     .iter()
                     .filter_map(|r| {
-                        if r.expiration_task_id.is_none() {
+                        if r.expiration_task().is_none() {
                             tracing::warn!(
-                                "No expiration task found for tabular with soft deletion marker set {:?}",
-                                r.table_id
+                                "No expiration task found for tabular '{}' with soft deletion marker set.",
+                                r.tabular_ident()
                             );
                         }
-                        r.expiration_task_id})
+                        r.expiration_task().map(|t| t.task_id)})
                     .collect(),
             ),
             transaction.transaction(),
@@ -845,7 +853,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .undrop_tabular(
                 warehouse_id,
                 Arc::new(request),
-                Arc::new(undrop_tabular_responses),
+                Arc::new(
+                    undrop_tabular_responses
+                        .into_iter()
+                        .map(ViewOrTableDeletionInfo::into_table_or_view_info)
+                        .collect(),
+                ),
                 Arc::new(request_metadata),
             )
             .await;
@@ -863,108 +876,132 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let catalog = context.v1_state.catalog;
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
+
+        let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer
+            .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                &[
+                    (warehouse_id, CatalogWarehouseAction::CanUse),
+                    (warehouse_id, CatalogWarehouseAction::CanListDeletedTabulars),
+                    (warehouse_id, CatalogWarehouseAction::CanListEverything),
+                ],
+            )
+            .await?
+            .into_inner();
+
+        if !can_use {
+            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        }
+        if !can_list_deleted_tabulars {
+            return Err(AuthZWarehouseActionForbidden::new(
                 warehouse_id,
                 CatalogWarehouseAction::CanListDeletedTabulars,
+                request_metadata.actor().clone(),
             )
-            .await?;
+            .into());
+        }
 
         // ------------------- Business Logic -------------------
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
-        let (tabulars, idents, next_page_token) =
-            crate::server::fetch_until_full_page::<_, _, _, C>(
-                pagination_query.page_size,
-                pagination_query.page_token,
-                |page_size, page_token, t| {
-                    let authorizer = authorizer.clone();
-                    let request_metadata = request_metadata.clone();
-                    async move {
-                        let query = PaginationQuery {
-                            page_size: Some(page_size),
-                            page_token: page_token.into(),
-                        };
+        let (tabulars, ids, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
+            pagination_query.page_size,
+            pagination_query.page_token,
+            |page_size, page_token, t| {
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
+                async move {
+                    let query = PaginationQuery {
+                        page_size: Some(page_size),
+                        page_token: page_token.into(),
+                    };
 
-                        let page = C::list_tabulars(
-                            warehouse_id,
-                            namespace_id,
-                            TabularListFlags::only_deleted(),
-                            t.transaction(),
-                            query,
-                        )
-                        .await?;
-                        let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                            page.into_iter_with_page_tokens().multiunzip();
+                    let page = C::list_tabulars(
+                        warehouse_id,
+                        namespace_id,
+                        TabularListFlags::only_deleted(),
+                        t.transaction(),
+                        None,
+                        query,
+                    )
+                    .await?;
+                    let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        page.into_iter_with_page_tokens().multiunzip();
 
-                        let (next_idents, next_uuids, next_page_tokens, mask): (
-                            Vec<_>,
-                            Vec<_>,
-                            Vec<_>,
-                            Vec<bool>,
-                        ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
-                            TabularId::View(id) => authorizer.is_allowed_view_action(
-                                &request_metadata,
-                                warehouse_id,
-                                *id,
-                                crate::service::authz::CatalogViewAction::CanIncludeInList,
-                            ),
-                            TabularId::Table(id) => authorizer.is_allowed_table_action(
-                                &request_metadata,
-                                warehouse_id,
-                                *id,
-                                crate::service::authz::CatalogTableAction::CanIncludeInList,
-                            ),
-                        }))
-                        .await?
+                    let authz_decisions = if can_list_everything {
+                        vec![true; ids.len()]
+                    } else {
+                        let actions = idents
+                            .iter()
+                            .map(|t| {
+                                t.as_action_request(
+                                    CatalogViewAction::CanIncludeInList,
+                                    CatalogTableAction::CanIncludeInList,
+                                )
+                            })
+                            .collect_vec();
+
+                        authorizer
+                            .are_allowed_tabular_actions_vec(&request_metadata, &actions)
+                            .await?
+                            .into_inner()
+                    };
+
+                    let (next_idents, next_uuids, next_page_tokens, mask): (
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<bool>,
+                    ) = authz_decisions
                         .into_iter()
                         .zip(idents.into_iter().zip(ids.into_iter()))
                         .zip(tokens.into_iter())
                         .map(|((allowed, namespace), token)| {
-                            (namespace.0, namespace.1, token, allowed.into_inner())
+                            (namespace.0, namespace.1, token, allowed)
                         })
                         .multiunzip();
-                        Ok(UnfilteredPage::new(
-                            next_idents,
-                            next_uuids,
-                            next_page_tokens,
-                            mask,
-                            page_size
-                                .clamp(0, i64::MAX)
-                                .try_into()
-                                .expect("We clamped."),
-                        ))
-                    }
-                    .boxed()
-                },
-                &mut t,
-            )
-            .await?;
+                    Ok(UnfilteredPage::new(
+                        next_idents,
+                        next_uuids,
+                        next_page_tokens,
+                        mask,
+                        page_size
+                            .clamp(0, i64::MAX)
+                            .try_into()
+                            .expect("We clamped."),
+                    ))
+                }
+                .boxed()
+            },
+            &mut t,
+        )
+        .await?;
 
-        let tabulars = idents
+        let tabulars = ids
             .into_iter()
-            .zip(tabulars.into_iter())
-            .map(|(k, info)| {
-                let i = info.table_ident.into_inner();
-                let deleted = info.deletion_details.ok_or(ErrorModel::internal(
-                    "Expected delete options to be Some, but found None",
-                    "InternalDatabaseError",
-                    None,
-                ))?;
-                Ok(DeletedTabularResponse {
+            .zip(tabulars)
+            .filter_map(|(k, info)| {
+                let deleted_at = info.deleted_at()?;
+                let Some(expiration_task) = info.expiration_task() else {
+                    tracing::error!(
+                        "Did not find expiration task for soft-deleted tabular with id '{k}'"
+                    );
+                    return None;
+                };
+                let tabular_ident = info.tabular_ident().clone();
+                Some(DeletedTabularResponse {
                     id: *k,
-                    name: i.name,
-                    namespace: i.namespace.inner(),
+                    name: tabular_ident.name,
+                    namespace: tabular_ident.namespace.inner(),
                     typ: k.into(),
                     warehouse_id,
-                    created_at: deleted.created_at,
-                    deleted_at: deleted.deleted_at,
-                    expiration_date: deleted.expiration_date,
+                    created_at: info.created_at(),
+                    deleted_at,
+                    expiration_date: expiration_task.expiration_date,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
         t.commit().await?;
 
@@ -1212,6 +1249,7 @@ mod test {
         let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
@@ -1295,6 +1333,7 @@ mod test {
         let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
@@ -1317,7 +1356,6 @@ mod test {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: ns.namespace.clone(),
         };
-        // create 10 staged tables
         for i in 0..10 {
             let _ = CatalogServer::create_view(
                 ns_params.clone(),

@@ -6,7 +6,7 @@ use std::{
 use flate2::{write::GzEncoder, Compression};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
-use super::{io::IOErrorExt, CommonMetadata};
+use super::{io::IOErrorExt, MetadataProperties};
 
 pub(crate) const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
 
@@ -96,7 +96,7 @@ impl CompressionCodec {
         }
     }
 
-    pub fn try_from_metadata<T: CommonMetadata>(
+    pub fn try_from_metadata<T: MetadataProperties>(
         metadata: &T,
     ) -> Result<Self, UnsupportedCompressionCodec> {
         Self::try_from_properties(metadata.properties())

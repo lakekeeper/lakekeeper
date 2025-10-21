@@ -1,9 +1,6 @@
-use std::sync::Arc;
+use std::{str::FromStr as _, sync::Arc};
 
-use iceberg::{
-    spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder},
-    TableIdent,
-};
+use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
 use lakekeeper_io::Location;
 use uuid::Uuid;
@@ -20,20 +17,20 @@ use crate::{
         require_warehouse_id,
         tables::{
             determine_table_ident, extract_count_from_metadata_location, require_active_warehouse,
-            validate_table_or_view_ident, CONCURRENT_UPDATE_ERROR_TYPE,
-            MAX_RETRIES_ON_CONCURRENT_UPDATE,
+            validate_table_or_view_ident, MAX_RETRIES_ON_CONCURRENT_UPDATE,
         },
-        views::{parse_view_location, validate_view_updates},
+        views::validate_view_updates,
     },
     service::{
-        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        authz::{AuthZViewOps, Authorizer, AuthzWarehouseOps, CatalogViewAction},
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceId, State, Transaction,
-        ViewCommit, ViewId, ViewMetadataWithLocation,
+        AuthZViewInfo, CatalogStore, CatalogTabularOps, CatalogView, CatalogViewOps,
+        CatalogWarehouseOps, InternalParseLocationError, State, TabularListFlags, Transaction,
+        ViewCommit, ViewId, ViewInfo, CONCURRENT_UPDATE_ERROR_TYPE,
     },
-    SecretIdent, WarehouseId,
+    SecretIdent,
 };
 
 /// Commit updates to a view
@@ -56,51 +53,44 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         updates,
     } = &request;
 
-    let identifier = determine_table_ident(&parameters.view, identifier.as_ref())?;
-    validate_table_or_view_ident(&identifier)?;
+    let view_ident = determine_table_ident(&parameters.view, identifier.as_ref())?;
+    validate_table_or_view_ident(&view_ident)?;
+    validate_view_updates(updates)?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
     authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
+        .require_warehouse_use(&request_metadata, warehouse_id)
         .await?;
-    let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-    let view_id = C::view_to_id(warehouse_id, &identifier, t_read.transaction()).await;
-    let view_id = authorizer
+
+    let view_info = C::get_view_info(
+        warehouse_id,
+        view_ident.clone(),
+        TabularListFlags::active(),
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+
+    let view_info = authorizer
         .require_view_action(
             &request_metadata,
             warehouse_id,
-            view_id,
+            view_ident,
+            view_info,
             CatalogViewAction::CanCommit,
         )
         .await?;
-    t_read.commit().await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    validate_view_updates(updates)?;
+    // Verify assertions
+    check_requirements(requirements.as_ref(), view_info.view_id())?;
+
     let warehouse =
         C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
-
-    // These operations only need to happen once before retries
-    let namespace = C::require_namespace(
-        warehouse_id,
-        identifier.namespace(),
-        state.v1_state.catalog.clone(),
-    )
-    .await?;
-    let namespace_id = namespace.namespace_id;
-
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
     require_active_warehouse(warehouse.status)?;
-
-    // Verify assertions (only needed once)
-    check_asserts(requirements.as_ref(), view_id)?;
 
     // Start the retry loop
     let request = Arc::new(request);
@@ -108,10 +98,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     loop {
         let result = try_commit_view::<C, A, S>(
             CommitViewContext {
-                warehouse_id,
-                namespace_id,
-                view_id,
-                identifier: &identifier,
+                view_info: &view_info,
                 storage_profile,
                 storage_secret_id,
                 request: request.as_ref(),
@@ -162,10 +149,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
 // Context structure to hold static parameters for retry function
 struct CommitViewContext<'a> {
-    warehouse_id: WarehouseId,
-    namespace_id: NamespaceId,
-    view_id: ViewId,
-    identifier: &'a TableIdent,
+    view_info: &'a ViewInfo,
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretIdent>,
     request: &'a CommitViewRequest,
@@ -173,6 +157,7 @@ struct CommitViewContext<'a> {
 }
 
 // Core commit logic that may be retried
+#[allow(clippy::too_many_lines)]
 async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
@@ -181,49 +166,59 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
-    let ViewMetadataWithLocation {
-        metadata_location: previous_metadata_location,
-        metadata: before_update_metadata,
-    } = C::load_view(ctx.warehouse_id, ctx.view_id, false, t.transaction()).await?;
-    let previous_view_location = parse_view_location(before_update_metadata.location())?;
-    let previous_metadata_location = parse_view_location(&previous_metadata_location)?;
+    let previous_view = C::load_view(
+        ctx.view_info.warehouse_id,
+        ctx.view_info.tabular_id,
+        false,
+        t.transaction(),
+    )
+    .await?;
+
+    let previous_view_location = Location::from_str(previous_view.metadata.location())
+        .map_err(InternalParseLocationError::from)?;
+    let previous_metadata_location = previous_view.metadata_location.clone();
 
     state
         .v1_state
         .contract_verifiers
-        .check_view_updates(&ctx.request.updates, &before_update_metadata)
+        .check_view_updates(&ctx.request.updates, &previous_view.metadata)
         .await?
         .into_result()?;
 
-    let (requested_update_metadata, delete_old_location) = build_new_metadata(
+    let (new_metadata, delete_old_location) = build_new_metadata(
         ctx.request.clone(),
-        before_update_metadata.clone(),
+        (*previous_view.metadata).clone(),
         &previous_view_location,
     )?;
+    let new_metadata = Arc::new(new_metadata);
 
-    let view_location = parse_view_location(requested_update_metadata.location())?;
+    let new_location =
+        Location::from_str(new_metadata.location()).map_err(InternalParseLocationError::from)?;
     let metadata_location = ctx.storage_profile.default_metadata_location(
-        &view_location,
-        &CompressionCodec::try_from_properties(requested_update_metadata.properties())?,
+        &new_location,
+        &CompressionCodec::try_from_properties(new_metadata.properties())?,
         Uuid::now_v7(),
         extract_count_from_metadata_location(&previous_metadata_location).map_or(0, |v| v + 1),
     );
 
     if delete_old_location.is_some() {
         ctx.storage_profile
-            .require_allowed_location(&view_location)?;
+            .require_allowed_location(&new_location)?;
     }
 
-    C::update_view_metadata(
+    let new_view = CatalogView {
+        metadata: new_metadata.clone(),
+        metadata_location,
+        location: new_location,
+    };
+
+    C::commit_view(
         ViewCommit {
-            warehouse_id: ctx.warehouse_id,
-            namespace_id: ctx.namespace_id,
-            view_id: ctx.view_id,
-            view_ident: ctx.identifier,
-            new_metadata_location: &metadata_location,
-            previous_metadata_location: &previous_metadata_location,
-            metadata: requested_update_metadata.clone(),
-            new_location: &view_location,
+            view_ident: &ctx.view_info.tabular_ident,
+            previous_view: &previous_view,
+            namespace_id: ctx.view_info.namespace_id,
+            warehouse_id: ctx.view_info.warehouse_id,
+            new_view: &new_view,
         },
         t.transaction(),
     )
@@ -247,13 +242,16 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
     write_file(
         &file_io,
-        &metadata_location,
-        &requested_update_metadata,
-        CompressionCodec::try_from_metadata(&requested_update_metadata)?,
+        &new_view.metadata_location,
+        &new_metadata,
+        CompressionCodec::try_from_metadata(&new_metadata)?,
     )
     .await?;
 
-    tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
+    tracing::debug!(
+        "Wrote new view metadata file to: '{}'",
+        new_view.metadata_location
+    );
 
     // Generate config for client
     let config = ctx
@@ -261,11 +259,11 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .generate_table_config(
             ctx.data_access,
             storage_secret.as_ref(),
-            &metadata_location,
+            &new_view.metadata_location,
             StoragePermissions::ReadWriteDelete,
             request_metadata,
-            ctx.warehouse_id,
-            ctx.view_id.into(),
+            ctx.view_info.warehouse_id,
+            ctx.view_info.tabular_id.into(),
         )
         .await?;
 
@@ -277,26 +275,32 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
         let _ = remove_all(&file_io, before_update_view_location)
             .await
-            .inspect(|()| tracing::trace!("Deleted old view location"))
-            .inspect_err(|e| tracing::error!("Failed to delete old view location: {e:?}"));
+            .inspect(|()| {
+                tracing::debug!("Deleted old view location {before_update_view_location}");
+            })
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Failed to delete old view location '{before_update_view_location}': {e:?}"
+                );
+            });
     }
 
     Ok((
         LoadViewResult {
-            metadata_location: metadata_location.to_string(),
-            metadata: requested_update_metadata.clone(),
+            metadata_location: new_view.metadata_location.to_string(),
+            metadata: new_metadata.clone(),
             config: Some(config.config.into()),
         },
         crate::service::endpoint_hooks::ViewCommit {
-            old_metadata: before_update_metadata,
-            new_metadata: requested_update_metadata,
+            old_metadata: previous_view.metadata,
+            new_metadata,
             old_metadata_location: previous_metadata_location,
-            new_metadata_location: metadata_location,
+            new_metadata_location: new_view.metadata_location,
         },
     ))
 }
 
-fn check_asserts(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {
+fn check_requirements(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {
     if let Some(requirements) = requirements {
         for assertion in requirements {
             match assertion {

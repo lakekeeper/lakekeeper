@@ -1,21 +1,25 @@
+use std::str::FromStr as _;
+
 use iceberg_ext::catalog::rest::LoadViewResult;
+use lakekeeper_io::Location;
 
 use crate::{
     api::{
         iceberg::v1::{DataAccessMode, ViewParameters},
-        set_not_found_status_code, ApiContext,
+        ApiContext,
     },
     request_metadata::RequestMetadata,
     server::{
         require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident},
-        views::parse_view_location,
     },
     service::{
-        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        authz::{
+            AuthZCannotSeeView, AuthZViewOps, Authorizer, CatalogViewAction, RequireViewActionError,
+        },
         storage::{StorageCredential, StoragePermissions},
-        CatalogStore, CatalogWarehouseOps, GetWarehouseResponse, Result, SecretStore, State,
-        Transaction, ViewMetadataWithLocation,
+        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogViewOps, CatalogWarehouseOps,
+        GetWarehouseResponse, InternalParseLocationError, Result, SecretStore, State, Transaction,
     },
 };
 
@@ -29,12 +33,6 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    // ToDo: Remove workaround when hierarchical namespaces are supported.
-    // It is important for now to throw a 404 if a table cannot be found,
-    // because spark might check if `table`.`branch` exists, which should return 404.
-    // Only then will it treat it as a branch.
-    // 404 is returned by the logic in the remainder of this function. Here, we only
-    // need to make sure that we don't fail prematurely on longer namespaces.
     match validate_table_or_view_ident(&view) {
         Ok(()) => {}
         Err(e) => {
@@ -46,25 +44,34 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
-    authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-    let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // We can't fail before AuthZ
-    let view_id = authorizer
-        .require_view_action(
-            &request_metadata,
-            warehouse_id,
-            view_id,
-            CatalogViewAction::CanGetMetadata,
-        )
-        .await
-        .map_err(set_not_found_status_code)?;
 
+    let view_info = C::get_view_info(
+        warehouse_id,
+        view.clone(),
+        crate::service::TabularListFlags::active(),
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .map_err(RequireViewActionError::from)?
+    .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, view.clone()))?;
+
+    let view_id = view_info.view_id();
+
+    let [can_load, can_write] = authorizer
+        .are_allowed_view_actions_arr(
+            &request_metadata,
+            &view_info,
+            &[
+                CatalogViewAction::CanGetMetadata,
+                CatalogViewAction::CanCommit,
+            ],
+        )
+        .await?
+        .into_inner();
+
+    if !can_load {
+        return Err(AuthZCannotSeeView::new(warehouse_id, view.clone()).into());
+    }
     // ------------------- BUSINESS LOGIC -------------------
     let GetWarehouseResponse {
         id: _,
@@ -75,17 +82,15 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         status,
         tabular_delete_profile: _,
         protected: _,
-    } = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog).await?;
+    } = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
     require_active_warehouse(status)?;
 
-    let ViewMetadataWithLocation {
-        metadata_location,
-        metadata: view_metadata,
-    } = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
-
-    let view_location = parse_view_location(view_metadata.location())?;
-
+    let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+    let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
     t.commit().await?;
+
+    let view_location =
+        Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;
 
     let storage_secret: Option<StorageCredential> = if let Some(secret_id) = storage_secret_id {
         Some(
@@ -100,21 +105,26 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         None
     };
 
+    let storage_permissions = if can_write {
+        StoragePermissions::ReadWriteDelete
+    } else {
+        StoragePermissions::Read
+    };
+
     let access = storage_profile
         .generate_table_config(
             data_access,
             storage_secret.as_ref(),
             &view_location,
-            // TODO: This should be a permission based on authz
-            StoragePermissions::ReadWriteDelete,
+            storage_permissions,
             &request_metadata,
             warehouse_id,
             view_id.into(),
         )
         .await?;
     let load_table_result = LoadViewResult {
-        metadata_location: metadata_location.clone(),
-        metadata: view_metadata,
+        metadata_location: view.metadata_location.to_string(),
+        metadata: view.metadata,
         config: Some(access.config.into()),
     };
 

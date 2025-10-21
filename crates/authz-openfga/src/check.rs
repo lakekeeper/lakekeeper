@@ -3,11 +3,11 @@ use lakekeeper::{
     api::{ApiContext, RequestMetadata},
     axum::{extract::State as AxumState, Extension, Json},
     iceberg::{NamespaceIdent, TableIdent},
-    server::{tables::authorized_table_ident_to_id, views::authorized_view_ident_to_id},
     service::{
-        authz::{Authorizer, AuthzNamespaceOps as _},
-        CatalogNamespaceOps, CatalogStore, NamespaceId, NamespaceIdentOrId, Result, SecretStore,
-        State, TableId, TabularListFlags, Transaction, ViewId,
+        authz::{AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps as _},
+        AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId, TableIdentOrId,
+        TabularListFlags, ViewId, ViewIdentOrId,
     },
     ProjectId, WarehouseId,
 };
@@ -217,7 +217,7 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
             warehouse_id,
         } => (*warehouse_id, NamespaceIdentOrId::from(namespace.clone())),
     };
-    let namespace = C::require_namespace(
+    let namespace = C::get_namespace(
         warehouse_id,
         user_provided_ns.clone(),
         api_context.v1_state.catalog,
@@ -240,44 +240,37 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
     let action = for_principal.map_or(AllTableRelations::CanGetMetadata, |_| {
         AllTableRelations::CanReadAssignments
     });
-    Ok(match table {
+
+    let (warehouse_id, table) = match table {
         TabularIdentOrUuid::IdInWarehouse {
             warehouse_id,
             table_id,
-        } => {
-            let table_id = TableId::from(*table_id);
-            authorizer
-                .require_table_action(metadata, *warehouse_id, Ok(Some(table_id)), action)
-                .await?;
-            (*warehouse_id, table_id).to_openfga()
-        }
+        } => (*warehouse_id, TableIdentOrId::Id(TableId::from(*table_id))),
         TabularIdentOrUuid::Name {
             namespace,
             table,
             warehouse_id,
-        } => {
-            let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
-            let table_id = authorized_table_ident_to_id::<C, _>(
-                authorizer.clone(),
-                metadata,
-                *warehouse_id,
-                &TableIdent {
-                    namespace: namespace.clone(),
-                    name: table.clone(),
-                },
-                TabularListFlags {
-                    include_active: true,
-                    include_staged: false,
-                    include_deleted: false,
-                },
-                action,
-                t.transaction(),
-            )
-            .await?;
-            t.commit().await.ok();
-            (*warehouse_id, table_id).to_openfga()
-        }
-    })
+        } => (
+            *warehouse_id,
+            TableIdentOrId::Ident(TableIdent {
+                namespace: namespace.clone(),
+                name: table.clone(),
+            }),
+        ),
+    };
+
+    let table_info = C::get_table_info(
+        warehouse_id,
+        table.clone(),
+        TabularListFlags::active(),
+        api_context.v1_state.catalog,
+    )
+    .await;
+    let table_info = authorizer
+        .require_table_action(metadata, warehouse_id, table, table_info, action)
+        .await?;
+
+    Ok((warehouse_id, table_info.table_id()).to_openfga())
 }
 
 async fn check_view<C: CatalogStore, S: SecretStore>(
@@ -290,39 +283,37 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
     let action = for_principal.map_or(AllViewRelations::CanGetMetadata, |_| {
         AllViewRelations::CanReadAssignments
     });
-    Ok(match view {
+
+    let (warehouse_id, view) = match view {
         TabularIdentOrUuid::IdInWarehouse {
             warehouse_id,
             table_id,
-        } => {
-            let view_id = ViewId::from(*table_id);
-            authorizer
-                .require_view_action(metadata, *warehouse_id, Ok(Some(view_id)), action)
-                .await?;
-            (*warehouse_id, view_id).to_openfga()
-        }
+        } => (*warehouse_id, ViewIdentOrId::Id(ViewId::from(*table_id))),
         TabularIdentOrUuid::Name {
             namespace,
             table,
             warehouse_id,
-        } => {
-            let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
-            let view_id = authorized_view_ident_to_id::<C, _>(
-                authorizer.clone(),
-                metadata,
-                *warehouse_id,
-                &TableIdent {
-                    namespace: namespace.clone(),
-                    name: table.clone(),
-                },
-                action,
-                t.transaction(),
-            )
-            .await?;
-            t.commit().await.ok();
-            (*warehouse_id, view_id).to_openfga()
-        }
-    })
+        } => (
+            *warehouse_id,
+            ViewIdentOrId::Ident(TableIdent {
+                namespace: namespace.clone(),
+                name: table.clone(),
+            }),
+        ),
+    };
+
+    let view_info = C::get_view_info(
+        warehouse_id,
+        view.clone(),
+        TabularListFlags::active(),
+        api_context.v1_state.catalog,
+    )
+    .await;
+    let view_info = authorizer
+        .require_view_action(metadata, warehouse_id, view, view_info, action)
+        .await?;
+
+    Ok((warehouse_id, view_info.view_id()).to_openfga())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]

@@ -10,8 +10,10 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tabular::list_entities},
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction},
-        CatalogNamespaceOps, CatalogStore, SecretStore, State, Transaction,
+        authz::{
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction,
+        },
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, SecretStore, State, Transaction,
     },
 };
 
@@ -32,7 +34,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let namespace = C::require_namespace(
+    let namespace = C::get_namespace(
         warehouse_id,
         &provided_namespace,
         state.v1_state.catalog.clone(),
@@ -52,7 +54,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
     // ------------------- BUSINESS LOGIC -------------------
     let mut t: <C as CatalogStore>::Transaction =
         C::Transaction::begin_read(state.v1_state.catalog).await?;
-    let (identifiers, view_uuids, next_page_token) =
+    let (view_infos, view_uuids, next_page_token) =
         crate::server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token,
@@ -62,16 +64,16 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
         .await?;
     t.commit().await?;
 
-    let mut idents = Vec::with_capacity(identifiers.len());
-    let mut protection_status = Vec::with_capacity(identifiers.len());
-    for ident in identifiers {
-        idents.push(ident.table_ident);
-        protection_status.push(ident.protected);
+    let mut identifiers = Vec::with_capacity(view_infos.len());
+    let mut protection_status = Vec::with_capacity(view_infos.len());
+    for view_info in view_infos {
+        identifiers.push(view_info.tabular.tabular_ident);
+        protection_status.push(view_info.tabular.protected);
     }
 
     Ok(ListTablesResponse {
         next_page_token,
-        identifiers: idents,
+        identifiers,
         table_uuids: return_uuids.then_some(view_uuids.into_iter().map(|id| *id).collect()),
         protection_status: query.return_protection_status.then_some(protection_status),
     })

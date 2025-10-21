@@ -8,12 +8,11 @@ use lakekeeper::{
     service::{
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CatalogProjectAction, CatalogRoleAction,
-            CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-            ListProjectsResponse, NamespaceParent,
+            CatalogServerAction, CatalogUserAction, ListProjectsResponse, NamespaceParent,
         },
         health::Health,
-        Actor, CatalogStore, ErrorModel, Namespace, NamespaceId, RoleId, SecretStore, ServerId,
-        State, TableId, UserId, ViewId,
+        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, Namespace, NamespaceId,
+        RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
     utoipa, ProjectId, WarehouseId,
@@ -71,6 +70,8 @@ impl OpenFGAAuthorizer {
 impl Authorizer for OpenFGAAuthorizer {
     type WarehouseAction = WarehouseRelation;
     type NamespaceAction = NamespaceRelation;
+    type TableAction = TableRelation;
+    type ViewAction = ViewRelation;
 
     fn implementation_name() -> &'static str {
         "openfga"
@@ -346,16 +347,14 @@ impl Authorizer for OpenFGAAuthorizer {
         self.batch_check(items).await.map_err(Into::into)
     }
 
-    async fn is_allowed_table_action_impl<A>(
+    async fn is_allowed_table_action_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        table_id: TableId,
-        action: A,
-    ) -> AuthorizerResult<bool>
-    where
-        A: From<CatalogTableAction> + std::fmt::Display + Send,
-    {
+        table: &impl AuthZTableInfo,
+        action: Self::TableAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
+        let warehouse_id = table.warehouse_id();
+        let table_id = table.table_id();
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -365,60 +364,48 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_table_actions_impl<A>(
+    async fn are_allowed_table_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        tables_with_actions: Vec<(TableId, A)>,
-    ) -> AuthorizerResult<Vec<bool>>
-    where
-        A: From<CatalogTableAction> + std::fmt::Display + Send,
-    {
+        tables_with_actions: &[(&impl AuthZTableInfo, Self::TableAction)],
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = tables_with_actions
-            .into_iter()
-            .map(|(table_id, a)| CheckRequestTupleKey {
+            .iter()
+            .map(|(table, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
-                object: (warehouse_id, table_id).to_openfga(),
+                object: (table.warehouse_id(), table.table_id()).to_openfga(),
             })
             .collect();
         self.batch_check(items).await.map_err(Into::into)
     }
 
-    async fn is_allowed_view_action_impl<A>(
+    async fn is_allowed_view_action_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        view_id: ViewId,
-        action: A,
-    ) -> AuthorizerResult<bool>
-    where
-        A: From<CatalogViewAction> + std::fmt::Display + Send,
-    {
+        view: &impl AuthZViewInfo,
+        action: Self::ViewAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: (warehouse_id, view_id).to_openfga(),
+            object: (view.warehouse_id(), view.view_id()).to_openfga(),
         })
         .await
         .map_err(Into::into)
     }
 
-    async fn are_allowed_view_actions_impl<A>(
+    async fn are_allowed_view_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        views_with_actions: Vec<(ViewId, A)>,
-    ) -> AuthorizerResult<Vec<bool>>
-    where
-        A: From<CatalogViewAction> + std::fmt::Display + Send,
-    {
+        views_with_actions: &[(&impl AuthZViewInfo, Self::ViewAction)],
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = views_with_actions
-            .into_iter()
-            .map(|(view_id, a)| CheckRequestTupleKey {
+            .iter()
+            .map(|(view, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
-                object: (warehouse_id, view_id).to_openfga(),
+                object: (view.warehouse_id(), view.view_id()).to_openfga(),
             })
             .collect();
         self.batch_check(items).await.map_err(Into::into)

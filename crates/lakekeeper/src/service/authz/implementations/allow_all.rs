@@ -16,8 +16,8 @@ use crate::{
             NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, CatalogStore, Namespace, NamespaceId, ProjectId, RoleId, SecretStore, ServerId,
-        State, TableId, ViewId, WarehouseId,
+        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, Namespace, NamespaceId, ProjectId,
+        RoleId, SecretStore, ServerId, State, TableId, ViewId, WarehouseId,
     },
 };
 
@@ -53,6 +53,8 @@ pub(super) struct ApiDoc;
 impl Authorizer for AllowAllAuthorizer {
     type WarehouseAction = CatalogWarehouseAction;
     type NamespaceAction = CatalogNamespaceAction;
+    type TableAction = CatalogTableAction;
+    type ViewAction = CatalogViewAction;
 
     fn implementation_name() -> &'static str {
         "allow-all"
@@ -146,29 +148,21 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_table_action_impl<A>(
+    async fn is_allowed_table_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
-        _table_id: TableId,
-        _action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogTableAction> + std::fmt::Display + Send,
-    {
+        _table: &impl AuthZTableInfo,
+        _action: Self::TableAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
-    async fn is_allowed_view_action_impl<A>(
+    async fn is_allowed_view_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
-        _view_id: ViewId,
-        _action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogViewAction> + std::fmt::Display + Send,
-    {
+        _view: &impl AuthZViewInfo,
+        _action: Self::ViewAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 

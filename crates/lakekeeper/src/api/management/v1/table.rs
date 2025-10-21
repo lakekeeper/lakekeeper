@@ -2,8 +2,9 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{Authorizer, CatalogTableAction},
-        CatalogStore, SecretStore, State, TableId, TabularId, Transaction,
+        authz::{AuthZTableOps, Authorizer, CatalogTableAction},
+        CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularId, TabularListFlags,
+        Transaction,
     },
     WarehouseId,
 };
@@ -27,17 +28,24 @@ where
     ) -> Result<ProtectionResponse> {
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-
+        let table = C::get_table_info(
+            warehouse_id,
+            table_id,
+            TabularListFlags::all(),
+            state.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_table_action(
                 &request_metadata,
                 warehouse_id,
-                Ok(Some(table_id)),
+                table_id,
+                table,
                 CatalogTableAction::CanDrop,
             )
             .await?;
 
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let status = C::set_tabular_protected(
             warehouse_id,
             TabularId::Table(table_id),
@@ -46,7 +54,10 @@ where
         )
         .await?;
         t.commit().await?;
-        Ok(status)
+        Ok(ProtectionResponse {
+            protected: status.protected(),
+            updated_at: status.updated_at(),
+        })
     }
 
     async fn get_table_protection(
@@ -57,19 +68,28 @@ where
     ) -> Result<ProtectionResponse> {
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
 
-        authorizer
+        let info = C::get_table_info(
+            warehouse_id,
+            table_id,
+            TabularListFlags::all(),
+            state.v1_state.catalog,
+        )
+        .await;
+
+        let info = authorizer
             .require_table_action(
                 &request_metadata,
                 warehouse_id,
-                Ok(Some(table_id)),
+                table_id,
+                info,
                 CatalogTableAction::CanGetMetadata,
             )
             .await?;
-        let status =
-            C::get_tabular_protected(warehouse_id, table_id.into(), t.transaction()).await?;
-        t.commit().await?;
-        Ok(status)
+
+        Ok(ProtectionResponse {
+            protected: info.protected,
+            updated_at: info.updated_at,
+        })
     }
 }

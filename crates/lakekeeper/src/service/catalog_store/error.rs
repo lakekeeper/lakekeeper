@@ -4,7 +4,7 @@ use std::{
 };
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 // Add this macro near the top of the file, after the imports
 macro_rules! impl_error_stack_methods {
@@ -60,7 +60,7 @@ macro_rules! define_transparent_error {
         ]
     ) => {
         $(#[$meta])*
-        #[derive(thiserror::Error, Debug, PartialEq)]
+        #[derive(thiserror::Error, Debug)]
         $vis enum $error_name {
             $(
                 #[error(transparent)]
@@ -77,8 +77,19 @@ macro_rules! define_transparent_error {
 
             impl $error_name {
                 #[must_use]
-                pub fn append_detail(mut self, detail: String) -> Self {
+                pub fn append_detail(mut self, detail: impl Into<String>) -> Self {
                     match &mut self {
+                        $(
+                            $error_name::$variant(e) => {
+                                e.append_detail_mut(detail);
+                            }
+                        )*
+                    }
+                    self
+                }
+
+                pub fn append_detail_mut(&mut self, detail: impl Into<String>) -> &mut Self {
+                    match self {
                         $(
                             $error_name::$variant(e) => {
                                 e.append_detail_mut(detail);
@@ -110,7 +121,7 @@ macro_rules! define_transparent_error {
 
 macro_rules! define_simple_error {
     ($error_name:ident, $error_message:literal) => {
-        #[derive(thiserror::Error, Debug, PartialEq, Eq)]
+        #[derive(thiserror::Error, Debug)]
         #[error($error_message)]
         pub struct $error_name {
             pub stack: Vec<String>,
@@ -212,7 +223,7 @@ impl Display for CatalogBackendError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct DatabaseIntegrityError {
     pub message: String,
     pub stack: Vec<String>,
@@ -350,5 +361,10 @@ impl From<InvalidPaginationToken> for ErrorModel {
             stack,
             source: None,
         }
+    }
+}
+impl From<InvalidPaginationToken> for IcebergErrorResponse {
+    fn from(err: InvalidPaginationToken) -> Self {
+        ErrorModel::from(err).into()
     }
 }

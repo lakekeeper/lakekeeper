@@ -92,8 +92,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut can_list_everything = can_list_everything;
         if let Some(parent_ident) = parent {
             let parent_namespace =
-                C::require_namespace(warehouse_id, parent_ident, state.v1_state.catalog.clone())
-                    .await;
+                C::get_namespace(warehouse_id, parent_ident, state.v1_state.catalog.clone()).await;
 
             let parent_namespace = authorizer
                 .require_namespace_action(
@@ -240,7 +239,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let authorizer = state.v1_state.authz;
 
         let parent_namespace = if let Some(namespace_parent) = namespace.parent() {
-            let parent_namespace = C::require_namespace(
+            let parent_namespace = C::get_namespace(
                 warehouse_id,
                 &namespace_parent,
                 state.v1_state.catalog.clone(),
@@ -315,7 +314,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
         let namespace =
-            C::require_namespace(warehouse_id, &parameters.namespace, state.v1_state.catalog).await;
+            C::get_namespace(warehouse_id, &parameters.namespace, state.v1_state.catalog).await;
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
@@ -351,7 +350,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let namespace = C::require_namespace(
+        let namespace = C::get_namespace(
             warehouse_id,
             &parameters.namespace,
             state.v1_state.catalog.clone(),
@@ -394,7 +393,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let namespace = C::require_namespace(
+        let namespace = C::get_namespace(
             warehouse_id,
             &parameters.namespace,
             state.v1_state.catalog.clone(),
@@ -462,7 +461,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let namespace = C::require_namespace(
+        let namespace = C::get_namespace(
             warehouse_id,
             &parameters.namespace,
             state.v1_state.catalog.clone(),
@@ -534,7 +533,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         entity_name: tabular_ident.clone().into_name_parts(),
                     },
                     TabularPurgePayload {
-                        tabular_location: tabular_location.clone(),
+                        tabular_location: tabular_location.to_string(),
                     },
                     t.transaction(),
                 )
@@ -869,6 +868,7 @@ mod tests {
                             &ctx.v1_state.catalog.read_pool(),
                         )
                         .await
+                        .unwrap()
                         .unwrap()
                         .namespace_id
                     ));

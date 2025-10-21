@@ -2,17 +2,9 @@ use crate::{
     server::tables::parse_location,
     service::{
         storage::{StorageLocations as _, StorageProfile},
-        Namespace, TabularId, TabularListFlags,
+        Namespace, TabularId,
     },
 };
-
-pub(crate) fn default_view_flags() -> bool {
-    false
-}
-
-pub(crate) fn default_table_flags() -> TabularListFlags {
-    TabularListFlags::active()
-}
 
 pub(super) fn determine_tabular_location(
     namespace: &Namespace,
@@ -60,14 +52,13 @@ macro_rules! list_entities {
     ($entity:ident, $list_fn:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
         |ps, page_token, trx| {
             use ::paste::paste;
-            paste! {
-                use crate::server::tabular::[<default_ $entity:snake _flags>] as default_flags;
-            }
-            use crate::server::UnfilteredPage;
+
+            use crate::{server::UnfilteredPage, service::TabularListFlags};
             // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
             let warehouse_id = $namespace_response.warehouse_id;
+            let namespace_id = $namespace_response.namespace_id;
             let namespace_response = $namespace_response.clone();
             async move {
                 let query = crate::api::iceberg::v1::PaginationQuery {
@@ -75,8 +66,9 @@ macro_rules! list_entities {
                     page_token: page_token.into(),
                 };
                 let entities = C::$list_fn(
-                    &namespace_response,
-                    default_flags(),
+                    warehouse_id,
+                    Some(namespace_id),
+                    TabularListFlags::active(),
                     trx.transaction(),
                     query,
                 )
@@ -99,13 +91,12 @@ macro_rules! list_entities {
                     vec![true; ids.len()]
                 } else {
                     paste! {
-                        authorizer.[<are_allowed_ $entity:lower _actions>](
+                        authorizer.[<are_allowed_ $entity:lower _actions_vec>](
                             &request_metadata,
-                            warehouse_id,
-                            ids.iter().map(|id| (
-                                *id,
+                            &idents.iter().map(|id| (
+                                id,
                                 [<Catalog $entity Action>]::CanIncludeInList)
-                            ).collect(),
+                            ).collect::<Vec<_>>(),
                         ).await?.into_inner()
                     }
                 };

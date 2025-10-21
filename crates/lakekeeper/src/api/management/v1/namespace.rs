@@ -29,7 +29,7 @@ where
         let authorizer = state.v1_state.authz.clone();
 
         let namespace =
-            C::require_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
+            C::get_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
 
         authorizer
             .require_namespace_action(
@@ -67,7 +67,7 @@ where
         let authorizer = state.v1_state.authz.clone();
 
         let namespace =
-            C::require_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
+            C::get_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
 
         let namespace = authorizer
             .require_namespace_action(

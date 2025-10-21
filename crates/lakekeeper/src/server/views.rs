@@ -6,12 +6,7 @@ mod list;
 mod load;
 mod rename;
 
-use std::str::FromStr;
-
-#[allow(unused_imports)]
-pub use exists::authorized_view_ident_to_id;
-use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
-use lakekeeper_io::Location;
+use iceberg_ext::catalog::rest::ViewUpdate;
 
 use super::{tables::validate_table_properties, CatalogServer};
 use crate::{
@@ -125,16 +120,6 @@ fn validate_view_updates(updates: &Vec<ViewUpdate>) -> Result<()> {
     Ok(())
 }
 
-fn parse_view_location(location: &str) -> Result<Location> {
-    Ok(Location::from_str(location).map_err(|e| {
-        ErrorModel::internal(
-            format!("Invalid view location in DB: {e}"),
-            "InvalidViewLocation",
-            Some(Box::new(e)),
-        )
-    })?)
-}
-
 #[cfg(test)]
 mod test {
     use iceberg::{NamespaceIdent, TableIdent};
@@ -159,7 +144,7 @@ mod test {
         service::{
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
-            CatalogStore, Namespace, State, ViewId,
+            CatalogTabularOps, CatalogViewOps as _, Namespace, State, TabularListFlags, ViewId,
         },
         WarehouseId,
     };
@@ -191,7 +176,6 @@ mod test {
             None,
         )
         .await
-        .1
         .namespace_ident;
         (api_context, namespace, warehouse_id)
     }
@@ -228,8 +212,13 @@ mod test {
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
         let views = PostgresBackend::list_views(
-            namespace,
-            include_deleted,
+            namespace.warehouse_id,
+            Some(namespace.namespace_id),
+            TabularListFlags {
+                include_deleted,
+                include_active: true,
+                include_staged: false,
+            },
             &mut read_tx,
             PaginationQuery::empty(),
         )
@@ -254,8 +243,13 @@ mod test {
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
         let views = PostgresBackend::list_views(
-            namespace,
-            include_deleted,
+            namespace.warehouse_id,
+            Some(namespace.namespace_id),
+            TabularListFlags {
+                include_deleted,
+                include_active: true,
+                include_staged: false,
+            },
             &mut read_tx,
             PaginationQuery::empty(),
         )
@@ -286,7 +280,7 @@ mod test {
         // Create views with the same table ID across different warehouses.
         for (wh_id, namespace, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
-            let meta = view_request(Some(*v_id), &location);
+            let view_metadata = view_request(Some(*v_id), &location);
             let ident = TableIdent {
                 namespace: ns_params.namespace.clone(),
                 name: v_name.clone(),
@@ -296,9 +290,8 @@ mod test {
                 *wh_id,
                 namespace.namespace_id,
                 &ident,
-                meta,
+                &view_metadata,
                 &meta_location,
-                &location,
                 &mut tx,
             )
             .await
@@ -364,7 +357,7 @@ mod test {
 
         // As the delete was hard, the view can be recreated in the warehouse.
         let (location, meta_location) = new_random_location();
-        let meta = view_request(Some(*v_id), &location);
+        let view_metadata = view_request(Some(*v_id), &location);
         let ident = TableIdent {
             namespace: deleted_view_data.2.namespace.clone(),
             name: v_name.clone(),
@@ -374,9 +367,8 @@ mod test {
             deleted_view_data.0,
             deleted_view_data.1.namespace_id,
             &ident,
-            meta,
+            &view_metadata,
             &meta_location,
-            &location,
             &mut tx,
         )
         .await
@@ -412,7 +404,7 @@ mod test {
         // Create views with the same table ID across different warehouses.
         for (wh_id, namespace, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
-            let meta = view_request(Some(*v_id), &location);
+            let view_metadata = view_request(Some(*v_id), &location);
             let ident = TableIdent {
                 namespace: ns_params.namespace.clone(),
                 name: v_name.clone(),
@@ -422,9 +414,8 @@ mod test {
                 *wh_id,
                 namespace.namespace_id,
                 &ident,
-                meta,
+                &view_metadata,
                 &meta_location,
-                &location,
                 &mut tx,
             )
             .await

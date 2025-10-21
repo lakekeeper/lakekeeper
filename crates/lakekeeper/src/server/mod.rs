@@ -10,7 +10,7 @@ pub mod tables;
 pub(crate) mod tabular;
 pub mod views;
 
-use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
@@ -27,21 +27,59 @@ use crate::{
     WarehouseId, CONFIG,
 };
 
-pub trait CommonMetadata {
+pub trait MetadataProperties {
     fn properties(&self) -> &HashMap<String, String>;
 }
 
-impl CommonMetadata for TableMetadata {
-    fn properties(&self) -> &HashMap<String, String> {
-        TableMetadata::properties(self)
-    }
+macro_rules! impl_metadata_properties {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl MetadataProperties for $ty {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.properties()
+                }
+            }
+
+            impl MetadataProperties for &$ty {
+                fn properties(&self) -> &HashMap<String, String> {
+                    (*self).properties()
+                }
+            }
+
+            impl MetadataProperties for &mut $ty {
+                fn properties(&self) -> &HashMap<String, String> {
+                    (**self).properties()
+                }
+            }
+
+            impl MetadataProperties for Arc<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+
+            impl MetadataProperties for &Arc<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+
+            impl MetadataProperties for Box<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+
+            impl MetadataProperties for &Box<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+        )+
+    };
 }
 
-impl CommonMetadata for ViewMetadata {
-    fn properties(&self) -> &HashMap<String, String> {
-        ViewMetadata::properties(self)
-    }
-}
+impl_metadata_properties!(TableMetadata, ViewMetadata);
 
 #[derive(Clone, Debug)]
 
@@ -267,7 +305,7 @@ pub(crate) mod test {
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile,
             },
-            CatalogNamespaceOps as _, CreateNamespaceResponse, Namespace, State, UserId,
+            CatalogNamespaceOps, CreateNamespaceResponse, Namespace, State, UserId,
         },
         WarehouseId,
     };
@@ -397,12 +435,13 @@ pub(crate) mod test {
         for wh_id in wh_ids {
             crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
                 .await;
-            let namespace = PostgresBackend::require_namespace(
+            let namespace = PostgresBackend::get_namespace(
                 wh_id,
                 NamespaceIdent::new("myns".to_string()),
                 state.clone(),
             )
             .await
+            .unwrap()
             .unwrap();
             let ns_params = NamespaceParameters {
                 prefix: Some(Prefix(wh_id.to_string())),
@@ -513,7 +552,7 @@ pub(crate) mod test {
 
                     #[sqlx::test]
                     async fn test_pagination_first_page_is_hidden(pool: PgPool) {
-                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
+                             let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
 
                         let mut first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
