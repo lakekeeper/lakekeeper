@@ -218,7 +218,6 @@ async fn prepare_versions(
         view_representation_dialect,
     }: VersionsPrep,
 ) -> Result<HashMap<ViewVersionId, Arc<ViewVersion>>, LoadViewError> {
-    let version_ids = version_ids;
     let version_schema_ids = version_schema_ids.ok_or_else(|| {
         RequiredViewComponentMissing::new(warehouse_id, view_id)
             .append_detail("Version Schema IDs missing")

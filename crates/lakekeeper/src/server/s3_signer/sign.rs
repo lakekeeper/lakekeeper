@@ -444,10 +444,10 @@ fn validate_uri(
     let table_location = S3Location::try_from_location(table_location, true)
         .map_err(|e| ValidationError::from(e.with_context("Error signing request")))?;
 
-    let normalized_table_location = if table_location.scheme() != "s3" {
-        Some(table_location.clone().set_s3_scheme())
-    } else {
+    let normalized_table_location = if table_location.scheme() == "s3" {
         None
+    } else {
+        Some(table_location.clone().set_s3_scheme())
     };
 
     for url_location in &parsed_url.locations {
