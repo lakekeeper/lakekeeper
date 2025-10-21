@@ -163,7 +163,7 @@ services:
       iceberg_net:
 
   trino:
-    image: trinodb/trino:477
+    image: trinodb/trino:476
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:

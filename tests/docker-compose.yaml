@@ -241,7 +241,7 @@ services:
       - iceberg_rest_tests
 
   trino:
-    image: trinodb/trino:477
+    image: trinodb/trino:476
     environment:
       - CATALOG_MANAGEMENT=dynamic
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog

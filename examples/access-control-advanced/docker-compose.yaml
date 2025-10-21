@@ -114,7 +114,7 @@ services:
       iceberg_net:
 
   trino-opa:
-    image: trinodb/trino:477
+    image: trinodb/trino:476
     environment:
       - OIDC_ISSUER=http://localhost:30080/realms/iceberg
     healthcheck:
