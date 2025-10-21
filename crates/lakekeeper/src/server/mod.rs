@@ -10,7 +10,7 @@ pub mod tables;
 pub(crate) mod tabular;
 pub mod views;
 
-use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
@@ -27,21 +27,59 @@ use crate::{
     WarehouseId, CONFIG,
 };
 
-pub trait CommonMetadata {
+pub trait MetadataProperties {
     fn properties(&self) -> &HashMap<String, String>;
 }
 
-impl CommonMetadata for TableMetadata {
-    fn properties(&self) -> &HashMap<String, String> {
-        TableMetadata::properties(self)
-    }
+macro_rules! impl_metadata_properties {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl MetadataProperties for $ty {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.properties()
+                }
+            }
+
+            impl MetadataProperties for &$ty {
+                fn properties(&self) -> &HashMap<String, String> {
+                    (*self).properties()
+                }
+            }
+
+            impl MetadataProperties for &mut $ty {
+                fn properties(&self) -> &HashMap<String, String> {
+                    (**self).properties()
+                }
+            }
+
+            impl MetadataProperties for Arc<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+
+            impl MetadataProperties for &Arc<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+
+            impl MetadataProperties for Box<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+
+            impl MetadataProperties for &Box<$ty> {
+                fn properties(&self) -> &HashMap<String, String> {
+                    self.as_ref().properties()
+                }
+            }
+        )+
+    };
 }
 
-impl CommonMetadata for ViewMetadata {
-    fn properties(&self) -> &HashMap<String, String> {
-        ViewMetadata::properties(self)
-    }
-}
+impl_metadata_properties!(TableMetadata, ViewMetadata);
 
 #[derive(Clone, Debug)]
 
@@ -241,7 +279,7 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
-    use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
+    use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -256,7 +294,7 @@ pub(crate) mod test {
             ApiContext,
         },
         implementations::{
-            postgres::{tabular::table::tests::get_namespace_id, PostgresBackend, SecretsState},
+            postgres::{PostgresBackend, SecretsState},
             CatalogState,
         },
         request_metadata::RequestMetadata,
@@ -267,7 +305,7 @@ pub(crate) mod test {
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile,
             },
-            NamespaceId, State, UserId,
+            CatalogNamespaceOps, CreateNamespaceResponse, Namespace, State, UserId,
         },
         WarehouseId,
     };
@@ -369,7 +407,7 @@ pub(crate) mod test {
         delete_profile: TabularDeleteProfile,
     ) -> (
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        Vec<(WarehouseId, NamespaceId, NamespaceParameters)>,
+        Vec<(WarehouseId, Namespace, NamespaceParameters)>,
         String,
     ) {
         let prof = crate::server::test::memory_io_profile();
@@ -393,17 +431,23 @@ pub(crate) mod test {
         assert_eq!(wh_ids.len(), num_warehouses);
 
         let mut wh_ns_data = Vec::with_capacity(num_warehouses);
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for wh_id in wh_ids {
-            let ns =
-                crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
-                    .await;
+            crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
+                .await;
+            let namespace = PostgresBackend::get_namespace(
+                wh_id,
+                NamespaceIdent::new("myns".to_string()),
+                state.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             let ns_params = NamespaceParameters {
                 prefix: Some(Prefix(wh_id.to_string())),
-                namespace: ns.namespace.clone(),
+                namespace: namespace.namespace_ident.clone(),
             };
-            let state = CatalogState::from_pools(pool.clone(), pool.clone());
-            let ns_id = get_namespace_id(state.clone(), wh_id, &ns.namespace).await;
-            wh_ns_data.push((wh_id, ns_id, ns_params));
+            wh_ns_data.push((wh_id, namespace, ns_params));
         }
 
         (ctx, wh_ns_data, base_loc)
@@ -508,7 +552,7 @@ pub(crate) mod test {
 
                     #[sqlx::test]
                     async fn test_pagination_first_page_is_hidden(pool: PgPool) {
-                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
+                             let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
 
                         let mut first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use http::StatusCode;
 use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
@@ -8,9 +7,12 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
+        authz::{
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction,
+        },
         contract_verification::ContractVerification,
-        CatalogStore, Result, SecretStore, State, TabularId, Transaction,
+        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, Result,
+        SecretStore, State, TabularId, TabularListFlags, Transaction,
     },
 };
 
@@ -30,37 +32,45 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     validate_table_or_view_ident(destination)?;
 
     // ------------------- AUTHZ -------------------
+    // Authorization is required for:
+    // 1) creating a view in the destination namespace
+    // 2) renaming the old view
     let authorizer = state.v1_state.authz;
-    authorizer
-        .require_warehouse_action(
+
+    // Check 1)
+    let destination_namespace = C::get_namespace(
+        warehouse_id,
+        &destination.namespace,
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+    let user_provided_namespace = &destination.namespace;
+    let _ = authorizer
+        .require_namespace_action(
             &request_metadata,
             warehouse_id,
-            CatalogWarehouseAction::CanUse,
+            user_provided_namespace,
+            destination_namespace,
+            CatalogNamespaceAction::CanCreateTable,
         )
         .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
-    let source_id = C::view_to_id(warehouse_id, &request.source, t.transaction()).await; // We can't fail before AuthZ;
-    let source_id = authorizer
+    // Check 2)
+    let source_view_info = C::get_view_info(
+        warehouse_id,
+        source.clone(),
+        TabularListFlags::active(),
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+
+    let source_view_info = authorizer
         .require_view_action(
             &request_metadata,
             warehouse_id,
-            source_id,
+            source.clone(),
+            source_view_info,
             CatalogViewAction::CanRename,
-        )
-        .await
-        .map_err(|mut e| {
-            e.error.code = StatusCode::NOT_FOUND.into();
-            e
-        })?;
-    // We need to be allowed to delete the old table and create the new one
-    let namespace_id = C::namespace_to_id(warehouse_id, &source.namespace, t.transaction()).await; // We can't fail before AuthZ
-                                                                                                   // We need to be allowed to delete the old table and create the new one
-    authorizer
-        .require_namespace_action(
-            &request_metadata,
-            namespace_id,
-            CatalogNamespaceAction::CanCreateTable,
         )
         .await?;
 
@@ -69,9 +79,13 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         return Ok(());
     }
 
-    C::rename_view(
+    let source_id = source_view_info.view_id();
+
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+
+    C::rename_tabular(
         warehouse_id,
-        source_id,
+        source_view_info.view_id(),
         source,
         destination,
         t.transaction(),
@@ -103,6 +117,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
 #[cfg(test)]
 mod test {
+    use http::StatusCode;
     use iceberg::{NamespaceIdent, TableIdent};
     use iceberg_ext::catalog::rest::CreateViewRequest;
     use sqlx::PgPool;
@@ -182,8 +197,7 @@ mod test {
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
-                .1
-                .namespace;
+                .namespace_ident;
 
         let view_name = "my-view";
         let rq: CreateViewRequest = create_view_request(Some(view_name), None);

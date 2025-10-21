@@ -86,7 +86,7 @@ async fn test_soft_deletion(pool: PgPool) {
             (
                 table_name.clone(),
                 crate::tests::create_table(
-                    api_context,
+                    api_context.clone(),
                     &warehouse_id,
                     &ns_name,
                     &table_name,

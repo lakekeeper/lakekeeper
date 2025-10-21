@@ -4,19 +4,20 @@ use crate::{
     api::{
         iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
-        set_not_found_status_code, ApiContext,
+        ApiContext,
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         tasks::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        CatalogStore, NamedEntity, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
+        Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
     },
 };
 
@@ -37,29 +38,29 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
-    authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
 
-    let view_id: ViewId = authorizer
+    let view_info = C::get_view_info(
+        warehouse_id,
+        view.clone(),
+        TabularListFlags::all(),
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+    let view_info = authorizer
         .require_view_action(
             &request_metadata,
             warehouse_id,
-            view_id,
+            view.clone(),
+            view_info,
             CatalogViewAction::CanDrop,
         )
-        .await
-        .map_err(set_not_found_status_code)?;
+        .await?;
+    let view_id = view_info.view_id();
 
     // ------------------- BUSINESS LOGIC -------------------
 
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
     state
         .v1_state
@@ -68,11 +69,10 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .await?
         .into_result()?;
 
-    tracing::debug!("Proceeding to delete view");
-
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
-            let location = C::drop_view(warehouse_id, view_id, force, t.transaction()).await?;
+            let location = C::drop_tabular(warehouse_id, view_id, force, t.transaction()).await?;
 
             if purge_requested {
                 TabularPurgeTask::schedule_task::<C>(
@@ -84,13 +84,14 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                         entity_name: view.clone().into_name_parts(),
                     },
                     TabularPurgePayload {
-                        tabular_location: location,
+                        tabular_location: location.to_string(),
                     },
                     t.transaction(),
                 )
                 .await?;
                 tracing::debug!(
-                    "Queued purge task for dropped view '{view_id}' in warehouse {warehouse_id}."
+                    "Queued purge task for dropped view '{}' in warehouse {warehouse_id}.",
+                    view_info.view_ident()
                 );
             }
             t.commit().await?;
@@ -106,7 +107,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
                 TaskMetadata {
-                    entity_id: EntityId::View(view_id),
+                    entity_id: EntityId::View(view_info.view_id()),
                     warehouse_id,
                     parent_task_id: None,
                     schedule_for: Some(chrono::Utc::now() + expiration_seconds),
@@ -124,14 +125,15 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             .await?;
             C::mark_tabular_as_deleted(
                 warehouse_id,
-                TabularId::View(view_id),
+                TabularId::View(view_info.view_id()),
                 force,
                 t.transaction(),
             )
             .await?;
 
             tracing::debug!(
-                "Queued expiration task for dropped view '{view_id}' in warehouse {warehouse_id}."
+                "Queued expiration task for dropped view '{}' with id '{view_id}' in warehouse {warehouse_id}.",
+                view_info.view_ident()
             );
             t.commit().await?;
         }
@@ -242,14 +244,12 @@ mod test {
         // Load expiration task
         let entity = TaskEntity::View {
             view_id: loaded_view.metadata.uuid().into(),
-            warehouse_id: whi,
         };
         let expiration_tasks = ManagementApiServer::list_tasks(
             whi,
             ListTasksRequest::builder()
                 .entities(Some(vec![TaskEntity::View {
                     view_id: loaded_view.metadata.uuid().into(),
-                    warehouse_id: whi,
                 }]))
                 .build(),
             api_context,

@@ -18,9 +18,10 @@ use crate::{
         views::validate_view_properties,
     },
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         storage::{StorageLocations as _, StoragePermissions},
-        CatalogStore, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        CatalogNamespaceOps, CatalogStore, CatalogViewOps, CatalogWarehouseOps, Result,
+        SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
@@ -36,9 +37,12 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 ) -> Result<LoadViewResult> {
     let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
-    let NamespaceParameters { namespace, prefix } = &parameters;
+    let NamespaceParameters {
+        namespace: provided_ns,
+        prefix,
+    } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let view = TableIdent::new(namespace.clone(), request.name.clone());
+    let view = TableIdent::new(provided_ns.clone(), request.name.clone());
 
     validate_table_or_view_ident(&view)?;
     validate_view_properties(request.properties.keys())?;
@@ -54,26 +58,25 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- AUTHZ -------------------
     let authorizer = &state.v1_state.authz;
-    authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-    let namespace_id = C::namespace_to_id(warehouse_id, namespace, t.transaction()).await; // Cannot fail before authz;
-    let namespace_id = authorizer
+
+    let namespace =
+        C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
+
+    let namespace = authorizer
         .require_namespace_action(
             &request_metadata,
-            namespace_id,
+            warehouse_id,
+            provided_ns,
+            namespace,
             CatalogNamespaceAction::CanCreateView,
         )
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
+
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
@@ -111,7 +114,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     .unwrap()
     .assign_uuid(*view_id.as_ref());
 
-    let metadata = view_creation.build().map_err(|e| {
+    let metadata_build_result = view_creation.build().map_err(|e| {
         ErrorModel::bad_request(
             format!("Failed to create view metadata: {e}"),
             "ViewMetadataCreationFailed",
@@ -121,11 +124,10 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     C::create_view(
         warehouse_id,
-        namespace_id,
+        namespace.namespace_id,
         &view,
-        metadata.metadata.clone(),
+        &metadata_build_result.metadata,
         &metadata_location,
-        &view_location,
         t.transaction(),
     )
     .await?;
@@ -135,11 +137,11 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
 
     let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
-    let compression_codec = CompressionCodec::try_from_metadata(&metadata.metadata)?;
+    let compression_codec = CompressionCodec::try_from_metadata(&metadata_build_result.metadata)?;
     write_file(
         &file_io,
         &metadata_location,
-        &metadata.metadata,
+        &metadata_build_result.metadata,
         compression_codec,
     )
     .await?;
@@ -159,7 +161,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             StoragePermissions::Read,
             &request_metadata,
             warehouse_id,
-            ViewId::from(metadata.metadata.uuid()).into(),
+            ViewId::from(metadata_build_result.metadata.uuid()).into(),
         )
         .await?;
 
@@ -167,8 +169,8 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .create_view(
             &request_metadata,
             warehouse_id,
-            ViewId::from(metadata.metadata.uuid()),
-            namespace_id,
+            ViewId::from(metadata_build_result.metadata.uuid()),
+            namespace.namespace_id,
         )
         .await?;
 
@@ -181,7 +183,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             warehouse_id,
             parameters.clone(),
             Arc::new(request),
-            Arc::new(metadata.metadata.clone()),
+            Arc::new(metadata_build_result.metadata.clone()),
             Arc::new(metadata_location.clone()),
             data_access,
             Arc::new(request_metadata),
@@ -190,7 +192,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     let load_view_result = LoadViewResult {
         metadata_location: metadata_location.to_string(),
-        metadata: metadata.metadata,
+        metadata: Arc::new(metadata_build_result.metadata),
         config: Some(config.config.into()),
     };
 
@@ -283,8 +285,7 @@ pub(crate) mod test {
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
-                .1
-                .namespace;
+                .namespace_ident;
 
         let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))
             .await

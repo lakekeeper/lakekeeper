@@ -6,7 +6,7 @@ use std::{
 
 use futures::TryFutureExt;
 use iceberg::{
-    spec::{TableMetadata, TableMetadataRef, ViewMetadata},
+    spec::{TableMetadata, TableMetadataRef, ViewMetadata, ViewMetadataRef},
     TableIdent,
 };
 use iceberg_ext::catalog::rest::{
@@ -25,7 +25,7 @@ use crate::{
         RequestMetadata,
     },
     server::tables::CommitContext,
-    service::{TableId, UndropTabularResponse, ViewId},
+    service::{TableId, TableInfo, ViewId, ViewOrTableInfo},
     WarehouseId,
 };
 
@@ -66,8 +66,8 @@ impl Display for EndpointHookCollection {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit {
-    pub old_metadata: ViewMetadata,
-    pub new_metadata: ViewMetadata,
+    pub old_metadata: ViewMetadataRef,
+    pub new_metadata: ViewMetadataRef,
     pub old_metadata_location: Location,
     pub new_metadata_location: Location,
 }
@@ -85,10 +85,11 @@ impl EndpointHookCollection {
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
         commits: Arc<Vec<CommitContext>>,
-        table_ident_map: Arc<HashMap<TableIdent, TableId, H>>,
+        table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
-        let table_ident_to_id_fn = move |ident: &TableIdent| table_ident_map.get(ident).copied();
+        let table_ident_to_id_fn =
+            move |ident: &TableIdent| table_ident_map.get(ident).map(|t| t.tabular_id);
         futures::future::join_all(self.0.iter().map(|hook| {
             hook.commit_transaction(
                 warehouse_id,
@@ -329,7 +330,7 @@ impl EndpointHookCollection {
         &self,
         warehouse_id: WarehouseId,
         request: Arc<UndropTabularsRequest>,
-        responses: Arc<Vec<UndropTabularResponse>>,
+        responses: Arc<Vec<ViewOrTableInfo>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -476,7 +477,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         &self,
         _warehouse_id: WarehouseId,
         _request: Arc<UndropTabularsRequest>,
-        _responses: Arc<Vec<UndropTabularResponse>>,
+        _responses: Arc<Vec<ViewOrTableInfo>>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())

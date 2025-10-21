@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH active_tasks AS (\n            SELECT \n                task_id,\n                warehouse_id,\n                entity_name,\n                entity_id,\n                entity_type,\n                queue_name\n            FROM task\n            WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)\n        ),\n        missing_task_ids AS (\n            SELECT unnest($1::uuid[]) as task_id\n            EXCEPT\n            SELECT task_id FROM active_tasks\n        ),\n        historical_tasks AS (\n            SELECT DISTINCT ON (task_id)\n                task_id,\n                warehouse_id,\n                entity_name,\n                entity_id,\n                entity_type,\n                queue_name\n            FROM task_log\n            WHERE task_id IN (SELECT task_id FROM missing_task_ids) \n              AND (warehouse_id = $2 OR $3)\n            ORDER BY task_id, attempt DESC\n        )\n        SELECT \n            task_id as \"task_id!\",\n            warehouse_id as \"warehouse_id!\",\n            entity_name as \"entity_name!\",\n            entity_id as \"entity_id!\",\n            entity_type as \"entity_type!: EntityType\",\n            queue_name as \"queue_name!\"\n        FROM active_tasks\n        UNION ALL\n        SELECT \n            task_id as \"task_id!\",\n            warehouse_id as \"warehouse_id!\",\n            entity_name as \"entity_name!\",\n            entity_id as \"entity_id!\",\n            entity_type as \"entity_type!: EntityType\",\n            queue_name as \"queue_name!\"\n        FROM historical_tasks\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "entity_name!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "entity_type!: EntityType",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "queue_name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "03dd06ceb3fd7753e29a721cfa0a804028c76d69c92665a59b1790c5f5b6b219"
+}

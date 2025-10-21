@@ -46,11 +46,9 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
         queue_name: row.queue_name.into(),
         entity: match row.entity_type {
             EntityType::Table => TaskEntity::Table {
-                warehouse_id: row.warehouse_id.into(),
                 table_id: row.entity_id.into(),
             },
             EntityType::View => TaskEntity::View {
-                warehouse_id: row.warehouse_id.into(),
                 view_id: row.entity_id.into(),
             },
         },
@@ -139,15 +137,9 @@ pub(crate) async fn list_tasks(
     let (entity_ids, entity_types) = entities
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|e| match e {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => (entity_warehouse_id == warehouse_id).then_some((*table_id, EntityType::Table)),
-            TaskEntity::View {
-                view_id,
-                warehouse_id: entity_warehouse_id,
-            } => (entity_warehouse_id == warehouse_id).then_some((*view_id, EntityType::View)),
+        .map(|e| match e {
+            TaskEntity::Table { table_id } => (*table_id, EntityType::Table),
+            TaskEntity::View { view_id } => (*view_id, EntityType::View),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -428,12 +420,8 @@ mod tests {
         assert!(result.next_page_token.is_some());
 
         match task.entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
@@ -559,7 +547,6 @@ mod tests {
         // Filter by first entity only
         let request = ListTasksRequest {
             entities: Some(vec![TaskEntity::Table {
-                warehouse_id,
                 table_id: entity_id1.as_uuid().into(),
             }]),
             ..Default::default()
@@ -570,12 +557,8 @@ mod tests {
         assert_eq!(result.tasks[0].task_id, task_id1);
 
         match result.tasks[0].entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id1.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
@@ -1340,7 +1323,6 @@ mod tests {
         let request = ListTasksRequest {
             queue_name: Some(vec![tq_name1.clone()]),
             entities: Some(vec![TaskEntity::Table {
-                warehouse_id,
                 table_id: entity_id1.as_uuid().into(),
             }]),
             ..Default::default()
@@ -1352,12 +1334,8 @@ mod tests {
         assert_eq!(result.tasks[0].queue_name.as_str(), tq_name1.as_str());
 
         match result.tasks[0].entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id1.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }

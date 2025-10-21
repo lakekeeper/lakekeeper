@@ -1,4 +1,7 @@
-use crate::api::ErrorModel;
+use crate::{
+    api::ErrorModel,
+    service::{CatalogBackendError, CatalogBackendErrorType},
+};
 
 pub(crate) trait DBErrorHandler
 where
@@ -7,6 +10,8 @@ where
     fn into_error_model(self, message: impl Into<String>) -> ErrorModel {
         ErrorModel::internal(message, "DatabaseError", Some(Box::new(self)))
     }
+
+    fn into_catalog_backend_error(self) -> CatalogBackendError;
 }
 
 impl DBErrorHandler for sqlx::Error {
@@ -20,7 +25,7 @@ impl DBErrorHandler for sqlx::Error {
                         Some(Box::new(self)),
                     );
                 }
-                match db.code().as_deref().map(|s| &s[..2]) {
+                match db.code().as_deref() {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
@@ -34,6 +39,28 @@ impl DBErrorHandler for sqlx::Error {
                 }
             }
             _ => ErrorModel::internal(message, "DatabaseError", Some(Box::new(self))),
+        }
+    }
+
+    fn into_catalog_backend_error(self) -> CatalogBackendError {
+        match self {
+            Self::Database(ref db) => {
+                // In our new error model, entity already exists should always have
+                // an explicit error variant, so we treat it as unexpected here.
+                match db.code().as_deref() {
+                    // https://www.postgresql.org/docs/current/errcodes-appendix.html
+                    Some(
+                        "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
+                        | "40001" | "40002" | "40003" | "40004",
+                    ) => CatalogBackendError::new(
+                        self,
+                        CatalogBackendErrorType::ConcurrentModification,
+                    )
+                    .append_detail("Database Transaction failed."),
+                    _ => CatalogBackendError::new_unexpected(self),
+                }
+            }
+            _ => CatalogBackendError::new_unexpected(self),
         }
     }
 }

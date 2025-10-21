@@ -1622,7 +1622,6 @@ pub(crate) mod test {
                 StoragePermissions::ReadWriteDelete,
             )
             .unwrap();
-        println!("Policy: {policy}");
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }
 }

@@ -9,7 +9,7 @@ use lakekeeper_io::{InvalidLocationError, LakekeeperStorage as _, Location, Stor
 use uuid::Uuid;
 
 use super::{
-    super::{io::write_file, namespace::authorized_namespace_ident_to_id, require_warehouse_id},
+    super::{io::write_file, require_warehouse_id},
     require_active_warehouse, validate_table_or_view_ident, validate_table_properties,
 };
 use crate::{
@@ -20,10 +20,11 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{compression_codec::CompressionCodec, tabular::determine_tabular_location},
     service::{
-        authz::{Authorizer, CatalogNamespaceAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, ValidationError},
-        CatalogStore, CreateTableResponse, State, TableCreation, TableId, TabularId, Transaction,
+        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogWarehouseOps, State,
+        TableCreation, TableId, TabularId, Transaction,
     },
     WarehouseId,
 };
@@ -138,10 +139,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     guard: &mut TableCreationGuard<A>,
 ) -> Result<LoadTableResult> {
     let data_access = data_access.into();
-    let namespace = parameters.namespace.clone();
+    let provided_ns = parameters.namespace.clone();
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = guard.warehouse_id();
-    let table = TableIdent::new(namespace.clone(), request.name.clone());
+    let table = TableIdent::new(provided_ns.clone(), request.name.clone());
     validate_table_or_view_ident(&table)?;
 
     if let Some(properties) = &request.properties {
@@ -150,23 +151,26 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let namespace_id = authorized_namespace_ident_to_id::<C, _>(
-        authorizer.clone(),
-        &request_metadata,
-        &warehouse_id,
-        &namespace,
-        CatalogNamespaceAction::CanCreateTable,
-        t.transaction(),
-    )
-    .await?;
+
+    let namespace =
+        C::get_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
+
+    let namespace = authorizer
+        .require_namespace_action(
+            &request_metadata,
+            warehouse_id,
+            provided_ns,
+            namespace,
+            CatalogNamespaceAction::CanCreateTable,
+        )
+        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
     let table_id = guard.table_id();
     let tabular_id = TabularId::Table(table_id);
 
-    let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+    let warehouse =
+        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
     let storage_profile = &warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
@@ -196,20 +200,19 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
 
-    let CreateTableResponse {
-        table_metadata,
-        staged_table_id,
-    } = C::create_table(
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+    let (_table_info, staged_table_id) = C::create_table(
         TableCreation {
             warehouse_id: warehouse.id,
             namespace_id: namespace.namespace_id,
             table_ident: &table,
-            table_metadata,
+            table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
         },
         t.transaction(),
     )
     .await?;
+    let table_metadata = Arc::new(table_metadata);
 
     // We don't commit the transaction yet, first we need to write the metadata file.
     let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
@@ -272,7 +275,12 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     // Create table in authorizer
     authorizer
-        .create_table(&request_metadata, warehouse_id, table_id, namespace_id)
+        .create_table(
+            &request_metadata,
+            warehouse_id,
+            table_id,
+            namespace.namespace_id,
+        )
         .await?;
 
     guard.mark_authorizer_created();
@@ -283,7 +291,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // If a staged table was overwritten, delete it from authorizer
     if let Some(staged_table_id) = staged_table_id {
         authorizer
-            .delete_table(warehouse_id, staged_table_id)
+            .delete_table(warehouse_id, staged_table_id.0)
             .await
             .ok();
     }
@@ -295,7 +303,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             warehouse_id,
             parameters,
             Arc::new(request),
-            Arc::new(table_metadata),
+            table_metadata.clone(),
             metadata_location.map(Arc::new),
             data_access,
             Arc::new(request_metadata),
