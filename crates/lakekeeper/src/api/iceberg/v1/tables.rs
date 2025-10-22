@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use http::{HeaderMap, StatusCode};
+use http::{HeaderMap, HeaderName, StatusCode};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadCredentialsResponse;
 
@@ -380,9 +380,13 @@ pub struct TableParameters {
     pub table: TableIdent,
 }
 
-pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
-pub const IF_NONE_MATCH_HEADER: &str = "If-None-Match";
-pub const ETAG_HEADER: &str = "ETag";
+pub const DATA_ACCESS_HEADER: &str = "x-iceberg-access-delegation";
+pub const IF_NONE_MATCH_HEADER: &str = "if-none-match";
+pub const ETAG_HEADER: &str = "etag";
+
+pub const DATA_ACCESS_HEADER_NAME: HeaderName = HeaderName::from_static(DATA_ACCESS_HEADER);
+pub const ETAG_HEADER_NAME: HeaderName = HeaderName::from_static(ETAG_HEADER);
+pub const IF_NONE_MATCH_HEADER_NAME: HeaderName = HeaderName::from_static(IF_NONE_MATCH_HEADER);
 
 #[derive(Debug, Clone, PartialEq, Copy)]
 // Modeled as a string to enable multiple values to be specified.

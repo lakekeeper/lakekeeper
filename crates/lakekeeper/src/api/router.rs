@@ -1,5 +1,28 @@
 use std::{fmt::Debug, sync::LazyLock};
 
+use crate::{
+    api::{
+        iceberg::v1::{
+            new_v1_full_router,
+            tables::{DATA_ACCESS_HEADER_NAME, ETAG_HEADER_NAME, IF_NONE_MATCH_HEADER_NAME},
+        },
+        management::v1::{api_doc as v1_api_doc, ApiServer},
+        ApiContext,
+    },
+    request_metadata::{
+        create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER_NAME,
+        X_REQUEST_ID_HEADER_NAME,
+    },
+    request_tracing::{MakeRequestUuid7, RestMakeSpan},
+    service::{
+        authn::{auth_middleware_fn, AuthMiddlewareState},
+        authz::Authorizer,
+        health::ServiceHealthProvider,
+        tasks::QueueApiConfig,
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
+    },
+    CancellationToken, CONFIG,
+};
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
@@ -16,26 +39,7 @@ use tower_http::{
     ServiceBuilderExt,
 };
 
-use crate::{
-    api::{
-        iceberg::v1::{
-            new_v1_full_router,
-            tables::{DATA_ACCESS_HEADER, ETAG_HEADER, IF_NONE_MATCH_HEADER},
-        },
-        management::v1::{api_doc as v1_api_doc, ApiServer},
-        ApiContext,
-    },
-    request_metadata::{create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER},
-    request_tracing::{MakeRequestUuid7, RestMakeSpan},
-    service::{
-        authn::{auth_middleware_fn, AuthMiddlewareState},
-        authz::Authorizer,
-        health::ServiceHealthProvider,
-        tasks::QueueApiConfig,
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
-    },
-    CancellationToken, CONFIG,
-};
+pub const X_USER_AGENT_HEADER_NAME: HeaderName = HeaderName::from_static("x-user-agent");
 
 static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {
     let mut yaml_str =
@@ -236,12 +240,13 @@ fn get_cors_layer(
                 header::CONTENT_TYPE,
                 header::ACCEPT,
                 header::USER_AGENT,
-                HeaderName::from_static(X_PROJECT_ID_HEADER),
-                HeaderName::from_static("x-user-agent"),
-                HeaderName::from_static(DATA_ACCESS_HEADER),
-                HeaderName::from_static(IF_NONE_MATCH_HEADER),
+                X_PROJECT_ID_HEADER_NAME,
+                X_REQUEST_ID_HEADER_NAME,
+                IF_NONE_MATCH_HEADER_NAME,
+                X_USER_AGENT_HEADER_NAME,
+                DATA_ACCESS_HEADER_NAME,
             ])
-            .expose_headers(vec![HeaderName::from_static(ETAG_HEADER)])
+            .expose_headers(vec![ETAG_HEADER_NAME])
             .allow_methods(vec![
                 Method::GET,
                 Method::HEAD,

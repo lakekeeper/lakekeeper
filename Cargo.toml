@@ -71,7 +71,7 @@ google-cloud-storage = { package = "gcloud-storage", version = "1.1" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
 hostname = "0.4.0"
-http = "^1.1"
+http = "1.3.1"
 http-body-util = "^0.1"
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "01fe1ef351277199f8de30b86cb89ad82c7d7583", features = [
     "storage-gcs",

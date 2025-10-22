@@ -8,7 +8,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use http::{HeaderMap, Method};
+use http::{HeaderMap, HeaderName, Method};
 use iceberg_ext::catalog::rest::ErrorModel;
 use limes::Authentication;
 use uuid::Uuid;
@@ -30,6 +30,9 @@ pub const X_FORWARDED_HOST_HEADER: &str = "x-forwarded-host";
 pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
 pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
+
+pub const X_PROJECT_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_PROJECT_ID_HEADER);
+pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUEST_ID_HEADER);
 
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
