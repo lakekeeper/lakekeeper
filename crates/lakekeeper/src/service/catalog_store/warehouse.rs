@@ -32,11 +32,11 @@ use crate::{
     strum_macros::EnumIter,
     serde::Serialize,
     serde::Deserialize,
-    utoipa::ToSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "sqlx",
     sqlx(type_name = "warehouse_status", rename_all = "kebab-case")

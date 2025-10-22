@@ -1,10 +1,9 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref, sync::LazyLock, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
 use chrono::Utc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use strum::EnumIter;
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
@@ -26,13 +25,15 @@ pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
 
+#[cfg(feature = "open-api")]
 #[allow(clippy::declare_interior_mutable_const)]
-pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|| {
-    vec![
-        tabular_expiration_queue::API_CONFIG.clone(),
-        tabular_purge_queue::API_CONFIG.clone(),
-    ]
-});
+pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            tabular_expiration_queue::API_CONFIG.clone(),
+            tabular_purge_queue::API_CONFIG.clone(),
+        ]
+    });
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
@@ -75,17 +76,18 @@ impl TaskQueueName {
     }
 }
 
-#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TaskEntity {
     #[serde(rename_all = "kebab-case")]
     Table {
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         table_id: TableId,
     },
     #[serde(rename_all = "kebab-case")]
     View {
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         view_id: ViewId,
     },
 }
@@ -106,8 +108,23 @@ impl TaskEntityNamed {
     }
 }
 
-/// Warehouse specific configuration for a task queue.
-pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned + Clone + Send + Sync {
+#[cfg(feature = "open-api")]
+pub trait TaskConfig:
+    utoipa::ToSchema + Serialize + DeserializeOwned + Clone + Send + Sync
+{
+    #[must_use]
+    fn max_time_since_last_heartbeat() -> chrono::Duration;
+
+    #[must_use]
+    fn max_retries() -> i32 {
+        DEFAULT_MAX_RETRIES
+    }
+
+    fn queue_name() -> &'static TaskQueueName;
+}
+
+#[cfg(not(feature = "open-api"))]
+pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     #[must_use]
     fn max_time_since_last_heartbeat() -> chrono::Duration;
 

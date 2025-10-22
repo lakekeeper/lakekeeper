@@ -226,6 +226,7 @@ where
     fn server_id(&self) -> ServerId;
 
     /// API Doc
+    #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi;
 
     /// Router for the API
@@ -844,6 +845,7 @@ pub(crate) mod tests {
             self.server_id
         }
 
+        #[cfg(feature = "open-api")]
         fn api_doc() -> utoipa::openapi::OpenApi {
             AllowAllAuthorizer::api_doc()
         }

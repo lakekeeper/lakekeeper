@@ -107,22 +107,25 @@ where
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchTabularRequest {
     /// Search string for fuzzy search.
     /// Length is truncated to 64 characters.
-    #[schema(max_length = 64)]
+    #[cfg_attr(feature = "open-api", schema(max_length = 64))]
     pub search: String,
 }
 
 /// Search result for tabulars
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchTabularResponse {
     /// List of tabulars matching the search criteria
     pub tabulars: Vec<SearchTabular>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema, Clone)]
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct SearchTabular {
     /// Namespace name

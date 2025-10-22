@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
 
 use tokio::sync::RwLock;
 
@@ -147,10 +147,16 @@ impl TaskQueueRegistry {
         let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
         let api_config = QueueApiConfig {
             queue_name,
+            #[cfg(feature = "open-api")]
             utoipa_type_name: T::name().to_string().into(),
+            #[cfg(feature = "open-api")]
             utoipa_schema: utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_schema_name(
                 T::name(),
             )),
+            #[cfg(not(feature = "open-api"))]
+            utoipa_type_name: (),
+            #[cfg(not(feature = "open-api"))]
+            utoipa_schema: (),
         };
 
         if let Some(_prev) = self.registered_queues.write().await.insert(
@@ -279,16 +285,22 @@ impl TaskQueueRegistry {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, typed_builder::TypedBuilder)]
 /// Contains all required information to dynamically generate API documentation
 /// for the warehouse-specific configuration of a task queue.
 pub struct QueueApiConfig {
     /// Name of the task queue
     pub queue_name: &'static TaskQueueName,
     /// Name of the configuration type used in the API documentation
-    pub utoipa_type_name: Cow<'static, str>,
+    #[cfg(feature = "open-api")]
+    pub utoipa_type_name: std::borrow::Cow<'static, str>,
+    #[cfg(not(feature = "open-api"))]
+    pub utoipa_type_name: (),
     /// Schema for the configuration type used in the API documentation
+    #[cfg(feature = "open-api")]
     pub utoipa_schema: utoipa::openapi::RefOr<utoipa::openapi::Schema>,
+    #[cfg(not(feature = "open-api"))]
+    pub utoipa_schema: (),
 }
 
 impl std::fmt::Debug for QueueApiConfig {

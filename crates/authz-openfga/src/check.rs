@@ -326,13 +326,13 @@ pub(super) enum CheckOperation {
     #[serde(rename_all = "kebab-case")]
     Project {
         action: ProjectAction,
-        #[schema(value_type = Option<uuid::Uuid>)]
+        #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
         project_id: Option<ProjectId>,
     },
     #[serde(rename_all = "kebab-case")]
     Warehouse {
         action: WarehouseAction,
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
     },
     Namespace {
@@ -358,16 +358,16 @@ pub(super) enum CheckOperation {
 pub(super) enum NamespaceIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     Id {
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         namespace_id: NamespaceId,
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
-        #[schema(value_type = Vec<String>)]
+        #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
     },
 }
@@ -378,19 +378,19 @@ pub(super) enum NamespaceIdentOrUuid {
 pub(super) enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     IdInWarehouse {
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
         #[serde(alias = "view_id")]
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
-        #[schema(value_type = Vec<String>)]
+        #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
         /// Name of the table or view
         #[serde(alias = "view")]
         table: String,
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
     },
 }

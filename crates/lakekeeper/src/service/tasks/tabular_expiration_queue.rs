@@ -2,9 +2,10 @@ use std::{sync::LazyLock, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
+#[cfg(feature = "open-api")]
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{EntityId, QueueApiConfig, TaskConfig, TaskExecutionDetails, TaskMetadata};
+use super::{EntityId, TaskConfig, TaskExecutionDetails, TaskMetadata};
 use crate::{
     api::{management::v1::DeleteKind, Result},
     service::{
@@ -19,11 +20,13 @@ use crate::{
 
 const QN_STR: &str = "tabular_expiration";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
-pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
-    queue_name: &QUEUE_NAME,
-    utoipa_type_name: TabularExpirationQueueConfig::name(),
-    utoipa_schema: TabularExpirationQueueConfig::schema(),
-});
+#[cfg(feature = "open-api")]
+pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
+    LazyLock::new(|| super::QueueApiConfig {
+        queue_name: &QUEUE_NAME,
+        utoipa_type_name: TabularExpirationQueueConfig::name(),
+        utoipa_schema: TabularExpirationQueueConfig::schema(),
+    });
 
 pub type TabularExpirationTask = SpecializedTask<
     TabularExpirationQueueConfig,
@@ -51,7 +54,8 @@ pub struct TabularExpirationExecutionDetails {}
 
 impl TaskExecutionDetails for TabularExpirationExecutionDetails {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 /// Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
 pub struct TabularExpirationQueueConfig {}
 

@@ -9,9 +9,10 @@ check-format:
 check-clippy:
     cargo clippy --no-default-features --all-targets --workspace -- -D warnings
     cargo clippy --all-targets --all-features --workspace -- -D warnings
-    cargo clippy -p lakekeeper --no-default-features --workspace -- -D warnings
-    cargo clippy -p lakekeeper-io --no-default-features --workspace -- -D warnings
-    cargo clippy -p lakekeeper-io --all-features --workspace -- -D warnings
+    cargo clippy -p lakekeeper --no-default-features -- -D warnings
+    cargo clippy -p lakekeeper-io --no-default-features --features "storage-in-memory" -- -D warnings
+    cargo clippy -p lakekeeper-io --all-features -- -D warnings
+    cargo clippy -p lakekeeper --no-default-features --features "sqlx-postgres,s3-signer,router,nats,vendored-protoc,kafka" -- -D warnings
 
 check-cargo-sort:
 	cargo sort -c -w

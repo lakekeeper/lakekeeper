@@ -48,6 +48,8 @@ pub use tower;
 #[cfg(feature = "router")]
 #[cfg_attr(docsrs, doc(cfg(feature = "router")))]
 pub use tower_http;
+#[cfg(feature = "open-api")]
+#[cfg_attr(docsrs, doc(cfg(feature = "open-api")))]
 pub use utoipa;
 
 #[cfg(feature = "router")]

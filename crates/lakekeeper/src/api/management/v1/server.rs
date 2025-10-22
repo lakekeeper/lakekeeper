@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -13,7 +11,8 @@ use crate::{
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
-#[derive(Debug, Deserialize, utoipa::ToSchema, TypedBuilder)]
+#[derive(Debug, Deserialize, TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct BootstrapRequest {
     /// Set to true if you accept LAKEKEEPER terms of use.
@@ -42,8 +41,8 @@ pub struct BootstrapRequest {
     pub user_type: Option<UserType>,
 }
 
-pub(crate) static APACHE_LICENSE_STATUS: LazyLock<LicenseStatus> =
-    LazyLock::new(|| LicenseStatus {
+pub static APACHE_LICENSE_STATUS: std::sync::LazyLock<LicenseStatus> =
+    std::sync::LazyLock::new(|| LicenseStatus {
         issuer: None,
         audience: Some("lakekeeper-core".to_string()),
         license_type: "Apache-2.0".to_string(),
@@ -55,7 +54,8 @@ pub(crate) static APACHE_LICENSE_STATUS: LazyLock<LicenseStatus> =
     });
 
 /// Status of license validation
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct LicenseStatus {
     /// Organization or entity that issued the license for Lakekeeper
@@ -80,7 +80,8 @@ pub struct LicenseStatus {
     pub license_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ServerInfo {
@@ -92,7 +93,7 @@ pub struct ServerInfo {
     /// Returns null if the catalog has not been bootstrapped.
     pub server_id: uuid::Uuid,
     /// Default Project ID. Null if not set
-    #[schema(value_type = Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option::<String>))]
     pub default_project_id: Option<ProjectId>,
     /// `AuthZ` backend in use.
     pub authz_backend: String,

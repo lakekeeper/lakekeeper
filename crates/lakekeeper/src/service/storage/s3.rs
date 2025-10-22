@@ -20,7 +20,6 @@ use lakekeeper_io::{
     InvalidLocationError, Location,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use veil::Redact;
 
 use crate::{
@@ -48,16 +47,8 @@ use crate::{
 
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-#[derive(
-    Debug,
-    Eq,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-    typed_builder::TypedBuilder,
-)]
+#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct S3Profile {
     /// Name of the S3 bucket
@@ -151,7 +142,8 @@ pub struct S3Profile {
     pub aws_kms_key_arn: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum S3UrlStyleDetectionMode {
     /// Use the path style for all requests.
@@ -163,7 +155,8 @@ pub enum S3UrlStyleDetectionMode {
     Auto,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum S3Flavor {
@@ -174,7 +167,8 @@ pub enum S3Flavor {
     // CloudflareR2,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum S3Credential {
     /// Authenticate to AWS using access-key and secret-key.
@@ -185,9 +179,10 @@ pub enum S3Credential {
     CloudflareR2(S3CloudflareR2Credential),
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-#[schema(title = "S3CredentialAccessKey")]
+#[cfg_attr(feature = "open-api", schema(title = "S3CredentialAccessKey"))]
 pub struct S3AccessKeyCredential {
     pub aws_access_key_id: String,
     #[redact(partial)]
@@ -196,17 +191,19 @@ pub struct S3AccessKeyCredential {
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-#[schema(title = "S3CredentialSystemIdentity")]
+#[cfg_attr(feature = "open-api", schema(title = "S3CredentialSystemIdentity"))]
 pub struct S3AwsSystemIdentityCredential {
     #[redact(partial)]
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-#[schema(title = "CloudflareR2Credential")]
+#[cfg_attr(feature = "open-api", schema(title = "CloudflareR2Credential"))]
 pub struct S3CloudflareR2Credential {
     /// Access key ID used for IO operations of Lakekeeper
     pub access_key_id: String,

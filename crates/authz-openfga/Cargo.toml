@@ -10,6 +10,9 @@ license = { workspace = true }
 description = "OpenFGA Authorizer for Lakekeeper"
 keywords = ["iceberg", "rest", "lakekeeper", "openfga"]
 
+[features]
+open-api = ["dep:utoipa"]
+
 [lib]
 
 [dependencies]
@@ -27,7 +30,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
-utoipa = { workspace = true }
+utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 veil = { workspace = true }
 

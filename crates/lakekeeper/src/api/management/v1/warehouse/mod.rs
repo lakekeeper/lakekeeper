@@ -7,7 +7,6 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
-use utoipa::ToSchema;
 
 use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
@@ -42,12 +41,13 @@ use crate::{
     ProjectId, WarehouseId,
 };
 
-#[derive(Debug, Deserialize, utoipa::IntoParams, Default)]
+#[derive(Debug, Deserialize, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListDeletedTabularsQuery {
     /// Filter by Namespace ID
     #[serde(default)]
-    #[param(value_type=uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", param(value_type=uuid::Uuid))]
     pub namespace_id: Option<NamespaceId>,
     /// Next page token
     #[serde(default)]
@@ -71,7 +71,8 @@ impl ListDeletedTabularsQuery {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema, TypedBuilder)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateWarehouseRequest {
     /// Name of the warehouse to create. Must be unique
@@ -79,7 +80,7 @@ pub struct CreateWarehouseRequest {
     pub warehouse_name: String,
     /// Project ID in which to create the warehouse.
     /// Deprecated: Please use the `x-project-id` header instead.
-    #[schema(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     #[builder(default, setter(strip_option))]
     pub project_id: Option<ProjectId>,
     /// Storage profile to use for the warehouse.
@@ -93,12 +94,13 @@ pub struct CreateWarehouseRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TabularDeleteProfile {
-    #[schema(title = "TabularDeleteProfileHard")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularDeleteProfileHard"))]
     Hard {},
-    #[schema(title = "TabularDeleteProfileSoft")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularDeleteProfileSoft"))]
     #[serde(rename_all = "kebab-case")]
     Soft {
         #[serde(
@@ -106,7 +108,7 @@ pub enum TabularDeleteProfile {
             serialize_with = "duration_to_seconds",
             alias = "expiration_seconds"
         )]
-        #[schema(value_type=i32)]
+        #[cfg_attr(feature = "open-api", schema(value_type=i32))]
         expiration_seconds: chrono::Duration,
     },
 }
@@ -143,15 +145,17 @@ impl Default for TabularDeleteProfile {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateWarehouseResponse {
     /// ID of the created warehouse.
-    #[schema(value_type=uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
     pub warehouse_id: WarehouseId,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateWarehouseStorageRequest {
     /// Storage profile to use for the warehouse.
@@ -166,43 +170,48 @@ pub struct UpdateWarehouseStorageRequest {
     pub storage_credential: Option<StorageCredential>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListWarehousesRequest {
     /// Optional filter to return only warehouses
     /// with the specified status.
     /// If not provided, only active warehouses are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     pub warehouse_status: Option<Vec<WarehouseStatus>>,
     /// The project ID to list warehouses for.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[param(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", param(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameWarehouseRequest {
     /// New name for the warehouse.
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateWarehouseDeleteProfileRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetWarehouseResponse {
     /// ID of the warehouse.
@@ -210,7 +219,7 @@ pub struct GetWarehouseResponse {
     /// Name of the warehouse.
     pub name: String,
     /// Project ID in which the warehouse was created.
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
@@ -222,14 +231,16 @@ pub struct GetWarehouseResponse {
     pub protected: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListWarehousesResponse {
     /// List of warehouses in the project.
     pub warehouses: Vec<GetWarehouseResponse>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateWarehouseCredentialRequest {
     /// New storage credential to use for the warehouse.
@@ -243,7 +254,8 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct WarehouseStatistics {
     /// Timestamp of when these statistics are valid until
@@ -260,7 +272,8 @@ pub struct WarehouseStatistics {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct WarehouseStatisticsResponse {
     /// ID of the warehouse for which the stats were collected.
@@ -271,7 +284,8 @@ pub struct WarehouseStatisticsResponse {
     pub next_page_token: Option<String>,
 }
 
-#[derive(Deserialize, Debug, ToSchema)]
+#[derive(Deserialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
     /// Tabulars to undrop
@@ -1093,30 +1107,34 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct SetTaskQueueConfigRequest {
     pub queue_config: QueueConfig,
     pub max_seconds_since_last_heartbeat: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct QueueConfig(pub(crate) serde_json::Value);
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetTaskQueueConfigResponse {
     pub queue_config: QueueConfigResponse,
     pub max_seconds_since_last_heartbeat: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct QueueConfigResponse {
     #[serde(flatten)]
     pub(crate) config: serde_json::Value,
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub(crate) queue_name: TaskQueueName,
 }
 

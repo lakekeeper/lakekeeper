@@ -39,17 +39,18 @@ const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
 const DEFAULT_ATTEMPTS: u16 = 5;
 
 // -------------------- REQUEST/RESPONSE TYPES --------------------
-#[derive(Debug, Serialize, utoipa::ToSchema, PartialEq)]
+#[derive(Debug, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct Task {
     /// Unique identifier for the task
-    #[schema(value_type = uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub task_id: TaskId,
     /// Warehouse ID associated with the task
-    #[schema(value_type = uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub warehouse_id: WarehouseId,
     /// Name of the queue processing this task
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub queue_name: TaskQueueName,
     /// Type of entity this task operates on
     pub entity: TaskEntity,
@@ -68,7 +69,7 @@ pub struct Task {
     /// Progress of the task (0.0 to 1.0)
     pub progress: f32,
     /// Parent task ID if this is a sub-task
-    #[schema(value_type = Option<uuid::Uuid>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
     pub parent_task_id: Option<TaskId>,
     /// When this task attempt was created
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -93,23 +94,25 @@ impl Task {
     }
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetTaskDetailsResponse {
     /// Most recent task information
     #[serde(flatten)]
     pub task: Task,
     /// Task-specific data
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Object))]
     pub task_data: serde_json::Value,
     /// Execution details for the current attempt
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
 }
 
-#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct TaskAttempt {
     /// Attempt number
@@ -121,7 +124,7 @@ pub struct TaskAttempt {
     /// When this attempt started
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     /// How long this attempt took
-    #[schema(example = "PT1H30M45.5S")]
+    #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
     #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
     pub duration: Option<chrono::Duration>,
     /// Message associated with this attempt
@@ -131,11 +134,12 @@ pub struct TaskAttempt {
     /// Progress achieved in this attempt
     pub progress: f32,
     /// Execution details for this attempt
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TaskStatus {
     /// Task is currently being processed
@@ -186,7 +190,8 @@ impl TaskStatus {
     }
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListTasksResponse {
     /// List of tasks
@@ -208,7 +213,8 @@ impl IntoResponse for GetTaskDetailsResponse {
 }
 
 // -------------------- QUERY PARAMETERS --------------------
-#[derive(Debug, Deserialize, utoipa::ToSchema, Default, typed_builder::TypedBuilder)]
+#[derive(Debug, Deserialize, Default, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListTasksRequest {
     /// Filter by task status
@@ -217,7 +223,7 @@ pub struct ListTasksRequest {
     pub status: Option<Vec<TaskStatus>>,
     /// Filter by one or more queue names
     #[serde(default)]
-    #[schema(value_type = Option<Vec<String>>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<Vec<String>>))]
     #[builder(default)]
     pub queue_name: Option<Vec<TaskQueueName>>,
     /// Filter by specific entity
@@ -227,12 +233,12 @@ pub struct ListTasksRequest {
     /// Filter tasks created after this timestamp
     #[serde(default)]
     #[builder(default)]
-    #[schema(example = "2025-12-31T23:59:59Z")]
+    #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_after: Option<chrono::DateTime<chrono::Utc>>,
     /// Filter tasks created before this timestamp
     #[serde(default)]
     #[builder(default)]
-    #[schema(example = "2025-12-31T23:59:59Z")]
+    #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
     /// Next page token, re-use the same request as for the original request,
     /// but set this to the `next_page_token` from the previous response.
@@ -246,27 +252,30 @@ pub struct ListTasksRequest {
     pub page_size: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct GetTaskDetailsQuery {
     /// Number of attempts to retrieve (default: 5)
-    #[param(default = 5)]
+    #[cfg_attr(feature = "open-api", param(default = 5))]
     pub num_attempts: Option<u16>,
 }
 
 // -------------------- CONTROL REQUESTS --------------------
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ControlTasksRequest {
     /// The action to perform on the task
     pub action: ControlTaskAction,
     /// Tasks to apply the action to
-    #[schema(value_type = Vec<uuid::Uuid>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Vec<uuid::Uuid>))]
     pub task_ids: Vec<TaskId>,
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "action-type")]
 pub enum ControlTaskAction {
     /// Stop the task gracefully. The task will be retried.
@@ -282,7 +291,7 @@ pub enum ControlTaskAction {
     #[serde(rename_all = "kebab-case")]
     RunAt {
         /// The time to run the task at
-        #[schema(example = "2025-12-31T23:59:59Z")]
+        #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
         #[serde(alias = "scheduled_for")]
         scheduled_for: chrono::DateTime<chrono::Utc>,
     },

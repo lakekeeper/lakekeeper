@@ -54,10 +54,10 @@ struct GetAccessQuery {
     /// The user or role to show access for.
     /// If not specified, shows access for the current user.
     #[serde(default)]
-    #[param(required = false, value_type=String)]
+    #[cfg_attr(feature = "open-api", param(required = false, value_type=String))]
     principal_user: Option<UserId>,
     #[serde(default)]
-    #[param(required = false, value_type=uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", param(required = false, value_type=uuid::Uuid))]
     principal_role: Option<RoleId>,
 }
 
@@ -130,7 +130,7 @@ struct GetViewAccessResponse {
 struct GetRoleAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<RoleRelation>>,
 }
 
@@ -145,7 +145,7 @@ struct GetRoleAssignmentsResponse {
 struct GetServerAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<ServerRelation>>,
 }
 
@@ -160,7 +160,7 @@ struct GetServerAssignmentsResponse {
 pub(super) struct GetProjectAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<ProjectRelation>>,
 }
 
@@ -168,7 +168,7 @@ pub(super) struct GetProjectAssignmentsQuery {
 #[serde(rename_all = "kebab-case")]
 struct GetProjectAssignmentsResponse {
     assignments: Vec<ProjectAssignment>,
-    #[schema(value_type = Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
     project_id: ProjectId,
 }
 
@@ -177,7 +177,7 @@ struct GetProjectAssignmentsResponse {
 pub(super) struct GetWarehouseAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<WarehouseRelation>>,
 }
 
@@ -192,7 +192,7 @@ struct GetWarehouseAssignmentsResponse {
 pub(super) struct GetNamespaceAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<NamespaceRelation>>,
 }
 
@@ -207,7 +207,7 @@ struct GetNamespaceAssignmentsResponse {
 pub(super) struct GetTableAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<TableRelation>>,
 }
 
@@ -222,7 +222,7 @@ struct GetTableAssignmentsResponse {
 pub(super) struct GetViewAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     relations: Option<Vec<ViewRelation>>,
 }
 

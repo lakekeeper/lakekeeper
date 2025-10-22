@@ -38,7 +38,8 @@ use crate::{
     WarehouseId, CONFIG,
 };
 
-#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct AdlsProfile {
     /// Name of the adls filesystem, in blobstorage also known as container.
@@ -436,11 +437,12 @@ pub(crate) fn reduce_scheme_string(path: &str) -> String {
         .unwrap_or(path.to_string())
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum AzCredential {
     #[serde(rename_all = "kebab-case")]
-    #[schema(title = "AzCredentialClientCredentials")]
+    #[cfg_attr(feature = "open-api", schema(title = "AzCredentialClientCredentials"))]
     ClientCredentials {
         client_id: String,
         tenant_id: String,
@@ -448,13 +450,13 @@ pub enum AzCredential {
         client_secret: String,
     },
     #[serde(rename_all = "kebab-case")]
-    #[schema(title = "AzCredentialSharedAccessKey")]
+    #[cfg_attr(feature = "open-api", schema(title = "AzCredentialSharedAccessKey"))]
     SharedAccessKey {
         #[redact]
         key: String,
     },
     #[serde(rename_all = "kebab-case")]
-    #[schema(title = "AzCredentialManagedIdentity")]
+    #[cfg_attr(feature = "open-api", schema(title = "AzCredentialManagedIdentity"))]
     AzureSystemIdentity {},
 }
 

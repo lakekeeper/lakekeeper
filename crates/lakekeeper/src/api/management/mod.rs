@@ -1,8 +1,6 @@
 #![allow(deprecated)]
 
 pub mod v1 {
-    #![allow(clippy::needless_for_each)]
-
     pub mod namespace;
     pub mod project;
     pub mod role;
@@ -14,6 +12,9 @@ pub mod v1 {
     pub mod view;
     pub mod warehouse;
 
+    #[cfg(feature = "open-api")]
+    pub mod openapi;
+
     use std::marker::PhantomData;
 
     use axum::{
@@ -24,7 +25,11 @@ pub mod v1 {
     };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
+    #[cfg(feature = "open-api")]
+    use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use namespace::NamespaceManagementService as _;
+    #[cfg(feature = "open-api")]
+    pub use openapi::api_doc;
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
@@ -41,10 +46,6 @@ pub mod v1 {
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
         User,
-    };
-    use utoipa::{
-        openapi::{security::SecurityScheme, KnownFormat, RefOr},
-        OpenApi, PartialSchema, ToSchema,
     };
     use view::ViewManagementService as _;
     use warehouse::{
@@ -71,112 +72,16 @@ pub mod v1 {
                     GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, UndropTabularsRequest,
                 },
             },
-            ApiContext, IcebergErrorResponse, Result,
+            ApiContext, Result,
         },
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId,
-            authz::Authorizer,
-            tasks::{QueueApiConfig, TaskId},
-            Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
-            State, TableId, TabularId, ViewId,
+            authn::UserId, authz::Authorizer, tasks::TaskId, Actor, CatalogStore,
+            CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State, TableId,
+            TabularId, ViewId,
         },
         ProjectId, WarehouseId,
     };
-
-    #[derive(Debug, OpenApi)]
-    #[openapi(
-        info(
-            title = "Lakekeeper Management API",
-            description = "Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).",
-        ),
-        tags(
-            (name = "server", description = "Manage Server"),
-            (name = "project", description = "Manage Projects"),
-            (name = "warehouse", description = "Manage Warehouses"),
-            (name = "tasks", description = "View & Manage Tasks"),
-            (name = "user", description = "Manage Users"),
-            (name = "role", description = "Manage Roles")
-        ),
-        security(
-            ("bearerAuth" = [])
-        ),
-        paths(
-            activate_warehouse,
-            bootstrap,
-            control_tasks,
-            create_project,
-            create_role,
-            create_user,
-            create_warehouse,
-            deactivate_warehouse,
-            delete_default_project,
-            delete_default_project_deprecated,
-            delete_project_by_id,
-            delete_role,
-            delete_user,
-            delete_warehouse,
-            get_default_project,
-            get_default_project_deprecated,
-            get_endpoint_statistics,
-            get_project_by_id,
-            get_role,
-            get_server_info,
-            get_task_details,
-            get_user,
-            get_warehouse,
-            get_warehouse_statistics,
-            list_deleted_tabulars,
-            list_projects,
-            list_roles,
-            list_tasks,
-            list_user,
-            list_warehouses,
-            rename_default_project,
-            rename_default_project_deprecated,
-            rename_project_by_id,
-            rename_warehouse,
-            search_role,
-            search_user,
-            search_tabular,
-            set_namespace_protection,
-            set_table_protection,
-            set_task_queue_config,
-            get_task_queue_config,
-            set_view_protection,
-            set_warehouse_protection,
-            get_namespace_protection,
-            get_table_protection,
-            get_view_protection,
-            undrop_tabulars,
-            undrop_tabulars_deprecated,
-            update_role,
-            update_storage_credential,
-            update_storage_profile,
-            update_user,
-            update_warehouse_delete_profile,
-            whoami,
-        ),
-        modifiers(&SecurityAddon)
-    )]
-    struct ManagementApiDoc;
-
-    struct SecurityAddon;
-
-    impl utoipa::Modify for SecurityAddon {
-        fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-            let components = openapi.components.as_mut().unwrap(); // we can unwrap safely since there already is components registered.
-            components.add_security_scheme(
-                "bearerAuth",
-                SecurityScheme::Http(
-                    utoipa::openapi::security::HttpBuilder::new()
-                        .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
-                        .bearer_format("JWT")
-                        .build(),
-                ),
-            );
-        }
-    }
 
     #[derive(Clone, Debug)]
     pub struct ApiServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
@@ -188,7 +93,7 @@ pub mod v1 {
     /// Get Server Info
     ///
     /// Returns basic information about the server configuration and status.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "server",
         path = ManagementV1Endpoint::ServerInfo.path(),
@@ -197,7 +102,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
             (status = 500, description = "Unauthorized", body = IcebergErrorResponse)
         )
-    )]
+    ))]
     async fn get_server_info<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -211,7 +116,7 @@ pub mod v1 {
     ///
     /// Initializes the Lakekeeper server and sets the initial administrator account.
     /// This operation can only be performed once.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "server",
         path = ManagementV1Endpoint::Bootstrap.path(),
@@ -221,7 +126,7 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
             (status = 500, description = "InternalError", body = IcebergErrorResponse)
         )
-    )]
+    ))]
     async fn bootstrap<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -235,7 +140,7 @@ pub mod v1 {
     ///
     /// Creates a new user or updates an existing user's metadata from the provided token.
     /// The token should include "profile" and "email" scopes for complete user information.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "user",
         path = ManagementV1Endpoint::CreateUser.path(),
@@ -245,7 +150,7 @@ pub mod v1 {
             (status = 201, description = "User created", body = User),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn create_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -262,7 +167,7 @@ pub mod v1 {
     /// Search User
     ///
     /// Performs a fuzzy search for users based on the provided criteria.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "user",
         path = ManagementV1Endpoint::SearchUser.path(),
@@ -271,7 +176,7 @@ pub mod v1 {
             (status = 200, description = "List of users", body = SearchUserResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn search_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -283,7 +188,7 @@ pub mod v1 {
     /// Get User by ID
     ///
     /// Retrieves detailed information about a specific user.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "user",
         path = ManagementV1Endpoint::GetUser.path(),
@@ -292,7 +197,7 @@ pub mod v1 {
             (status = 200, description = "User details", body = User),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -306,7 +211,7 @@ pub mod v1 {
     /// Whoami
     ///
     /// Returns information about the user associated with the current authentication token.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "user",
         path = ManagementV1Endpoint::Whoami.path(),
@@ -314,7 +219,7 @@ pub mod v1 {
             (status = 200, description = "User details", body = User),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn whoami<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -340,7 +245,7 @@ pub mod v1 {
     ///
     /// Replaces the current user details with the new details provided in the request.
     /// If a field is not provided, it will be set to `None`.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         put,
         tag = "user",
         path = ManagementV1Endpoint::UpdateUser.path(),
@@ -350,7 +255,7 @@ pub mod v1 {
             (status = 200, description = "User details updated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn update_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -363,7 +268,7 @@ pub mod v1 {
     /// List Users
     ///
     /// Returns a paginated list of users based on the provided query parameters.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "user",
         path = ManagementV1Endpoint::ListUser.path(),
@@ -372,7 +277,7 @@ pub mod v1 {
             (status = 200, description = "List of users", body = ListUsersResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn list_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -385,7 +290,7 @@ pub mod v1 {
     ///
     /// Permanently removes a user and all their associated permissions.
     /// If the user is re-registered later, their permissions will need to be re-added.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "user",
         path =  ManagementV1Endpoint::DeleteUser.path(),
@@ -394,7 +299,7 @@ pub mod v1 {
             (status = 204, description = "User deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn delete_user<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -408,7 +313,7 @@ pub mod v1 {
     /// Create Role
     ///
     /// Creates a role with the specified name, description, and permissions.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "role",
         path = ManagementV1Endpoint::CreateRole.path(),
@@ -417,7 +322,7 @@ pub mod v1 {
             (status = 201, description = "Role successfully created", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn create_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -432,7 +337,7 @@ pub mod v1 {
     /// Search Role
     ///
     /// Performs a fuzzy search for roles based on the provided criteria.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "role",
         path = ManagementV1Endpoint::SearchRole.path(),
@@ -441,7 +346,7 @@ pub mod v1 {
             (status = 200, description = "List of users", body = SearchRoleResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn search_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -453,7 +358,7 @@ pub mod v1 {
     /// List Roles
     ///
     /// Returns all roles in the project that the current user has access to view.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "role",
         path = ManagementV1Endpoint::ListRole.path(),
@@ -462,7 +367,7 @@ pub mod v1 {
             (status = 200, description = "List of roles", body = ListRolesResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn list_roles<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<ListRolesQuery>,
@@ -474,7 +379,7 @@ pub mod v1 {
     /// Delete Role
     ///
     /// Permanently removes a role and all its associated permissions.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "role",
         path = ManagementV1Endpoint::DeleteRole.path(),
@@ -483,7 +388,7 @@ pub mod v1 {
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn delete_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -497,7 +402,7 @@ pub mod v1 {
     /// Get Role
     ///
     /// Retrieves detailed information about a specific role.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "role",
         path = ManagementV1Endpoint::GetRole.path(),
@@ -506,7 +411,7 @@ pub mod v1 {
             (status = 200, description = "Role details", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -518,7 +423,7 @@ pub mod v1 {
     }
 
     /// Update Role
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "role",
         path = ManagementV1Endpoint::UpdateRole.path(),
@@ -528,7 +433,7 @@ pub mod v1 {
             (status = 200, description = "Role updated successfully", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn update_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -545,7 +450,7 @@ pub mod v1 {
     /// Creates a new warehouse in the specified project with the provided configuration.
     /// The project of a warehouse cannot be changed after creation.
     /// This operation validates the storage configuration.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::CreateWarehouse.path(),
@@ -554,7 +459,7 @@ pub mod v1 {
             (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn create_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -566,7 +471,7 @@ pub mod v1 {
     /// List Projects
     ///
     /// Lists all projects that the requesting user has access to.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "project",
         path = ManagementV1Endpoint::ListProjects.path(),
@@ -574,7 +479,7 @@ pub mod v1 {
             (status = 200, description = "List of projects", body = ListProjectsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn list_projects<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -585,7 +490,7 @@ pub mod v1 {
     /// Create Project
     ///
     /// Creates a new project with the specified configuration.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "project",
         path = ManagementV1Endpoint::CreateProject.path(),
@@ -593,7 +498,7 @@ pub mod v1 {
             (status = 201, description = "Project created successfully", body = CreateProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn create_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -605,7 +510,7 @@ pub mod v1 {
     /// Get Project
     ///
     /// Retrieves information about the user's default project.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetDefaultProject.path(),
@@ -614,7 +519,7 @@ pub mod v1 {
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -626,7 +531,7 @@ pub mod v1 {
     ///
     /// Retrieves information about the user's default project.
     /// This endpoint is deprecated and will be removed in a future version.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
             get,
             tag = "project",
             path = ManagementV1Endpoint::GetDefaultProjectDeprecated.path(),
@@ -634,7 +539,7 @@ pub mod v1 {
                 (status = 200, description = "Project details", body = GetProjectResponse),
                 (status = "4XX", body = IcebergErrorResponse),
             )
-        )]
+        ))]
     #[deprecated(
         since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
@@ -647,7 +552,7 @@ pub mod v1 {
     }
 
     /// Get Project
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetDefaultProjectById.path(),
@@ -656,7 +561,7 @@ pub mod v1 {
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -666,7 +571,7 @@ pub mod v1 {
     }
 
     /// Delete Project
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteDefaultProject.path(),
@@ -675,7 +580,7 @@ pub mod v1 {
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn delete_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -689,7 +594,7 @@ pub mod v1 {
     ///
     /// Removes the user's default project and all its resources.
     /// This endpoint is deprecated and will be removed in a future version.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
             delete,
             tag = "project",
             path = ManagementV1Endpoint::DeleteDefaultProjectDeprecated .path(),
@@ -697,7 +602,7 @@ pub mod v1 {
                 (status = 204, description = "Project deleted successfully"),
                 (status = "4XX", body = IcebergErrorResponse),
             )
-        )]
+        ))]
     #[deprecated(
         since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
@@ -714,7 +619,7 @@ pub mod v1 {
     /// Delete Project by ID
     ///
     /// Permanently removes a specific project and all its associated resources.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteProjectById.path(),
@@ -723,7 +628,7 @@ pub mod v1 {
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn delete_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -735,7 +640,7 @@ pub mod v1 {
     }
 
     /// Rename Project
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameDefaultProject.path(),
@@ -744,7 +649,7 @@ pub mod v1 {
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn rename_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -757,7 +662,7 @@ pub mod v1 {
     ///
     /// Updates the name of the user's default project.
     /// This endpoint is deprecated and will be removed in a future version.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
             post,
             tag = "project",
             path = ManagementV1Endpoint::RenameDefaultProjectDeprecated.path(),
@@ -765,7 +670,7 @@ pub mod v1 {
                 (status = 200, description = "Project renamed successfully"),
                 (status = "4XX", body = IcebergErrorResponse),
             )
-        )]
+        ))]
     #[deprecated(
         since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
@@ -781,7 +686,7 @@ pub mod v1 {
     /// Rename Project by ID
     ///
     /// Updates the name of a specific project.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameProjectById.path(),
@@ -790,7 +695,7 @@ pub mod v1 {
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn rename_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -805,7 +710,7 @@ pub mod v1 {
     /// Returns all warehouses in the project that the current user has access to.
     /// By default, deactivated warehouses are not included in the results.
     /// Set the `include_deactivated` query parameter to `true` to include them.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::ListWarehouses.path(),
@@ -814,7 +719,7 @@ pub mod v1 {
             (status = 200, description = "List of warehouses", body = ListWarehousesResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn list_warehouses<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Query(request): Query<ListWarehousesRequest>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -826,7 +731,7 @@ pub mod v1 {
     /// Get Warehouse
     ///
     /// Retrieves detailed information about a specific warehouse.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::GetWarehouse.path(),
@@ -835,7 +740,7 @@ pub mod v1 {
             (status = 200, description = "Warehouse details", body = GetWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -844,7 +749,8 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_warehouse(warehouse_id.into(), api_context, metadata).await
     }
 
-    #[derive(Debug, Deserialize, utoipa::IntoParams, TypedBuilder)]
+    #[derive(Debug, Deserialize, TypedBuilder)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
     pub struct DeleteWarehouseQuery {
         #[serde(
             deserialize_with = "crate::api::iceberg::types::deserialize_bool",
@@ -858,7 +764,7 @@ pub mod v1 {
     ///
     /// Permanently removes a warehouse and all its associated resources.
     /// Use the `force` parameter to delete protected warehouses.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "warehouse",
         path = ManagementV1Endpoint::DeleteWarehouse.path(),
@@ -867,7 +773,7 @@ pub mod v1 {
             (status = 204, description = "Warehouse deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn delete_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(query): Query<DeleteWarehouseQuery>,
@@ -882,7 +788,7 @@ pub mod v1 {
     /// Rename Warehouse
     ///
     /// Updates the name of a specific warehouse.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::RenameWarehouse.path(),
@@ -892,7 +798,7 @@ pub mod v1 {
             (status = 200, description = "Warehouse renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn rename_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -906,7 +812,7 @@ pub mod v1 {
     /// Update Deletion Profile
     ///
     /// Configures the soft-delete behavior for a warehouse.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::UpdateWarehouseDeleteProfile.path(),
@@ -916,7 +822,7 @@ pub mod v1 {
             (status = 200, description = "Deletion Profile updated successfully"),
         (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn update_warehouse_delete_profile<
         C: CatalogStore,
         A: Authorizer + Clone,
@@ -939,7 +845,7 @@ pub mod v1 {
     /// Deactivate Warehouse
     ///
     /// Temporarily disables access to a warehouse without deleting its data.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::DeactivateWarehouse.path(),
@@ -948,7 +854,7 @@ pub mod v1 {
             (status = 200, description = "Warehouse deactivated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn deactivate_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -960,7 +866,7 @@ pub mod v1 {
     /// Activate Warehouse
     ///
     /// Re-enables access to a previously deactivated warehouse.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::ActivateWarehouse.path(),
@@ -969,7 +875,7 @@ pub mod v1 {
             (status = 200, description = "Warehouse activated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn activate_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -981,7 +887,7 @@ pub mod v1 {
     /// Update Storage Profile
     ///
     /// Updates both the storage profile and credentials of a warehouse.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::UpdateStorageProfile.path(),
@@ -991,7 +897,7 @@ pub mod v1 {
             (status = 200, description = "Storage profile updated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn update_storage_profile<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1006,7 +912,7 @@ pub mod v1 {
     ///
     /// Updates only the storage credential of a warehouse without modifying the storage profile.
     /// Useful for refreshing expiring credentials.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::UpdateStorageCredential.path(),
@@ -1016,7 +922,7 @@ pub mod v1 {
             (status = 200, description = "Storage credential updated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn update_storage_credential<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1032,17 +938,19 @@ pub mod v1 {
         .await
     }
 
-    #[derive(Deserialize, Debug, ToSchema)]
+    #[derive(Deserialize, Debug)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     pub struct SetProtectionRequest {
         /// Setting this to `true` will prevent the entity from being deleted unless `force` is used.
         pub protected: bool,
     }
 
-    #[derive(Debug, Deserialize, Serialize, utoipa::IntoParams)]
+    #[derive(Debug, Deserialize, Serialize)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
     pub struct GetWarehouseStatisticsQuery {
         /// Next page token
         #[serde(skip_serializing_if = "PageToken::skip_serialize")]
-        #[param(value_type=String)]
+        #[cfg_attr(feature = "open-api", param(value_type=String))]
         pub page_token: PageToken,
         /// Signals an upper bound of the number of results that a client will receive.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1078,7 +986,7 @@ pub mod v1 {
     /// - 01:00:36: table deleted:
     ///     - `timestamp: 02:00:00, created_at: 01:00:36, updated_at: null, 0 tables, 1 view`
     ///     - `timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view`
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::GetWarehouseStatistics.path(),
@@ -1087,7 +995,7 @@ pub mod v1 {
             (status = 200, description = "Warehouse statistics", body = WarehouseStatisticsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_warehouse_statistics<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(query): Query<GetWarehouseStatisticsQuery>,
@@ -1135,14 +1043,14 @@ pub mod v1 {
     /// - 00:00:00-00:16:32: no activity
     ///     - `timestamps: []`
     /// - 00:16:32: warehouse created:
-    ///     `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
+    ///     - `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
     /// - 00:30:00: table created:
     ///     - `timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}, {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]`
     /// - 00:45:00: table created:
     ///     - `timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}, {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]`
     /// - 01:00:36: table deleted:
     ///     - `timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},{"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],[{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]`
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "project",
         path = ManagementV1Endpoint::LoadEndpointStatistics.path(),
@@ -1151,7 +1059,7 @@ pub mod v1 {
             (status = 200, description = "Endpoint statistics", body = EndpointStatisticsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_endpoint_statistics<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1168,7 +1076,7 @@ pub mod v1 {
     /// can be parsed as uuid:
     /// - if there is tabular with that uuid, the tabular is in the response
     /// - if there is a namespace with that uuid, tables in that namespace are in the response
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::SearchTabular.path(),
@@ -1178,7 +1086,7 @@ pub mod v1 {
             (status = 200, description = "List of tabulars", body = SearchTabularResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn search_tabular<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1193,7 +1101,7 @@ pub mod v1 {
     /// List Soft-Deleted Tabulars
     ///
     /// Returns all soft-deleted tables and views in the warehouse that are visible to the current user.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::ListDeletedTabulars.path(),
@@ -1202,7 +1110,7 @@ pub mod v1 {
             (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn list_deleted_tabulars<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(query): Query<ListDeletedTabularsQuery>,
@@ -1223,7 +1131,7 @@ pub mod v1 {
     ///
     /// Restores previously deleted tables or views to make them accessible again.
     /// This endpoint is deprecated and will be removed soon.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::UndropTabularsDeprecated.path(),
@@ -1232,7 +1140,7 @@ pub mod v1 {
             (status = 204, description = "Tabular undropped successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     #[deprecated(
         since = "0.7.0",
         note = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."
@@ -1256,7 +1164,7 @@ pub mod v1 {
     /// Undrop Tabular
     ///
     /// Restores previously deleted tables or views to make them accessible again.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::UndropTabulars.path(),
@@ -1265,7 +1173,7 @@ pub mod v1 {
             (status = 204, description = "Tabular undropped successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn undrop_tabulars<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1282,7 +1190,8 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    #[derive(Serialize, Deserialize, Debug, utoipa::ToSchema)]
+    #[derive(Serialize, Deserialize, Debug)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     pub struct ProtectionResponse {
         /// Indicates whether the entity is protected
         pub protected: bool,
@@ -1299,7 +1208,7 @@ pub mod v1 {
     /// Get Table Protection
     ///
     /// Retrieves whether a table is protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::GetTableProtection.path(),
@@ -1308,7 +1217,7 @@ pub mod v1 {
             (status = 200, body =  ProtectionResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_table_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1326,7 +1235,7 @@ pub mod v1 {
     /// Set Table Protection
     ///
     /// Configures whether a table should be protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::SetTableProtection.path(),
@@ -1335,7 +1244,7 @@ pub mod v1 {
             (status = 200, body =  ProtectionResponse, description = "Table protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn set_table_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1355,7 +1264,7 @@ pub mod v1 {
     /// Get View Protection
     ///
     /// Retrieves whether a view is protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::GetViewProtection.path(),
@@ -1364,7 +1273,7 @@ pub mod v1 {
             (status = 200, body = ProtectionResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_view_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1382,7 +1291,7 @@ pub mod v1 {
     /// Set View Protection
     ///
     /// Configures whether a view should be protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::SetViewProtection.path(),
@@ -1391,7 +1300,7 @@ pub mod v1 {
             (status = 200, body = ProtectionResponse, description = "View protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn set_view_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1411,7 +1320,7 @@ pub mod v1 {
     /// Get Namespace Protection
     ///
     /// Retrieves whether a namespace is protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::GetNamespaceProtection.path(),
@@ -1420,7 +1329,7 @@ pub mod v1 {
             (status = 200, body = ProtectionResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_namespace_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1438,7 +1347,7 @@ pub mod v1 {
     /// Set Namespace Protection
     ///
     /// Configures whether a namespace should be protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::SetNamespaceProtection.path(),
@@ -1447,7 +1356,7 @@ pub mod v1 {
             (status = 200, body = ProtectionResponse, description = "Namespace protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn set_namespace_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1467,7 +1376,7 @@ pub mod v1 {
     /// Set Warehouse Protection
     ///
     /// Configures whether a warehouse should be protected from deletion.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
         path = ManagementV1Endpoint::SetWarehouseProtection.path(),
@@ -1476,7 +1385,7 @@ pub mod v1 {
             (status = 200, body = ProtectionResponse, description = "Warehouse protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn set_warehouse_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1495,7 +1404,7 @@ pub mod v1 {
     /// Set the configuration for a Task Queue.
     ///
     /// These configurations are global per warehouse and shared across all instances of this kind of task.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "tasks",
         path = ManagementV1Endpoint::SetTaskQueueConfig.path(),
@@ -1504,7 +1413,7 @@ pub mod v1 {
             (status = 204, description = "Task queue config set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn set_task_queue_config<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1526,7 +1435,7 @@ pub mod v1 {
     /// Get the configuration for a Task Queue.
     ///
     /// These configurations are global per warehouse and shared across all instances of this kind of task.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "tasks",
         path = ManagementV1Endpoint::GetTaskQueueConfig.path(),
@@ -1535,7 +1444,7 @@ pub mod v1 {
             (status = 200, body = GetTaskQueueConfigResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_task_queue_config<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1552,7 +1461,7 @@ pub mod v1 {
     }
 
     /// List active and historic tasks.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "tasks",
         path = ManagementV1Endpoint::ListTasks.path(),
@@ -1562,7 +1471,7 @@ pub mod v1 {
             (status = 200, body = ListTasksResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn list_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1573,7 +1482,7 @@ pub mod v1 {
     }
 
     /// Get Details about a specific task by its ID.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "tasks",
         path = ManagementV1Endpoint::GetTaskDetails.path(),
@@ -1582,7 +1491,7 @@ pub mod v1 {
             (status = 200, body = GetTaskDetailsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn get_task_details<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, task_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1598,7 +1507,7 @@ pub mod v1 {
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
     ///
     /// Accepts at most 100 task IDs in one request.
-    #[utoipa::path(
+    #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "tasks",
         path = ManagementV1Endpoint::ControlTasks.path(),
@@ -1608,7 +1517,7 @@ pub mod v1 {
             (status = 204, description = "All requested actions were successful"),
             (status = "4XX", body = IcebergErrorResponse),
         )
-    )]
+    ))]
     async fn control_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -1620,7 +1529,8 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    #[derive(Debug, Serialize, utoipa::ToSchema)]
+    #[derive(Debug, Serialize)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
@@ -1629,7 +1539,8 @@ pub mod v1 {
         pub next_page_token: Option<String>,
     }
 
-    #[derive(Debug, Serialize, utoipa::ToSchema)]
+    #[derive(Debug, Serialize)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
     pub struct DeletedTabularResponse {
         /// Unique identifier of the tabular
@@ -1641,7 +1552,7 @@ pub mod v1 {
         /// Type of the tabular
         pub typ: TabularType,
         /// Warehouse ID where the tabular is stored
-        #[schema(value_type = uuid::Uuid)]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         pub warehouse_id: WarehouseId,
         /// Date when the tabular was created
         pub created_at: chrono::DateTime<chrono::Utc>,
@@ -1661,229 +1572,20 @@ pub mod v1 {
     }
 
     /// Type of tabular
-    #[derive(
-        Debug, Deserialize, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq,
-    )]
+    #[derive(Debug, Deserialize, Serialize, Clone, Copy, strum::Display, PartialEq, Eq)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
     pub enum TabularType {
         Table,
         View,
     }
 
-    #[derive(
-        Debug,
-        Deserialize,
-        Serialize,
-        utoipa::ToSchema,
-        Clone,
-        Copy,
-        PartialEq,
-        Eq,
-        strum_macros::Display,
-    )]
+    #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
     pub enum DeleteKind {
         Default,
         Purge,
-    }
-
-    /// Get the `OpenAPI` documentation for the management API.
-    ///
-    /// # Errors
-    ///
-    #[allow(clippy::too_many_lines)]
-    pub fn api_doc<A: Authorizer>(
-        queue_api_configs: Vec<&QueueApiConfig>,
-    ) -> utoipa::openapi::OpenApi {
-        let mut doc = ManagementApiDoc::openapi();
-        doc.merge(A::api_doc());
-
-        let Some(comps) = doc.components.as_mut() else {
-            tracing::warn!(
-                "No components found in the OpenAPI document, not patching queue configs in."
-            );
-            return doc;
-        };
-        let paths = &mut doc.paths.paths;
-        let Some(config_path) = paths.remove(ManagementV1Endpoint::SetTaskQueueConfig.path())
-        else {
-            tracing::warn!("No path found for SetTaskQueueConfig, not patching queue configs in.");
-            return doc;
-        };
-
-        for QueueApiConfig {
-            queue_name,
-            utoipa_type_name,
-            utoipa_schema,
-        } in queue_api_configs
-        {
-            let mut set_queue_config_schema = SetTaskQueueConfigRequest::schema();
-            let mut get_queue_config_schema = GetTaskQueueConfigResponse::schema();
-            let set_queue_config_type_name = format!("Set{utoipa_type_name}");
-            let get_queue_config_type_name = format!("Get{utoipa_type_name}");
-            let queue_config_type_ref = RefOr::Ref(
-                utoipa::openapi::schema::RefBuilder::new()
-                    .ref_location_from_schema_name(utoipa_type_name.to_string())
-                    .build(),
-            );
-            let set_queue_config_type_ref = RefOr::Ref(
-                utoipa::openapi::schema::RefBuilder::new()
-                    .ref_location_from_schema_name(set_queue_config_type_name.clone())
-                    .build(),
-            );
-            let get_queue_config_type_ref = RefOr::Ref(
-                utoipa::openapi::schema::RefBuilder::new()
-                    .ref_location_from_schema_name(get_queue_config_type_name.clone())
-                    .build(),
-            );
-
-            // replace the "queue-config" property with a ref to the actual queue config type
-            match &mut set_queue_config_schema {
-                RefOr::Ref(_) => {
-                    unreachable!(
-                        "The schema for SetTaskQueueConfigRequest should not be a reference."
-                    );
-                }
-                RefOr::T(s) => match s {
-                    utoipa::openapi::schema::Schema::Object(obj) => {
-                        let ins = obj
-                            .properties
-                            .insert("queue-config".to_string(), queue_config_type_ref.clone());
-                        if ins.is_none() {
-                            unreachable!("The schema for SetTaskQueueConfigRequest should have a 'queue-config' property.");
-                        }
-                    }
-                    _ => {
-                        unreachable!(
-                            "The schema for SetTaskQueueConfigRequest should be an object."
-                        );
-                    }
-                },
-            }
-            match &mut get_queue_config_schema {
-                RefOr::Ref(_) => {
-                    unreachable!(
-                        "The schema for GetTaskQueueConfigResponse should not be a reference."
-                    );
-                }
-                RefOr::T(s) => match s {
-                    utoipa::openapi::schema::Schema::Object(obj) => {
-                        let ins = obj
-                            .properties
-                            .insert("queue-config".to_string(), queue_config_type_ref.clone());
-                        if ins.is_none() {
-                            unreachable!("The schema for GetTaskQueueConfigResponse should have a 'queue-config' property.");
-                        }
-                    }
-                    _ => {
-                        unreachable!(
-                            "The schema for GetTaskQueueConfigResponse should be an object."
-                        );
-                    }
-                },
-            }
-
-            let path = ManagementV1Endpoint::SetTaskQueueConfig
-                .path()
-                .replace("{queue_name}", queue_name);
-
-            let mut p = config_path.clone();
-
-            let Some(post) = p.post.as_mut() else {
-                tracing::warn!(
-                    "No post method found for '{}', not patching queue configs into the ApiDoc.",
-                    ManagementV1Endpoint::SetTaskQueueConfig.path()
-                );
-                return doc;
-            };
-            post.parameters = post.parameters.take().map(|params| {
-                params
-                    .into_iter()
-                    .filter(|param| param.name != "queue_name")
-                    .collect()
-            });
-            post.operation_id = Some(format!(
-                "set_task_queue_config_{}",
-                queue_name.replace('-', "_")
-            ));
-            let Some(body) = post.request_body.as_mut() else {
-                tracing::warn!(
-                    "No request body found for the '{}', not patching queue configs into the ApiDoc.",
-                    ManagementV1Endpoint::SetTaskQueueConfig.path()
-                );
-                return doc;
-            };
-            body.content.insert(
-                "application/json".to_string(),
-                utoipa::openapi::ContentBuilder::new()
-                    .schema(Some(set_queue_config_type_ref))
-                    .build(),
-            );
-            let Some(get) = p.get.as_mut() else {
-                tracing::warn!(
-                    "No get method found for '{}', not patching queue configs into the ApiDoc.",
-                    ManagementV1Endpoint::SetTaskQueueConfig.path()
-                );
-                return doc;
-            };
-            get.parameters = get.parameters.take().map(|params| {
-                params
-                    .into_iter()
-                    .filter(|param| param.name != "queue_name")
-                    .collect()
-            });
-            get.operation_id = Some(format!(
-                "get_task_queue_config_{}",
-                queue_name.replace('-', "_")
-            ));
-            let response = utoipa::openapi::response::ResponseBuilder::new()
-                .content(
-                    "application/json",
-                    utoipa::openapi::content::ContentBuilder::new()
-                        .schema(Some(get_queue_config_type_ref))
-                        .build(),
-                )
-                .header(
-                    "x-request-id",
-                    utoipa::openapi::HeaderBuilder::new()
-                        .schema(
-                            utoipa::openapi::schema::Object::builder()
-                                .schema_type(utoipa::openapi::schema::SchemaType::new(
-                                    utoipa::openapi::schema::Type::String,
-                                ))
-                                .format(Some(utoipa::openapi::schema::SchemaFormat::KnownFormat(
-                                    KnownFormat::Uuid,
-                                ))),
-                        )
-                        .description(Some("Request identifier, add this to your bug reports."))
-                        .build(),
-                );
-            get.responses
-                .responses
-                .insert("200".to_string(), RefOr::T(response.build()));
-
-            paths.insert(path, p);
-
-            comps
-                .schemas
-                .insert(utoipa_type_name.to_string(), utoipa_schema.clone());
-            comps
-                .schemas
-                .insert(set_queue_config_type_name, set_queue_config_schema);
-            comps
-                .schemas
-                .insert(get_queue_config_type_name, get_queue_config_schema);
-
-            // Remove original SetTaskQueueConfigRequest and GetTaskQueueConfigResponse schemas
-            comps
-                .schemas
-                .remove(&SetTaskQueueConfigRequest::name().to_string());
-            comps
-                .schemas
-                .remove(&GetTaskQueueConfigResponse::name().to_string());
-        }
-
-        doc
     }
 
     impl<C: CatalogStore, A: Authorizer, S: SecretStore> ApiServer<C, A, S> {

@@ -38,9 +38,8 @@ use crate::{
 };
 
 /// Storage profile for a warehouse.
-#[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema,
-)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[allow(clippy::unsafe_derive_deserialize)]
 // tokio::join! uses unsafe code internally.
@@ -48,30 +47,22 @@ use crate::{
 pub enum StorageProfile {
     /// Azure storage profile
     #[serde(rename = "adls", alias = "azdls")]
-    #[schema(title = "StorageProfileAdls")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileAdls"))]
     Adls(AdlsProfile),
     /// S3 storage profile
     #[serde(rename = "s3")]
-    #[schema(title = "StorageProfileS3")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileS3"))]
     S3(S3Profile),
     #[serde(rename = "gcs")]
-    #[schema(title = "StorageProfileGcs")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileGcs"))]
     Gcs(GcsProfile),
     #[cfg(feature = "test-utils")]
     Memory(MemoryProfile),
 }
 
 #[cfg(feature = "test-utils")]
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-    typed_builder::TypedBuilder,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct MemoryProfile {
     /// Base location for the local profile
@@ -850,7 +841,8 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::From)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum StorageCredential {
     /// Credentials for S3 storage
@@ -867,7 +859,7 @@ pub enum StorageCredential {
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "s3")]
-    #[schema(title = "StorageCredentialS3")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialS3"))]
     S3(S3Credential),
     /// Credentials for Az storage
     ///
@@ -884,7 +876,7 @@ pub enum StorageCredential {
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "az")]
-    #[schema(title = "StorageCredentialAz")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialAz"))]
     Az(AzCredential),
     /// Credentials for GCS storage
     ///
@@ -912,7 +904,7 @@ pub enum StorageCredential {
     /// ```
     ///
     #[serde(rename = "gcs")]
-    #[schema(title = "StorageCredentialGcs")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialGcs"))]
     Gcs(GcsCredential),
 }
 

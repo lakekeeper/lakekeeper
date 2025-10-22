@@ -158,9 +158,9 @@ async fn main() -> anyhow::Result<()> {
             let queue_configs_ref = &BUILT_IN_API_CONFIGS;
             let queue_configs: Vec<&_> = queue_configs_ref.iter().collect();
             let doc = match &CONFIG.authz_backend {
-                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(queue_configs.clone()),
+                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(&queue_configs),
                 AuthZBackend::External(e) if e == "openfga" => {
-                    v1_api_doc::<OpenFGAAuthorizer>(queue_configs)
+                    v1_api_doc::<OpenFGAAuthorizer>(&queue_configs)
                 }
                 AuthZBackend::External(e) => anyhow::bail!("Unsupported authz backend `{e}`"),
             };

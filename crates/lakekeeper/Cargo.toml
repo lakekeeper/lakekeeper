@@ -19,6 +19,7 @@ all = [
     "nats",
     "vendored-protoc",
     "kafka",
+    "open-api",
 ]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
@@ -29,6 +30,7 @@ default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
 test-utils = ["lakekeeper-io/storage-in-memory"]
+open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -88,7 +90,7 @@ rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
-serde_norway = { workspace = true }
+serde_norway = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -108,8 +110,8 @@ tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
-utoipa = { workspace = true, features = ["uuid"] }
-utoipa-swagger-ui = { workspace = true }
+utoipa = { workspace = true, features = ["uuid"], optional = true }
+utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
 vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
@@ -129,6 +131,7 @@ lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
+serde_norway = { workspace = true }
 serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tempfile = { version = "3.20" }

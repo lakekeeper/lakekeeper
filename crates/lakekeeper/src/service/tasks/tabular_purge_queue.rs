@@ -4,9 +4,10 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::Location;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
+#[cfg(feature = "open-api")]
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
+use super::{SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
@@ -15,11 +16,13 @@ use crate::{
 
 const QN_STR: &str = "tabular_purge";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
-pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
-    queue_name: &QUEUE_NAME,
-    utoipa_type_name: PurgeQueueConfig::name(),
-    utoipa_schema: PurgeQueueConfig::schema(),
-});
+#[cfg(feature = "open-api")]
+pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
+    LazyLock::new(|| super::QueueApiConfig {
+        queue_name: &QUEUE_NAME,
+        utoipa_type_name: PurgeQueueConfig::name(),
+        utoipa_schema: PurgeQueueConfig::schema(),
+    });
 
 pub type TabularPurgeTask =
     SpecializedTask<PurgeQueueConfig, TabularPurgePayload, TabularPurgeExecutionDetails>;
@@ -39,7 +42,8 @@ impl TabularPurgePayload {
 
 impl TaskData for TabularPurgePayload {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct PurgeQueueConfig {}
 
 impl TaskConfig for PurgeQueueConfig {

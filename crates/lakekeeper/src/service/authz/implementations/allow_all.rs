@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use axum::Router;
+#[cfg(feature = "open-api")]
 use utoipa::OpenApi;
 
 use crate::{
@@ -45,6 +46,7 @@ impl HealthExt for AllowAllAuthorizer {
     }
 }
 
+#[cfg(feature = "open-api")]
 #[derive(Debug, OpenApi)]
 #[openapi()]
 pub(super) struct ApiDoc;
@@ -64,6 +66,7 @@ impl Authorizer for AllowAllAuthorizer {
         self.server_id
     }
 
+    #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi {
         ApiDoc::openapi()
     }

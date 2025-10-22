@@ -5,30 +5,20 @@ use std::{
 
 use iceberg::TableIdent;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::generic::{TableId, ViewId};
 
 #[derive(
-    Hash,
-    PartialOrd,
-    PartialEq,
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    Deserialize,
-    Serialize,
-    ToSchema,
-    derive_more::From,
+    Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize, derive_more::From,
 )]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
-#[schema(as=TabularIdentUuid)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=TabularIdentUuid))]
 pub enum TabularId {
-    #[schema(value_type = Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
     Table(TableId),
-    #[schema(value_type = Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
     View(ViewId),
 }
 

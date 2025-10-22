@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::LazyLock};
+use std::fmt::Debug;
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::{either::Either, middleware::option_layer};
@@ -16,13 +16,15 @@ use tower_http::{
     ServiceBuilderExt,
 };
 
+#[cfg(feature = "open-api")]
+use crate::api::management::v1::api_doc as v1_api_doc;
 use crate::{
     api::{
         iceberg::v1::{
             new_v1_full_router,
             tables::{DATA_ACCESS_HEADER_NAME, ETAG_HEADER_NAME, IF_NONE_MATCH_HEADER_NAME},
         },
-        management::v1::{api_doc as v1_api_doc, ApiServer},
+        management::v1::ApiServer,
         ApiContext,
     },
     request_metadata::{
@@ -42,12 +44,14 @@ use crate::{
 
 pub const X_USER_AGENT_HEADER_NAME: HeaderName = HeaderName::from_static("x-user-agent");
 
-static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {
-    let mut yaml_str =
-        include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
-    yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
-    serde_norway::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
-});
+#[cfg(feature = "open-api")]
+static ICEBERG_OPENAPI_SPEC_YAML: std::sync::LazyLock<serde_json::Value> =
+    std::sync::LazyLock::new(|| {
+        let mut yaml_str =
+            include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
+        yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
+        serde_norway::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+    });
 
 pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,
@@ -141,7 +145,8 @@ pub async fn new_full_router<
             }),
         );
     let registered_api_config = state.v1_state.registered_task_queues.api_config().await;
-    let router = maybe_merge_swagger_router(router, registered_api_config.iter().collect());
+    let queue_api_configs = registered_api_config.iter().collect::<Vec<_>>();
+    let router = maybe_merge_swagger_router(router, &queue_api_configs);
     let router = router
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
@@ -268,10 +273,12 @@ fn get_cors_layer(
     maybe_cors_layer
 }
 
+#[cfg_attr(not(feature = "open-api"), allow(unused_variables))]
 fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
-    queue_api_configs: Vec<&QueueApiConfig>,
+    queue_api_configs: &[&QueueApiConfig],
 ) -> Router<ApiContext<State<A, C, S>>> {
+    #[cfg(feature = "open-api")]
     if CONFIG.serve_swagger_ui {
         router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
@@ -285,6 +292,10 @@ fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                 ),
         )
     } else {
+        router
+    }
+    #[cfg(not(feature = "open-api"))]
+    {
         router
     }
 }

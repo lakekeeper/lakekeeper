@@ -1,7 +1,6 @@
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 pub use crate::service::{
@@ -25,46 +24,51 @@ use crate::{
     ProjectId,
 };
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetProjectResponse {
     /// ID of the project.
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub project_id: ProjectId,
     /// Name of the project
     pub project_name: String,
 }
 
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListProjectsResponse {
     /// List of projects
     pub projects: Vec<GetProjectResponse>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectRequest {
     /// Name of the project to create.
     pub project_name: String,
     /// Request a specific project ID - optional.
     /// If not provided, a new project ID will be generated (recommended).
-    #[schema(value_type = Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectResponse {
     /// ID of the created project.
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub project_id: ProjectId,
 }
 
@@ -274,7 +278,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, ToSchema)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct EndpointStatistic {
     /// Number of requests to this endpoint for the current time-slice.
@@ -308,7 +313,8 @@ pub struct EndpointStatistic {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Deserialize, Serialize, Debug, ToSchema)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct EndpointStatisticsResponse {
     /// Array of timestamps indicating the time at which each entry in the `called_endpoints` array
@@ -336,31 +342,32 @@ pub struct EndpointStatisticsResponse {
     pub next_page_token: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TimeWindowSelector {
-    #[schema(example = json!({
+    #[cfg_attr(feature = "open-api", schema(example = json!({
         "type": "window",
         "end": "2023-12-31T23:59:59Z",
         "interval": "P1D"
-    }))]
+    })))]
     Window {
         /// End timestamp of the time window
         /// Specify
-        #[schema(example = "2023-12-31T23:59:59Z")]
+        #[cfg_attr(feature = "open-api", schema(example = "2023-12-31T23:59:59Z"))]
         end: chrono::DateTime<chrono::Utc>,
         /// Duration/span of the time window
         ///
         /// The returned statistics will be for the time window from `end` - `interval` to `end`.
         /// Specify a ISO8601 duration string, e.g. `PT1H` for 1 hour, `P1D` for 1 day.
-        #[schema(example = "P1D")]
+        #[cfg_attr(feature = "open-api", schema(example = "P1D"))]
         #[serde(with = "crate::utils::time_conversion::iso8601_duration_serde")]
         interval: chrono::Duration,
     },
-    #[schema(example = json!({
+    #[cfg_attr(feature = "open-api", schema(example = json!({
         "type": "page-token",
         "token": "xyz"
-    }))]
+    })))]
     PageToken {
         /// Opaque Token from previous response for paginating through time windows
         ///
@@ -369,7 +376,8 @@ pub enum TimeWindowSelector {
     },
 }
 
-#[derive(Deserialize, ToSchema, Debug)]
+#[derive(Deserialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetEndpointStatisticsRequest {
     /// Warehouse filter
@@ -388,7 +396,8 @@ pub struct GetEndpointStatisticsRequest {
     pub range_specifier: Option<TimeWindowSelector>,
 }
 
-#[derive(Deserialize, Serialize, ToSchema, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum WarehouseFilter {
     /// Filter for a specific warehouse

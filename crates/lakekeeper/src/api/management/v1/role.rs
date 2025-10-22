@@ -16,7 +16,8 @@ use crate::{
     ProjectId,
 };
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateRoleRequest {
     /// Name of the role to create
@@ -27,22 +28,23 @@ pub struct CreateRoleRequest {
     /// Project ID in which the role is created.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[schema(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct Role {
     /// Globally unique id of this role
-    #[schema(value_type=uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
     pub id: RoleId,
     /// Name of the role
     pub name: String,
     /// Description of the role
     pub description: Option<String>,
     /// Project ID in which the role is created.
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -50,13 +52,15 @@ pub struct Role {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchRoleResponse {
     /// List of users matching the search criteria
     pub roles: Vec<Role>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateRoleRequest {
     /// Name of the role to create
@@ -66,7 +70,8 @@ pub struct UpdateRoleRequest {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRolesResponse {
     pub roles: Vec<Role>,
@@ -80,7 +85,8 @@ impl IntoResponse for ListRolesResponse {
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct SearchRoleRequest {
     /// Search string for fuzzy search.
@@ -89,11 +95,12 @@ pub struct SearchRoleRequest {
     /// Deprecated: Please use the `x-project-id` header instead.
     /// Project ID in which the role is created.
     #[serde(default)]
-    #[schema(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListRolesQuery {
     /// Search for a specific role name
@@ -109,7 +116,7 @@ pub struct ListRolesQuery {
     /// Project ID from which roles should be listed
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[param(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", param(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 

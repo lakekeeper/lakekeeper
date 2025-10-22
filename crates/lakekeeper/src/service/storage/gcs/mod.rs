@@ -45,7 +45,8 @@ static STS_URL: LazyLock<Url> = LazyLock::new(|| {
 });
 const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GcsProfile {
     /// Name of the GCS bucket
@@ -54,7 +55,8 @@ pub struct GcsProfile {
     pub key_prefix: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 /// GCS Credentials
 ///
@@ -79,18 +81,19 @@ pub enum GcsCredential {
     /// Service Account Key
     ///
     /// The key is the JSON object obtained when creating a service account key in the GCP console.
-    #[schema(title = "GcsCredentialServiceAccountKey")]
+    #[cfg_attr(feature = "open-api", schema(title = "GcsCredentialServiceAccountKey"))]
     ServiceAccountKey { key: GcsServiceKey },
 
     /// GCP System Identity
     ///
     /// Use the service account that the application is running as.
     /// This can be a Compute Engine default service account or a user-assigned service account.
-    #[schema(title = "GcsCredentialSystemIdentity")]
+    #[cfg_attr(feature = "open-api", schema(title = "GcsCredentialSystemIdentity"))]
     GcpSystemIdentity {},
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct GcsServiceKey {
     pub r#type: String,
     pub project_id: String,
