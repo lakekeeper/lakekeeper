@@ -71,7 +71,7 @@ allow_show_schemas if {
 allow_select_from_columns_schemata if {
     input.action.operation == "SelectFromColumns"
     input.action.resource.table.schemaName == "information_schema"
-    input.action.resource.table.tableName in ["schemata", "tables", "columns"]
+    input.action.resource.table.tableName in ["schemata", "tables", "columns", "views"]
 }
 
 # always allow "information_schema" schema
