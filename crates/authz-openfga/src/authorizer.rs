@@ -15,7 +15,7 @@ use lakekeeper::{
         RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
-    utoipa, ProjectId, WarehouseId,
+    ProjectId, WarehouseId,
 };
 use openfga_client::{
     client::{
@@ -25,6 +25,7 @@ use openfga_client::{
     },
     tonic,
 };
+#[cfg(feature = "open-api")]
 use utoipa::OpenApi as _;
 
 use crate::{
@@ -81,6 +82,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.server_id
     }
 
+    #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi {
         crate::api::ApiDoc::openapi()
     }

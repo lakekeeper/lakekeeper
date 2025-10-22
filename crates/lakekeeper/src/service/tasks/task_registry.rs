@@ -285,7 +285,7 @@ impl TaskQueueRegistry {
     }
 }
 
-#[derive(Clone, typed_builder::TypedBuilder)]
+#[derive(Clone)]
 /// Contains all required information to dynamically generate API documentation
 /// for the warehouse-specific configuration of a task queue.
 pub struct QueueApiConfig {
@@ -319,7 +319,6 @@ mod test {
     use std::sync::LazyLock;
 
     use serde::{Deserialize, Serialize};
-    use utoipa::ToSchema;
 
     use super::*;
     use crate::service::tasks::TaskQueueName;
@@ -335,7 +334,8 @@ mod test {
         static SECOND_QUEUE_NAME: LazyLock<TaskQueueName> =
             LazyLock::new(|| "second-test-queue".into());
 
-        #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
         struct TestQueueConfig {
             test_field: String,
         }
@@ -351,7 +351,8 @@ mod test {
         }
 
         // Register another queue and verify both instances see it
-        #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
         struct SecondTestQueueConfig {
             other_field: i32,
         }

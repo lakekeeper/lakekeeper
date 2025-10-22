@@ -21,10 +21,11 @@ use openfga_client::client::{
 };
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
+#[cfg(feature = "open-api")]
 use utoipa::OpenApi;
 
 use super::{
-    check::{__path_check, check},
+    check::check,
     relations::{
         APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
         APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
@@ -42,13 +43,16 @@ use super::{
         WarehouseRelation as AllWarehouseRelation,
     },
 };
+#[cfg(feature = "open-api")]
+use crate::check::__path_check;
 use crate::{
     entities::OpenFgaEntity, models::RoleIdExt as _, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 struct GetAccessQuery {
     /// The user or role to show access for.
@@ -83,49 +87,57 @@ impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetRoleAccessResponse {
     allowed_actions: Vec<RoleAction>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetServerAccessResponse {
     allowed_actions: Vec<ServerAction>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetProjectAccessResponse {
     allowed_actions: Vec<ProjectAction>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetWarehouseAccessResponse {
     allowed_actions: Vec<WarehouseAction>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetNamespaceAccessResponse {
     allowed_actions: Vec<NamespaceAction>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetTableAccessResponse {
     allowed_actions: Vec<TableAction>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetViewAccessResponse {
     allowed_actions: Vec<ViewAction>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 struct GetRoleAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -134,13 +146,15 @@ struct GetRoleAssignmentsQuery {
     relations: Option<Vec<RoleRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetRoleAssignmentsResponse {
     assignments: Vec<RoleAssignment>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 struct GetServerAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -149,13 +163,15 @@ struct GetServerAssignmentsQuery {
     relations: Option<Vec<ServerRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetServerAssignmentsResponse {
     assignments: Vec<ServerAssignment>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GetProjectAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -164,7 +180,8 @@ pub(super) struct GetProjectAssignmentsQuery {
     relations: Option<Vec<ProjectRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetProjectAssignmentsResponse {
     assignments: Vec<ProjectAssignment>,
@@ -172,7 +189,8 @@ struct GetProjectAssignmentsResponse {
     project_id: ProjectId,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GetWarehouseAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -181,13 +199,15 @@ pub(super) struct GetWarehouseAssignmentsQuery {
     relations: Option<Vec<WarehouseRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetWarehouseAssignmentsResponse {
     assignments: Vec<WarehouseAssignment>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GetNamespaceAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -196,13 +216,15 @@ pub(super) struct GetNamespaceAssignmentsQuery {
     relations: Option<Vec<NamespaceRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetNamespaceAssignmentsResponse {
     assignments: Vec<NamespaceAssignment>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GetTableAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -211,13 +233,15 @@ pub(super) struct GetTableAssignmentsQuery {
     relations: Option<Vec<TableRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetTableAssignmentsResponse {
     assignments: Vec<TableAssignment>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GetViewAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
@@ -226,13 +250,15 @@ pub(super) struct GetViewAssignmentsQuery {
     relations: Option<Vec<ViewRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetViewAssignmentsResponse {
     assignments: Vec<ViewAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateServerAssignmentsRequest {
     #[serde(default)]
@@ -241,7 +267,8 @@ struct UpdateServerAssignmentsRequest {
     deletes: Vec<ServerAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateProjectAssignmentsRequest {
     #[serde(default)]
@@ -250,7 +277,8 @@ struct UpdateProjectAssignmentsRequest {
     deletes: Vec<ProjectAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateWarehouseAssignmentsRequest {
     #[serde(default)]
@@ -259,7 +287,8 @@ struct UpdateWarehouseAssignmentsRequest {
     deletes: Vec<WarehouseAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateNamespaceAssignmentsRequest {
     #[serde(default)]
@@ -268,7 +297,8 @@ struct UpdateNamespaceAssignmentsRequest {
     deletes: Vec<NamespaceAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateTableAssignmentsRequest {
     #[serde(default)]
@@ -277,7 +307,8 @@ struct UpdateTableAssignmentsRequest {
     deletes: Vec<TableAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateViewAssignmentsRequest {
     #[serde(default)]
@@ -286,7 +317,8 @@ struct UpdateViewAssignmentsRequest {
     deletes: Vec<ViewAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct UpdateRoleAssignmentsRequest {
     #[serde(default)]
@@ -295,27 +327,30 @@ struct UpdateRoleAssignmentsRequest {
     deletes: Vec<RoleAssignment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetWarehouseAuthPropertiesResponse {
     managed_access: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetNamespaceAuthPropertiesResponse {
     managed_access: bool,
     managed_access_inherited: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct SetManagedAccessRequest {
     managed_access: bool,
 }
 
 /// Get my access to the default project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
@@ -325,7 +360,7 @@ struct SetManagedAccessRequest {
     responses(
             (status = 200, body = GetRoleAccessResponse),
     )
-)]
+))]
 async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(role_id): Path<RoleId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -351,7 +386,7 @@ async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to the server
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/server/access",
@@ -359,7 +394,7 @@ async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, description = "Server Access", body = GetServerAccessResponse),
     )
-)]
+))]
 async fn get_server_access<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -385,7 +420,7 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to the default project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/project/access",
@@ -393,7 +428,7 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
-)]
+))]
 async fn get_project_access<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -421,7 +456,7 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to the default project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/project/{project_id}/access",
@@ -432,7 +467,7 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
-)]
+))]
 async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -458,7 +493,7 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to a warehouse
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/access",
@@ -469,7 +504,7 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetWarehouseAccessResponse),
     )
-)]
+))]
 async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -495,7 +530,7 @@ async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get Authorization properties of a warehouse
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}",
@@ -505,7 +540,7 @@ async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetWarehouseAuthPropertiesResponse),
     )
-)]
+))]
 async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -529,7 +564,7 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Set managed access property of a warehouse
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/managed-access",
@@ -539,7 +574,7 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200),
     )
-)]
+))]
 async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -561,7 +596,7 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
 }
 
 /// Set managed access property of a namespace
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/managed-access",
@@ -572,7 +607,7 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200),
     )
-)]
+))]
 async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -594,7 +629,7 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get Authorization properties of a namespace
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}",
@@ -604,7 +639,7 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetNamespaceAuthPropertiesResponse),
     )
-)]
+))]
 async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -638,7 +673,7 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to a namespace
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/access",
@@ -649,7 +684,7 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, description = "Server Relations", body = GetNamespaceAccessResponse),
     )
-)]
+))]
 async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -675,7 +710,7 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to a table
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access",
@@ -687,7 +722,7 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, description = "Server Relations", body = GetTableAccessResponse),
     )
-)]
+))]
 async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -713,7 +748,7 @@ async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to a view
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access",
@@ -725,7 +760,7 @@ async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetViewAccessResponse),
     )
-)]
+))]
 async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -751,7 +786,7 @@ async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments of a role
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/assignments",
@@ -762,7 +797,7 @@ async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetRoleAssignmentsResponse),
     )
-)]
+))]
 async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(role_id): Path<RoleId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -786,7 +821,7 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments of the server
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/server/assignments",
@@ -794,7 +829,7 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetServerAssignmentsResponse),
     )
-)]
+))]
 async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -814,7 +849,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments of a project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/project/assignments",
@@ -822,7 +857,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetProjectAssignmentsResponse),
     )
-)]
+))]
 async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -851,7 +886,7 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments to a project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/project/{project_id}/assignments",
@@ -862,7 +897,7 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetProjectAssignmentsResponse),
     )
-)]
+))]
 async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -889,7 +924,7 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments for a warehouse
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
@@ -900,7 +935,7 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetWarehouseAssignmentsResponse),
     )
-)]
+))]
 async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -921,7 +956,7 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments for a namespace
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
@@ -932,7 +967,7 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetNamespaceAssignmentsResponse),
     )
-)]
+))]
 async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -957,7 +992,7 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments for a table
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
@@ -969,7 +1004,7 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetTableAssignmentsResponse),
     )
-)]
+))]
 async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -990,7 +1025,7 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments for a view
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments",
@@ -1002,7 +1037,7 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 200, body = GetViewAssignmentsResponse),
     )
-)]
+))]
 async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1023,7 +1058,7 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for this server
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/server/assignments",
@@ -1031,7 +1066,7 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -1052,7 +1087,7 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for the default project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/project/assignments",
@@ -1060,7 +1095,7 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -1083,7 +1118,7 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for a project
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/project/{project_id}/assignments",
@@ -1094,7 +1129,7 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1115,7 +1150,7 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for a warehouse
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
@@ -1126,7 +1161,7 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1147,7 +1182,7 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for a namespace
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
@@ -1158,7 +1193,7 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1179,7 +1214,7 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for a table
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
@@ -1191,7 +1226,7 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1212,7 +1247,7 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Update permissions for a view
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments",
@@ -1224,7 +1259,7 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1245,7 +1280,7 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 // Update permissions for a role
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/assignments",
@@ -1256,7 +1291,7 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )
-)]
+))]
 async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(role_id): Path<RoleId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -1285,8 +1320,8 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, OpenApi)]
-#[openapi(
+#[cfg_attr(feature = "open-api", derive(OpenApi))]
+#[cfg_attr(feature = "open-api", openapi(
     servers(
         (
             url = "{scheme}://{host}/{basePath}",
@@ -1340,7 +1375,9 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
                        TableRelation,
                        ViewRelation,
                        WarehouseRelation))
-)]
+))]
+#[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) struct ApiDoc;
 
 pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(

@@ -94,7 +94,9 @@ struct SecurityAddon;
 
 impl utoipa::Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        let components = openapi.components.as_mut().unwrap(); // we can unwrap safely since there already is components registered.
+        let components = openapi
+            .components
+            .get_or_insert_with(|| utoipa::openapi::ComponentsBuilder::new().build());
         components.add_security_scheme(
             "bearerAuth",
             SecurityScheme::Http(

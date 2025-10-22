@@ -108,7 +108,7 @@ pub enum TabularDeleteProfile {
             serialize_with = "duration_to_seconds",
             alias = "expiration_seconds"
         )]
-        #[cfg_attr(feature = "open-api", schema(value_type=i32))]
+        #[cfg_attr(feature = "open-api", schema(value_type=i64))]
         expiration_seconds: chrono::Duration,
     },
 }

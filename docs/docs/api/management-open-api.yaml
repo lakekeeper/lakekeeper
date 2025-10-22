@@ -151,7 +151,7 @@ paths:
         - 00:00:00-00:16:32: no activity
             - `timestamps: []`
         - 00:16:32: warehouse created:
-            `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
+            - `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
         - 00:30:00: table created:
             - `timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}, {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]`
         - 00:45:00: table created:
@@ -4798,7 +4798,7 @@ components:
           properties:
             expiration-seconds:
               type: integer
-              format: int32
+              format: int64
             type:
               type: string
               enum:

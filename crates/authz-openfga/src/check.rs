@@ -28,7 +28,7 @@ use super::{
 use crate::{entities::OpenFgaEntity, relations::ActorExt};
 
 /// Check if a specific action is allowed on the given object
-#[utoipa::path(
+#[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/check",
@@ -36,7 +36,7 @@ use crate::{entities::OpenFgaEntity, relations::ActorExt};
     responses(
             (status = 200, body = CheckResponse),
     )
-)]
+))]
 pub(super) async fn check<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -316,7 +316,8 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
     Ok((warehouse_id, view_info.view_id()).to_openfga())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Represents an action on an object
 pub(super) enum CheckOperation {
@@ -352,7 +353,8 @@ pub(super) enum CheckOperation {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
 /// Identifier for a namespace, either a UUID or its name and warehouse ID
 pub(super) enum NamespaceIdentOrUuid {
@@ -372,7 +374,8 @@ pub(super) enum NamespaceIdentOrUuid {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
 /// Identifier for a table or view, either a UUID or its name and namespace
 pub(super) enum TabularIdentOrUuid {
@@ -395,7 +398,8 @@ pub(super) enum TabularIdentOrUuid {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Check if a specific action is allowed on the given object
 pub(super) struct CheckRequest {
@@ -405,7 +409,8 @@ pub(super) struct CheckRequest {
     operation: CheckOperation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub(super) struct CheckResponse {
     /// Whether the action is allowed.

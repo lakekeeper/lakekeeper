@@ -10,7 +10,6 @@ use lakekeeper::service::{
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-use utoipa::ToSchema;
 
 use crate::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
@@ -46,7 +45,8 @@ pub(super) trait GrantableRelation: ReducedRelation {
     fn grant_relation(&self) -> Self::OpenFgaRelation;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Identifies a user or a role
 pub(super) enum UserOrRole {
@@ -143,7 +143,8 @@ pub(super) enum RoleRelation {
 
 impl OpenFgaRelation for RoleRelation {}
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=RoleRelation))]
 pub(super) enum APIRoleRelation {
@@ -151,7 +152,8 @@ pub(super) enum APIRoleRelation {
     Ownership,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum RoleAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "RoleAssignmentAssignee"))]
@@ -197,7 +199,8 @@ impl Assignment for RoleAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=RoleAction))]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APIRoleAction {
@@ -272,7 +275,8 @@ pub(super) enum ServerRelation {
 
 impl OpenFgaRelation for ServerRelation {}
 
-#[derive(Debug, Clone, Deserialize, Copy, Hash, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Hash, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ServerRelation))]
 pub(super) enum APIServerRelation {
@@ -280,7 +284,8 @@ pub(super) enum APIServerRelation {
     Operator,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ServerAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "ServerAssignmentAdmin"))]
@@ -326,7 +331,8 @@ impl Assignment for ServerAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=ServerAction))]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APIServerAction {
@@ -425,7 +431,8 @@ pub(super) enum ProjectRelation {
 
 impl OpenFgaRelation for ProjectRelation {}
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ProjectRelation))]
 pub(super) enum APIProjectRelation {
@@ -439,7 +446,8 @@ pub(super) enum APIProjectRelation {
     Modify,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ProjectAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "ProjectAssignmentProjectAdmin"))]
@@ -534,7 +542,8 @@ impl Assignment for ProjectAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ProjectAction))]
 pub(super) enum APIProjectAction {
@@ -672,7 +681,8 @@ impl From<CatalogWarehouseAction> for WarehouseRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=WarehouseRelation))]
 pub(super) enum APIWarehouseRelation {
@@ -685,7 +695,8 @@ pub(super) enum APIWarehouseRelation {
     Modify,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum WarehouseAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "WarehouseAssignmentOwnership"))]
@@ -775,7 +786,8 @@ impl Assignment for WarehouseAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=WarehouseAction))]
 pub(super) enum APIWarehouseAction {
@@ -946,7 +958,8 @@ impl From<&CatalogNamespaceAction> for NamespaceRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=NamespaceRelation))]
 pub(super) enum APINamespaceRelation {
@@ -959,7 +972,8 @@ pub(super) enum APINamespaceRelation {
     Modify,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum NamespaceAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "NamespaceAssignmentOwnership"))]
@@ -1049,7 +1063,8 @@ impl Assignment for NamespaceAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=NamespaceAction))]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APINamespaceAction {
@@ -1173,7 +1188,8 @@ impl From<&CatalogTableAction> for TableRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=TableRelation))]
 pub(super) enum APITableRelation {
@@ -1185,7 +1201,8 @@ pub(super) enum APITableRelation {
     Modify,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum TableAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "TableAssignmentOwnership"))]
@@ -1264,7 +1281,8 @@ impl Assignment for TableAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=TableAction))]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APITableAction {
@@ -1387,7 +1405,8 @@ impl From<&CatalogViewAction> for ViewRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ViewRelation))]
 pub(super) enum APIViewRelation {
@@ -1398,7 +1417,8 @@ pub(super) enum APIViewRelation {
     Modify,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ViewAssignment {
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentOwnership"))]
@@ -1469,7 +1489,8 @@ impl Assignment for ViewAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=ViewAction))]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APIViewAction {

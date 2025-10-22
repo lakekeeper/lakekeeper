@@ -321,6 +321,8 @@ pub async fn serve(
 
 #[cfg(test)]
 mod test {
+
+    #[cfg(feature = "open-api")]
     #[test]
     fn test_openapi_spec_can_be_parsed() {
         let _ = super::ICEBERG_OPENAPI_SPEC_YAML.clone();

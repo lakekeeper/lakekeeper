@@ -14,7 +14,6 @@ mod test {
 
     use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
-    use utoipa::ToSchema;
     use uuid::Uuid;
 
     use crate::{
@@ -32,7 +31,8 @@ mod test {
 
     #[sqlx::test]
     async fn test_task_queue_config_lands_in_task_worker(pool: PgPool) {
-        #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+        #[derive(Debug, Clone, Deserialize, Serialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
         struct Config {
             some_val: String,
         }
@@ -41,7 +41,8 @@ mod test {
         struct TestTaskData {
             tabular_id: Uuid,
         }
-        #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+        #[derive(Debug, Clone, Deserialize, Serialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
         struct ExecutionDetails {}
 
         impl TaskExecutionDetails for ExecutionDetails {}

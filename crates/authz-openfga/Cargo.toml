@@ -11,7 +11,7 @@ description = "OpenFGA Authorizer for Lakekeeper"
 keywords = ["iceberg", "rest", "lakekeeper", "openfga"]
 
 [features]
-open-api = ["dep:utoipa"]
+open-api = ["dep:utoipa", "lakekeeper/open-api"]
 
 [lib]
 

@@ -8,12 +8,7 @@
 #![allow(clippy::module_name_repetitions, clippy::similar_names)]
 
 use clap::{Parser, Subcommand};
-use lakekeeper::{
-    api::management::v1::api_doc as v1_api_doc,
-    service::{authz::AllowAllAuthorizer, tasks::BUILT_IN_API_CONFIGS},
-    tokio, tracing, AuthZBackend, CONFIG,
-};
-use lakekeeper_authz_openfga::OpenFGAAuthorizer;
+use lakekeeper::{tokio, tracing, CONFIG};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 mod authorizer;
@@ -102,6 +97,7 @@ enum Commands {
     },
     /// Print the version of the server
     Version {},
+    #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
 }
@@ -154,13 +150,19 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Version {}) => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
+        #[cfg(feature = "open-api")]
         Some(Commands::ManagementOpenapi {}) => {
-            let queue_configs_ref = &BUILT_IN_API_CONFIGS;
+            use lakekeeper::{
+                api::management::v1::api_doc, service::authz::AllowAllAuthorizer, AuthZBackend,
+            };
+            use lakekeeper_authz_openfga::OpenFGAAuthorizer;
+
+            let queue_configs_ref = &lakekeeper::service::tasks::BUILT_IN_API_CONFIGS;
             let queue_configs: Vec<&_> = queue_configs_ref.iter().collect();
             let doc = match &CONFIG.authz_backend {
-                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(&queue_configs),
+                AuthZBackend::AllowAll => api_doc::<AllowAllAuthorizer>(&queue_configs),
                 AuthZBackend::External(e) if e == "openfga" => {
-                    v1_api_doc::<OpenFGAAuthorizer>(&queue_configs)
+                    api_doc::<OpenFGAAuthorizer>(&queue_configs)
                 }
                 AuthZBackend::External(e) => anyhow::bail!("Unsupported authz backend `{e}`"),
             };
