@@ -36,6 +36,7 @@ pub use rdkafka;
 pub use request_metadata::{
     determine_base_uri, determine_forwarded_prefix, X_FORWARDED_HOST_HEADER,
     X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
+    X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
 };
 #[cfg(feature = "sqlx")]
 pub use sqlx;

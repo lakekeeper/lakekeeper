@@ -18,11 +18,17 @@ use tower_http::{
 
 use crate::{
     api::{
-        iceberg::v1::new_v1_full_router,
+        iceberg::v1::{
+            new_v1_full_router,
+            tables::{DATA_ACCESS_HEADER_NAME, ETAG_HEADER_NAME, IF_NONE_MATCH_HEADER_NAME},
+        },
         management::v1::{api_doc as v1_api_doc, ApiServer},
         ApiContext,
     },
-    request_metadata::{create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER},
+    request_metadata::{
+        create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER_NAME,
+        X_REQUEST_ID_HEADER_NAME,
+    },
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
     service::{
         authn::{auth_middleware_fn, AuthMiddlewareState},
@@ -33,6 +39,8 @@ use crate::{
     },
     CancellationToken, CONFIG,
 };
+
+pub const X_USER_AGENT_HEADER_NAME: HeaderName = HeaderName::from_static("x-user-agent");
 
 static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {
     let mut yaml_str =
@@ -233,9 +241,13 @@ fn get_cors_layer(
                 header::CONTENT_TYPE,
                 header::ACCEPT,
                 header::USER_AGENT,
-                HeaderName::from_static(X_PROJECT_ID_HEADER),
-                HeaderName::from_static("x-user-agent"),
+                X_PROJECT_ID_HEADER_NAME,
+                X_REQUEST_ID_HEADER_NAME,
+                IF_NONE_MATCH_HEADER_NAME,
+                X_USER_AGENT_HEADER_NAME,
+                DATA_ACCESS_HEADER_NAME,
             ])
+            .expose_headers(vec![ETAG_HEADER_NAME])
             .allow_methods(vec![
                 Method::GET,
                 Method::HEAD,
