@@ -4769,7 +4769,7 @@ components:
                   type: string
                   enum:
                     - modify
-          title: TableAssignmentCreate
+          title: TableAssignmentModify
     TableRelation:
       type: string
       enum:

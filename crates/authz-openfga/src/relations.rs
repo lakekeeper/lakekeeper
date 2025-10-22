@@ -1215,7 +1215,7 @@ pub(super) enum TableAssignment {
     Describe(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "TableAssignmentSelect"))]
     Select(UserOrRole),
-    #[cfg_attr(feature = "open-api", schema(title = "TableAssignmentCreate"))]
+    #[cfg_attr(feature = "open-api", schema(title = "TableAssignmentModify"))]
     Modify(UserOrRole),
 }
 

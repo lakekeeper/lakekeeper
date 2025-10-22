@@ -61,7 +61,7 @@ struct GetAccessQuery {
     #[cfg_attr(feature = "open-api", param(required = false, value_type=String))]
     principal_user: Option<UserId>,
     #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(required = false, value_type=uuid::Uuid))]
+    #[cfg_attr(feature = "open-api", param(required = false, value_type=Uuid))]
     principal_role: Option<RoleId>,
 }
 
