@@ -120,7 +120,7 @@ jobs:
 
       - name: Setup node
         if: matrix.docker-build == false
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: 23
 
