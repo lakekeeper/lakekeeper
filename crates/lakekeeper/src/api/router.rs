@@ -1,5 +1,21 @@
 use std::{fmt::Debug, sync::LazyLock};
 
+use axum::{response::IntoResponse, routing::get, Json, Router};
+use axum_extra::{either::Either, middleware::option_layer};
+use axum_prometheus::PrometheusMetricLayer;
+use http::{header, HeaderName, HeaderValue, Method};
+use limes::Authenticator;
+use tower::ServiceBuilder;
+use tower_http::{
+    catch_panic::CatchPanicLayer,
+    compression::CompressionLayer,
+    cors::AllowOrigin,
+    sensitive_headers::SetSensitiveHeadersLayer,
+    timeout::TimeoutLayer,
+    trace::{self, TraceLayer},
+    ServiceBuilderExt,
+};
+
 use crate::{
     api::{
         iceberg::v1::{
@@ -22,21 +38,6 @@ use crate::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     CancellationToken, CONFIG,
-};
-use axum::{response::IntoResponse, routing::get, Json, Router};
-use axum_extra::{either::Either, middleware::option_layer};
-use axum_prometheus::PrometheusMetricLayer;
-use http::{header, HeaderName, HeaderValue, Method};
-use limes::Authenticator;
-use tower::ServiceBuilder;
-use tower_http::{
-    catch_panic::CatchPanicLayer,
-    compression::CompressionLayer,
-    cors::AllowOrigin,
-    sensitive_headers::SetSensitiveHeadersLayer,
-    timeout::TimeoutLayer,
-    trace::{self, TraceLayer},
-    ServiceBuilderExt,
 };
 
 pub const X_USER_AGENT_HEADER_NAME: HeaderName = HeaderName::from_static("x-user-agent");
