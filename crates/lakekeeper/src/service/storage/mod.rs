@@ -1,6 +1,7 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
 pub(crate) mod az;
+mod cache;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
@@ -38,7 +39,7 @@ use crate::{
 };
 
 /// Storage profile for a warehouse.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[allow(clippy::unsafe_derive_deserialize)]
@@ -60,8 +61,20 @@ pub enum StorageProfile {
     Memory(MemoryProfile),
 }
 
+/// Storage profile for a warehouse.
+#[derive(Debug, Hash, Copy, Clone, Eq, PartialEq, derive_more::From)]
+enum StorageProfileBorrowed<'a> {
+    Adls(&'a AdlsProfile),
+    S3(&'a S3Profile),
+    Gcs(&'a GcsProfile),
+    #[cfg(feature = "test-utils")]
+    Memory(&'a MemoryProfile),
+}
+
 #[cfg(feature = "test-utils")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, typed_builder::TypedBuilder)]
+#[derive(
+    Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, typed_builder::TypedBuilder,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct MemoryProfile {
@@ -69,7 +82,7 @@ pub struct MemoryProfile {
     base_location: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Copy, strum_macros::Display)]
 pub enum StoragePermissions {
     Read,
     ReadWrite,
@@ -80,6 +93,24 @@ pub enum StoragePermissions {
 pub struct TableConfig {
     pub(crate) creds: TableProperties,
     pub(crate) config: TableProperties,
+}
+
+#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+pub struct ShortTermCredentialsRequest {
+    pub table_location: Location,
+    pub storage_permissions: StoragePermissions,
+    pub warehouse_id: WarehouseId,
+    pub tabular_id: TabularId,
+}
+
+impl std::fmt::Display for ShortTermCredentialsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Short Term Credentials Request for table {} at location `{}` with permissions {} in warehouse {}",
+            self.tabular_id, self.table_location, self.storage_permissions, self.warehouse_id,
+        )
+    }
 }
 
 impl StorageProfile {
@@ -236,6 +267,13 @@ impl StorageProfile {
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: table_location.clone(),
+            storage_permissions,
+            warehouse_id,
+            tabular_id,
+        };
+
         match self {
             StorageProfile::S3(profile) => {
                 profile
@@ -245,11 +283,8 @@ impl StorageProfile {
                             .map(|s| s.try_to_s3())
                             .transpose()
                             .map_err(CredentialsError::from)?,
-                        table_location,
-                        storage_permissions,
+                        stc_request,
                         request_metadata,
-                        warehouse_id,
-                        tabular_id,
                     )
                     .await
             }
@@ -257,12 +292,11 @@ impl StorageProfile {
                 profile
                     .generate_table_config(
                         data_access,
-                        table_location,
                         secret
                             .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
                             .try_to_az()
                             .map_err(CredentialsError::from)?,
-                        storage_permissions,
+                        stc_request,
                     )
                     .await
             }
@@ -277,8 +311,7 @@ impl StorageProfile {
                             .ok_or_else(|| {
                                 CredentialsError::MissingCredential("gcs".to_string())
                             })?,
-                        table_location,
-                        storage_permissions,
+                        &stc_request,
                     )
                     .await
             }
@@ -841,7 +874,7 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::From)]
+#[derive(Debug, Hash, Clone, PartialEq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum StorageCredential {
@@ -906,6 +939,13 @@ pub enum StorageCredential {
     #[serde(rename = "gcs")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialGcs"))]
     Gcs(GcsCredential),
+}
+
+#[derive(Debug, Hash, Copy, Clone, PartialEq, derive_more::From)]
+enum StorageCredentialBorrowed<'a> {
+    S3(&'a S3Credential),
+    Az(&'a AzCredential),
+    Gcs(&'a GcsCredential),
 }
 
 impl SecretInStorage for StorageCredential {}

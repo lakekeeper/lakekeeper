@@ -3,28 +3,33 @@ use lakekeeper_io::Location;
 use serde::{Deserialize, Serialize};
 
 use super::{TokenSource, HTTP_CLIENT, STS_URL};
-use crate::service::storage::{error::TableConfigError, gcs::GcsServiceKey, StoragePermissions};
+use crate::service::storage::{
+    error::TableConfigError, gcs::GcsServiceKey, ShortTermCredentialsRequest, StoragePermissions,
+};
 
 pub(crate) async fn downscope(
     token_source: TokenSource,
     bucket: &str,
-    table_location: Location,
-    storage_permissions: StoragePermissions,
+    stc_request: &ShortTermCredentialsRequest,
 ) -> Result<STSResponse, TableConfigError> {
     let token = token_source.token().await.map_err(|e| {
         tracing::error!("Failed to get token from token source: {:?}", e);
         TableConfigError::FailedDependency("Failed to get gcp token from token source".to_string())
     })?;
 
-    let sts_request = &STSRequest::from_token_and_options(
+    let gcs_sts_request = &STSRequest::from_token_and_options(
         &token,
-        &Options::from_location_and_permissions(bucket, &table_location, storage_permissions),
+        &Options::from_location_and_permissions(
+            bucket,
+            &stc_request.table_location,
+            stc_request.storage_permissions,
+        ),
     )?;
 
     let response = HTTP_CLIENT
         .clone()
         .post(STS_URL.clone())
-        .json(&sts_request)
+        .json(&gcs_sts_request)
         .send()
         .await
         .map_err(|e| {
@@ -35,20 +40,20 @@ pub(crate) async fn downscope(
         .await
         .map_err(|e| {
             tracing::error!(
-                "Downscoping did not return a JSON body: {e:?}. Request: {sts_request:?}",
+                "Downscoping did not return a JSON body: {e:?}. Request: {gcs_sts_request:?}",
             );
             TableConfigError::FailedDependency("Failed to downscope.".to_string())
         })?;
 
     serde_json::from_value(response.clone()).map_err(|e| {
         tracing::error!(
-            "Failed to parse downscoping response: {e:?}. Received Body: {response}. Request: {sts_request:?}",
+            "Failed to parse downscoping response: {e:?}. Received Body: {response}. Request: {gcs_sts_request:?}",
         );
         TableConfigError::FailedDependency("Failed to downscope.".to_string())
     })
 }
 
-#[derive(Deserialize, veil::Redact)]
+#[derive(Deserialize, Clone, veil::Redact)]
 pub(crate) struct STSResponse {
     #[redact(partial)]
     pub(crate) access_token: String,

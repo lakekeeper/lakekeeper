@@ -1,4 +1,9 @@
-use std::{collections::HashMap, str::FromStr, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
@@ -29,16 +34,17 @@ use crate::{
         CatalogConfig, Result,
     },
     service::storage::{
+        cache::{STCCacheKey, STCCacheValue, ShortTermCredential, STC_CACHE},
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
         },
-        StoragePermissions, TableConfig,
+        ShortTermCredentialsRequest, StoragePermissions, TableConfig,
     },
     WarehouseId, CONFIG,
 };
 
-#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct AdlsProfile {
@@ -68,6 +74,7 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
 
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
+const SAS_TOKEN_DEFAULT_VALIDITY_SECONDS: u64 = 3600;
 
 pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
 
@@ -236,9 +243,8 @@ impl AdlsProfile {
     pub async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
-        table_location: &Location,
         credential: &AzCredential,
-        permissions: StoragePermissions,
+        stc_request: ShortTermCredentialsRequest,
     ) -> Result<TableConfig, TableConfigError> {
         if !data_access.provide_credentials() {
             return Ok(TableConfig {
@@ -247,32 +253,49 @@ impl AdlsProfile {
             });
         }
 
-        let sas = match credential {
-            AzCredential::ClientCredentials { .. } => {
-                let client = self.blob_service_client(credential).await?;
-                self.sas_via_delegation_key(table_location, client, permissions)
-                    .await?
+        let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
+        let cached_sas_token = self.load_sas_token_from_cache(&cache_key).await;
+
+        let sas = if let Some(sas_token) = cached_sas_token {
+            sas_token
+        } else {
+            let sas = match credential {
+                AzCredential::ClientCredentials { .. } => {
+                    let client = self.blob_service_client(credential).await?;
+                    self.sas_via_delegation_key(&stc_request, client).await?
+                }
+                AzCredential::SharedAccessKey { key } => self.sas(
+                    &stc_request,
+                    OffsetDateTime::now_utc()
+                        .saturating_sub(time::Duration::minutes(5))
+                        .saturating_add(time::Duration::days(7)),
+                    azure_core::auth::Secret::new(key.to_string()),
+                )?,
+                AzCredential::AzureSystemIdentity {} => {
+                    let client = self.blob_service_client(credential).await?;
+                    self.sas_via_delegation_key(&stc_request, client)
+                        .await
+                        .map_err(|e| {
+                            tracing::debug!("Failed to get azure system identity token: {e}",);
+                            CredentialsError::ShortTermCredential {
+                                reason: "Failed to get azure system identity token".to_string(),
+                                source: Some(Box::new(e)),
+                            }
+                        })?
+                }
+            };
+
+            if CONFIG.cache.stc.enabled {
+                let sts_validity_duration = Duration::from_secs(
+                    self.sas_token_validity_seconds
+                        .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS),
+                );
+                let valid_until = Instant::now().checked_add(sts_validity_duration);
+                let cache_value = STCCacheValue::new(sas.clone(), valid_until);
+                STC_CACHE.insert(cache_key, cache_value).await;
             }
-            AzCredential::SharedAccessKey { key } => self.sas(
-                table_location,
-                permissions,
-                OffsetDateTime::now_utc()
-                    .saturating_sub(time::Duration::minutes(5))
-                    .saturating_add(time::Duration::days(7)),
-                azure_core::auth::Secret::new(key.to_string()),
-            )?,
-            AzCredential::AzureSystemIdentity {} => {
-                let client = self.blob_service_client(credential).await?;
-                self.sas_via_delegation_key(table_location, client, permissions)
-                    .await
-                    .map_err(|e| {
-                        tracing::debug!("Failed to get azure system identity token: {e}",);
-                        CredentialsError::ShortTermCredential {
-                            reason: "Failed to get azure system identity token".to_string(),
-                            source: Some(Box::new(e)),
-                        }
-                    })?
-            }
+
+            sas
         };
 
         let mut creds = TableProperties::default();
@@ -289,17 +312,42 @@ impl AdlsProfile {
         })
     }
 
+    async fn load_sas_token_from_cache(&self, cache_key: &STCCacheKey) -> Option<String> {
+        let stc_request = &cache_key.request;
+        if CONFIG.cache.stc.enabled {
+            if let Some(STCCacheValue {
+                credentials: ShortTermCredential::Adls(sas_token),
+                ..
+            }) = STC_CACHE.get(cache_key).await
+            {
+                tracing::debug!("Using cached short term credentials for request: {stc_request}");
+                return Some(sas_token);
+            }
+            tracing::debug!(
+                "No cached SAS token found for request: {stc_request}, fetching new credentials"
+            );
+        } else {
+            tracing::debug!(
+                "STC caching disabled, fetching new SAS token for request: {stc_request}"
+            );
+        }
+
+        None
+    }
+
     async fn sas_via_delegation_key(
         &self,
-        path: &Location,
+        stc_request: &ShortTermCredentialsRequest,
         client: BlobServiceClient,
-        permissions: StoragePermissions,
     ) -> Result<String, CredentialsError> {
         // allow for some clock drift
         let start = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
         let max_validity_seconds = MAX_SAS_TOKEN_VALIDITY_SECONDS_I64;
         // account for the 5 minutes offset from above
-        let sas_token_validity_seconds = self.sas_token_validity_seconds.unwrap_or(3600) + 300;
+        let sas_token_validity_seconds = self
+            .sas_token_validity_seconds
+            .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS)
+            + 300;
         let clamped_validity_seconds = i64::try_from(sas_token_validity_seconds)
             .unwrap_or(max_validity_seconds)
             .clamp(0, max_validity_seconds);
@@ -325,17 +373,16 @@ impl AdlsProfile {
         let signed_expiry = delegation_key.user_deligation_key.signed_expiry;
         let key = delegation_key.user_deligation_key.clone();
 
-        self.sas(path, permissions, signed_expiry, key)
+        self.sas(stc_request, signed_expiry, key)
     }
 
     fn sas(
         &self,
-        path: &Location,
-        permissions: StoragePermissions,
+        stc_request: &ShortTermCredentialsRequest,
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(path.as_ref());
+        let path = reduce_scheme_string(stc_request.table_location.as_ref());
         let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
         let depth = rootless_path.split('/').count();
 
@@ -349,7 +396,7 @@ impl AdlsProfile {
         let sas = BlobSharedAccessSignature::new(
             key,
             canonical_resource,
-            permissions.into(),
+            stc_request.storage_permissions.into(),
             signed_expiry,
             BlobSignedResource::Directory,
         )
@@ -437,7 +484,7 @@ pub(crate) fn reduce_scheme_string(path: &str) -> String {
         .unwrap_or(path.to_string())
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Hash, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum AzCredential {

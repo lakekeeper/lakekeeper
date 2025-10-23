@@ -253,6 +253,9 @@ pub struct DynAppConfig {
     )]
     pub endpoint_stat_flush_interval: Duration,
 
+    // ------------- Caching -------------
+    pub cache: Cache,
+
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
 
@@ -429,6 +432,22 @@ pub struct KV2Config {
     pub secret_mount: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Cache {
+    pub stc: STCCache,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct STCCache {
+    pub enabled: bool,
+}
+
+impl std::default::Default for STCCache {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
@@ -498,6 +517,7 @@ impl Default for DynAppConfig {
             serve_swagger_ui: true,
             skip_storage_validation: false,
             debug: DebugConfig::default(),
+            cache: Cache::default(),
         }
     }
 }
@@ -1047,6 +1067,29 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_REQUEST_BODIES", "false");
             let config = get_config();
             assert!(!config.debug.log_request_bodies);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_stc_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.stc.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__STC__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.stc.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__STC__ENABLED", "true");
+            let config = get_config();
+            assert!(config.cache.stc.enabled);
             Ok(())
         });
     }

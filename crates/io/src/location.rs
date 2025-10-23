@@ -8,6 +8,12 @@ pub struct Location {
     authority_and_path: String, // Everything after ://
 }
 
+impl std::hash::Hash for Location {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.full_location.hash(state);
+    }
+}
+
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("Failed to parse '{value}' as Location: {reason}")]
 pub struct LocationParseError {
