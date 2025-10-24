@@ -242,6 +242,25 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 | `LAKEKEEPER__UI__OPENID_TOKEN_TYPE`                | `access_token`                               | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
 
+### Caching
+Lakekeeper uses in-memory caches to speed up certain operations.
+
+#### Short-Term Credentials (STC) Cache
+
+When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
+
+| Variable                                        | Example | Description      |
+|-------------------------------------------------|---------|------------------|
+| <nobr>`LAKEKEEPER__CACHE__STC__ENABLED`</nobr>  | `true`  | Enable or disable the short-term credentials cache. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache. Default: `10000` |
+
+**Expiry Mechanism**: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
+
+**Metrics**: The STC cache exposes Prometheus metrics for monitoring:
+- `lakekeeper_stc_cache_size{cache_type="stc"}`: Current number of entries in the cache
+- `lakekeeper_stc_cache_hits_total{cache_type="stc"}`: Total number of cache hits
+- `lakekeeper_stc_cache_misses_total{cache_type="stc"}`: Total number of cache misses
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:

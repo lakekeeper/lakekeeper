@@ -39,7 +39,10 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::storage::{
-        cache::{STCCacheKey, STCCacheValue, ShortTermCredential, STC_CACHE},
+        cache::{
+            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
+            ShortTermCredential,
+        },
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
@@ -496,7 +499,7 @@ impl S3Profile {
             if let Some(STCCacheValue {
                 credentials: ShortTermCredential::S3(cached),
                 ..
-            }) = STC_CACHE.get(&cache_key).await
+            }) = get_stc_from_cache(&cache_key).await
             {
                 tracing::debug!("Using cached STS credentials for request: {sts_request}");
                 return Ok(cached);
@@ -520,7 +523,7 @@ impl S3Profile {
             let sts_validity_duration = Duration::from_secs(self.sts_token_validity_seconds);
             let valid_until = Instant::now().checked_add(sts_validity_duration);
             let cache_value = STCCacheValue::new(temporary_credential.clone(), valid_until);
-            STC_CACHE.insert(cache_key, cache_value).await;
+            insert_stc_into_cache(cache_key, cache_value).await;
         }
 
         Ok(temporary_credential)

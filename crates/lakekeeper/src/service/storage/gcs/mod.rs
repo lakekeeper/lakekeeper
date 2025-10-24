@@ -27,7 +27,10 @@ use crate::{
         CatalogConfig,
     },
     service::storage::{
-        cache::{STCCacheKey, STCCacheValue, ShortTermCredential, STC_CACHE},
+        cache::{
+            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
+            ShortTermCredential,
+        },
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
@@ -371,7 +374,7 @@ impl GcsProfile {
                     ShortTermCredential::Gcs(token.clone()),
                     Instant::now().checked_add(sts_validity_duration),
                 );
-                STC_CACHE.insert(cache_key, cache_value).await;
+                insert_stc_into_cache(cache_key, cache_value).await;
             }
 
             token
@@ -413,7 +416,7 @@ impl GcsProfile {
             if let Some(STCCacheValue {
                 credentials: ShortTermCredential::Gcs(sts_response),
                 ..
-            }) = STC_CACHE.get(cache_key).await
+            }) = get_stc_from_cache(cache_key).await
             {
                 tracing::debug!("Using cached short term credentials for request: {stc_request}");
                 return Some(sts_response);

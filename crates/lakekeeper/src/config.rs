@@ -434,18 +434,22 @@ pub struct KV2Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct Cache {
-    pub stc: STCCache,
+pub(crate) struct Cache {
+    pub(crate) stc: STCCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct STCCache {
-    pub enabled: bool,
+pub(crate) struct STCCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
 }
 
 impl std::default::Default for STCCache {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            capacity: 10_000,
+        }
     }
 }
 
@@ -1077,6 +1081,7 @@ mod test {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
             assert!(config.cache.stc.enabled);
+            assert_eq!(config.cache.stc.capacity, 10_000);
             Ok(())
         });
 
@@ -1089,8 +1094,10 @@ mod test {
 
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__CACHE__STC__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__STC__CAPACITY", "5000");
             let config = get_config();
             assert!(config.cache.stc.enabled);
+            assert_eq!(config.cache.stc.capacity, 5000);
             Ok(())
         });
     }
