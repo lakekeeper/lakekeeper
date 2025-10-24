@@ -254,7 +254,8 @@ pub struct DynAppConfig {
     pub endpoint_stat_flush_interval: Duration,
 
     // ------------- Caching -------------
-    pub cache: Cache,
+    #[serde(default)]
+    pub(crate) cache: Cache,
 
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
