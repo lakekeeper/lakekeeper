@@ -41,7 +41,7 @@ jobs:
           docker save -o /tmp/${{ inputs.image_name }}-${{ inputs.platform }}.tar localhost/${{ inputs.image_name }}:${{ inputs.platform }}
 
       - name: Save Docker
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: lakekeeper-image
           path: /tmp/*.tar
