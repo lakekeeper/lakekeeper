@@ -53,20 +53,20 @@ static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<DefaultAz
             .build()
     });
 
-#[derive(Debug, Clone, PartialEq, derive_more::From)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum AzureAuth {
     ClientCredentials(AzureClientCredentialsAuth),
     SharedAccessKey(AzureSharedAccessKeyAuth),
     AzureSystemIdentity,
 }
 
-#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
+#[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct AzureSharedAccessKeyAuth {
     #[redact(partial)]
     pub key: String,
 }
 
-#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
+#[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct AzureClientCredentialsAuth {
     pub client_id: String,
     pub tenant_id: String,

@@ -176,7 +176,7 @@ pub enum S3Flavor {
     // CloudflareR2,
 }
 
-#[derive(Debug, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum S3Credential {
@@ -188,7 +188,7 @@ pub enum S3Credential {
     CloudflareR2(S3CloudflareR2Credential),
 }
 
-#[derive(Redact, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "open-api", schema(title = "S3CredentialAccessKey"))]
@@ -200,7 +200,7 @@ pub struct S3AccessKeyCredential {
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "open-api", schema(title = "S3CredentialSystemIdentity"))]
@@ -209,7 +209,7 @@ pub struct S3AwsSystemIdentityCredential {
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "open-api", schema(title = "CloudflareR2Credential"))]

@@ -388,14 +388,14 @@ pub const DATA_ACCESS_HEADER_NAME: HeaderName = HeaderName::from_static(DATA_ACC
 pub const ETAG_HEADER_NAME: HeaderName = HeaderName::from_static(ETAG_HEADER);
 pub const IF_NONE_MATCH_HEADER_NAME: HeaderName = HeaderName::from_static(IF_NONE_MATCH_HEADER);
 
-#[derive(Debug, Hash, Clone, PartialEq, Copy)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Copy)]
 // Modeled as a string to enable multiple values to be specified.
 pub struct DataAccess {
     pub vended_credentials: bool,
     pub remote_signing: bool,
 }
 
-#[derive(Debug, Hash, Clone, Copy, PartialEq, derive_more::From)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, derive_more::From)]
 pub enum DataAccessMode {
     // For internal use only - indicates that the client has credentials
     // and thus doesn't need any form of data access delegation.

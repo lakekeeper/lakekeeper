@@ -487,7 +487,7 @@ pub(crate) fn reduce_scheme_string(path: &str) -> String {
         .unwrap_or(path.to_string())
 }
 
-#[derive(Redact, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum AzCredential {

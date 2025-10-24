@@ -61,7 +61,7 @@ pub struct GcsProfile {
     pub key_prefix: Option<String>,
 }
 
-#[derive(Debug, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 /// GCS Credentials
@@ -98,7 +98,7 @@ pub enum GcsCredential {
     GcpSystemIdentity {},
 }
 
-#[derive(Redact, Hash, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct GcsServiceKey {
     pub r#type: String,
@@ -426,7 +426,7 @@ impl GcsProfile {
             );
         } else {
             tracing::debug!(
-                "STC caching disabled, fetching new SAS token for request: {stc_request}"
+                "STC caching disabled, fetching new STS token for request: {stc_request}"
             );
         }
 

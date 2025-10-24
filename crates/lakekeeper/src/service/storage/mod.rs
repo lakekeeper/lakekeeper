@@ -874,7 +874,7 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
-#[derive(Debug, Hash, Clone, PartialEq, Serialize, Deserialize, derive_more::From)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum StorageCredential {

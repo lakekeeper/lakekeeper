@@ -435,10 +435,12 @@ pub struct KV2Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
+    /// Short‑Term Credentials cache configuration.
     pub(crate) stc: STCCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub(crate) struct STCCache {
     pub(crate) enabled: bool,
     pub(crate) capacity: u64,

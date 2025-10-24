@@ -48,9 +48,9 @@ pub(super) struct STCCacheKey {
     /// Request Hash
     pub(super) request: ShortTermCredentialsRequest,
     /// Hash of the storage profile
-    pub(super) storage_profile_hash: u64,
+    storage_profile_hash: u64,
     /// Hash of the credentials used to create the STC token
-    pub(super) credential_hash: u64,
+    credential_hash: u64,
 }
 
 #[derive(Debug, Clone, derive_more::From)]
