@@ -5,7 +5,6 @@ use aws_sigv4::{
     sign::v4,
     {self},
 };
-use iceberg::{NamespaceIdent, TableIdent};
 use lakekeeper_io::{s3::S3Location, Location};
 
 use super::{super::CatalogServer, error::SignError};
@@ -141,17 +140,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .map_err(RequireTableActionError::from)
         };
 
-        let table_info = match table_info? {
-            Some(info) => info,
-            None => {
-                return Err(ErrorModel::bad_request(
-                    "No table found for the given location",
-                    "TableNotFoundByLocation",
-                    None,
-                )
-                .into());
-            }
+        let Some(table_info) = table_info? else {
+            return Err(ErrorModel::bad_request(
+                "No table found for the given location",
+                "TableNotFoundByLocation",
+                None,
+            )
+            .into());
         };
+
         let action = match operation {
             Operation::Read => CatalogTableAction::CanReadData,
             Operation::Write | Operation::Delete => CatalogTableAction::CanWriteData,
