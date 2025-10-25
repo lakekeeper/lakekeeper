@@ -147,7 +147,7 @@ tower-http = { version = "^0.6", features = [
 tracing = { version = "^0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
-typed-builder = "^0.22.0"
+typed-builder = "^0.23.0"
 url = { version = "^2.5", features = ["serde"] }
 urlencoding = "^2.1"
 utoipa = { version = "5.4.0", features = [
