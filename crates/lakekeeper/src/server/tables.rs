@@ -252,7 +252,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let (_table_info, staged_table_id) = C::create_table(
             TableCreation {
-                warehouse_id: warehouse.id,
+                warehouse_id: warehouse.warehouse_id,
                 namespace_id,
                 table_ident: &table_ident,
                 table_metadata: &table_metadata,
@@ -1078,14 +1078,12 @@ async fn try_commit_tables<
             let new_table_location =
                 parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
             let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
-            let new_metadata_location = previous_table_metadata
-                .storage_profile
-                .default_metadata_location(
-                    &new_table_location,
-                    &new_compression_codec,
-                    Uuid::now_v7(),
-                    next_metadata_count,
-                );
+            let new_metadata_location = warehouse.storage_profile.default_metadata_location(
+                &new_table_location,
+                &new_compression_codec,
+                Uuid::now_v7(),
+                next_metadata_count,
+            );
 
             let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
                 + number_expired_metadata_log_entries)

@@ -60,6 +60,7 @@ pub(crate) async fn load_view(
         view_representation_typ,
         view_representation_sql,
         view_representation_dialect,
+        warehouse_updated_at,
     } = query(warehouse_id, *view_id, include_deleted, &mut *conn)
         .await?
         .ok_or_else(|| TabularNotFound::new(warehouse_id, view_id))?;
@@ -93,6 +94,7 @@ pub(crate) async fn load_view(
         .map_err(InternalParseLocationError::from)?;
     Ok(CatalogView {
         metadata_location,
+        warehouse_updated_at,
         metadata: ViewMetadata::try_from_parts(ViewMetadataParts {
             format_version: match view_format_version {
                 ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
@@ -142,9 +144,11 @@ SELECT v.view_id,
        vvl.version_log_timestamps,
        vvr.typ                           AS "view_representation_typ: Json<Vec<Vec<ViewRepresentationType>>>",
        vvr.sql                           AS "view_representation_sql: Json<Vec<Vec<String>>>",
-       vvr.dialect                       AS "view_representation_dialect: Json<Vec<Vec<String>>>"
+       vvr.dialect                       AS "view_representation_dialect: Json<Vec<Vec<String>>>",
+       w.updated_at                      AS warehouse_updated_at
 FROM view v
          INNER JOIN tabular ta ON ta.warehouse_id = $1 AND ta.tabular_id = v.view_id
+         INNER JOIN warehouse w ON w.warehouse_id = $1
          INNER JOIN current_view_metadata_version cvv
              ON cvv.warehouse_id = $1 AND v.view_id = cvv.view_id
          LEFT JOIN (SELECT view_id,
@@ -400,6 +404,7 @@ struct Query {
     view_representation_typ: Option<Json<Vec<Vec<ViewRepresentationType>>>>,
     view_representation_sql: Option<Json<Vec<Vec<String>>>>,
     view_representation_dialect: Option<Json<Vec<Vec<String>>>>,
+    warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 struct VersionsPrep {

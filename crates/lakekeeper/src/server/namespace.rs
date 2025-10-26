@@ -30,8 +30,8 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskFilter, TaskMetadata,
         },
-        CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
-        GetWarehouseResponse, NamedEntity, NamespaceId, State, TabularId, Transaction,
+        CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps, NamedEntity,
+        NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
     },
     CONFIG,
 };
@@ -418,7 +418,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             try_recursive_drop::<_, C>(
                 flags,
                 authorizer,
-                warehouse,
+                &warehouse,
                 t,
                 namespace_id,
                 &request_metadata,
@@ -497,7 +497,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     flags: NamespaceDropFlags,
     authorizer: A,
-    warehouse: GetWarehouseResponse,
+    warehouse: &ResolvedWarehouse,
     mut t: <C as CatalogStore>::Transaction,
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
@@ -512,7 +512,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         ))
     {
         let drop_info =
-            C::drop_namespace(warehouse.id, namespace_id, flags, t.transaction()).await?;
+            C::drop_namespace(warehouse.warehouse_id, namespace_id, flags, t.transaction()).await?;
 
         C::cancel_scheduled_tasks(
             None,
@@ -526,7 +526,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
                 TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
-                        warehouse_id: warehouse.id,
+                        warehouse_id: warehouse.warehouse_id,
                         entity_id: EntityId::from(*tabular_id),
                         parent_task_id: None,
                         schedule_for: None,
@@ -561,7 +561,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             match tabular_id {
                 TabularId::Table(table_id) => {
                     authorizer
-                        .delete_table(warehouse.id, table_id)
+                        .delete_table(warehouse.warehouse_id, table_id)
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
@@ -573,7 +573,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                 }
                 TabularId::View(view_id) => {
                     authorizer
-                        .delete_view(warehouse.id, view_id)
+                        .delete_view(warehouse.warehouse_id, view_id)
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
@@ -687,7 +687,7 @@ fn remove_managed_namespace_properties(namespace_props: &mut NamespaceProperties
 
 fn set_namespace_location_property(
     namespace_props: &mut NamespaceProperties,
-    warehouse: &GetWarehouseResponse,
+    warehouse: &ResolvedWarehouse,
     namespace_id: NamespaceId,
 ) -> Result<()> {
     let mut location = namespace_props.get_location();

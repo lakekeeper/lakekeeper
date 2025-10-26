@@ -77,7 +77,6 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
     let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
@@ -86,7 +85,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         &namespace,
         request.location.clone(),
         view_id,
-        &storage_profile,
+        &warehouse.storage_profile,
     )?;
 
     // Update the request for event
@@ -94,7 +93,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     request.location = Some(view_location.to_string());
     let request = request; // make it immutable
 
-    let metadata_location = storage_profile.default_metadata_location(
+    let metadata_location = warehouse.storage_profile.default_metadata_location(
         &view_location,
         &CompressionCodec::try_from_properties(&request.properties)?,
         *view_id,
@@ -136,7 +135,10 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let storage_secret =
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
 
-    let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
+    let file_io = warehouse
+        .storage_profile
+        .file_io(storage_secret.as_ref())
+        .await?;
     let compression_codec = CompressionCodec::try_from_metadata(&metadata_build_result.metadata)?;
     write_file(
         &file_io,
@@ -153,7 +155,8 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ToDo: There is a small inefficiency here: If storage credentials
     // are not required because of i.e. remote-signing and if this
     // is a stage-create, we still fetch the secret.
-    let config = storage_profile
+    let config = warehouse
+        .storage_profile
         .generate_table_config(
             data_access,
             storage_secret.as_ref(),

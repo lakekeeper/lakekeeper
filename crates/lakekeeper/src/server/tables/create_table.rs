@@ -203,7 +203,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let (_table_info, staged_table_id) = C::create_table(
         TableCreation {
-            warehouse_id: warehouse.id,
+            warehouse_id: warehouse.warehouse_id,
             namespace_id: namespace.namespace_id,
             table_ident: &table,
             table_metadata: &table_metadata,

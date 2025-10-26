@@ -182,6 +182,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let storage_profile = warehouse
             .storage_profile
+            .clone()
             .try_into_s3()
             .map_err(|e| extend_err(IcebergErrorResponse::from(e)))?;
 
@@ -233,7 +234,7 @@ async fn s3_url_style_detection<C: CatalogStore>(
             let result = C::require_warehouse_by_id(warehouse_id, state)
                 .await
                 .map(|w| {
-                    w.storage_profile
+                    w.storage_profile.clone()
                         .try_into_s3()
                         .map(|s| s.remote_signing_url_style)
                         .map_err(|e| {

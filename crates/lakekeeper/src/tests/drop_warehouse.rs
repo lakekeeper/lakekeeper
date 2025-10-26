@@ -53,7 +53,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
 
     // Create namespace
     let ns_name = NamespaceIdent::new(format!("test_namespace_{}", Uuid::now_v7()));
-    let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+    let prefix = Some(Prefix(warehouse.warehouse_id().to_string()));
     let _ = CatalogServer::create_namespace(
         prefix.clone(),
         CreateNamespaceRequest {
@@ -71,7 +71,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         let table_name = format!("table_{i}");
         let _ = crate::tests::create_table(
             api_context.clone(),
-            &warehouse.warehouse_id.to_string(),
+            &warehouse.warehouse_id().to_string(),
             &ns_name.to_string(),
             &table_name,
             false,
@@ -95,7 +95,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
 
     // Drop warehouse - this should fail due to purge tasks
     ApiServer::delete_warehouse(
-        warehouse.warehouse_id,
+        warehouse.warehouse_id(),
         DeleteWarehouseQuery::builder().build(),
         api_context.clone(),
         random_request_metadata(),
@@ -116,7 +116,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         match ApiServer::delete_warehouse(
-            warehouse.warehouse_id,
+            warehouse.warehouse_id(),
             DeleteWarehouseQuery::builder().build(),
             api_context.clone(),
             random_request_metadata(),

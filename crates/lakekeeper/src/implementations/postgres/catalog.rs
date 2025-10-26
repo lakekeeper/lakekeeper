@@ -36,7 +36,7 @@ use crate::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
                 WarehouseStatisticsResponse,
             },
-            DeleteWarehouseQuery, ProtectionResponse, TabularType,
+            DeleteWarehouseQuery, TabularType,
         },
     },
     implementations::postgres::{
@@ -73,10 +73,10 @@ use crate::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateTableError, CreateViewError,
         DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
-        GetWarehouseResponse, ListNamespacesQuery, ListTabularsError, LoadTableError,
-        LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, Namespace, NamespaceDropInfo,
-        NamespaceId, NamespaceIdentOrId, ProjectId, RenameTabularError, ResolvedTask, Result,
-        RoleId, SearchTabularError, ServerInfo, SetTabularProtectionError,
+        ListNamespacesQuery, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
+        MarkTabularAsDeletedError, Namespace, NamespaceDropInfo, NamespaceId, NamespaceIdentOrId,
+        ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId,
+        SearchTabularError, ServerInfo, SetTabularProtectionError,
         SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
         TabularIdentBorrowed, TabularListFlags, Transaction, UpdateWarehouseStorageProfileError,
@@ -109,7 +109,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_name: &str,
         project_id: &ProjectId,
         catalog_state: CatalogState,
-    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError> {
+    ) -> std::result::Result<Option<ResolvedWarehouse>, CatalogGetWarehouseByNameError> {
         get_warehouse_by_name(warehouse_name, project_id, catalog_state).await
     }
 
@@ -373,7 +373,7 @@ impl CatalogStore for super::PostgresBackend {
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<WarehouseId, CatalogCreateWarehouseError> {
+    ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
         create_warehouse(
             warehouse_name,
             project_id,
@@ -438,14 +438,14 @@ impl CatalogStore for super::PostgresBackend {
         project_id: &ProjectId,
         status_filter: Option<Vec<WarehouseStatus>>,
         catalog_state: Self::State,
-    ) -> std::result::Result<Vec<GetWarehouseResponse>, CatalogListWarehousesError> {
+    ) -> std::result::Result<Vec<ResolvedWarehouse>, CatalogListWarehousesError> {
         list_warehouses(project_id, status_filter, &catalog_state.read_pool()).await
     }
 
     async fn get_warehouse_by_id_impl<'a>(
         warehouse_id: WarehouseId,
         state: Self::State,
-    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByIdError> {
+    ) -> std::result::Result<Option<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
         get_warehouse_by_id(warehouse_id, &state.read_pool()).await
     }
 
@@ -469,7 +469,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogRenameWarehouseError> {
+    ) -> std::result::Result<ResolvedWarehouse, CatalogRenameWarehouseError> {
         rename_warehouse(warehouse_id, new_name, transaction).await
     }
 
@@ -477,7 +477,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), SetWarehouseDeletionProfileError> {
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseDeletionProfileError> {
         set_warehouse_deletion_profile(warehouse_id, deletion_profile, &mut **transaction).await
     }
 
@@ -493,7 +493,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<(), SetWarehouseStatusError> {
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseStatusError> {
         set_warehouse_status(warehouse_id, status, transaction).await
     }
 
@@ -502,7 +502,7 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<(), UpdateWarehouseStorageProfileError> {
+    ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
         update_storage_profile(
             warehouse_id,
             storage_profile,
@@ -619,7 +619,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<ProtectionResponse, SetWarehouseProtectedError> {
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 

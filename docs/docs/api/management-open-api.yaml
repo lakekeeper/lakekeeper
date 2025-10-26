@@ -1991,6 +1991,10 @@ paths:
       responses:
         '200':
           description: Warehouse renamed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -2116,6 +2120,10 @@ paths:
       responses:
         '200':
           description: Storage profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -2147,6 +2155,10 @@ paths:
       responses:
         '200':
           description: Storage credential updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -2941,14 +2953,7 @@ components:
             Name of the warehouse to create. Must be unique
             within a project and may not contain "/"
     CreateWarehouseResponse:
-      type: object
-      required:
-        - warehouse-id
-      properties:
-        warehouse-id:
-          type: string
-          format: uuid
-          description: ID of the created warehouse.
+      $ref: '#/components/schemas/GetWarehouseResponse'
     DeletedTabularResponse:
       type: object
       required:
@@ -3466,6 +3471,7 @@ components:
       type: object
       required:
         - id
+        - warehouse-id
         - name
         - project-id
         - storage-profile
@@ -3480,6 +3486,7 @@ components:
           type: string
           format: uuid
           description: ID of the warehouse.
+          deprecated: true
         name:
           type: string
           description: Name of the warehouse.
@@ -3495,6 +3502,16 @@ components:
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile used for the warehouse.
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last updated timestamp.
+        warehouse-id:
+          type: string
+          format: uuid
+          description: ID of the warehouse.
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)

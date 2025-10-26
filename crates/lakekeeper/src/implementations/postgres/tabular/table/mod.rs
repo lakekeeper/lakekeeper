@@ -20,11 +20,11 @@ use uuid::Uuid;
 use crate::{
     api::iceberg::v1::tables::{LoadTableFilters, SnapshotsQuery},
     service::{
-        storage::{join_location, StorageProfile},
-        ConversionError, InternalParseLocationError, InternalTableMetadataBuildFailed,
-        LoadTableError, LoadTableResponse, RequiredTableComponentMissing, TableId,
+        storage::join_location, ConversionError, InternalParseLocationError,
+        InternalTableMetadataBuildFailed, LoadTableError, LoadTableResponse,
+        RequiredTableComponentMissing, TableId,
     },
-    SecretIdent, WarehouseId,
+    WarehouseId,
 };
 
 const MAX_PARAMETERS: usize = 30000;
@@ -146,8 +146,7 @@ struct TableQueryStruct {
     metadata_location: Option<String>,
     table_fs_location: String,
     table_fs_protocol: String,
-    storage_profile: Json<StorageProfile>,
-    storage_secret_id: Option<Uuid>,
+    warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
@@ -517,8 +516,7 @@ pub(crate) async fn load_tables(
             ti.tabular_namespace_name as "namespace_name",
             ti.namespace_id,
             ti."metadata_location",
-            w.storage_profile as "storage_profile: Json<StorageProfile>",
-            w."storage_secret_id",
+            w.updated_at as "warehouse_updated_at",
             ts.schema_ids,
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
@@ -670,6 +668,7 @@ pub(crate) async fn load_tables(
     table
         .into_iter()
         .map(|table| {
+            let warehouse_updated_at = table.warehouse_updated_at;
             let table_id = table.table_id.into();
             let metadata_location = table
                 .metadata_location
@@ -678,9 +677,6 @@ pub(crate) async fn load_tables(
                 .transpose()
                 .map_err(InternalParseLocationError::from)?;
             let namespace_id = table.namespace_id.into();
-            let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
-            let storage_profile = table.storage_profile.deref().clone();
-
             let table_metadata = table.into_table_metadata()?;
 
             Ok(LoadTableResponse {
@@ -688,8 +684,7 @@ pub(crate) async fn load_tables(
                 namespace_id,
                 table_metadata,
                 metadata_location,
-                storage_secret_ident,
-                storage_profile,
+                warehouse_updated_at,
             })
         })
         .collect()

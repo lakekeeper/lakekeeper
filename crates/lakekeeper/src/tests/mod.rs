@@ -165,7 +165,7 @@ pub(crate) async fn setup<T: Authorizer>(
     let mut additional_warehouses = vec![];
     for i in 1..number_of_warehouses {
         let warehouse_name = format!("test-warehouse-{}-{}", i, Uuid::now_v7());
-        let warehouse = ApiServer::create_warehouse(
+        let create_wh_response = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
                 project_id: None,
@@ -178,12 +178,12 @@ pub(crate) async fn setup<T: Authorizer>(
         )
         .await
         .unwrap();
-        additional_warehouses.push((warehouse.warehouse_id, warehouse_name.clone()));
+        additional_warehouses.push((create_wh_response.warehouse_id(), warehouse_name.clone()));
     }
     (
         api_context,
         TestWarehouseResponse {
-            warehouse_id: warehouse.warehouse_id,
+            warehouse_id: warehouse.warehouse_id(),
             warehouse_name,
             additional_warehouses,
         },

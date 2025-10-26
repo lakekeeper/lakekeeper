@@ -13,13 +13,12 @@ use crate::{
     server::tables::TableMetadataDiffs,
     service::{
         define_simple_error, define_simple_tabular_err, define_transparent_error,
-        impl_error_stack_methods, impl_from_with_detail, storage::StorageProfile,
-        CatalogBackendError, CatalogStore, ConversionError, CreateTabularError,
-        InternalBackendErrors, InternalParseLocationError, InvalidNamespaceIdentifier,
-        LocationAlreadyTaken, NamespaceId, SerializationError, TableId, TableInfo,
-        TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
+        impl_error_stack_methods, impl_from_with_detail, CatalogBackendError, CatalogStore,
+        ConversionError, CreateTabularError, InternalBackendErrors, InternalParseLocationError,
+        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, SerializationError, TableId,
+        TableInfo, TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
     },
-    SecretIdent, WarehouseId,
+    WarehouseId,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,8 +27,7 @@ pub struct LoadTableResponse {
     pub namespace_id: NamespaceId,
     pub table_metadata: TableMetadata,
     pub metadata_location: Option<Location>,
-    pub storage_secret_ident: Option<SecretIdent>,
-    pub storage_profile: StorageProfile,
+    pub warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone)]

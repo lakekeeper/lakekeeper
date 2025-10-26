@@ -54,20 +54,21 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         authorizer
             .require_warehouse_action(
                 &request_metadata,
-                warehouse.id,
+                warehouse.warehouse_id,
                 CatalogWarehouseAction::CanGetConfig,
             )
             .await?;
 
         let mut config = warehouse.storage_profile.generate_catalog_config(
-            warehouse.id,
+            warehouse.warehouse_id,
             &request_metadata,
             warehouse.tabular_delete_profile,
         );
 
-        config
-            .defaults
-            .insert("prefix".to_string(), CONFIG.warehouse_prefix(warehouse.id));
+        config.defaults.insert(
+            "prefix".to_string(),
+            CONFIG.warehouse_prefix(warehouse.warehouse_id),
+        );
         config.defaults.insert(
             "rest-page-size".to_string(),
             CONFIG.pagination_size_default.to_string(),

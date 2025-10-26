@@ -795,7 +795,7 @@ pub mod v1 {
         params(("warehouse_id" = Uuid,)),
         request_body = RenameWarehouseRequest,
         responses(
-            (status = 200, description = "Warehouse renamed successfully"),
+            (status = 200, body=GetWarehouseResponse, description = "Warehouse renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -804,7 +804,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameWarehouseRequest>,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         ApiServer::<C, A, S>::rename_warehouse(warehouse_id.into(), request, api_context, metadata)
             .await
     }
@@ -894,7 +894,7 @@ pub mod v1 {
         params(("warehouse_id" = Uuid,)),
         request_body = UpdateWarehouseStorageRequest,
         responses(
-            (status = 200, description = "Storage profile updated successfully"),
+            (status = 200, body=GetWarehouseResponse, description = "Storage profile updated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -903,7 +903,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateWarehouseStorageRequest>,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         ApiServer::<C, A, S>::update_storage(warehouse_id.into(), request, api_context, metadata)
             .await
     }
@@ -919,7 +919,7 @@ pub mod v1 {
         params(("warehouse_id" = Uuid,)),
         request_body = UpdateWarehouseCredentialRequest,
         responses(
-            (status = 200, description = "Storage credential updated successfully"),
+            (status = 200, body=GetWarehouseResponse, description = "Storage credential updated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -928,7 +928,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateWarehouseCredentialRequest>,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         ApiServer::<C, A, S>::update_storage_credential(
             warehouse_id.into(),
             request,

@@ -27,7 +27,7 @@ use crate::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
                 WarehouseStatisticsResponse,
             },
-            DeleteWarehouseQuery, ProtectionResponse, TabularType,
+            DeleteWarehouseQuery, TabularType,
         },
     },
     service::{
@@ -45,6 +45,7 @@ pub use namespace::*;
 mod tabular;
 pub use tabular::*;
 mod warehouse;
+mod warehouse_cache;
 pub use warehouse::*;
 mod project;
 pub use project::*;
@@ -145,7 +146,7 @@ where
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<WarehouseId, CatalogCreateWarehouseError>;
+    ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
     /// Delete a warehouse.
     async fn delete_warehouse_impl<'a>(
@@ -159,7 +160,7 @@ where
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogRenameWarehouseError>;
+    ) -> std::result::Result<ResolvedWarehouse, CatalogRenameWarehouseError>;
 
     /// Return a list of all warehouse in a project
     async fn list_warehouses_impl(
@@ -168,7 +169,7 @@ where
         // If Some, return only warehouses with any of the statuses in the set
         status_filter: Option<Vec<WarehouseStatus>>,
         state: Self::State,
-    ) -> std::result::Result<Vec<GetWarehouseResponse>, CatalogListWarehousesError>;
+    ) -> std::result::Result<Vec<ResolvedWarehouse>, CatalogListWarehousesError>;
 
     /// Get the warehouse metadata. Return only active warehouses.
     ///
@@ -176,7 +177,7 @@ where
     async fn get_warehouse_by_id_impl<'a>(
         warehouse_id: WarehouseId,
         state: Self::State,
-    ) -> std::result::Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByIdError>;
+    ) -> std::result::Result<Option<ResolvedWarehouse>, CatalogGetWarehouseByIdError>;
 
     /// Get the warehouse metadata. Return only active warehouses.
     ///
@@ -185,7 +186,7 @@ where
         warehouse_name: &str,
         project_id: &ProjectId,
         catalog_state: Self::State,
-    ) -> Result<Option<GetWarehouseResponse>, CatalogGetWarehouseByNameError>;
+    ) -> Result<Option<ResolvedWarehouse>, CatalogGetWarehouseByNameError>;
 
     async fn get_warehouse_stats(
         warehouse_id: WarehouseId,
@@ -198,27 +199,27 @@ where
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), SetWarehouseDeletionProfileError>;
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseDeletionProfileError>;
 
     /// Set the status of a warehouse.
     async fn set_warehouse_status_impl<'a>(
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), SetWarehouseStatusError>;
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseStatusError>;
 
     async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), UpdateWarehouseStorageProfileError>;
+    ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError>;
 
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<ProtectionResponse, SetWarehouseProtectedError>;
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.

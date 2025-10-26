@@ -15,8 +15,8 @@ use crate::{
     },
     service::{
         authz::Authorizer, secrets::SecretStore, AuthZTableInfo as _, CatalogStore,
-        CatalogTableOps, LoadTableResponse as CatalogLoadTableResult, State, TableId,
-        TableIdentOrId, TabularListFlags, TabularNotFound, Transaction,
+        CatalogTableOps, CatalogWarehouseOps, LoadTableResponse as CatalogLoadTableResult, State,
+        TableId, TableIdentOrId, TabularListFlags, TabularNotFound, Transaction,
     },
     WarehouseId,
 };
@@ -64,8 +64,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         namespace_id: _,
         table_metadata,
         metadata_location,
-        storage_secret_ident,
-        storage_profile,
+        warehouse_updated_at: warehouse_last_updated_at,
     } = load_table_inner::<C>(
         warehouse_id,
         table_info.table_id(),
@@ -77,16 +76,22 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     .await?;
     t.commit().await?;
 
+    let warehouse = C::require_warehouse_by_id_cache_aware(
+        warehouse_id,
+        warehouse_last_updated_at,
+        catalog_state.clone(),
+    )
+    .await?;
+
     let table_location =
         parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // ToDo: This is a small inefficiency: We fetch the secret even if it might
-    // not be required based on the `data_access` parameter.
     let storage_config = if let Some(storage_permissions) = storage_permissions {
         let storage_secret =
-            maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
+            maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
         Some(
-            storage_profile
+            warehouse
+                .storage_profile
                 .generate_table_config(
                     data_access.into(),
                     storage_secret.as_ref(),

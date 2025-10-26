@@ -24,6 +24,7 @@ pub struct CatalogView {
     pub metadata: ViewMetadataRef,
     // Typesafe location for the view
     pub location: Location,
+    pub warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone)]

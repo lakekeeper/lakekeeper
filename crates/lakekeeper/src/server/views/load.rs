@@ -19,7 +19,7 @@ use crate::{
         },
         storage::{StorageCredential, StoragePermissions},
         AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogViewOps, CatalogWarehouseOps,
-        GetWarehouseResponse, InternalParseLocationError, Result, SecretStore, State, Transaction,
+        InternalParseLocationError, Result, SecretStore, State, Transaction,
     },
 };
 
@@ -73,37 +73,34 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         return Err(AuthZCannotSeeView::new(warehouse_id, view.clone()).into());
     }
     // ------------------- BUSINESS LOGIC -------------------
-    let GetWarehouseResponse {
-        id: _,
-        name: _,
-        project_id: _,
-        storage_profile,
-        storage_secret_id,
-        status,
-        tabular_delete_profile: _,
-        protected: _,
-    } = C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
-    require_active_warehouse(status)?;
-
-    let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
     let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
     t.commit().await?;
+
+    let warehouse = C::require_warehouse_by_id_cache_aware(
+        warehouse_id,
+        view.warehouse_updated_at,
+        state.v1_state.catalog,
+    )
+    .await?;
+    require_active_warehouse(warehouse.status)?;
 
     let view_location =
         Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;
 
-    let storage_secret: Option<StorageCredential> = if let Some(secret_id) = storage_secret_id {
-        Some(
-            state
-                .v1_state
-                .secrets
-                .get_secret_by_id(secret_id)
-                .await?
-                .secret,
-        )
-    } else {
-        None
-    };
+    let storage_secret: Option<StorageCredential> =
+        if let Some(secret_id) = warehouse.storage_secret_id {
+            Some(
+                state
+                    .v1_state
+                    .secrets
+                    .get_secret_by_id(secret_id)
+                    .await?
+                    .secret,
+            )
+        } else {
+            None
+        };
 
     let storage_permissions = if can_write {
         StoragePermissions::ReadWriteDelete
@@ -111,7 +108,8 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         StoragePermissions::Read
     };
 
-    let access = storage_profile
+    let access = warehouse
+        .storage_profile
         .generate_table_config(
             data_access,
             storage_secret.as_ref(),

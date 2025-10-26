@@ -147,11 +147,13 @@ impl Default for TabularDeleteProfile {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct CreateWarehouseResponse {
-    /// ID of the created warehouse.
-    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
-    pub warehouse_id: WarehouseId,
+#[serde(transparent)]
+pub struct CreateWarehouseResponse(GetWarehouseResponse);
+impl CreateWarehouseResponse {
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        self.0.warehouse_id
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -210,12 +212,17 @@ pub struct RenameProjectRequest {
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetWarehouseResponse {
     /// ID of the warehouse.
-    pub id: uuid::Uuid,
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    #[deprecated(since = "0.11.0", note = "Please use 'warehouse_id' field instead.")]
+    pub id: WarehouseId,
+    /// ID of the warehouse.
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    pub warehouse_id: WarehouseId,
     /// Name of the warehouse.
     pub name: String,
     /// Project ID in which the warehouse was created.
@@ -229,6 +236,8 @@ pub struct GetWarehouseResponse {
     pub status: WarehouseStatus,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Last updated timestamp.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -379,7 +388,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let warehouse_id = C::create_warehouse(
+        let resolved_warehouse = C::create_warehouse(
             warehouse_name,
             &project_id,
             storage_profile,
@@ -389,12 +398,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         authorizer
-            .create_warehouse(&request_metadata, warehouse_id, &project_id)
+            .create_warehouse(
+                &request_metadata,
+                resolved_warehouse.warehouse_id,
+                &project_id,
+            )
             .await?;
 
         transaction.commit().await?;
 
-        Ok(CreateWarehouseResponse { warehouse_id })
+        Ok(CreateWarehouseResponse(
+            (*resolved_warehouse).clone().into(),
+        ))
     }
 
     async fn list_warehouses(
@@ -427,7 +442,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 &warehouses
                     .iter()
-                    .map(|w| (w.id, CatalogWarehouseAction::CanIncludeInList))
+                    .map(|w| (w.warehouse_id, CatalogWarehouseAction::CanIncludeInList))
                     .collect::<Vec<_>>(),
             )
             .await?
@@ -436,7 +451,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .zip(warehouses)
             .filter_map(|(allowed, warehouse)| {
                 if allowed {
-                    Some(warehouse.into())
+                    Some((*warehouse).clone().into())
                 } else {
                     None
                 }
@@ -462,8 +477,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let warehouses = C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog).await?;
-        Ok(warehouses.into())
+        let warehouse = C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog).await?;
+        Ok((*warehouse).clone().into())
     }
 
     async fn get_warehouse_statistics(
@@ -537,11 +552,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         tracing::debug!("Setting protection for warehouse {warehouse_id} to {protection}");
-        let status =
+        let resolved_warehouse =
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
 
-        Ok(status)
+        Ok(ProtectionResponse {
+            protected: resolved_warehouse.protected,
+            updated_at: resolved_warehouse.updated_at,
+        })
     }
 
     async fn rename_warehouse(
@@ -549,7 +567,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: RenameWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -564,11 +582,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_warehouse_name(&request.new_name)?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
-        C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
+        let resolved_warehouse =
+            C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
 
         transaction.commit().await?;
 
-        Ok(())
+        Ok((*resolved_warehouse).clone().into())
     }
 
     async fn update_warehouse_delete_profile(
@@ -665,7 +684,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: UpdateWarehouseStorageRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -693,7 +712,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let warehouse =
             C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let storage_profile = warehouse.storage_profile.update_with(storage_profile)?;
+        let storage_profile = warehouse
+            .storage_profile
+            .clone()
+            .update_with(storage_profile)?;
         let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(storage_credential) = storage_credential {
@@ -708,7 +730,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        C::update_storage_profile(
+        let updated_warehouse = C::update_storage_profile(
             warehouse_id,
             storage_profile,
             secret_id,
@@ -726,12 +748,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .delete_secret(&old_secret_id)
                 .await
                 .map_err(|e| {
-                    tracing::warn!("Failed to delete old secret: {:?}", e.error);
+                    tracing::warn!(
+                        "Failed to delete old storage secret with id {old_secret_id}: {:?}",
+                        e.error
+                    );
                 })
                 .ok();
         }
 
-        Ok(())
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn update_storage_credential(
@@ -739,7 +764,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: UpdateWarehouseCredentialRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -758,9 +783,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let old_secret_id = warehouse.storage_secret_id;
-        let storage_profile = warehouse.storage_profile;
 
-        Box::pin(storage_profile.validate_access(
+        Box::pin(warehouse.storage_profile.validate_access(
             new_storage_credential.as_ref(),
             None,
             &request_metadata,
@@ -779,9 +803,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        C::update_storage_profile(
+        let updated_warehouse = C::update_storage_profile(
             warehouse_id,
-            storage_profile,
+            warehouse.storage_profile.clone(),
             secret_id,
             transaction.transaction(),
         )
@@ -797,12 +821,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .delete_secret(&old_secret_id)
                 .await
                 .map_err(|e| {
-                    tracing::warn!("Failed to delete old secret: {:?}", e.error);
+                    tracing::warn!(
+                        "Failed to delete old storage secret with id {old_secret_id}: {:?}",
+                        e.error
+                    );
                 })
                 .ok();
         }
 
-        Ok(())
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn undrop_tabulars(
@@ -1156,16 +1183,18 @@ impl axum::response::IntoResponse for GetWarehouseResponse {
     }
 }
 
-impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
-    fn from(warehouse: crate::service::GetWarehouseResponse) -> Self {
+impl From<crate::service::ResolvedWarehouse> for GetWarehouseResponse {
+    fn from(warehouse: crate::service::ResolvedWarehouse) -> Self {
         Self {
-            id: warehouse.id.into(),
+            warehouse_id: warehouse.warehouse_id,
+            id: warehouse.warehouse_id,
             name: warehouse.name,
             project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
+            updated_at: warehouse.updated_at,
         }
     }
 }

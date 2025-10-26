@@ -437,6 +437,8 @@ pub struct KV2Config {
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
     pub(crate) stc: STCCache,
+    /// Warehouse cache configuration.
+    pub(crate) warehouse: WarehouseCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -451,6 +453,22 @@ impl std::default::Default for STCCache {
         Self {
             enabled: true,
             capacity: 10_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct WarehouseCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+}
+
+impl std::default::Default for WarehouseCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 1000,
         }
     }
 }
