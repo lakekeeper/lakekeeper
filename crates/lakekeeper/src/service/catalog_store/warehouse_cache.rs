@@ -105,7 +105,9 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
         let name = warehouse.name.clone();
         let current_entry = WAREHOUSE_CACHE.get(&warehouse_id).await;
         if let Some(existing) = &current_entry {
-            if existing.warehouse.updated_at >= warehouse.updated_at {
+            let curr = existing.warehouse.updated_at;
+            let new_ = warehouse.updated_at;
+            if matches!((curr, new_), (Some(curr), Some(new_)) if curr >= new_) {
                 tracing::debug!(
                     "Skipping insert of warehouse id {warehouse_id} into cache; existing entry is newer or same"
                 );

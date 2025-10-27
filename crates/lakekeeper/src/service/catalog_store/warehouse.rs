@@ -395,8 +395,8 @@ pub enum CachePolicy {
     /// Use cached data if available
     #[default]
     Use,
-    /// Only use cached data newer than the specified timestamp
-    /// If None is provided, skip the cache entirely
+    /// Only use cached data newer than the specified timestamp.
+    /// `None` refers to the initial state of the entry (never updated).
     OnlyIfNewerThan(Option<chrono::DateTime<chrono::Utc>>),
     /// Skip the cache and always fetch from the database
     Skip,
