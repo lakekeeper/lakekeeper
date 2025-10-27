@@ -14,7 +14,7 @@ use crate::{
         tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
     },
     service::{
-        authz::Authorizer, secrets::SecretStore, AuthZTableInfo as _, CatalogStore,
+        authz::Authorizer, secrets::SecretStore, AuthZTableInfo as _, CachePolicy, CatalogStore,
         CatalogTableOps, CatalogWarehouseOps, LoadTableResponse as CatalogLoadTableResult, State,
         TableId, TableIdentOrId, TabularListFlags, TabularNotFound, Transaction,
     },
@@ -78,7 +78,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
 
     let warehouse = C::require_warehouse_by_id_cache_aware(
         warehouse_id,
-        warehouse_last_updated_at,
+        CachePolicy::OnlyIfNewerThan(warehouse_last_updated_at),
         catalog_state.clone(),
     )
     .await?;

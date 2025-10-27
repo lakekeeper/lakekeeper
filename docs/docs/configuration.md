@@ -256,10 +256,27 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 
 **Expiry Mechanism**: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
+**Metrics**: The Warehouse cache exposes Prometheus metrics for monitoring:
+- `lakekeeper_warehouse_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
+- `lakekeeper_warehouse_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
+- `lakekeeper_warehouse_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
+
+#### Warehouse Cache
+
+Caches warehouse metadata to reduce database queries for warehouse lookups.
+
+| Configuration Key                                    | Type    | Default | Description |
+|------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__ENABLED`<nobr>  | boolean | `true`  | Enable/disable warehouse caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`<nobr> | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
+
+If the cache is enabled, changes to Storage Profile may take up to 30 seconds to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
+
 **Metrics**: The STC cache exposes Prometheus metrics for monitoring:
 - `lakekeeper_stc_cache_size{cache_type="stc"}`: Current number of entries in the cache
 - `lakekeeper_stc_cache_hits_total{cache_type="stc"}`: Total number of cache hits
 - `lakekeeper_stc_cache_misses_total{cache_type="stc"}`: Total number of cache misses
+
 
 ### Endpoint Statistics
 

@@ -18,8 +18,8 @@ use crate::{
             AuthZCannotSeeView, AuthZViewOps, Authorizer, CatalogViewAction, RequireViewActionError,
         },
         storage::{StorageCredential, StoragePermissions},
-        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogViewOps, CatalogWarehouseOps,
-        InternalParseLocationError, Result, SecretStore, State, Transaction,
+        AuthZViewInfo as _, CachePolicy, CatalogStore, CatalogTabularOps, CatalogViewOps,
+        CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State, Transaction,
     },
 };
 
@@ -79,7 +79,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     let warehouse = C::require_warehouse_by_id_cache_aware(
         warehouse_id,
-        view.warehouse_updated_at,
+        CachePolicy::OnlyIfNewerThan(view.warehouse_updated_at),
         state.v1_state.catalog,
     )
     .await?;

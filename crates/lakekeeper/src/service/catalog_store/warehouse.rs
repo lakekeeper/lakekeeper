@@ -390,6 +390,18 @@ define_transparent_error! {
     ]
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum CachePolicy {
+    /// Use cached data if available
+    #[default]
+    Use,
+    /// Only use cached data newer than the specified timestamp
+    /// If None is provided, skip the cache entirely
+    OnlyIfNewerThan(Option<chrono::DateTime<chrono::Utc>>),
+    /// Skip the cache and always fetch from the database
+    Skip,
+}
+
 #[async_trait::async_trait]
 pub trait CatalogWarehouseOps
 where
@@ -488,45 +500,75 @@ where
     /// Get warehouse by ID, invalidating cache if it's older than the provided timestamp
     async fn get_warehouse_by_id_cache_aware(
         warehouse_id: WarehouseId,
-        require_updated_after: Option<chrono::DateTime<chrono::Utc>>,
+        cache_policy: CachePolicy,
         state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
-        // Check cache first
-        let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
+        let warehouse = match cache_policy {
+            CachePolicy::Skip => {
+                // Skip cache entirely
+                let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)
+                    .await?
+                    .map(Arc::new);
 
-        if let Some(warehouse) = &cached_warehouse {
-            // Determine if cache is valid based on timestamps
-            let cache_is_valid = match (warehouse.updated_at, require_updated_after) {
-                // Both None: cache is valid (warehouse never updated, no requirement)
-                // OR: Cache has timestamp, no requirement: cache is valid
-                (None | Some(_), None) => true,
-                // Cache is None but we require a timestamp: cache is stale
-                (None, Some(_)) => false,
-                // Both have timestamps: compare them
-                (Some(cached_at), Some(required_at)) => cached_at >= required_at,
-            };
+                // Update cache with fresh data
+                if let Some(warehouse) = warehouse.clone() {
+                    warehouse_cache_insert(warehouse).await;
+                }
 
-            if cache_is_valid {
-                return Ok(Some(warehouse.clone()));
+                warehouse
             }
+            CachePolicy::Use => {
+                // Use cache if available
+                Self::get_warehouse_by_id(warehouse_id, state).await?
+            }
+            CachePolicy::OnlyIfNewerThan(require_updated_after) => {
+                // Check cache first
+                let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
 
-            tracing::debug!(
-                "Detected stale cache for warehouse {}: cached={:?}, required={:?}. Refreshing.",
-                warehouse_id,
-                warehouse.updated_at,
-                require_updated_after
-            );
-        }
+                if let Some(warehouse) = &cached_warehouse {
+                    // Determine if cache is valid based on timestamps
+                    let cache_is_valid = match (warehouse.updated_at, require_updated_after) {
+                        // Both None: cache is valid (warehouse never updated, no requirement)
+                        // OR: Cache has timestamp, no requirement: cache is valid
+                        (None | Some(_), None) => true,
+                        // Cache is None but we require a timestamp: cache is stale
+                        (None, Some(_)) => false,
+                        // Both have timestamps: compare them
+                        (Some(cached_at), Some(required_at)) => cached_at >= required_at,
+                    };
 
-        // Fetch from database
-        let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)
-            .await?
-            .map(Arc::new);
-
-        // Update cache with fresh data
-        if let Some(warehouse) = warehouse.clone() {
-            warehouse_cache_insert(warehouse).await;
-        }
+                    if cache_is_valid {
+                        Some(warehouse.clone())
+                    } else {
+                        tracing::debug!(
+                            "Detected stale cache for warehouse {}: cached={:?}, required={:?}. Refreshing.",
+                            warehouse_id,
+                            warehouse.updated_at,
+                            require_updated_after
+                        );
+                        // Cache is stale: fetch fresh data
+                        let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)
+                            .await?
+                            .map(Arc::new);
+                        // Update cache with fresh data
+                        if let Some(warehouse) = warehouse.clone() {
+                            warehouse_cache_insert(warehouse).await;
+                        }
+                        warehouse
+                    }
+                } else {
+                    // No cache entry: fetch fresh data
+                    let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)
+                        .await?
+                        .map(Arc::new);
+                    // Update cache with fresh data
+                    if let Some(warehouse) = warehouse.clone() {
+                        warehouse_cache_insert(warehouse).await;
+                    }
+                    warehouse
+                }
+            }
+        };
 
         Ok(warehouse)
     }
@@ -543,10 +585,10 @@ where
 
     async fn require_warehouse_by_id_cache_aware(
         warehouse_id: WarehouseId,
-        require_updated_after: Option<chrono::DateTime<chrono::Utc>>,
+        cache_policy: CachePolicy,
         state: Self::State,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-        Self::get_warehouse_by_id_cache_aware(warehouse_id, require_updated_after, state)
+        Self::get_warehouse_by_id_cache_aware(warehouse_id, cache_policy, state)
             .await?
             .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
     }

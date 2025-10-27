@@ -477,7 +477,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let warehouse = C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog).await?;
+        let warehouse = C::require_warehouse_by_id_cache_aware(
+            warehouse_id,
+            crate::service::CachePolicy::Skip,
+            context.v1_state.catalog,
+        )
+        .await?;
         Ok((*warehouse).clone().into())
     }
 

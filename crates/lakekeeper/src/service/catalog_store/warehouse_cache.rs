@@ -6,8 +6,6 @@ use std::{
 use axum_prometheus::metrics;
 use moka::future::Cache;
 
-use crate::{service::ResolvedWarehouse, ProjectId, WarehouseId, CONFIG};
-
 #[cfg(feature = "router")]
 use crate::{
     api::{
@@ -20,6 +18,7 @@ use crate::{
     service::endpoint_hooks::EndpointHook,
     SecretId,
 };
+use crate::{service::ResolvedWarehouse, ProjectId, WarehouseId, CONFIG};
 
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
 const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
