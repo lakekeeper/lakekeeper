@@ -128,7 +128,7 @@ impl moka::Expiry<STCCacheKey, STCCacheValue> for STCCacheExpiration {
 fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_STC_CACHE_SIZE, "cache_type" => "stc")
-        .set(STC_CACHE.weighted_size() as f64);
+        .set(STC_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn get_stc_from_cache(key: &STCCacheKey) -> Option<STCCacheValue> {

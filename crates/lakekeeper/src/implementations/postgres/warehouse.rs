@@ -404,7 +404,7 @@ pub(crate) async fn get_warehouse_by_id<
             protected,
             updated_at
         FROM warehouse
-        WHERE warehouse_id = $1
+        WHERE warehouse_id = $1 AND status = 'active'
         "#,
         *warehouse_id
     )

@@ -4,7 +4,7 @@ use std::{
 };
 
 use axum_prometheus::metrics;
-use moka::future::Cache;
+use moka::{future::Cache, notification::RemovalCause};
 
 #[cfg(feature = "router")]
 use crate::{
@@ -46,15 +46,31 @@ static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> = LazyLock
         .max_capacity(CONFIG.cache.warehouse.capacity)
         .initial_capacity(50)
         .time_to_live(Duration::from_secs(30))
-        .async_eviction_listener(|_key, value: CachedWarehouse, _cause| {
+        .async_eviction_listener(|key, value: CachedWarehouse, cause| {
             Box::pin(async move {
-                // When evicted, also remove from name index
-                NAME_TO_ID_CACHE
-                    .invalidate(&(
-                        value.warehouse.project_id.clone(),
-                        value.warehouse.name.clone(),
-                    ))
-                    .await;
+                // Evictions:
+                // - Replaced: only invalidate old-name mapping if the current entry
+                //   either does not exist or has a different (project_id, name).
+                // - Other causes: primary entry is gone; invalidate mapping.
+                let should_invalidate = match cause {
+                    RemovalCause::Replaced => {
+                        if let Some(curr) = WAREHOUSE_CACHE.get(&*key).await {
+                            curr.warehouse.project_id != value.warehouse.project_id
+                                || curr.warehouse.name != value.warehouse.name
+                        } else {
+                            true
+                        }
+                    }
+                    _ => true,
+                };
+                if should_invalidate {
+                    NAME_TO_ID_CACHE
+                        .invalidate(&(
+                            value.warehouse.project_id.clone(),
+                            value.warehouse.name.clone(),
+                        ))
+                        .await;
+                }
             })
         })
         .build()
@@ -98,12 +114,10 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
             }
         }
         tracing::debug!("Inserting warehouse id {warehouse_id} into cache");
-        WAREHOUSE_CACHE
-            .insert(warehouse_id, CachedWarehouse { warehouse })
-            .await;
-        NAME_TO_ID_CACHE
-            .insert((project_id, name), warehouse_id)
-            .await;
+        tokio::join!(
+            WAREHOUSE_CACHE.insert(warehouse_id, CachedWarehouse { warehouse }),
+            NAME_TO_ID_CACHE.insert((project_id, name), warehouse_id),
+        );
         update_cache_size_metric();
     }
 }
@@ -114,7 +128,7 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
 fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse")
-        .set(WAREHOUSE_CACHE.weighted_size() as f64);
+        .set(WAREHOUSE_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn warehouse_cache_get_by_id(

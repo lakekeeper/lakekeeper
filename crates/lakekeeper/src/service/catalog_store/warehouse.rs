@@ -69,7 +69,7 @@ pub struct ResolvedWarehouse {
     pub tabular_delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
-    /// Timestamp when the profile was last updated
+    /// Timestamp when the warehouse metadata was last updated.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -474,7 +474,7 @@ where
         Ok(warehouses)
     }
 
-    /// Get the warehouse metadata - should only return active warehouses.
+    /// Get the warehouse metadata.
     ///
     /// Return Ok(None) if the warehouse does not exist.
     async fn get_warehouse_by_id<'a>(

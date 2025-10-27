@@ -363,9 +363,12 @@ async fn serve_inner<
     let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
     hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
     if CONFIG.cache.warehouse.enabled {
+        tracing::info!("Warehouse cache is enabled, registering warehouse cache endpoint hook");
         hooks.append(Arc::new(
             crate::service::warehouse_cache::WarehouseCacheEndpointHook {},
         ));
+    } else {
+        tracing::info!("Warehouse cache is disabled");
     }
 
     // Task queues
