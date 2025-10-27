@@ -14,7 +14,7 @@ use crate::{
     config::KV2Config,
     service::{
         health::{Health, HealthExt, HealthStatus},
-        secrets::{Secret, SecretIdent, SecretStore},
+        secrets::{Secret, SecretId, SecretStore},
     },
 };
 
@@ -23,7 +23,7 @@ impl SecretStore for SecretsState {
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: DeserializeOwned>(
         &self,
-        secret_id: SecretIdent,
+        secret_id: SecretId,
     ) -> Result<Secret<S>> {
         // it seems there is no atomic get for metadata and secret so we read_metadata, and then
         // read the secret with the current version defined in the previously read metadata
@@ -78,8 +78,8 @@ impl SecretStore for SecretsState {
     async fn create_secret<S: Send + Sync + Serialize + std::fmt::Debug>(
         &self,
         secret: S,
-    ) -> Result<SecretIdent> {
-        let secret_id = SecretIdent::from(Uuid::now_v7());
+    ) -> Result<SecretId> {
+        let secret_id = SecretId::from(Uuid::now_v7());
         vaultrs::kv2::set(
             &*self.vault_client.read().await,
             self.secret_mount.as_str(),
@@ -98,7 +98,7 @@ impl SecretStore for SecretsState {
     }
 
     /// Delete a secret
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> Result<()> {
+    async fn delete_secret(&self, secret_id: &SecretId) -> Result<()> {
         Ok(vaultrs::kv2::delete_metadata(
             &*self.vault_client.read().await,
             self.secret_mount.as_str(),
@@ -248,7 +248,7 @@ impl std::fmt::Debug for SecretsState {
     }
 }
 
-fn secret_ident_to_key(secret_id: SecretIdent) -> String {
+fn secret_ident_to_key(secret_id: SecretId) -> String {
     format!("secret/{secret_id}", secret_id = secret_id.as_uuid())
 }
 

@@ -106,7 +106,7 @@ fn require_warehouse_id(prefix: Option<&Prefix>) -> std::result::Result<Warehous
 }
 
 pub(crate) async fn maybe_get_secret<S: SecretStore>(
-    secret: Option<crate::SecretIdent>,
+    secret: Option<crate::SecretId>,
     state: &S,
 ) -> Result<Option<StorageCredential>, IcebergErrorResponse> {
     if let Some(secret_id) = secret {

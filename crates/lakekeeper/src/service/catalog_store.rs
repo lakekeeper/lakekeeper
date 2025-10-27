@@ -38,14 +38,14 @@ use crate::{
         },
         TabularId, TabularIdentBorrowed,
     },
-    SecretIdent,
+    SecretId,
 };
 mod namespace;
 pub use namespace::*;
 mod tabular;
 pub use tabular::*;
 mod warehouse;
-mod warehouse_cache;
+pub(crate) mod warehouse_cache;
 pub use warehouse::*;
 mod project;
 pub use project::*;
@@ -144,7 +144,7 @@ where
         project_id: &ProjectId,
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretIdent>,
+        storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
@@ -211,7 +211,7 @@ where
     async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
-        storage_secret_id: Option<SecretIdent>,
+        storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError>;
 

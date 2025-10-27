@@ -15,7 +15,7 @@ pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 #[allow(unused_imports)]
 pub(crate) use identifier::tabular::TabularIdentBorrowed;
 pub use identifier::tabular::{TabularId, TabularIdentOwned};
-pub use secrets::{SecretIdent, SecretStore};
+pub use secrets::{SecretId, SecretStore};
 use tasks::RegisteredTaskQueues;
 
 use self::authz::Authorizer;

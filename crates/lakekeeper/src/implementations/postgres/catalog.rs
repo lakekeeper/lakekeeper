@@ -83,7 +83,7 @@ use crate::{
         ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
         WarehouseStatus,
     },
-    SecretIdent,
+    SecretId,
 };
 
 #[async_trait::async_trait]
@@ -371,7 +371,7 @@ impl CatalogStore for super::PostgresBackend {
         project_id: &ProjectId,
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretIdent>,
+        storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
         create_warehouse(
@@ -500,7 +500,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
-        storage_secret_id: Option<SecretIdent>,
+        storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
         update_storage_profile(

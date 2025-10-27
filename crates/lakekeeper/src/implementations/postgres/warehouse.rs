@@ -25,7 +25,7 @@ use crate::{
         UpdateWarehouseStorageProfileError, WarehouseAlreadyExists, WarehouseHasUnfinishedTasks,
         WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
     },
-    ProjectId, SecretIdent, WarehouseId, CONFIG,
+    ProjectId, SecretId, WarehouseId, CONFIG,
 };
 
 pub(super) async fn set_warehouse_deletion_profile<
@@ -81,7 +81,7 @@ pub(crate) async fn create_warehouse(
     project_id: &ProjectId,
     storage_profile: StorageProfile,
     tabular_delete_profile: TabularDeleteProfile,
-    storage_secret_id: Option<SecretIdent>,
+    storage_secret_id: Option<SecretId>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let storage_profile_ser =
@@ -613,7 +613,7 @@ pub(crate) async fn set_warehouse_protection(
 pub(crate) async fn update_storage_profile(
     warehouse_id: WarehouseId,
     storage_profile: StorageProfile,
-    storage_secret_id: Option<SecretIdent>,
+    storage_secret_id: Option<SecretId>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
     let storage_profile_ser =
@@ -783,7 +783,7 @@ pub(crate) mod test {
         state: CatalogState,
         storage_profile: Option<StorageProfile>,
         project_id: Option<&ProjectId>,
-        secret_id: Option<SecretIdent>,
+        secret_id: Option<SecretId>,
         create_project: bool,
     ) -> crate::WarehouseId {
         let project_id = project_id.map_or(

@@ -8,8 +8,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use http::{HeaderMap, HeaderName, Method};
-use iceberg_ext::catalog::rest::ErrorModel;
+use http::{HeaderMap, HeaderName, Method, StatusCode};
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
@@ -46,6 +46,28 @@ pub struct RequestMetadata {
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("This endpoint requires a project ID to be specified, but none was provided.")]
+pub struct ProjectIdMissing;
+
+impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {
+    fn from(e: ProjectIdMissing) -> Self {
+        ErrorModel {
+            message: e.to_string(),
+            r#type: "ProjectIdMissing".to_string(),
+            code: StatusCode::BAD_REQUEST.as_u16(),
+            source: None,
+            stack: Vec::new(),
+        }
+    }
+}
+
+impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::IcebergErrorResponse {
+    fn from(e: ProjectIdMissing) -> Self {
+        IcebergErrorResponse::from(ErrorModel::from(e))
+    }
 }
 
 impl RequestMetadata {
@@ -198,16 +220,11 @@ impl RequestMetadata {
     /// Fails if none of the above methods provide a project ID.
     pub fn require_project_id(
         &self,
-        user_project: Option<ProjectId>, // Explicitly requested via an API parameter
-    ) -> crate::api::Result<ProjectId> {
-        user_project.or(self.preferred_project_id()).ok_or_else(|| {
-            ErrorModel::bad_request(
-                format!("No project provided. Please provide the `{X_PROJECT_ID_HEADER}` header"),
-                "NoProjectIdProvided",
-                None,
-            )
-            .into()
-        })
+        user_project: Option<ProjectId>,
+    ) -> Result<ProjectId, ProjectIdMissing> {
+        user_project
+            .or(self.preferred_project_id())
+            .ok_or(ProjectIdMissing)
     }
 
     /// Get the host that the request was made to.

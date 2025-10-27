@@ -1077,6 +1077,11 @@ async fn try_commit_tables<
 
             let new_table_location =
                 parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
+            if new_metadata.location() != previous_table_metadata.table_metadata.location() {
+                warehouse
+                    .storage_profile
+                    .require_allowed_location(&new_table_location)?;
+            }
             let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
             let new_metadata_location = warehouse.storage_profile.default_metadata_location(
                 &new_table_location,

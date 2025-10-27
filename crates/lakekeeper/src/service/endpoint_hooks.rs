@@ -21,12 +21,15 @@ use crate::{
             types::DropParams,
             v1::{DataAccessMode, NamespaceParameters, TableParameters, ViewParameters},
         },
-        management::v1::warehouse::UndropTabularsRequest,
+        management::v1::warehouse::{
+            RenameWarehouseRequest, UndropTabularsRequest, UpdateWarehouseCredentialRequest,
+            UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+        },
         RequestMetadata,
     },
     server::tables::CommitContext,
-    service::{TableId, TableInfo, ViewId, ViewOrTableInfo},
-    WarehouseId,
+    service::{ResolvedWarehouse, TableId, TableInfo, ViewId, ViewOrTableInfo},
+    SecretId, WarehouseId,
 };
 
 #[derive(Clone)]
@@ -349,6 +352,152 @@ impl EndpointHookCollection {
         }))
         .await;
     }
+
+    pub(crate) async fn create_warehouse(
+        &self,
+        warehouse: Arc<ResolvedWarehouse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.create_warehouse(warehouse.clone(), request_metadata.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Hook '{}' encountered error on create_warehouse: {e:?}",
+                        hook.to_string()
+                    );
+                })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn delete_warehouse(
+        &self,
+        warehouse_id: WarehouseId,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.delete_warehouse(warehouse_id, request_metadata.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Hook '{}' encountered error on delete_warehouse: {e:?}",
+                        hook.to_string()
+                    );
+                })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn set_warehouse_protection(
+        &self,
+        requested_protected: bool,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.set_warehouse_protection(
+                requested_protected,
+                updated_warehouse.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on set_warehouse_protection: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn rename_warehouse(
+        &self,
+        request: Arc<RenameWarehouseRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.rename_warehouse(
+                request.clone(),
+                updated_warehouse.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on rename_warehouse: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn update_warehouse_delete_profile(
+        &self,
+        request: Arc<UpdateWarehouseDeleteProfileRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.update_warehouse_delete_profile(
+                request.clone(),
+                updated_warehouse.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on update_warehouse_delete_profile: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn update_warehouse_storage(
+        &self,
+        request: Arc<UpdateWarehouseStorageRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.update_warehouse_storage(
+                request.clone(),
+                updated_warehouse.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on update_warehouse_storage: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn update_warehouse_storage_credential(
+        &self,
+        request: Arc<UpdateWarehouseCredentialRequest>,
+        old_secret_id: Option<SecretId>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.update_warehouse_storage_credential(
+                request.clone(),
+                old_secret_id,
+                updated_warehouse.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on update_warehouse_storage_credential: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
 }
 
 /// `EndpointHook` is a trait that allows for custom hooks to be executed within the context of
@@ -478,6 +627,68 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _warehouse_id: WarehouseId,
         _request: Arc<UndropTabularsRequest>,
         _responses: Arc<Vec<ViewOrTableInfo>>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn create_warehouse(
+        &self,
+        _warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn delete_warehouse(
+        &self,
+        _warehouse_id: WarehouseId,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn set_warehouse_protection(
+        &self,
+        _requested_protected: bool,
+        _updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn rename_warehouse(
+        &self,
+        _request: Arc<RenameWarehouseRequest>,
+        _updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn update_warehouse_delete_profile(
+        &self,
+        _request: Arc<UpdateWarehouseDeleteProfileRequest>,
+        _updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn update_warehouse_storage(
+        &self,
+        _request: Arc<UpdateWarehouseStorageRequest>,
+        _updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn update_warehouse_storage_credential(
+        &self,
+        _request: Arc<UpdateWarehouseCredentialRequest>,
+        _old_secret_id: Option<SecretId>,
+        _updated_warehouse: Arc<ResolvedWarehouse>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())

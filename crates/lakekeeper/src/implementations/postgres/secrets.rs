@@ -8,7 +8,7 @@ use crate::{
     api::{ErrorModel, Result},
     service::{
         health::{Health, HealthExt},
-        secrets::{Secret, SecretIdent, SecretStore},
+        secrets::{Secret, SecretId, SecretStore},
     },
     CONFIG,
 };
@@ -53,7 +53,7 @@ impl SecretStore for SecretsState {
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: for<'de> Deserialize<'de>>(
         &self,
-        secret_id: SecretIdent,
+        secret_id: SecretId,
     ) -> Result<Secret<S>> {
         struct SecretRow {
             secret: Option<String>,
@@ -114,7 +114,7 @@ impl SecretStore for SecretsState {
     async fn create_secret<S: Send + Sync + Serialize + std::fmt::Debug>(
         &self,
         secret: S,
-    ) -> Result<SecretIdent> {
+    ) -> Result<SecretId> {
         let secret_str = serde_json::to_string(&secret).map_err(|_e| {
             ErrorModel::builder()
                 .code(StatusCode::INTERNAL_SERVER_ERROR.into())
@@ -149,7 +149,7 @@ impl SecretStore for SecretsState {
     }
 
     /// Delete a secret
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> Result<()> {
+    async fn delete_secret(&self, secret_id: &SecretId) -> Result<()> {
         sqlx::query!(
             r#"
             DELETE FROM secret

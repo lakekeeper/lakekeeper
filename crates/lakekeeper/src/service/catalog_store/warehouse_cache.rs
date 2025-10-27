@@ -8,6 +8,19 @@ use moka::future::Cache;
 
 use crate::{service::ResolvedWarehouse, ProjectId, WarehouseId, CONFIG};
 
+#[cfg(feature = "router")]
+use crate::{
+    api::{
+        management::v1::warehouse::{
+            RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
+            UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+        },
+        RequestMetadata,
+    },
+    service::endpoint_hooks::EndpointHook,
+    SecretId,
+};
+
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
 const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
 const METRIC_WAREHOUSE_CACHE_MISSES: &str = "lakekeeper_warehouse_cache_misses_total";
@@ -48,7 +61,6 @@ static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> = LazyLock
         .build()
 });
 
-// Secondary index: name → warehouse_id
 // Secondary index: (project_id, name) → warehouse_id
 static NAME_TO_ID_CACHE: LazyLock<Cache<(ProjectId, String), WarehouseId>> = LazyLock::new(|| {
     Cache::builder()
@@ -62,19 +74,39 @@ pub(super) struct CachedWarehouse {
     pub(super) warehouse: Arc<ResolvedWarehouse>,
 }
 
-// pub(super) async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
-//     WAREHOUSE_CACHE.invalidate(&warehouse_id).await;
-// }
+#[allow(dead_code)] // Not required for all features
+async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::debug!("Invalidating warehouse id {warehouse_id} from cache");
+        WAREHOUSE_CACHE.invalidate(&warehouse_id).await;
+        update_cache_size_metric();
+    }
+}
 
 pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
-    let warehouse_id = warehouse.warehouse_id;
-    let project_id = warehouse.project_id.clone();
-    let name = warehouse.name.clone();
-    tokio::join!(
-        WAREHOUSE_CACHE.insert(warehouse_id, CachedWarehouse { warehouse }),
-        NAME_TO_ID_CACHE.insert((project_id, name), warehouse_id),
-    );
-    update_cache_size_metric();
+    if CONFIG.cache.warehouse.enabled {
+        let warehouse_id = warehouse.warehouse_id;
+        let project_id = warehouse.project_id.clone();
+        let name = warehouse.name.clone();
+        let current_entry = WAREHOUSE_CACHE.get(&warehouse_id).await;
+        if let Some(existing) = &current_entry {
+            if existing.warehouse.updated_at >= warehouse.updated_at {
+                tracing::debug!(
+                    "Skipping insert of warehouse id {warehouse_id} into cache; existing entry is newer or same"
+                );
+                // Existing entry is newer or same; skip insert
+                return;
+            }
+        }
+        tracing::debug!("Inserting warehouse id {warehouse_id} into cache");
+        WAREHOUSE_CACHE
+            .insert(warehouse_id, CachedWarehouse { warehouse })
+            .await;
+        NAME_TO_ID_CACHE
+            .insert((project_id, name), warehouse_id)
+            .await;
+        update_cache_size_metric();
+    }
 }
 
 /// Update the cache size metric with the current number of entries
@@ -121,5 +153,91 @@ pub(super) async fn warehouse_cache_get_by_name(
     } else {
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         None
+    }
+}
+
+#[cfg(feature = "router")]
+#[derive(Debug, Clone)]
+pub(crate) struct WarehouseCacheEndpointHook;
+
+#[cfg(feature = "router")]
+impl std::fmt::Display for WarehouseCacheEndpointHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WarehouseCacheEndpointHook")
+    }
+}
+
+#[cfg(feature = "router")]
+#[async_trait::async_trait]
+impl EndpointHook for WarehouseCacheEndpointHook {
+    async fn create_warehouse(
+        &self,
+        warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        warehouse_cache_insert(warehouse).await;
+        Ok(())
+    }
+
+    async fn delete_warehouse(
+        &self,
+        warehouse_id: WarehouseId,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        // When we invalidate by warehouse_id, the eviction listener will handle
+        // removing the entry from NAME_TO_ID_CACHE
+        warehouse_cache_invalidate(warehouse_id).await;
+        Ok(())
+    }
+
+    async fn set_warehouse_protection(
+        &self,
+        _requested_protected: bool,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
+    async fn rename_warehouse(
+        &self,
+        _request: Arc<RenameWarehouseRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
+    async fn update_warehouse_delete_profile(
+        &self,
+        _request: Arc<UpdateWarehouseDeleteProfileRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
+    async fn update_warehouse_storage(
+        &self,
+        _request: Arc<UpdateWarehouseStorageRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
+    async fn update_warehouse_storage_credential(
+        &self,
+        _request: Arc<UpdateWarehouseCredentialRequest>,
+        _old_secret_id: Option<SecretId>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
     }
 }

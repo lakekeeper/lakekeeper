@@ -1121,4 +1121,30 @@ mod test {
             Ok(())
         });
     }
+
+    #[test]
+    fn test_warehouse_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.warehouse.enabled);
+            assert_eq!(config.cache.warehouse.capacity, 1000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__WAREHOUSE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.warehouse.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__WAREHOUSE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__WAREHOUSE__CAPACITY", "2000");
+            let config = get_config();
+            assert!(config.cache.warehouse.enabled);
+            assert_eq!(config.cache.warehouse.capacity, 2000);
+            Ok(())
+        });
+    }
 }

@@ -18,7 +18,7 @@ use crate::{
         storage::StorageProfile,
         DatabaseIntegrityError,
     },
-    ProjectId, SecretIdent, WarehouseId,
+    ProjectId, SecretId, WarehouseId,
 };
 
 /// Status of a warehouse
@@ -62,7 +62,7 @@ pub struct ResolvedWarehouse {
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
     /// Storage secret ID used for the warehouse.
-    pub storage_secret_id: Option<SecretIdent>,
+    pub storage_secret_id: Option<SecretId>,
     /// Whether the warehouse is active.
     pub status: WarehouseStatus,
     /// Tabular delete profile used for the warehouse.
@@ -401,7 +401,7 @@ where
         project_id: &ProjectId,
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretIdent>,
+        storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
         let warehouse = Self::create_warehouse_impl(
@@ -498,9 +498,8 @@ where
             // Determine if cache is valid based on timestamps
             let cache_is_valid = match (warehouse.updated_at, require_updated_after) {
                 // Both None: cache is valid (warehouse never updated, no requirement)
-                (None, None) => true,
-                // Cache has timestamp, no requirement: cache is valid
-                (Some(_), None) => true,
+                // OR: Cache has timestamp, no requirement: cache is valid
+                (None | Some(_), None) => true,
                 // Cache is None but we require a timestamp: cache is stale
                 (None, Some(_)) => false,
                 // Both have timestamps: compare them
@@ -607,7 +606,7 @@ where
     async fn update_storage_profile<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
-        storage_secret_id: Option<SecretIdent>,
+        storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<ResolvedWarehouse>, UpdateWarehouseStorageProfileError> {
         Self::update_storage_profile_impl(

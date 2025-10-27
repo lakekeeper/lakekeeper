@@ -1,30 +1,35 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT \n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected\n            FROM warehouse\n            WHERE project_id = $1\n            AND status = ANY($2)\n            ",
+  "query": "UPDATE warehouse\n            SET warehouse_name = $1\n            WHERE warehouse_id = $2\n            AND status = 'active'\n        RETURNING\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
         "name": "warehouse_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "warehouse_name",
         "type_info": "Text"
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "storage_profile: Json<StorageProfile>",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "storage_secret_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "status: WarehouseStatus",
         "type_info": {
           "Custom": {
@@ -39,7 +44,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "tabular_delete_mode: DbTabularDeleteProfile",
         "type_info": {
           "Custom": {
@@ -54,49 +59,39 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "tabular_expiration_seconds",
         "type_info": "Int8"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "protected",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
         "Text",
-        {
-          "Custom": {
-            "name": "warehouse_status[]",
-            "kind": {
-              "Array": {
-                "Custom": {
-                  "name": "warehouse_status",
-                  "kind": {
-                    "Enum": [
-                      "active",
-                      "inactive"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        }
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      false,
       true,
       false,
       false,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "fffcd962cdf5696a3df28808e1cf9d1cfcbb85a2904202828bfe4df04e547a2f"
+  "hash": "3c443998f727f1f828612fbf5c6e597fac5f0561620ac425ad5be054a3d014f6"
 }

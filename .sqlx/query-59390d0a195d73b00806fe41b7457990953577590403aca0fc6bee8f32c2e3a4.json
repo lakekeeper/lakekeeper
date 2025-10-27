@@ -1,0 +1,111 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH\n            whi AS (INSERT INTO warehouse (\n                                   warehouse_name,\n                                   project_id,\n                                   storage_profile,\n                                   storage_secret_id,\n                                   status,\n                                   tabular_expiration_seconds,\n                                   tabular_delete_mode)\n                                VALUES ($1, $2, $3, $4, 'active', $5, $6)\n                                RETURNING\n                                    project_id,\n                                    warehouse_id,\n                                    warehouse_name,\n                                    storage_profile as \"storage_profile: Json<StorageProfile>\",\n                                    storage_secret_id,\n                                    status AS \"status: WarehouseStatus\",\n                                    tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                                    tabular_expiration_seconds,\n                                    protected,\n                                    updated_at),\n            whs AS (INSERT INTO warehouse_statistics (number_of_views,\n                                                      number_of_tables,\n                                                      warehouse_id)\n                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))\n            SELECT\n                *\n            FROM whi",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "storage_profile: Json<StorageProfile>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "storage_secret_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "status: WarehouseStatus",
+        "type_info": {
+          "Custom": {
+            "name": "warehouse_status",
+            "kind": {
+              "Enum": [
+                "active",
+                "inactive"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "tabular_delete_mode: DbTabularDeleteProfile",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "tabular_expiration_seconds",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "protected",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Uuid",
+        "Int8",
+        {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "59390d0a195d73b00806fe41b7457990953577590403aca0fc6bee8f32c2e3a4"
+}

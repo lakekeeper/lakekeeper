@@ -10,7 +10,7 @@ use crate::{
         secrets::{Secret, SecretInStorage},
         SecretStore,
     },
-    SecretIdent,
+    SecretId,
 };
 
 #[cfg(feature = "sqlx-postgres")]
@@ -76,7 +76,7 @@ pub enum Secrets {
 impl SecretStore for Secrets {
     async fn get_secret_by_id<S: SecretInStorage + serde::de::DeserializeOwned>(
         &self,
-        secret_id: SecretIdent,
+        secret_id: SecretId,
     ) -> crate::api::Result<Secret<S>> {
         match self {
             #[cfg(feature = "sqlx-postgres")]
@@ -90,7 +90,7 @@ impl SecretStore for Secrets {
     >(
         &self,
         secret: S,
-    ) -> crate::api::Result<SecretIdent> {
+    ) -> crate::api::Result<SecretId> {
         match self {
             #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.create_secret(secret).await,
@@ -98,7 +98,7 @@ impl SecretStore for Secrets {
         }
     }
 
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> crate::api::Result<()> {
+    async fn delete_secret(&self, secret_id: &SecretId) -> crate::api::Result<()> {
         match self {
             #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.delete_secret(secret_id).await,

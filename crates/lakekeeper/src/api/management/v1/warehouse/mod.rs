@@ -320,13 +320,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id = project_id
-            .or(request_metadata.preferred_project_id())
-            .ok_or(ErrorModel::bad_request(
-                "project_id must be specified",
-                "CreateWarehouseProjectIdMissing",
-                None,
-            ))?;
+        let project_id = request_metadata.require_project_id(project_id)?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -406,6 +400,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         transaction.commit().await?;
+
+        context
+            .v1_state
+            .hooks
+            .create_warehouse(resolved_warehouse.clone(), Arc::new(request_metadata))
+            .await;
 
         Ok(CreateWarehouseResponse(
             (*resolved_warehouse).clone().into(),
@@ -530,6 +530,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
         transaction.commit().await?;
 
+        context
+            .v1_state
+            .hooks
+            .delete_warehouse(warehouse_id, Arc::new(request_metadata))
+            .await;
+
         Ok(())
     }
 
@@ -555,6 +561,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let resolved_warehouse =
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
+
+        context
+            .v1_state
+            .hooks
+            .set_warehouse_protection(
+                protection,
+                resolved_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(ProtectionResponse {
             protected: resolved_warehouse.protected,
@@ -582,12 +598,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_warehouse_name(&request.new_name)?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
-        let resolved_warehouse =
+        let updated_warehouse =
             C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
 
         transaction.commit().await?;
 
-        Ok((*resolved_warehouse).clone().into())
+        context
+            .v1_state
+            .hooks
+            .rename_warehouse(
+                Arc::new(request),
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn update_warehouse_delete_profile(
@@ -608,13 +634,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        C::set_warehouse_deletion_profile(
+        let updated_warehouse = C::set_warehouse_deletion_profile(
             warehouse_id,
             &request.delete_profile,
             transaction.transaction(),
         )
         .await?;
         transaction.commit().await?;
+
+        context
+            .v1_state
+            .hooks
+            .update_warehouse_delete_profile(
+                Arc::new(request),
+                updated_warehouse,
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(())
     }
@@ -696,6 +732,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
+        let request_for_hook = Arc::new(request.clone());
         let UpdateWarehouseStorageRequest {
             mut storage_profile,
             storage_credential,
@@ -740,6 +777,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
+        context
+            .v1_state
+            .hooks
+            .update_warehouse_storage(
+                request_for_hook,
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
         // Delete the old secret if it exists - never fail the request if the deletion fails
         if let Some(old_secret_id) = old_secret_id {
             context
@@ -748,10 +795,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .delete_secret(&old_secret_id)
                 .await
                 .map_err(|e| {
-                    tracing::warn!(
-                        "Failed to delete old storage secret with id {old_secret_id}: {:?}",
-                        e.error
-                    );
+                    tracing::warn!(error=?e.error, "Failed to delete old storage secret");
                 })
                 .ok();
         }
@@ -776,6 +820,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
+        let request_for_hook = Arc::new(request.clone());
         let UpdateWarehouseCredentialRequest {
             new_storage_credential,
         } = request;
@@ -813,6 +858,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
+        context
+            .v1_state
+            .hooks
+            .update_warehouse_storage_credential(
+                request_for_hook,
+                old_secret_id,
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
         // Delete the old secret if it exists - never fail the request if the deletion fails
         if let Some(old_secret_id) = old_secret_id {
             context
@@ -821,10 +877,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .delete_secret(&old_secret_id)
                 .await
                 .map_err(|e| {
-                    tracing::warn!(
-                        "Failed to delete old storage secret with id {old_secret_id}: {:?}",
-                        e.error
-                    );
+                    tracing::warn!(error=?e.error, "Failed to delete old storage secret");
                 })
                 .ok();
         }

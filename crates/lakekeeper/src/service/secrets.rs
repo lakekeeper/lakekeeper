@@ -13,26 +13,26 @@ where
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: SecretInStorage + DeserializeOwned>(
         &self,
-        secret_id: SecretIdent,
+        secret_id: SecretId,
     ) -> Result<Secret<S>>;
 
     /// Create a new secret
     async fn create_secret<S: SecretInStorage + Send + Sync + Serialize + std::fmt::Debug>(
         &self,
         secret: S,
-    ) -> Result<SecretIdent>;
+    ) -> Result<SecretId>;
 
     /// Delete a secret
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> Result<()>;
+    async fn delete_secret(&self, secret_id: &SecretId) -> Result<()>;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 // Is UUID here too strict?
-pub struct SecretIdent(uuid::Uuid);
+pub struct SecretId(uuid::Uuid);
 
-impl SecretIdent {
+impl SecretId {
     #[must_use]
     #[inline]
     pub fn into_uuid(&self) -> uuid::Uuid {
@@ -46,19 +46,19 @@ impl SecretIdent {
     }
 }
 
-impl From<uuid::Uuid> for SecretIdent {
+impl From<uuid::Uuid> for SecretId {
     fn from(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
 }
 
-impl From<SecretIdent> for uuid::Uuid {
-    fn from(ident: SecretIdent) -> Self {
+impl From<SecretId> for uuid::Uuid {
+    fn from(ident: SecretId) -> Self {
         ident.0
     }
 }
 
-impl std::fmt::Display for SecretIdent {
+impl std::fmt::Display for SecretId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -66,7 +66,7 @@ impl std::fmt::Display for SecretIdent {
 
 #[derive(Debug, Clone)]
 pub struct Secret<T> {
-    pub secret_id: SecretIdent,
+    pub secret_id: SecretId,
     pub secret: T,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,

@@ -14,7 +14,7 @@ mod config;
 pub mod server;
 pub mod service;
 pub use config::{AuthZBackend, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
-pub use service::{ProjectId, SecretIdent, WarehouseId};
+pub use service::{ProjectId, SecretId, WarehouseId};
 
 #[cfg(feature = "router")]
 #[cfg_attr(docsrs, doc(cfg(feature = "router")))]

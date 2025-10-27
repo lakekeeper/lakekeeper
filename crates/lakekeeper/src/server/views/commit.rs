@@ -30,7 +30,7 @@ use crate::{
         CatalogWarehouseOps, InternalParseLocationError, State, TabularListFlags, Transaction,
         ViewCommit, ViewId, ViewInfo, CONCURRENT_UPDATE_ERROR_TYPE,
     },
-    SecretIdent,
+    SecretId,
 };
 
 /// Commit updates to a view
@@ -151,7 +151,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 struct CommitViewContext<'a> {
     view_info: &'a ViewInfo,
     storage_profile: &'a StorageProfile,
-    storage_secret_id: Option<SecretIdent>,
+    storage_secret_id: Option<SecretId>,
     request: &'a CommitViewRequest,
     data_access: DataAccessMode,
 }

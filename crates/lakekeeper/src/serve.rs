@@ -362,6 +362,11 @@ async fn serve_inner<
     // Endpoint Hooks
     let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
     hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
+    if CONFIG.cache.warehouse.enabled {
+        hooks.append(Arc::new(
+            crate::service::warehouse_cache::WarehouseCacheEndpointHook {},
+        ));
+    }
 
     // Task queues
     let task_queue_registry = TaskQueueRegistry::new();
