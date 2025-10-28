@@ -3,7 +3,7 @@ use lakekeeper::service::{
     authz::{
         CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
         CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, NamespaceAction,
-        TableAction, ViewAction, WarehouseAction,
+        ProjectAction, ServerAction, TableAction, ViewAction, WarehouseAction,
     },
     Actor, RoleId,
 };
@@ -255,7 +255,7 @@ impl ReducedRelation for CatalogRoleAction {
 /// Server Relations in the `OpenFGA` schema
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum ServerRelation {
+pub enum ServerRelation {
     // -- Hierarchical relations --
     Project,
     // -- Direct relations --
@@ -272,8 +272,15 @@ pub(super) enum ServerRelation {
     CanGrantAdmin,
     CanGrantOperator,
 }
+impl ServerAction for ServerRelation {}
 
 impl OpenFgaRelation for ServerRelation {}
+
+impl From<CatalogServerAction> for ServerRelation {
+    fn from(action: CatalogServerAction) -> Self {
+        action.to_openfga()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Copy, Hash, Eq, PartialEq, EnumIter)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -395,7 +402,7 @@ impl ReducedRelation for APIServerAction {
 
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum ProjectRelation {
+pub enum ProjectRelation {
     // -- Hierarchical relations --
     Warehouse,
     Server,
@@ -429,7 +436,14 @@ pub(super) enum ProjectRelation {
     CanGrantDataAdmin,
 }
 
+impl ProjectAction for ProjectRelation {}
 impl OpenFgaRelation for ProjectRelation {}
+
+impl From<CatalogProjectAction> for ProjectRelation {
+    fn from(action: CatalogProjectAction) -> Self {
+        action.to_openfga()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]

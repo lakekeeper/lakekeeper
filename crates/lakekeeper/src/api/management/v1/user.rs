@@ -10,7 +10,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, CatalogServerAction, CatalogUserAction},
+        authz::{AuthZServerOps, Authorizer, CatalogServerAction, CatalogUserAction},
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
     },
 };

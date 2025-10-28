@@ -29,9 +29,9 @@ use crate::{
     server::UnfilteredPage,
     service::{
         authz::{
-            AuthZCannotUseWarehouseId, AuthZTableOps, AuthZWarehouseActionForbidden, Authorizer,
-            AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction,
+            AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
+            AuthZWarehouseActionForbidden, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
         },
         secrets::SecretStore,
         tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},

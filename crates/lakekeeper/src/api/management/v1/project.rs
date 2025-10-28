@@ -15,8 +15,9 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{
-            Authorizer, AuthzWarehouseOps, CatalogProjectAction, CatalogServerAction,
-            CatalogWarehouseAction, ListProjectsResponse as AuthZListProjectsResponse,
+            AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
+            CatalogServerAction, CatalogWarehouseAction,
+            ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
         CatalogStore, State, Transaction,

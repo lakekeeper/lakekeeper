@@ -97,7 +97,7 @@ impl From<AuthZNamespaceActionForbidden> for ErrorModel {
         } = err;
         ErrorModel::forbidden(
             format!(
-                "Namespace action `{action}` forbidden for `{actor}` on namespace with `{namespace}` in warehouse `{warehouse_id}`"
+                "Namespace action `{action}` forbidden for {actor} on namespace with `{namespace}` in warehouse `{warehouse_id}`"
             ),
             "NamespaceActionForbidden",
             None,

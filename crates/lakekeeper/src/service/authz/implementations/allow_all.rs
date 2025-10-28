@@ -53,6 +53,8 @@ pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
+    type ServerAction = CatalogServerAction;
+    type ProjectAction = CatalogProjectAction;
     type WarehouseAction = CatalogWarehouseAction;
     type NamespaceAction = CatalogNamespaceAction;
     type TableAction = CatalogTableAction;
@@ -90,7 +92,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse> {
+    ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
         Ok(ListProjectsResponse::All)
     }
 
@@ -120,7 +122,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _action: CatalogServerAction,
-    ) -> Result<bool> {
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -129,7 +131,7 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _project_id: &ProjectId,
         _action: CatalogProjectAction,
-    ) -> Result<bool> {
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 

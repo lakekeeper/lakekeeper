@@ -29,7 +29,7 @@ use openfga_client::{
 use utoipa::OpenApi as _;
 
 use crate::{
-    entities::{OpenFgaEntity, ParseOpenFgaEntity},
+    entities::OpenFgaEntity,
     error::{
         BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
         OpenFGAResult, UnexpectedCorrelationId,
@@ -69,6 +69,8 @@ impl OpenFGAAuthorizer {
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
+    type ServerAction = ServerRelation;
+    type ProjectAction = ProjectRelation;
     type WarehouseAction = WarehouseRelation;
     type NamespaceAction = NamespaceRelation;
     type TableAction = TableRelation;
@@ -183,9 +185,9 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn list_projects_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> AuthorizerResult<ListProjectsResponse> {
+    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
         let actor = metadata.actor();
-        self.list_projects_internal(actor).await
+        self.list_projects_internal(actor).await.map_err(Into::into)
     }
 
     async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> AuthorizerResult<bool> {
@@ -261,8 +263,8 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_server_action_impl(
         &self,
         metadata: &RequestMetadata,
-        action: CatalogServerAction,
-    ) -> AuthorizerResult<bool> {
+        action: Self::ServerAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -276,8 +278,8 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
-        action: CatalogProjectAction,
-    ) -> AuthorizerResult<bool> {
+        action: Self::ProjectAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -718,7 +720,7 @@ impl OpenFGAAuthorizer {
     async fn list_projects_internal(
         &self,
         actor: &Actor,
-    ) -> AuthorizerResult<ListProjectsResponse> {
+    ) -> Result<ListProjectsResponse, OpenFGABackendUnavailable> {
         let list_all = self
             .check(CheckRequestTupleKey {
                 user: actor.to_openfga(),
@@ -738,9 +740,9 @@ impl OpenFGAAuthorizer {
                 actor.to_openfga(),
             )
             .await?
-            .iter()
-            .map(|p| ProjectId::parse_from_openfga(p))
-            .collect::<std::result::Result<HashSet<ProjectId>, _>>()?;
+            .into_iter()
+            .map(ProjectId::from_db_unchecked)
+            .collect::<HashSet<ProjectId>>();
 
         Ok(ListProjectsResponse::Projects(projects))
     }
@@ -1068,12 +1070,12 @@ impl OpenFGAAuthorizer {
         r#type: impl Into<String>,
         relation: impl Into<String>,
         user: impl Into<String>,
-    ) -> OpenFGAResult<Vec<String>> {
+    ) -> Result<Vec<String>, OpenFGABackendUnavailable> {
         let user = user.into();
         self.client
             .list_objects(r#type, relation, user, None, None)
             .await
-            .map_err(OpenFGAError::from)
+            .map_err(Into::into)
             .map(|response| response.into_inner().objects)
     }
 }

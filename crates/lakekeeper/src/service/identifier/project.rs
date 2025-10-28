@@ -70,8 +70,8 @@ impl ProjectId {
         &self.0
     }
 
-    #[cfg(feature = "sqlx")]
-    pub(crate) fn from_db_unchecked(id: String) -> Self {
+    #[must_use]
+    pub fn from_db_unchecked(id: String) -> Self {
         Self(id)
     }
 }

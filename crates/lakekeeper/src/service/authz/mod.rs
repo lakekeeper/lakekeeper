@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use axum::Router;
 use futures::future::try_join_all;
 use strum::EnumIter;
@@ -28,6 +26,10 @@ mod table;
 pub use table::*;
 mod view;
 pub use view::*;
+mod project;
+pub use project::*;
+mod server;
+pub use server::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
@@ -162,14 +164,6 @@ impl AsTableId for TableInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ListProjectsResponse {
-    /// List of projects that the user is allowed to see.
-    Projects(HashSet<ProjectId>),
-    /// The user is allowed to see all projects.
-    All,
-}
-
 #[derive(Debug, Clone)]
 pub enum NamespaceParent {
     Warehouse(WarehouseId),
@@ -214,6 +208,8 @@ pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
+    type ServerAction: ServerAction;
+    type ProjectAction: ProjectAction;
     type WarehouseAction: WarehouseAction;
     type NamespaceAction: NamespaceAction;
     type TableAction: TableAction;
@@ -236,22 +232,17 @@ where
     /// is allowed to assume the specified role.
     async fn check_actor(&self, actor: &Actor) -> Result<()>;
 
-    /// Check if this server can be bootstrapped.
+    /// Check if this server can be bootstrapped by the provided user.
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
 
     /// Perform bootstrapping, including granting the provided user the highest level of access.
     async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
     /// Return Err only for internal errors.
-    async fn list_projects_impl(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse>;
-
-    async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
-        if metadata.has_admin_privileges() {
-            Ok(ListProjectsResponse::All)
-        } else {
-            self.list_projects_impl(metadata).await
-        }
-    }
+    async fn list_projects_impl(
+        &self,
+        metadata: &RequestMetadata,
+    ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable>;
 
     /// Search users
     async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool>;
@@ -318,21 +309,8 @@ where
     async fn is_allowed_server_action_impl(
         &self,
         metadata: &RequestMetadata,
-        action: CatalogServerAction,
-    ) -> Result<bool>;
-
-    async fn is_allowed_server_action(
-        &self,
-        metadata: &RequestMetadata,
-        action: CatalogServerAction,
-    ) -> Result<MustUse<bool>> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.is_allowed_server_action_impl(metadata, action).await
-        }
-        .map(MustUse::from)
-    }
+        action: Self::ServerAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -340,23 +318,8 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
-        action: CatalogProjectAction,
-    ) -> Result<bool>;
-
-    async fn is_allowed_project_action(
-        &self,
-        metadata: &RequestMetadata,
-        project_id: &ProjectId,
-        action: CatalogProjectAction,
-    ) -> Result<MustUse<bool>> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.is_allowed_project_action_impl(metadata, project_id, action)
-                .await
-        }
-        .map(MustUse::from)
-    }
+        action: Self::ProjectAction,
+    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -628,56 +591,12 @@ where
             .into())
         }
     }
-
-    async fn require_server_action(
-        &self,
-        metadata: &RequestMetadata,
-        action: CatalogServerAction,
-    ) -> Result<()> {
-        if self
-            .is_allowed_server_action(metadata, action)
-            .await?
-            .into_inner()
-        {
-            Ok(())
-        } else {
-            let actor = metadata.actor();
-            Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on server for {actor}"),
-                "ServerActionForbidden",
-                None,
-            )
-            .into())
-        }
-    }
-
-    async fn require_project_action(
-        &self,
-        metadata: &RequestMetadata,
-        project_id: &ProjectId,
-        action: CatalogProjectAction,
-    ) -> Result<()> {
-        if self
-            .is_allowed_project_action(metadata, project_id, action)
-            .await?
-            .into_inner()
-        {
-            Ok(())
-        } else {
-            let actor = metadata.actor();
-            Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on project {project_id} for {actor}"),
-                "ProjectActionForbidden",
-                None,
-            )
-            .into())
-        }
-    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::{
+        collections::HashSet,
         str::FromStr,
         sync::{Arc, RwLock},
     };
@@ -832,6 +751,8 @@ pub(crate) mod tests {
     }
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
+        type ServerAction = CatalogServerAction;
+        type ProjectAction = CatalogProjectAction;
         type WarehouseAction = CatalogWarehouseAction;
         type NamespaceAction = CatalogNamespaceAction;
         type TableAction = CatalogTableAction;
@@ -871,7 +792,7 @@ pub(crate) mod tests {
         async fn list_projects_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<ListProjectsResponse> {
+        ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
             Ok(ListProjectsResponse::All)
         }
 
@@ -904,7 +825,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _action: CatalogServerAction,
-        ) -> Result<bool> {
+        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             Ok(true)
         }
 
@@ -913,7 +834,7 @@ pub(crate) mod tests {
             _metadata: &RequestMetadata,
             project_id: &ProjectId,
             action: CatalogProjectAction,
-        ) -> Result<bool> {
+        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("project:{action}").as_str()) {
                 return Ok(false);
             }
