@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.4](https://github.com/lakekeeper/lakekeeper/compare/v0.10.3...v0.10.4) (2025-10-28)
+
+
+### Bug Fixes
+
+* **ci:** Revert 0.10.3 release ([dfdbdcf](https://github.com/lakekeeper/lakekeeper/commit/dfdbdcf77923f36b1d2ea1a84cd494dad9f4bc9d))
+* Update UI / Fix S3 Storage Profile required fields ([bdc026a](https://github.com/lakekeeper/lakekeeper/commit/bdc026a4c508626af37ea46d5ff3b9781f07d389))
+
+
+### Miscellaneous Chores
+
+* **main:** release 0.10.3 ([#1446](https://github.com/lakekeeper/lakekeeper/issues/1446)) ([b8fcf54](https://github.com/lakekeeper/lakekeeper/commit/b8fcf54c627d48a547ef0baf6863949b68579388))
+
 ## [0.10.3](https://github.com/lakekeeper/lakekeeper/compare/v0.10.2...v0.10.3) (2025-10-15)
 
 
