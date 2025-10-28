@@ -26,7 +26,7 @@ clap = { version = "^4.5", features = ["derive"] }
 figment = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["all"] }
 lakekeeper-authz-openfga = { path = "../authz-openfga" }
-lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "7958d9f", optional = true }
+lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.10.3", optional = true }
 limes = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
