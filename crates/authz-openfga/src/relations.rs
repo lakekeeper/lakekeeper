@@ -1017,8 +1017,8 @@ impl GrantableRelation for APINamespaceRelation {
             APINamespaceRelation::ManageGrants => NamespaceRelation::CanGrantManageGrants,
             APINamespaceRelation::Describe => NamespaceRelation::CanGrantDescribe,
             APINamespaceRelation::Select => NamespaceRelation::CanGrantSelect,
-            APINamespaceRelation::Create => NamespaceRelation::CanCreateNamespace,
-            APINamespaceRelation::Modify => NamespaceRelation::CanUpdateProperties,
+            APINamespaceRelation::Create => NamespaceRelation::CanGrantCreate,
+            APINamespaceRelation::Modify => NamespaceRelation::CanGrantModify,
         }
     }
 }
