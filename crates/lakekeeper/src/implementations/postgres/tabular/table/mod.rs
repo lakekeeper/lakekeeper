@@ -22,7 +22,7 @@ use crate::{
     service::{
         storage::join_location, ConversionError, InternalParseLocationError,
         InternalTableMetadataBuildFailed, LoadTableError, LoadTableResponse,
-        RequiredTableComponentMissing, TableId, WarehouseVersion,
+        RequiredTableComponentMissing, TableId,
     },
     WarehouseId,
 };
@@ -146,7 +146,7 @@ struct TableQueryStruct {
     metadata_location: Option<String>,
     table_fs_location: String,
     table_fs_protocol: String,
-    warehouse_version: WarehouseVersion,
+    warehouse_version: i64,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
@@ -684,7 +684,7 @@ pub(crate) async fn load_tables(
                 namespace_id,
                 table_metadata,
                 metadata_location,
-                warehouse_version,
+                warehouse_version: warehouse_version.into(),
             })
         })
         .collect()

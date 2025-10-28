@@ -27,7 +27,7 @@ use crate::{
         storage::join_location, CatalogBackendError, CatalogGetNamespaceError, CatalogView,
         InternalParseLocationError, InvalidViewRepresentationsInternal, LoadViewError, NamespaceId,
         RequiredViewComponentMissing, TabularNotFound, ViewId,
-        ViewMetadataValidationFailedInternal, WarehouseVersion,
+        ViewMetadataValidationFailedInternal,
     },
     WarehouseId,
 };
@@ -94,7 +94,7 @@ pub(crate) async fn load_view(
         .map_err(InternalParseLocationError::from)?;
     Ok(CatalogView {
         metadata_location,
-        warehouse_version,
+        warehouse_version: warehouse_version.into(),
         metadata: ViewMetadata::try_from_parts(ViewMetadataParts {
             format_version: match view_format_version {
                 ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
@@ -404,7 +404,7 @@ struct Query {
     view_representation_typ: Option<Json<Vec<Vec<ViewRepresentationType>>>>,
     view_representation_sql: Option<Json<Vec<Vec<String>>>>,
     view_representation_dialect: Option<Json<Vec<Vec<String>>>>,
-    warehouse_version: WarehouseVersion,
+    warehouse_version: i64,
 }
 
 struct VersionsPrep {

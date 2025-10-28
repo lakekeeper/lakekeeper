@@ -108,18 +108,24 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
         if let Some(existing) = &current_entry {
             let current_version = existing.warehouse.version;
             let new_version = warehouse.version;
-            if new_version < current_version {
-                tracing::debug!(
-                    "Skipping insert of warehouse id {warehouse_id} into cache; existing version {current_version} is newer than new version {new_version}"
-                );
-                // Existing entry is newer; skip insert
-                return;
-            } else if new_version == current_version {
-                tracing::debug!(
-                    "Skipping insert of warehouse id {warehouse_id} into cache; versions are equal"
-                );
-                // Existing entry is same; skip insert
-                return;
+            match new_version.cmp(&current_version) {
+                std::cmp::Ordering::Less => {
+                    tracing::debug!(
+                        "Skipping insert of warehouse id {warehouse_id} into cache; existing version {current_version} is newer than new version {new_version}"
+                    );
+                    // Existing entry is newer; skip insert
+                    return;
+                }
+                std::cmp::Ordering::Equal => {
+                    tracing::debug!(
+                        "Skipping insert of warehouse id {warehouse_id} into cache; versions are equal"
+                    );
+                    // Existing entry is same; skip insert
+                    return;
+                }
+                std::cmp::Ordering::Greater => {
+                    // New entry is newer; proceed with insert
+                }
             }
         }
         tracing::debug!("Inserting warehouse id {warehouse_id} into cache");
