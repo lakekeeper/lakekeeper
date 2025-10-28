@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - main
-      - "release-*"
+      # We can't use `release-*` here because release-please uses `release-please-*` prefix
+      - "rel-*"
   pull_request:
     paths:
       - ".github/workflows/release.yml"
