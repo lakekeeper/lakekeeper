@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE warehouse\n            SET storage_profile = $1, storage_secret_id = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                updated_at\n        ",
+  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        AND status = 'active'\n        ",
   "describe": {
     "columns": [
       {
@@ -72,13 +72,17 @@
         "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
-        "Jsonb",
-        "Uuid",
-        "Uuid"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -91,8 +95,9 @@
       false,
       true,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "82807345c242ae4af03f9b1ad7b51bef5afe3c55400e24eb8a62524eead434cd"
+  "hash": "8818aabd4a0acdb79ff4ce5c3c64b85dd9bb7b2a4facd301be48ce088f39cb02"
 }

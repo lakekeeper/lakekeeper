@@ -22,7 +22,7 @@ use crate::{
     service::{
         storage::join_location, ConversionError, InternalParseLocationError,
         InternalTableMetadataBuildFailed, LoadTableError, LoadTableResponse,
-        RequiredTableComponentMissing, TableId,
+        RequiredTableComponentMissing, TableId, WarehouseVersion,
     },
     WarehouseId,
 };
@@ -146,7 +146,7 @@ struct TableQueryStruct {
     metadata_location: Option<String>,
     table_fs_location: String,
     table_fs_protocol: String,
-    warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    warehouse_version: WarehouseVersion,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
@@ -516,7 +516,7 @@ pub(crate) async fn load_tables(
             ti.tabular_namespace_name as "namespace_name",
             ti.namespace_id,
             ti."metadata_location",
-            w.updated_at as "warehouse_updated_at",
+            w.version as "warehouse_version",
             ts.schema_ids,
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
@@ -668,7 +668,7 @@ pub(crate) async fn load_tables(
     table
         .into_iter()
         .map(|table| {
-            let warehouse_updated_at = table.warehouse_updated_at;
+            let warehouse_version = table.warehouse_version;
             let table_id = table.table_id.into();
             let metadata_location = table
                 .metadata_location
@@ -684,7 +684,7 @@ pub(crate) async fn load_tables(
                 namespace_id,
                 table_metadata,
                 metadata_location,
-                warehouse_updated_at,
+                warehouse_version,
             })
         })
         .collect()

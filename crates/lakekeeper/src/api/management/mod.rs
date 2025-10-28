@@ -819,7 +819,7 @@ pub mod v1 {
         params(("warehouse_id" = Uuid,)),
         request_body = UpdateWarehouseDeleteProfileRequest,
         responses(
-            (status = 200, description = "Deletion Profile updated successfully"),
+            (status = 200, body = GetWarehouseResponse, description = "Deletion Profile updated successfully"),
         (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -832,7 +832,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateWarehouseDeleteProfileRequest>,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         ApiServer::<C, A, S>::update_warehouse_delete_profile(
             warehouse_id.into(),
             request,

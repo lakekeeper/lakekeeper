@@ -24,6 +24,7 @@ use crate::{
         SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
         UpdateWarehouseStorageProfileError, WarehouseAlreadyExists, WarehouseHasUnfinishedTasks,
         WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
+        WarehouseVersion,
     },
     ProjectId, SecretId, WarehouseId, CONFIG,
 };
@@ -59,7 +60,8 @@ pub(super) async fn set_warehouse_deletion_profile<
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
-                updated_at
+                updated_at,
+                version
             "#,
         num_secs,
         prof as _,
@@ -114,7 +116,8 @@ pub(crate) async fn create_warehouse(
                                     tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                                     tabular_expiration_seconds,
                                     protected,
-                                    updated_at),
+                                    updated_at,
+                                    version),
             whs AS (INSERT INTO warehouse_statistics (number_of_views,
                                                       number_of_tables,
                                                       warehouse_id)
@@ -278,6 +281,7 @@ struct WarehouseRecord {
     tabular_expiration_seconds: Option<i64>,
     protected: bool,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    version: i64,
 }
 
 impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
@@ -299,6 +303,7 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             tabular_delete_profile,
             protected: value.protected,
             updated_at: value.updated_at,
+            version: WarehouseVersion::from(value.version),
         })
     }
 }
@@ -326,7 +331,8 @@ pub(crate) async fn list_warehouses<
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
-                updated_at
+                updated_at,
+                version
             FROM warehouse
             WHERE project_id = $1
             AND status = ANY($2)
@@ -362,7 +368,8 @@ pub(super) async fn get_warehouse_by_name(
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
-            updated_at
+            updated_at,
+            version
         FROM warehouse
         WHERE warehouse_name = $1 AND project_id = $2
         AND status = 'active'
@@ -402,7 +409,8 @@ pub(crate) async fn get_warehouse_by_id<
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
-            updated_at
+            updated_at,
+            version
         FROM warehouse
         WHERE warehouse_id = $1 AND status = 'active'
         "#,
@@ -522,7 +530,8 @@ pub(crate) async fn rename_warehouse(
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
-            updated_at
+            updated_at,
+            version
         "#,
         new_name,
         *warehouse_id
@@ -558,7 +567,8 @@ pub(crate) async fn set_warehouse_status(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
-                updated_at
+                updated_at,
+                version
         "#,
         status as _,
         *warehouse_id
@@ -594,7 +604,8 @@ pub(crate) async fn set_warehouse_protection(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
-                updated_at
+                updated_at,
+                version
             "#,
         protected,
         *warehouse_id
@@ -636,7 +647,8 @@ pub(crate) async fn update_storage_profile(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
-                updated_at
+                updated_at,
+                version
         "#,
         storage_profile_ser,
         storage_secret_id.map(|id| id.into_uuid()),

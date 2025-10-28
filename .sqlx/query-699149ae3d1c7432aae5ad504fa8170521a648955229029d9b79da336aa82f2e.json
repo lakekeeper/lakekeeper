@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        AND status = 'active'\n        ",
+  "query": "\n        SELECT \n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_id = $1 AND status = 'active'\n        ",
   "describe": {
     "columns": [
       {
@@ -72,12 +72,16 @@
         "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -90,8 +94,9 @@
       false,
       true,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "aaecbcd318c2f08d0d2065eb8762dd75e45f1260eacdcf4e8b4b31bcffd4c223"
+  "hash": "699149ae3d1c7432aae5ad504fa8170521a648955229029d9b79da336aa82f2e"
 }

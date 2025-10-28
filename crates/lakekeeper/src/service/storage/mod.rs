@@ -153,8 +153,8 @@ impl StorageProfile {
                 this_profile.update_with(other_profile).map(Into::into)
             }
             #[cfg(feature = "test-utils")]
-            (StorageProfile::Memory(_this_profile), StorageProfile::Memory(_other_profile)) => {
-                unimplemented!("Local profile update not implemented")
+            (StorageProfile::Memory(_this_profile), StorageProfile::Memory(other_profile)) => {
+                Ok(other_profile.into())
             }
             (this_profile, other_profile) => Err(UpdateError::IncompatibleProfiles(
                 this_profile.storage_type().to_string(),

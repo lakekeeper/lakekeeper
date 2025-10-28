@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE warehouse\n            SET tabular_expiration_seconds = $1, tabular_delete_mode = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                updated_at\n            ",
+  "query": "WITH\n            whi AS (INSERT INTO warehouse (\n                                   warehouse_name,\n                                   project_id,\n                                   storage_profile,\n                                   storage_secret_id,\n                                   status,\n                                   tabular_expiration_seconds,\n                                   tabular_delete_mode)\n                                VALUES ($1, $2, $3, $4, 'active', $5, $6)\n                                RETURNING\n                                    project_id,\n                                    warehouse_id,\n                                    warehouse_name,\n                                    storage_profile as \"storage_profile: Json<StorageProfile>\",\n                                    storage_secret_id,\n                                    status AS \"status: WarehouseStatus\",\n                                    tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                                    tabular_expiration_seconds,\n                                    protected,\n                                    updated_at,\n                                    version),\n            whs AS (INSERT INTO warehouse_statistics (number_of_views,\n                                                      number_of_tables,\n                                                      warehouse_id)\n                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))\n            SELECT\n                *\n            FROM whi",
   "describe": {
     "columns": [
       {
@@ -72,10 +72,19 @@
         "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Uuid",
         "Int8",
         {
           "Custom": {
@@ -87,8 +96,7 @@
               ]
             }
           }
-        },
-        "Uuid"
+        }
       ]
     },
     "nullable": [
@@ -101,8 +109,9 @@
       false,
       true,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "1f121eedb80b741f03995969297e7c0b1e09c1038067c3e374337e01e2ac2617"
+  "hash": "56d8028355ea7526d7ea058fd5df0421f6917d9c9d03e311f6e07bfe29b84710"
 }

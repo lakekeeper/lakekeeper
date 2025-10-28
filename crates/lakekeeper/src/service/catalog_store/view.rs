@@ -14,6 +14,7 @@ use crate::{
         InternalParseLocationError, InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId,
         ProtectedTabularDeletionWithoutForce, SerializationError, TabularAlreadyExists,
         TabularNotFound, Transaction, UnexpectedTabularInResponse, ViewId, ViewInfo,
+        WarehouseVersion,
     },
     WarehouseId,
 };
@@ -24,7 +25,7 @@ pub struct CatalogView {
     pub metadata: ViewMetadataRef,
     // Typesafe location for the view
     pub location: Location,
-    pub warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub warehouse_version: WarehouseVersion,
 }
 
 #[derive(Debug, Clone)]

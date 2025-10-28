@@ -17,6 +17,7 @@ use crate::{
         ConversionError, CreateTabularError, InternalBackendErrors, InternalParseLocationError,
         InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, SerializationError, TableId,
         TableInfo, TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
+        WarehouseVersion,
     },
     WarehouseId,
 };
@@ -27,7 +28,7 @@ pub struct LoadTableResponse {
     pub namespace_id: NamespaceId,
     pub table_metadata: TableMetadata,
     pub metadata_location: Option<Location>,
-    pub warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub warehouse_version: WarehouseVersion,
 }
 
 #[derive(Debug, Clone)]

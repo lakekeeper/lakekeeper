@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE warehouse\n            SET protected = $1\n            WHERE warehouse_id = $2\n            RETURNING \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                updated_at\n            ",
+  "query": "UPDATE warehouse\n            SET protected = $1\n            WHERE warehouse_id = $2\n            RETURNING \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                updated_at,\n                version\n            ",
   "describe": {
     "columns": [
       {
@@ -72,6 +72,11 @@
         "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -90,8 +95,9 @@
       false,
       true,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "b4b8233e3f73f20d198cbc92622dbcf5468f9e9cc51c37676c719ae29b63b8ac"
+  "hash": "c131c632f9bfff038c5b7040c4f7de497151fde0f06dd2e701465a1b8a092361"
 }

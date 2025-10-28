@@ -64,7 +64,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         namespace_id: _,
         table_metadata,
         metadata_location,
-        warehouse_updated_at: warehouse_last_updated_at,
+        warehouse_version,
     } = load_table_inner::<C>(
         warehouse_id,
         table_info.table_id(),
@@ -78,7 +78,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
 
     let warehouse = C::require_warehouse_by_id_cache_aware(
         warehouse_id,
-        CachePolicy::OnlyIfNewerThan(warehouse_last_updated_at),
+        CachePolicy::RequireMinimumVersion(*warehouse_version),
         catalog_state.clone(),
     )
     .await?;

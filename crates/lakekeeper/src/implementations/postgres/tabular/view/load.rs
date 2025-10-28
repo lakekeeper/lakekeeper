@@ -27,7 +27,7 @@ use crate::{
         storage::join_location, CatalogBackendError, CatalogGetNamespaceError, CatalogView,
         InternalParseLocationError, InvalidViewRepresentationsInternal, LoadViewError, NamespaceId,
         RequiredViewComponentMissing, TabularNotFound, ViewId,
-        ViewMetadataValidationFailedInternal,
+        ViewMetadataValidationFailedInternal, WarehouseVersion,
     },
     WarehouseId,
 };
@@ -60,7 +60,7 @@ pub(crate) async fn load_view(
         view_representation_typ,
         view_representation_sql,
         view_representation_dialect,
-        warehouse_updated_at,
+        warehouse_version,
     } = query(warehouse_id, *view_id, include_deleted, &mut *conn)
         .await?
         .ok_or_else(|| TabularNotFound::new(warehouse_id, view_id))?;
@@ -94,7 +94,7 @@ pub(crate) async fn load_view(
         .map_err(InternalParseLocationError::from)?;
     Ok(CatalogView {
         metadata_location,
-        warehouse_updated_at,
+        warehouse_version,
         metadata: ViewMetadata::try_from_parts(ViewMetadataParts {
             format_version: match view_format_version {
                 ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
@@ -125,16 +125,16 @@ async fn query(
     let rs = sqlx::query_as!(Query,
             r#"
 SELECT v.view_id,
-       v.view_format_version            as "view_format_version: ViewFormatVersion",
-       ta.fs_location                      AS view_fs_location,
-       ta.fs_protocol                      AS view_fs_protocol,
-       ta.metadata_location             AS "metadata_location!",
-       cvv.version_id                   AS current_version_id,
+       v.view_format_version             AS "view_format_version: ViewFormatVersion",
+       ta.fs_location                    AS view_fs_location,
+       ta.fs_protocol                    AS view_fs_protocol,
+       ta.metadata_location              AS "metadata_location!",
+       cvv.version_id                    AS current_version_id,
        vs.schema_ids,
-       vs.schemas                       as "schemas: Vec<Json<Schema>>",
+       vs.schemas                        AS "schemas: Vec<Json<Schema>>",
        vp.view_properties_keys,
        vp.view_properties_values,
-       vvr.version_ids                  as "version_ids!: Vec<ViewVersionId>",
+       vvr.version_ids                   AS "version_ids!: Vec<ViewVersionId>",
        vvr.version_schema_ids,
        vvr.version_timestamps,
        vvr.version_default_namespace_ids AS "version_default_namespace_ids!: Vec<Option<Uuid>>",
@@ -145,7 +145,7 @@ SELECT v.view_id,
        vvr.typ                           AS "view_representation_typ: Json<Vec<Vec<ViewRepresentationType>>>",
        vvr.sql                           AS "view_representation_sql: Json<Vec<Vec<String>>>",
        vvr.dialect                       AS "view_representation_dialect: Json<Vec<Vec<String>>>",
-       w.updated_at                      AS warehouse_updated_at
+       w.version                         AS warehouse_version
 FROM view v
          INNER JOIN tabular ta ON ta.warehouse_id = $1 AND ta.tabular_id = v.view_id
          INNER JOIN warehouse w ON w.warehouse_id = $1
@@ -404,7 +404,7 @@ struct Query {
     view_representation_typ: Option<Json<Vec<Vec<ViewRepresentationType>>>>,
     view_representation_sql: Option<Json<Vec<Vec<String>>>>,
     view_representation_dialect: Option<Json<Vec<Vec<String>>>>,
-    warehouse_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    warehouse_version: WarehouseVersion,
 }
 
 struct VersionsPrep {

@@ -1744,6 +1744,10 @@ paths:
       responses:
         '200':
           description: Deletion Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:

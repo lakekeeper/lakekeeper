@@ -94,7 +94,7 @@ pub struct CreateWarehouseRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TabularDeleteProfile {
@@ -626,7 +626,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: UpdateWarehouseDeleteProfileRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -652,12 +652,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .hooks
             .update_warehouse_delete_profile(
                 Arc::new(request),
-                updated_warehouse,
+                updated_warehouse.clone(),
                 Arc::new(request_metadata),
             )
             .await;
 
-        Ok(())
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn deactivate_warehouse(

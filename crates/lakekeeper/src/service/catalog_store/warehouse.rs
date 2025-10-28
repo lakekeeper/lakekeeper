@@ -51,7 +51,24 @@ pub enum WarehouseStatus {
     Inactive,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, derive_more::From)]
+pub struct WarehouseVersion(i64);
+
+impl std::fmt::Display for WarehouseVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::ops::Deref for WarehouseVersion {
+    type Target = i64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWarehouse {
     /// ID of the warehouse.
     pub warehouse_id: WarehouseId,
@@ -71,6 +88,9 @@ pub struct ResolvedWarehouse {
     pub protected: bool,
     /// Timestamp when the warehouse metadata was last updated.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Version of the warehouse entity.
+    /// Increments on each update to the warehouse.
+    pub version: WarehouseVersion,
 }
 
 // --------------------------- GENERAL ERROR ---------------------------
@@ -395,9 +415,8 @@ pub enum CachePolicy {
     /// Use cached data if available
     #[default]
     Use,
-    /// Only use cached data newer than the specified timestamp.
-    /// `None` refers to the initial state of the entry (never updated).
-    OnlyIfNewerThan(Option<chrono::DateTime<chrono::Utc>>),
+    /// Only use cached data newer or equal to the specified version
+    RequireMinimumVersion(i64),
     /// Skip the cache and always fetch from the database
     Skip,
 }
@@ -521,21 +540,13 @@ where
                 // Use cache if available
                 Self::get_warehouse_by_id(warehouse_id, state).await?
             }
-            CachePolicy::OnlyIfNewerThan(require_updated_after) => {
+            CachePolicy::RequireMinimumVersion(require_min_version) => {
                 // Check cache first
                 let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
 
                 if let Some(warehouse) = &cached_warehouse {
-                    // Determine if cache is valid based on timestamps
-                    let cache_is_valid = match (warehouse.updated_at, require_updated_after) {
-                        // Both None: cache is valid (warehouse never updated, no requirement)
-                        // OR: Cache has timestamp, no requirement: cache is valid
-                        (None | Some(_), None) => true,
-                        // Cache is None but we require a timestamp: cache is stale
-                        (None, Some(_)) => false,
-                        // Both have timestamps: compare them
-                        (Some(cached_at), Some(required_at)) => cached_at >= required_at,
-                    };
+                    // Determine if cache is valid based on version
+                    let cache_is_valid = warehouse.version.0 >= require_min_version;
 
                     if cache_is_valid {
                         Some(warehouse.clone())
@@ -543,8 +554,8 @@ where
                         tracing::debug!(
                             "Detected stale cache for warehouse {}: cached={:?}, required={:?}. Refreshing.",
                             warehouse_id,
-                            warehouse.updated_at,
-                            require_updated_after
+                            warehouse.version,
+                            require_min_version
                         );
                         // Cache is stale: fetch fresh data
                         let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)

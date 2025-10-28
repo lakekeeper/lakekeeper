@@ -1,0 +1,366 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH filtered_table_refs AS (\n            SELECT warehouse_id, table_id, snapshot_id, table_ref_name, retention\n            FROM table_refs \n            WHERE warehouse_id = $1 AND table_id = ANY($2)\n        )\n        SELECT\n            t.warehouse_id,\n            t.table_id,\n            t.last_sequence_number,\n            t.last_column_id,\n            t.last_updated_ms,\n            t.last_partition_id,\n            t.table_format_version as \"table_format_version: DbTableFormatVersion\",\n            t.next_row_id,\n            ti.name as \"table_name\",\n            ti.fs_location as \"table_fs_location\",\n            ti.fs_protocol as \"table_fs_protocol\",\n            ti.tabular_namespace_name as \"namespace_name\",\n            ti.namespace_id,\n            ti.\"metadata_location\",\n            w.version as \"warehouse_version\",\n            ts.schema_ids,\n            tcs.schema_id as \"current_schema\",\n            tdps.partition_spec_id as \"default_partition_spec_id\",\n            ts.schemas as \"schemas: Vec<Json<Schema>>\",\n            tsnap.snapshot_ids,\n            tsnap.parent_snapshot_ids as \"snapshot_parent_snapshot_id: Vec<Option<i64>>\",\n            tsnap.sequence_numbers as \"snapshot_sequence_number\",\n            tsnap.manifest_lists as \"snapshot_manifest_list: Vec<String>\",\n            tsnap.timestamp as \"snapshot_timestamp_ms\",\n            tsnap.summaries as \"snapshot_summary: Vec<Json<Summary>>\",\n            tsnap.schema_ids as \"snapshot_schema_id: Vec<Option<i32>>\",\n            tsnap.first_row_ids as \"snapshot_first_row_ids: Vec<Option<i64>>\",\n            tsnap.assigned_rows as \"snapshot_assigned_rows: Vec<Option<i64>>\",\n            tsnap.key_id as \"snapshot_key_ids: Vec<Option<String>>\",\n            tdsort.sort_order_id as \"default_sort_order_id?\",\n            tps.partition_spec_id as \"partition_spec_ids\",\n            tps.partition_spec as \"partition_specs: Vec<Json<PartitionSpec>>\",\n            tp.keys as \"table_properties_keys\",\n            tp.values as \"table_properties_values\",\n            tsl.snapshot_ids as \"snapshot_log_ids\",\n            tsl.timestamps as \"snapshot_log_timestamps\",\n            tml.metadata_files as \"metadata_log_files\",\n            tml.timestamps as \"metadata_log_timestamps\",\n            tso.sort_order_ids as \"sort_order_ids\",\n            tso.sort_orders as \"sort_orders: Vec<Json<SortOrder>>\",\n            tr.table_ref_names as \"table_ref_names\",\n            tr.snapshot_ids as \"table_ref_snapshot_ids\",\n            tr.retentions as \"table_ref_retention: Vec<Json<SnapshotRetention>>\",\n            pstat.snapshot_ids as \"partition_stats_snapshot_ids\",\n            pstat.statistics_paths as \"partition_stats_statistics_paths\",\n            pstat.file_size_in_bytes_s as \"partition_stats_file_size_in_bytes\",\n            tstat.snapshot_ids as \"table_stats_snapshot_ids\",\n            tstat.statistics_paths as \"table_stats_statistics_paths\",\n            tstat.file_size_in_bytes_s as \"table_stats_file_size_in_bytes\",\n            tstat.file_footer_size_in_bytes_s as \"table_stats_file_footer_size_in_bytes\",\n            tstat.key_metadatas as \"table_stats_key_metadata: Vec<Option<String>>\",\n            tstat.blob_metadatas as \"table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>\",\n            tenc.key_ids as \"encryption_key_ids\",\n            tenc.encrypted_key_metadatas as \"encryption_encrypted_key_metadatas\",\n            tenc.encrypted_by_ids as \"encryption_encrypted_by_ids: Vec<Option<String>>\",\n            tenc.properties as \"encryption_properties: Vec<Option<serde_json::Value>>\"\n        FROM \"table\" t\n        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id\n        INNER JOIN warehouse w ON w.warehouse_id = $1\n        INNER JOIN table_current_schema tcs\n            ON tcs.warehouse_id = $1 AND tcs.table_id = t.table_id\n        LEFT JOIN table_default_partition_spec tdps\n            ON tdps.warehouse_id = $1 AND tdps.table_id = t.table_id\n        LEFT JOIN table_default_sort_order tdsort\n            ON tdsort.warehouse_id = $1 AND tdsort.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(schema_id) as schema_ids,\n                          ARRAY_AGG(schema) as schemas\n                   FROM table_schema WHERE warehouse_id = $1 AND table_id = ANY($2)\n                   GROUP BY table_id) ts ON ts.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(partition_spec) as partition_spec,\n                          ARRAY_AGG(partition_spec_id) as partition_spec_id\n                   FROM table_partition_spec WHERE warehouse_id = $1 AND table_id = ANY($2)\n                   GROUP BY table_id) tps ON tps.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                            ARRAY_AGG(key) as keys,\n                            ARRAY_AGG(value) as values\n                     FROM table_properties WHERE warehouse_id = $1 AND table_id = ANY($2)\n                     GROUP BY table_id) tp ON tp.table_id = t.table_id\n        LEFT JOIN (SELECT ts.table_id,\n                          ARRAY_AGG(ts.snapshot_id) as snapshot_ids,\n                          ARRAY_AGG(ts.parent_snapshot_id) as parent_snapshot_ids,\n                          ARRAY_AGG(ts.sequence_number) as sequence_numbers,\n                          ARRAY_AGG(ts.manifest_list) as manifest_lists,\n                          ARRAY_AGG(ts.summary) as summaries,\n                          ARRAY_AGG(ts.schema_id) as schema_ids,\n                          ARRAY_AGG(ts.timestamp_ms) as timestamp,\n                          ARRAY_AGG(ts.first_row_id) as first_row_ids,\n                          ARRAY_AGG(ts.assigned_rows) as assigned_rows,\n                          ARRAY_AGG(ts.key_id) as key_id\n                   FROM table_snapshot ts\n                   WHERE ts.warehouse_id = $1 AND ts.table_id = ANY($2)\n                   AND ($4 = 'all' OR EXISTS (\n                       SELECT 1 FROM filtered_table_refs ftr \n                       WHERE ftr.warehouse_id = ts.warehouse_id \n                         AND ftr.table_id = ts.table_id \n                         AND ftr.snapshot_id = ts.snapshot_id\n                   ))\n                   GROUP BY ts.table_id) tsnap ON tsnap.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,\n                          ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps\n                     FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = ANY($2)\n                     GROUP BY table_id) tsl ON tsl.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps,\n                          ARRAY_AGG(metadata_file ORDER BY sequence_number) as metadata_files\n                   FROM table_metadata_log WHERE warehouse_id = $1 AND table_id = ANY($2)\n                   GROUP BY table_id) tml ON tml.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(sort_order_id) as sort_order_ids,\n                          ARRAY_AGG(sort_order) as sort_orders\n                     FROM table_sort_order WHERE warehouse_id = $1 AND table_id = ANY($2)\n                     GROUP BY table_id) tso ON tso.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(table_ref_name) as table_ref_names,\n                          ARRAY_AGG(snapshot_id) as snapshot_ids,\n                          ARRAY_AGG(retention) as retentions\n                   FROM filtered_table_refs\n                   GROUP BY table_id) tr ON tr.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(snapshot_id) as snapshot_ids,\n                          ARRAY_AGG(statistics_path) as statistics_paths,\n                          ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s\n                    FROM partition_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)\n                    GROUP BY table_id) pstat ON pstat.table_id = t.table_id\n        LEFT JOIN (SELECT table_id,\n                          ARRAY_AGG(snapshot_id) as snapshot_ids,\n                          ARRAY_AGG(statistics_path) as statistics_paths,\n                          ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s,\n                          ARRAY_AGG(file_footer_size_in_bytes) as file_footer_size_in_bytes_s,\n                          ARRAY_AGG(key_metadata) as key_metadatas,\n                          ARRAY_AGG(blob_metadata) as blob_metadatas\n                    FROM table_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)\n                    GROUP BY table_id) tstat ON tstat.table_id = t.table_id\n        LEFT JOIN (\n            SELECT table_id,\n                   ARRAY_AGG(key_id) as key_ids,\n                   ARRAY_AGG(encrypted_key_metadata) as encrypted_key_metadatas,\n                   ARRAY_AGG(encrypted_by_id) as encrypted_by_ids,\n                   ARRAY_AGG(properties) as properties\n            FROM table_encryption_keys\n            WHERE warehouse_id = $1 AND table_id = ANY($2)\n            GROUP BY table_id\n        ) tenc ON tenc.table_id = t.table_id\n        WHERE t.warehouse_id = $1\n            AND w.status = 'active'\n            AND (ti.deleted_at IS NULL OR $3)\n            AND t.\"table_id\" = ANY($2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "table_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_sequence_number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_column_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_updated_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_partition_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "table_format_version: DbTableFormatVersion",
+        "type_info": {
+          "Custom": {
+            "name": "table_format_version",
+            "kind": {
+              "Enum": [
+                "1",
+                "2",
+                "3"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "next_row_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "table_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "table_fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "table_fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 12,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "metadata_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "warehouse_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "schema_ids",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 16,
+        "name": "current_schema",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "default_partition_spec_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 18,
+        "name": "schemas: Vec<Json<Schema>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 19,
+        "name": "snapshot_ids",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 20,
+        "name": "snapshot_parent_snapshot_id: Vec<Option<i64>>",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 21,
+        "name": "snapshot_sequence_number",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 22,
+        "name": "snapshot_manifest_list: Vec<String>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 23,
+        "name": "snapshot_timestamp_ms",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 24,
+        "name": "snapshot_summary: Vec<Json<Summary>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 25,
+        "name": "snapshot_schema_id: Vec<Option<i32>>",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 26,
+        "name": "snapshot_first_row_ids: Vec<Option<i64>>",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 27,
+        "name": "snapshot_assigned_rows: Vec<Option<i64>>",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 28,
+        "name": "snapshot_key_ids: Vec<Option<String>>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 29,
+        "name": "default_sort_order_id?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 30,
+        "name": "partition_spec_ids",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 31,
+        "name": "partition_specs: Vec<Json<PartitionSpec>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 32,
+        "name": "table_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 33,
+        "name": "table_properties_values",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 34,
+        "name": "snapshot_log_ids",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 35,
+        "name": "snapshot_log_timestamps",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 36,
+        "name": "metadata_log_files",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 37,
+        "name": "metadata_log_timestamps",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 38,
+        "name": "sort_order_ids",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 39,
+        "name": "sort_orders: Vec<Json<SortOrder>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 40,
+        "name": "table_ref_names",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 41,
+        "name": "table_ref_snapshot_ids",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 42,
+        "name": "table_ref_retention: Vec<Json<SnapshotRetention>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 43,
+        "name": "partition_stats_snapshot_ids",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 44,
+        "name": "partition_stats_statistics_paths",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 45,
+        "name": "partition_stats_file_size_in_bytes",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 46,
+        "name": "table_stats_snapshot_ids",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 47,
+        "name": "table_stats_statistics_paths",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 48,
+        "name": "table_stats_file_size_in_bytes",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 49,
+        "name": "table_stats_file_footer_size_in_bytes",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 50,
+        "name": "table_stats_key_metadata: Vec<Option<String>>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 51,
+        "name": "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 52,
+        "name": "encryption_key_ids",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 53,
+        "name": "encryption_encrypted_key_metadatas",
+        "type_info": "ByteaArray"
+      },
+      {
+        "ordinal": 54,
+        "name": "encryption_encrypted_by_ids: Vec<Option<String>>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 55,
+        "name": "encryption_properties: Vec<Option<serde_json::Value>>",
+        "type_info": "JsonbArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "8fbe746adf4d627635597dcdaaf5eb84dc15773cc07e9b358aa4fd1e8d89ea27"
+}

@@ -210,7 +210,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         metadata: new_metadata.clone(),
         metadata_location,
         location: new_location,
-        warehouse_updated_at: previous_view.warehouse_updated_at,
+        warehouse_version: previous_view.warehouse_version,
     };
 
     C::commit_view(

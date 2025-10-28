@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     api::{
         management::v1::{
@@ -15,6 +17,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         storage::{StorageCredential, StorageProfile},
+        warehouse_cache::WarehouseCacheEndpointHook,
         UserId,
     },
 };
@@ -31,6 +34,8 @@ mod soft_deletion;
 mod stats;
 #[cfg(test)]
 mod tasks;
+#[cfg(test)]
+mod warehouse_ops;
 use crate::{
     api::ApiContext,
     service::{authz::Authorizer, tasks::TaskQueueRegistry, State},
@@ -213,7 +218,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             catalog: catalog_state,
             secrets: secret_store,
             contract_verifiers: ContractVerifiers::new(vec![]),
-            hooks: EndpointHookCollection::new(vec![]),
+            hooks: EndpointHookCollection::new(vec![Arc::new(WarehouseCacheEndpointHook {})]),
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
         },

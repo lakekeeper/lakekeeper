@@ -79,7 +79,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     let warehouse = C::require_warehouse_by_id_cache_aware(
         warehouse_id,
-        CachePolicy::OnlyIfNewerThan(view.warehouse_updated_at),
+        CachePolicy::RequireMinimumVersion(*view.warehouse_version),
         state.v1_state.catalog,
     )
     .await?;
