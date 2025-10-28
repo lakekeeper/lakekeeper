@@ -29,7 +29,7 @@ use openfga_client::{
 use utoipa::OpenApi as _;
 
 use crate::{
-    entities::OpenFgaEntity,
+    entities::{OpenFgaEntity, ParseOpenFgaEntity},
     error::{
         BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
         OpenFGAResult, UnexpectedCorrelationId,
@@ -741,7 +741,13 @@ impl OpenFGAAuthorizer {
             )
             .await?
             .into_iter()
-            .map(ProjectId::from_db_unchecked)
+            .filter_map(|p| {
+                ProjectId::parse_from_openfga(&p)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse project id from OpenFGA.");
+                    })
+                    .ok()
+            })
             .collect::<HashSet<ProjectId>>();
 
         Ok(ListProjectsResponse::Projects(projects))

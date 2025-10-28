@@ -27,7 +27,6 @@ pub enum ListProjectsResponse {
 }
 
 // --------------------------- Errors ---------------------------
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZProjectActionForbidden {
     project_id: ProjectId,
