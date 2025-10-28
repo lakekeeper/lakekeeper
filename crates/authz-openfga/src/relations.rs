@@ -378,7 +378,7 @@ impl ReducedRelation for CatalogServerAction {
             CatalogServerAction::CanCreateProject => ServerRelation::CanCreateProject,
             CatalogServerAction::CanUpdateUsers => ServerRelation::CanUpdateUsers,
             CatalogServerAction::CanDeleteUsers => ServerRelation::CanDeleteUsers,
-            CatalogServerAction::CanListUsers => ServerRelation::CanListAllProjects,
+            CatalogServerAction::CanListUsers => ServerRelation::CanListUsers,
             CatalogServerAction::CanProvisionUsers => ServerRelation::CanProvisionUsers,
         }
     }

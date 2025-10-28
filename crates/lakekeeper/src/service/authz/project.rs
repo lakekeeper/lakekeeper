@@ -125,14 +125,12 @@ pub trait AuthZProjectOps: Authorizer {
         {
             Ok(())
         } else {
-            Err(
-                AuthZProjectActionForbidden::new(
-                    project_id.clone(),
-                    action,
-                    metadata.actor().clone(),
-                )
-                .into(),
+            Err(AuthZProjectActionForbidden::new(
+                project_id.clone(),
+                action,
+                metadata.actor().clone(),
             )
+            .into())
         }
     }
 }
