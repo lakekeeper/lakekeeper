@@ -45,7 +45,7 @@ If you made any changes to SQL queries, please follow [Working with SQLx](#worki
 
 We have three crates, `lakekeeper`, `lakekeeper-bin` and `iceberg-ext`. The bulk of the code is in `lakekeeper`. The `lakekeeper-bin` crate contains the main entry point for the catalog. The `iceberg-ext` crate contains extensions to `iceberg-rust`. 
 
-#### lakekeeper
+**lakekeeper**
 
 The `lakekeeper` crate contains the core of the catalog. It is structured into several modules:
 
@@ -55,7 +55,7 @@ The `lakekeeper` crate contains the core of the catalog. It is structured into s
 4. `tests` - contains integration tests and some common test helpers, see below for more information.
 5. `implementations` - contains the concrete implementation of the catalog backend, currently there's only a Postgres implementation and an alternative for Postgres as secret-store, `kv2`.
 
-#### lakekeeper-bin
+**lakekeeper-bin**
 
 The main function branches out into multiple commands, amongst others, there's a health-check, migrations, but also serve which is likely the most relevant to you. In case you are forking us to implement your own AuthZ backend, you'll want to change the `serve` command to use your own implementation, just follow the call-chain.
 
