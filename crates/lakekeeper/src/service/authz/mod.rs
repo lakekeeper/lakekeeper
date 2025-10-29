@@ -10,7 +10,7 @@ use super::{
 use crate::{
     api::iceberg::v1::Result,
     request_metadata::RequestMetadata,
-    service::{AuthZTableInfo, AuthZViewInfo, Namespace, ServerId, TableInfo},
+    service::{AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy, ServerId, TableInfo},
 };
 
 mod error;
@@ -335,7 +335,7 @@ where
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace: &Namespace,
+        namespace: &NamespaceHierarchy,
         action: Self::NamespaceAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
@@ -347,8 +347,8 @@ where
         let n_inputs = warehouses_with_actions.len();
         let futures: Vec<_> = warehouses_with_actions
             .iter()
-            .map(|(id, a)| async move {
-                self.is_allowed_warehouse_action(metadata, *id, *a)
+            .map(|(warehouse, a)| async move {
+                self.is_allowed_warehouse_action(metadata, *warehouse, *a)
                     .await
                     .map(MustUse::into_inner)
             })
@@ -365,7 +365,7 @@ where
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&Namespace, Self::NamespaceAction)],
+        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let futures: Vec<_> = actions
             .iter()
@@ -605,7 +605,7 @@ pub(crate) mod tests {
     use paste::paste;
 
     use super::*;
-    use crate::service::health::Health;
+    use crate::service::{health::Health, Namespace};
 
     #[test]
     fn test_catalog_resource_action() {
@@ -856,13 +856,13 @@ pub(crate) mod tests {
         async fn is_allowed_namespace_action_impl(
             &self,
             _metadata: &RequestMetadata,
-            namespace: &Namespace,
+            namespace: &NamespaceHierarchy,
             action: Self::NamespaceAction,
         ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("namespace:{action}").as_str()) {
                 return Ok(false);
             }
-            let namespace_id = namespace.namespace_id;
+            let namespace_id = namespace.namespace_id();
             Ok(self.check_available(format!("namespace:{namespace_id}").as_str()))
         }
 
@@ -1075,13 +1075,18 @@ pub(crate) mod tests {
     );
     test_block_namespace_action!(
         CatalogNamespaceAction::CanListViews,
-        &Namespace {
-            namespace_ident: NamespaceIdent::new("test".to_string()),
-            namespace_id: NamespaceId::new_random(),
-            warehouse_id: WarehouseId::new_random(),
-            protected: false,
-            properties: None,
-            updated_at: Some(chrono::Utc::now()),
+        &NamespaceHierarchy {
+            namespace: Arc::new(Namespace {
+                namespace_ident: NamespaceIdent::new("test".to_string()),
+                namespace_id: NamespaceId::new_random(),
+                warehouse_id: WarehouseId::new_random(),
+                protected: false,
+                properties: None,
+                created_at: chrono::Utc::now(),
+                updated_at: Some(chrono::Utc::now()),
+                version: 0.into(),
+            }),
+            parents: vec![]
         }
     );
     test_block_action!(

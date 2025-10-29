@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO namespace (warehouse_id, namespace_id, namespace_name, namespace_properties)\n        (\n            SELECT $1, $2, $3, $4\n            WHERE EXISTS (\n                SELECT 1\n                FROM warehouse\n                WHERE warehouse_id = $1\n                AND status = 'active'\n        ))\n        RETURNING namespace_id, created_at, updated_at, version\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "82f85183199b729e53a58c95d59ff69a14eb0d550725d74818d367c64c0f604c"
+}

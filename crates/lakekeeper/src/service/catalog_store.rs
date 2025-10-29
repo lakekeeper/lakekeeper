@@ -62,6 +62,29 @@ pub use view::*;
 mod table;
 pub use table::*;
 
+macro_rules! define_version_newtype {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, derive_more::From)]
+        pub struct $name(i64);
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl std::ops::Deref for $name {
+            type Target = i64;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+    };
+}
+
+pub(crate) use define_version_newtype;
+
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
@@ -227,7 +250,10 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError>;
+    ) -> std::result::Result<
+        PaginatedMapping<NamespaceId, NamespaceHierarchy>,
+        CatalogListNamespaceError,
+    >;
 
     async fn create_namespace_impl<'a>(
         warehouse_id: WarehouseId,
@@ -241,7 +267,7 @@ where
         warehouse_id: WarehouseId,
         namespace: NamespaceIdentOrId,
         state: Self::State,
-    ) -> std::result::Result<Option<Namespace>, CatalogGetNamespaceError>;
+    ) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>;
 
     async fn drop_namespace_impl<'a>(
         warehouse_id: WarehouseId,

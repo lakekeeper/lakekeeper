@@ -14,7 +14,7 @@ use crate::{
             },
             CatalogBackendError,
         },
-        define_simple_error,
+        define_simple_error, define_version_newtype,
         storage::StorageProfile,
         DatabaseIntegrityError,
     },
@@ -51,22 +51,7 @@ pub enum WarehouseStatus {
     Inactive,
 }
 
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, derive_more::From)]
-pub struct WarehouseVersion(i64);
-
-impl std::fmt::Display for WarehouseVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::ops::Deref for WarehouseVersion {
-    type Target = i64;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+define_version_newtype!(WarehouseVersion);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWarehouse {

@@ -80,8 +80,8 @@ where
             .await?;
 
         Ok(ProtectionResponse {
-            protected: namespace.protected,
-            updated_at: namespace.updated_at,
+            protected: namespace.is_protected(),
+            updated_at: namespace.updated_at(),
         })
     }
 }

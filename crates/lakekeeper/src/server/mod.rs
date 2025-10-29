@@ -278,6 +278,8 @@ where
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::sync::Arc;
+
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
@@ -445,9 +447,9 @@ pub(crate) mod test {
             .unwrap();
             let ns_params = NamespaceParameters {
                 prefix: Some(Prefix(wh_id.to_string())),
-                namespace: namespace.namespace_ident.clone(),
+                namespace: namespace.namespace_ident().clone(),
             };
-            wh_ns_data.push((wh_id, namespace, ns_params));
+            wh_ns_data.push((wh_id, Arc::unwrap_or_clone(namespace.namespace), ns_params));
         }
 
         (ctx, wh_ns_data, base_loc)

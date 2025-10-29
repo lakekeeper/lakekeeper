@@ -186,7 +186,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id;
+        let namespace_id = namespace.namespace_id();
         let warehouse =
             C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
         let storage_profile = &warehouse.storage_profile;

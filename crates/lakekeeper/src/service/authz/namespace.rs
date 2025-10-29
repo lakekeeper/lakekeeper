@@ -8,7 +8,7 @@ use crate::{
             BackendUnavailableOrCountMismatch, CatalogNamespaceAction, MustUse,
         },
         Actor, CatalogBackendError, CatalogGetNamespaceError, InvalidNamespaceIdentifier,
-        Namespace, NamespaceIdentOrId, NamespaceNotFound,
+        NamespaceHierarchy, NamespaceIdentOrId, NamespaceNotFound,
     },
     WarehouseId,
 };
@@ -162,9 +162,9 @@ pub trait AuthzNamespaceOps: Authorizer {
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         user_provided_namespace: impl Into<NamespaceIdentOrId> + Send,
-        namespace: Result<Option<Namespace>, CatalogGetNamespaceError>,
+        namespace: Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>,
         action: impl Into<Self::NamespaceAction> + Send,
-    ) -> Result<Namespace, RequireNamespaceActionError> {
+    ) -> Result<NamespaceHierarchy, RequireNamespaceActionError> {
         let actor = metadata.actor();
         // OK to return because this goes via the Into method
         // of RequireNamespaceActionError
@@ -174,7 +174,7 @@ pub trait AuthzNamespaceOps: Authorizer {
                 AuthZCannotSeeNamespace::new(warehouse_id, user_provided_namespace.into()).into(),
             );
         };
-        let namespace_name = namespace.namespace_ident.clone();
+        let namespace_name = namespace.namespace_ident().clone();
         let user_provided_namespace = user_provided_namespace.into();
         let cant_see_err =
             AuthZCannotSeeNamespace::new(warehouse_id, user_provided_namespace.clone()).into();
@@ -185,13 +185,15 @@ pub trait AuthzNamespaceOps: Authorizer {
             match &user_provided_namespace {
                 NamespaceIdentOrId::Id(id) => {
                     assert_eq!(
-                        *id, namespace.namespace_id,
+                        *id,
+                        namespace.namespace_id(),
                         "Mismatched namespace ID: user provided {id}, got {namespace:?}"
                     );
                 }
                 NamespaceIdentOrId::Name(ident) => {
                     assert_eq!(
-                        ident, &namespace.namespace_ident,
+                        ident,
+                        namespace.namespace_ident(),
                         "Mismatched namespace ident: user provided {ident}, got {namespace:?}"
                     );
                 }
@@ -232,7 +234,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     async fn is_allowed_namespace_action(
         &self,
         metadata: &RequestMetadata,
-        namespace: &Namespace,
+        namespace: &NamespaceHierarchy,
         action: impl Into<Self::NamespaceAction> + Send,
     ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
@@ -250,7 +252,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        namespace: &Namespace,
+        namespace: &NamespaceHierarchy,
         actions: &[A; N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let actions = actions
@@ -273,7 +275,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&Namespace, A)],
+        actions: &[(&NamespaceHierarchy, A)],
     ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])

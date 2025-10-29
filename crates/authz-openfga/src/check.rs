@@ -227,7 +227,7 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
         .require_namespace_action(metadata, warehouse_id, user_provided_ns, namespace, action)
         .await?;
 
-    Ok(namespace.namespace_id.to_openfga())
+    Ok(namespace.namespace_id().to_openfga())
 }
 
 async fn check_table<C: CatalogStore, S: SecretStore>(

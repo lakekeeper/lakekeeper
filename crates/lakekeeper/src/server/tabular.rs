@@ -21,11 +21,7 @@ pub(super) fn determine_tabular_location(
         location
     } else {
         let namespace_props = NamespaceProperties::from_props_unchecked(
-            namespace
-                .properties
-                .as_ref()
-                .map(|arc| (**arc).clone())
-                .unwrap_or_default(),
+            namespace.properties.clone().unwrap_or_default(),
         );
 
         let namespace_location = match namespace_props.get_location() {
@@ -57,8 +53,8 @@ macro_rules! list_entities {
             // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
-            let warehouse_id = $namespace_response.warehouse_id;
-            let namespace_id = $namespace_response.namespace_id;
+            let warehouse_id = $namespace_response.warehouse_id();
+            let namespace_id = $namespace_response.namespace_id();
             let namespace_response = $namespace_response.clone();
             async move {
                 let query = crate::api::iceberg::v1::PaginationQuery {

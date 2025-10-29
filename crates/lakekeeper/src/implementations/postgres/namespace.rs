@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg::TableIdent;
 use itertools::izip;
@@ -20,9 +20,9 @@ use crate::{
         ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
         NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
-        NamespaceId, NamespaceIdent, NamespaceIdentOrId, NamespaceNotEmpty, NamespaceNotFound,
-        NamespacePropertiesSerializationError, NamespaceProtected, Result, TabularId,
-        WarehouseIdNotFound,
+        NamespaceHierarchy, NamespaceId, NamespaceIdent, NamespaceIdentOrId, NamespaceNotEmpty,
+        NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected, Result,
+        TabularId, WarehouseIdNotFound,
     },
     WarehouseId, CONFIG,
 };
@@ -31,13 +31,73 @@ pub(crate) async fn get_namespace<'c, 'e: 'c, E: sqlx::Executor<'c, Database = s
     warehouse_id: WarehouseId,
     namespace: NamespaceIdentOrId,
     connection: E,
-) -> std::result::Result<Option<Namespace>, CatalogGetNamespaceError> {
+) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
     match namespace {
         NamespaceIdentOrId::Id(id) => get_namespace_by_id(warehouse_id, id, connection).await,
         NamespaceIdentOrId::Name(name) => {
             get_namespace_by_name(warehouse_id, &name, connection).await
         }
     }
+}
+
+#[derive(Debug)]
+struct NamespaceRow {
+    namespace_id: NamespaceId,
+    namespace_name: Vec<String>,
+    warehouse_id: WarehouseId,
+    protected: bool,
+    properties: Json<Option<HashMap<String, String>>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    version: i64,
+}
+
+impl NamespaceRow {
+    fn into_namespace(
+        self,
+        warehouse_id: WarehouseId,
+    ) -> std::result::Result<Namespace, InvalidNamespaceIdentifier> {
+        Ok(Namespace {
+            namespace_ident: parse_namespace_identifier_from_vec(
+                &self.namespace_name,
+                warehouse_id,
+                Some(self.namespace_id),
+            )?,
+            protected: self.protected,
+            properties: self.properties.0.filter(|p| !p.is_empty()),
+            namespace_id: self.namespace_id,
+            warehouse_id: self.warehouse_id,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            version: self.version.into(),
+        })
+    }
+}
+
+fn namespace_rows_into_hierarchy(
+    mut rows: Vec<NamespaceRow>,
+    warehouse_id: WarehouseId,
+) -> std::result::Result<Option<NamespaceHierarchy>, InvalidNamespaceIdentifier> {
+    // Order by length of namespace_name to build hierarchy.
+    // Start from the requested (longest) namespace down to the root (shortest).
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    // Sort by namespace_name length descending (longest first = deepest namespace)
+    rows.sort_by_key(|row| std::cmp::Reverse(row.namespace_name.len()));
+
+    // First row is the target namespace (longest path)
+    let target = rows.remove(0);
+    let namespace = Arc::new(target.into_namespace(warehouse_id)?);
+
+    // Remaining rows are parents, ordered from immediate parent to root
+    let parents = rows
+        .into_iter()
+        .map(|row| row.into_namespace(warehouse_id).map(Arc::new))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(Some(NamespaceHierarchy { namespace, parents }))
 }
 
 pub(crate) async fn get_namespace_by_id<
@@ -48,48 +108,42 @@ pub(crate) async fn get_namespace_by_id<
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     connection: E,
-) -> std::result::Result<Option<Namespace>, CatalogGetNamespaceError> {
-    let row = sqlx::query!(
+) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
+    let row = sqlx::query_as!(
+        NamespaceRow,
         r#"
+        with selected_ns as (
+            select namespace_name
+            from namespace
+            where warehouse_id = $1 AND namespace_id = $2
+        ),
+        parent_paths as (
+            SELECT DISTINCT namespace_name[1:generate_series(1, array_length(namespace_name, 1))] as parent_name
+            FROM selected_ns
+        )
         SELECT 
-            namespace_name as "namespace_name: Vec<String>",
+            n.namespace_id,
+            n.namespace_name as "namespace_name: Vec<String>",
             n.warehouse_id,
             n.protected,
-            namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
-            n.updated_at
+            n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+            n.created_at,
+            n.updated_at,
+            n.version
         FROM namespace n
         INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE n.warehouse_id = $1 AND n.namespace_id = $2
+        WHERE n.warehouse_id = $1
         AND w.status = 'active'
+        AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
         "#,
         *warehouse_id,
         *namespace_id
     )
-    .fetch_one(connection)
-    .await;
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    let row = match row {
-        Ok(r) => r,
-        Err(sqlx::Error::RowNotFound) => {
-            return Ok(None);
-        }
-        Err(e) => {
-            return Err(e.into_catalog_backend_error().into());
-        }
-    };
-
-    Ok(Some(Namespace {
-        namespace_ident: parse_namespace_identifier_from_vec(
-            &row.namespace_name,
-            warehouse_id,
-            Some(namespace_id),
-        )?,
-        protected: row.protected,
-        properties: row.properties.deref().clone().map(Arc::new),
-        namespace_id,
-        warehouse_id: row.warehouse_id.into(),
-        updated_at: row.updated_at,
-    }))
+    namespace_rows_into_hierarchy(row, warehouse_id).map_err(Into::into)
 }
 
 pub(crate) async fn get_namespace_by_name<
@@ -100,44 +154,132 @@ pub(crate) async fn get_namespace_by_name<
     warehouse_id: WarehouseId,
     namespace: &NamespaceIdent,
     connection: E,
-) -> std::result::Result<Option<Namespace>, CatalogGetNamespaceError> {
-    let row = sqlx::query!(
+) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
+    let rows = sqlx::query_as!(
+        NamespaceRow,
         r#"
-        SELECT 
+        with selected_ns as (
+            select namespace_name
+            from namespace
+            where warehouse_id = $1 AND namespace_name = $2
+        ),
+        parent_paths as (
+            SELECT DISTINCT namespace_name[1:generate_series(1, array_length(namespace_name, 1))] as parent_name
+            FROM selected_ns
+        )
+        SELECT
             n.namespace_id,
+            n.namespace_name as "namespace_name: Vec<String>",
             n.warehouse_id,
             n.protected,
-            namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
-            n.updated_at
+            n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+            n.created_at,
+            n.updated_at,
+            n.version
         FROM namespace n
         INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE n.warehouse_id = $1 AND n.namespace_name = $2
+        WHERE n.warehouse_id = $1
         AND w.status = 'active'
+        AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
         "#,
         *warehouse_id,
         &**namespace
     )
-    .fetch_one(connection)
-    .await;
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    let row = match row {
-        Ok(r) => r,
-        Err(sqlx::Error::RowNotFound) => {
-            return Ok(None);
-        }
-        Err(e) => {
-            return Err(e.into_catalog_backend_error().into());
-        }
-    };
+    namespace_rows_into_hierarchy(rows, warehouse_id).map_err(Into::into)
+}
 
-    Ok(Some(Namespace {
-        namespace_ident: namespace.clone(),
-        protected: row.protected,
-        properties: row.properties.deref().clone().map(Arc::new),
-        namespace_id: row.namespace_id.into(),
-        warehouse_id: row.warehouse_id.into(),
-        updated_at: row.updated_at,
-    }))
+struct ListNamespaceRow {
+    namespace_id: NamespaceId,
+    warehouse_id: WarehouseId,
+    namespace_name: Vec<String>,
+    protected: bool,
+    properties: Json<Option<HashMap<String, String>>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    version: i64,
+    include_in_list: bool,
+}
+
+impl From<ListNamespaceRow> for NamespaceRow {
+    fn from(row: ListNamespaceRow) -> Self {
+        NamespaceRow {
+            namespace_id: row.namespace_id,
+            namespace_name: row.namespace_name,
+            warehouse_id: row.warehouse_id,
+            protected: row.protected,
+            properties: row.properties,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            version: row.version,
+        }
+    }
+}
+
+fn list_rows_into_hierarchy(
+    rows: Vec<ListNamespaceRow>,
+    warehouse_id: WarehouseId,
+) -> std::result::Result<
+    PaginatedMapping<NamespaceId, NamespaceHierarchy>,
+    InvalidNamespaceIdentifier,
+> {
+    if rows.is_empty() {
+        return Ok(PaginatedMapping::with_capacity(0));
+    }
+
+    // Step 1: Convert all rows to Arc<Namespace> and collect target IDs in order
+    let mut namespace_by_name: HashMap<Vec<String>, Arc<Namespace>> =
+        HashMap::with_capacity(rows.len());
+
+    // Track which namespaces should be included in the result, in order
+    let mut include_in_list = Vec::new();
+
+    for row in rows {
+        let namespace_name = row.namespace_name.clone();
+        let include_this_row_in_list = row.include_in_list;
+
+        let namespace_row: NamespaceRow = row.into();
+
+        let namespace = Arc::new(namespace_row.into_namespace(warehouse_id)?);
+
+        if include_this_row_in_list {
+            include_in_list.push(namespace.clone());
+        }
+
+        namespace_by_name.insert(namespace_name, namespace);
+    }
+
+    // Step 2: Build hierarchies by iterating over include_in_list_ids
+    let mut result = PaginatedMapping::with_capacity(include_in_list.len());
+
+    for namespace in include_in_list {
+        // Build parents from immediate parent down to root
+        let namespace_ident_vec = namespace.namespace_ident.as_ref();
+        let mut parents = Vec::with_capacity(namespace_ident_vec.len().saturating_sub(1));
+        for parent_len in (1..namespace_ident_vec.len()).rev() {
+            if let Some(parent_ns) = namespace_by_name.get(&namespace_ident_vec[..parent_len]) {
+                parents.push(parent_ns.clone());
+            }
+        }
+
+        let namespace_id = namespace.namespace_id;
+        let created_at = namespace.created_at;
+
+        let hierarchy = NamespaceHierarchy { namespace, parents };
+
+        let token = PaginateToken::V1(V1PaginateToken {
+            id: namespace_id,
+            created_at,
+        })
+        .to_string();
+
+        result.insert(namespace_id, hierarchy, token);
+    }
+
+    Ok(result)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -151,7 +293,8 @@ pub(crate) async fn list_namespaces(
         return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError> {
+) -> std::result::Result<PaginatedMapping<NamespaceId, NamespaceHierarchy>, CatalogListNamespaceError>
+{
     let page_size = CONFIG.page_size_or_pagination_max(*page_size);
 
     // Treat empty parent as None
@@ -172,7 +315,7 @@ pub(crate) async fn list_namespaces(
         )
         .unzip();
 
-    let namespaces: Vec<_> = if let Some(parent) = parent {
+    let namespaces = if let Some(parent) = parent {
         // If it doesn't fit in a i32 it is way too large. Validation would have failed
         // already in the catalog.
         let parent_len: i32 = parent.len().try_into().unwrap_or(MAX_NAMESPACE_DEPTH + 1);
@@ -181,25 +324,43 @@ pub(crate) async fn list_namespaces(
         // Get all namespaces where the "name" array has
         // length(parent) + 1 elements, and the first length(parent)
         // elements are equal to parent.
-        sqlx::query!(
+        sqlx::query_as!(
+            ListNamespaceRow,
             r#"
+            WITH list_entries AS (
+                SELECT
+                    n.namespace_id,
+                    n.namespace_name
+                FROM namespace n
+                INNER JOIN warehouse w ON w.warehouse_id = $1
+                WHERE n.warehouse_id = $1
+                AND w.status = 'active'
+                AND array_length("namespace_name", 1) = $2 + 1
+                AND "namespace_name"[1:$2] = $3
+                --- PAGINATION
+                AND ((n.created_at > $4 OR $4 IS NULL) OR (n.created_at = $4 AND n.namespace_id > $5))
+                ORDER BY n.created_at, n.namespace_id ASC
+                LIMIT $6
+            ),
+            parent_paths AS (
+                SELECT DISTINCT
+                    tn.namespace_name[1:generate_series(1, array_length(tn.namespace_name, 1))] as parent_name
+                FROM list_entries tn
+            )
             SELECT
                 n.namespace_id,
-                "namespace_name" as "namespace_name: Vec<String>",
-                n.created_at,
+                n.namespace_name as "namespace_name: Vec<String>",
+                n.warehouse_id,
                 n.protected,
-                namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
-                n.updated_at
+                n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+                n.created_at,
+                n.updated_at,
+                n.version,
+                n.namespace_id in (SELECT namespace_id FROM list_entries) AS "include_in_list!"
             FROM namespace n
-            INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
-            AND w.status = 'active'
-            AND array_length("namespace_name", 1) = $2 + 1
-            AND "namespace_name"[1:$2] = $3
-            --- PAGINATION
-            AND ((n.created_at > $4 OR $4 IS NULL) OR (n.created_at = $4 AND n.namespace_id > $5))
+            AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
             ORDER BY n.created_at, n.namespace_id ASC
-            LIMIT $6
             "#,
             *warehouse_id,
             parent_len,
@@ -210,37 +371,45 @@ pub(crate) async fn list_namespaces(
         )
         .fetch_all(&mut **transaction)
         .await
-        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+        .map_err(DBErrorHandler::into_catalog_backend_error)?
         .into_iter()
-        .map(|r| {
-            (
-                r.namespace_id,
-                r.namespace_name,
-                r.created_at,
-                r.protected,
-                r.properties.deref().clone(),
-                r.updated_at,
-            )
-        })
-        .collect()
+        .collect::<Vec<_>>()
     } else {
-        sqlx::query!(
+        sqlx::query_as!(
+            ListNamespaceRow,
             r#"
+            WITH list_entries AS (
+                SELECT
+                    n.namespace_id,
+                    n.namespace_name
+                FROM namespace n
+                INNER JOIN warehouse w ON w.warehouse_id = $1
+                WHERE n.warehouse_id = $1
+                AND array_length("namespace_name", 1) = 1
+                AND w.status = 'active'
+                AND ((n.created_at > $2 OR $2 IS NULL) OR (n.created_at = $2 AND n.namespace_id > $3))
+                ORDER BY n.created_at, n.namespace_id ASC
+                LIMIT $4
+            ),
+            parent_paths AS (
+                SELECT DISTINCT
+                    tn.namespace_name[1:generate_series(1, array_length(tn.namespace_name, 1))] as parent_name
+                FROM list_entries tn
+            )
             SELECT
                 n.namespace_id,
-                "namespace_name" as "namespace_name: Vec<String>",
-                n.created_at,
+                n.namespace_name as "namespace_name: Vec<String>",
+                n.warehouse_id,
                 n.protected,
-                namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
-                n.updated_at
+                n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
+                n.created_at,
+                n.updated_at,
+                n.version,
+                n.namespace_id in (SELECT namespace_id FROM list_entries) AS "include_in_list!"
             FROM namespace n
-            INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
-            AND array_length("namespace_name", 1) = 1
-            AND w.status = 'active'
-            AND ((n.created_at > $2 OR $2 IS NULL) OR (n.created_at = $2 AND n.namespace_id > $3))
+            AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
             ORDER BY n.created_at, n.namespace_id ASC
-            LIMIT $4
             "#,
             *warehouse_id,
             token_ts,
@@ -249,54 +418,12 @@ pub(crate) async fn list_namespaces(
         )
         .fetch_all(&mut **transaction)
         .await
-        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+        .map_err(DBErrorHandler::into_catalog_backend_error)?
         .into_iter()
-        .map(|r| {
-            (
-                r.namespace_id,
-                r.namespace_name,
-                r.created_at,
-                r.protected,
-                r.properties.deref().clone(),
-                r.updated_at,
-            )
-        })
         .collect()
     };
 
-    // Convert Vec<Vec<String>> to Vec<NamespaceIdent>
-    let mut namespace_map: PaginatedMapping<NamespaceId, Namespace> =
-        PaginatedMapping::with_capacity(namespaces.len());
-    for ns_result in namespaces
-        .into_iter()
-        .map(|(id, n, ts, protected, properties, updated_at)| {
-            parse_namespace_identifier_from_vec(&n, warehouse_id, Some(id)).map(|n| {
-                (
-                    id.into(),
-                    Namespace {
-                        warehouse_id,
-                        namespace_id: id.into(),
-                        namespace_ident: n,
-                        protected,
-                        properties: properties.map(Arc::new),
-                        updated_at,
-                    },
-                    ts,
-                )
-            })
-        })
-    {
-        let (id, ns, created_at) = ns_result?;
-        namespace_map.insert(
-            id,
-            ns,
-            PaginateToken::V1(V1PaginateToken {
-                id: *id,
-                created_at,
-            })
-            .to_string(),
-        );
-    }
+    let namespace_map = list_rows_into_hierarchy(namespaces, warehouse_id)?;
 
     Ok(namespace_map)
 }
@@ -323,7 +450,7 @@ pub(crate) async fn create_namespace(
                 WHERE warehouse_id = $1
                 AND status = 'active'
         ))
-        RETURNING namespace_id, updated_at
+        RETURNING namespace_id, created_at, updated_at, version
         "#,
         *warehouse_id,
         *namespace_id,
@@ -360,11 +487,13 @@ pub(crate) async fn create_namespace(
     let properties = properties.and_then(|h| if h.is_empty() { None } else { Some(h) });
     Ok(Namespace {
         namespace_ident: namespace,
-        properties: properties.filter(|p| !p.is_empty()).map(Arc::new),
+        properties: properties.filter(|p| !p.is_empty()),
         protected: false,
         namespace_id,
         warehouse_id,
         updated_at: r.updated_at,
+        created_at: r.created_at,
+        version: r.version.into(),
     })
 }
 
@@ -596,7 +725,7 @@ pub(crate) async fn set_namespace_protected(
         WHERE namespace_id = $2 AND warehouse_id IN (
             SELECT warehouse_id FROM warehouse WHERE status = 'active'
         )
-        returning protected, updated_at, namespace_name as "namespace_name: Vec<String>", namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
+        returning protected, created_at, updated_at, namespace_name as "namespace_name: Vec<String>", namespace_properties as "properties: Json<Option<HashMap<String, String>>>", version
         "#,
         protect,
         *namespace_id
@@ -619,10 +748,12 @@ pub(crate) async fn set_namespace_protected(
             Some(namespace_id),
         )?,
         protected: row.protected,
-        properties: row.properties.deref().clone().map(Arc::new),
+        properties: row.properties.0.filter(|p| !p.is_empty()),
         namespace_id,
         warehouse_id,
+        created_at: row.created_at,
         updated_at: row.updated_at,
+        version: row.version.into(),
     })
 }
 
@@ -643,7 +774,7 @@ pub(crate) async fn update_namespace_properties(
         AND warehouse_id IN (
             SELECT warehouse_id FROM warehouse WHERE status = 'active'
         )
-        RETURNING namespace_name as "namespace_name: Vec<String>", protected, updated_at, namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
+        RETURNING namespace_name as "namespace_name: Vec<String>", protected, created_at, updated_at, namespace_properties as "properties: Json<Option<HashMap<String, String>>>", version
         "#,
         properties,
         *warehouse_id,
@@ -663,10 +794,12 @@ pub(crate) async fn update_namespace_properties(
             Some(namespace_id),
         )?,
         protected: row.protected,
-        properties: row.properties.deref().clone().map(Arc::new),
+        properties: row.properties.0.filter(|p| !p.is_empty()),
         namespace_id,
         warehouse_id,
         updated_at: row.updated_at,
+        created_at: row.created_at,
+        version: row.version.into(),
     })
 }
 
@@ -739,26 +872,27 @@ pub(crate) mod tests {
         )
         .await;
 
-        let namespace_id = PostgresBackend::get_namespace(warehouse_id, &namespace, state.clone())
-            .await
-            .unwrap()
-            .expect("Namespace should exist")
-            .namespace_id;
-
-        assert_eq!(namespace_info.namespace_ident, namespace);
+        let namespace_hierarchy_by_name =
+            PostgresBackend::get_namespace(warehouse_id, &namespace, state.clone())
+                .await
+                .unwrap()
+                .expect("Namespace should exist");
         assert_eq!(
-            namespace_info.properties.unwrap(),
-            properties.clone().into()
+            namespace_hierarchy_by_name.root(),
+            &namespace_hierarchy_by_name.namespace
         );
+        assert_eq!(namespace_hierarchy_by_name.depth(), 0);
+        let namespace_id = namespace_hierarchy_by_name.namespace_id();
 
-        let namespace_info =
+        assert_eq!(&*namespace_hierarchy_by_name.namespace, &namespace_info);
+
+        let namespace_hierarchy_by_id =
             PostgresBackend::get_namespace(warehouse_id, namespace_id, state.clone())
                 .await
                 .unwrap()
                 .expect("Namespace should exist");
 
-        assert_eq!(namespace_info.namespace_ident, namespace);
-        assert_eq!(namespace_info.properties.unwrap(), properties.into());
+        assert_eq!(namespace_hierarchy_by_id, namespace_hierarchy_by_name);
 
         let mut transaction = PostgresTransaction::begin_read(state.clone())
             .await
@@ -785,7 +919,7 @@ pub(crate) mod tests {
         .into_hashmap();
 
         assert_eq!(response.len(), 1);
-        assert_eq!(response[&namespace_id].namespace_ident, namespace);
+        assert_eq!(response[&namespace_id].namespace_ident(), &namespace);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -810,7 +944,7 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .expect("Namespace should exist");
-        assert_eq!(&*response.properties.unwrap(), &new_props);
+        assert_eq!(response.properties().unwrap(), &new_props);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -876,10 +1010,13 @@ pub(crate) mod tests {
         assert_eq!(namespaces.len(), 1);
         let namespaces = namespaces.into_hashmap();
         assert_eq!(
-            namespaces[&namespace_info_1.namespace_id].namespace_ident,
-            namespace_info_1.namespace_ident
+            namespaces[&namespace_info_1.namespace_id].namespace_ident(),
+            &namespace_info_1.namespace_ident
         );
-        assert!(!namespaces[&namespace_info_1.namespace_id].protected);
+        assert!(!namespaces[&namespace_info_1.namespace_id].is_protected());
+        // Root namespaces should have no parents
+        assert!(namespaces[&namespace_info_1.namespace_id].is_root());
+        assert_eq!(namespaces[&namespace_info_1.namespace_id].depth(), 0);
 
         let mut t = PostgresTransaction::begin_read(state.clone())
             .await
@@ -907,15 +1044,17 @@ pub(crate) mod tests {
         let namespaces = namespaces.into_hashmap();
 
         assert_eq!(
-            namespaces[&namespace_info_2.namespace_id].namespace_ident,
-            namespace_info_2.namespace_ident
+            namespaces[&namespace_info_2.namespace_id].namespace_ident(),
+            &namespace_info_2.namespace_ident
         );
-        assert!(!namespaces[&namespace_info_2.namespace_id].protected);
+        assert!(!namespaces[&namespace_info_2.namespace_id].is_protected());
+        assert!(namespaces[&namespace_info_2.namespace_id].is_root());
         assert_eq!(
-            namespaces[&namespace_info_3.namespace_id].namespace_ident,
-            namespace_info_3.namespace_ident
+            namespaces[&namespace_info_3.namespace_id].namespace_ident(),
+            &namespace_info_3.namespace_ident
         );
-        assert!(!namespaces[&namespace_info_3.namespace_id].protected);
+        assert!(!namespaces[&namespace_info_3.namespace_id].is_protected());
+        assert!(namespaces[&namespace_info_3.namespace_id].is_root());
 
         // last page is empty
         let namespaces = PostgresBackend::list_namespaces(
@@ -937,6 +1076,32 @@ pub(crate) mod tests {
 
         assert_eq!(namespaces.next_token(), None);
         assert_eq!(namespaces.into_hashmap(), HashMap::new());
+    }
+
+    #[sqlx::test]
+    async fn test_get_nested_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let parent_namespace_ident = NamespaceIdent::from_vec(vec!["parent".to_string()]).unwrap();
+        let parent_namespace =
+            initialize_namespace(state.clone(), warehouse_id, &parent_namespace_ident, None).await;
+
+        let child_namespace_ident =
+            NamespaceIdent::from_vec(vec!["parent".to_string(), "child".to_string()]).unwrap();
+        let child_namespace =
+            initialize_namespace(state.clone(), warehouse_id, &child_namespace_ident, None).await;
+
+        let result =
+            PostgresBackend::get_namespace(warehouse_id, &child_namespace_ident, state.clone())
+                .await
+                .unwrap()
+                .expect("Namespace should exist");
+        assert_eq!(&*result.namespace, &child_namespace);
+        assert_eq!(result.depth(), 1);
+        assert_eq!(&**result.root(), &parent_namespace);
+        assert_eq!(result.parents, vec![Arc::new(parent_namespace)]);
     }
 
     #[sqlx::test]
@@ -988,7 +1153,7 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .expect("Namespace should exist")
-            .namespace_id;
+            .namespace_id();
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
@@ -1019,7 +1184,7 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .expect("Namespace should exist")
-            .namespace_id;
+            .namespace_id();
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1429,5 +1594,385 @@ pub(crate) mod tests {
         assert_eq!(drop_info.open_tasks.len(), 0);
 
         transaction.commit().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_list_namespaces_with_hierarchy(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Create a hierarchy: root, root.child, root.child.grandchild
+        let root = NamespaceIdent::from_vec(vec!["root".to_string()]).unwrap();
+        let root_ns = initialize_namespace(state.clone(), warehouse_id, &root, None).await;
+
+        let child =
+            NamespaceIdent::from_vec(vec!["root".to_string(), "child".to_string()]).unwrap();
+        let child_ns = initialize_namespace(state.clone(), warehouse_id, &child, None).await;
+
+        let grandchild = NamespaceIdent::from_vec(vec![
+            "root".to_string(),
+            "child".to_string(),
+            "grandchild".to_string(),
+        ])
+        .unwrap();
+        let grandchild_ns =
+            initialize_namespace(state.clone(), warehouse_id, &grandchild, None).await;
+
+        // List all root namespaces (no parent filter)
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: None,
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Should only return root namespace
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        let root_hierarchy = &result_map[&root_ns.namespace_id];
+        assert_eq!(root_hierarchy.namespace_ident(), &root);
+        assert!(root_hierarchy.is_root());
+        assert_eq!(root_hierarchy.depth(), 0);
+        assert_eq!(root_hierarchy.parents.len(), 0);
+
+        // List children of root
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: Some(root.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Should return child with root as parent
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        let child_hierarchy = &result_map[&child_ns.namespace_id];
+        assert_eq!(child_hierarchy.namespace_ident(), &child);
+        assert!(!child_hierarchy.is_root());
+        assert_eq!(child_hierarchy.depth(), 1);
+        assert_eq!(child_hierarchy.parents.len(), 1);
+        assert_eq!(&**child_hierarchy.parent().unwrap(), &root_ns);
+        assert_eq!(&**child_hierarchy.root(), &root_ns);
+
+        // List children of root.child
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: Some(child.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Should return grandchild with full hierarchy
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        let grandchild_hierarchy = &result_map[&grandchild_ns.namespace_id];
+        assert_eq!(grandchild_hierarchy.namespace_ident(), &grandchild);
+        assert!(!grandchild_hierarchy.is_root());
+        assert_eq!(grandchild_hierarchy.depth(), 2);
+        assert_eq!(grandchild_hierarchy.parents.len(), 2);
+
+        // Parents should be ordered: immediate parent first, then root
+        assert_eq!(&**grandchild_hierarchy.parent().unwrap(), &child_ns);
+        assert_eq!(&*grandchild_hierarchy.parents[0], &child_ns);
+        assert_eq!(&*grandchild_hierarchy.parents[1], &root_ns);
+        assert_eq!(&**grandchild_hierarchy.root(), &root_ns);
+    }
+
+    #[sqlx::test]
+    async fn test_list_namespaces_multiple_hierarchies(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Create multiple root namespaces with children
+        // Root A with child A.1
+        let root_a = NamespaceIdent::from_vec(vec!["a".to_string()]).unwrap();
+        let root_a_ns = initialize_namespace(state.clone(), warehouse_id, &root_a, None).await;
+
+        let child_a1 = NamespaceIdent::from_vec(vec!["a".to_string(), "1".to_string()]).unwrap();
+        let child_a1_ns = initialize_namespace(state.clone(), warehouse_id, &child_a1, None).await;
+
+        // Root B with child B.1
+        let root_b = NamespaceIdent::from_vec(vec!["b".to_string()]).unwrap();
+        let root_b_ns = initialize_namespace(state.clone(), warehouse_id, &root_b, None).await;
+
+        let child_b1 = NamespaceIdent::from_vec(vec!["b".to_string(), "1".to_string()]).unwrap();
+        let child_b1_ns = initialize_namespace(state.clone(), warehouse_id, &child_b1, None).await;
+
+        // List all root namespaces
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: None,
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Should return both roots, both with no parents
+        assert_eq!(result.len(), 2);
+        let result_map = result.into_hashmap();
+
+        assert!(result_map[&root_a_ns.namespace_id].is_root());
+        assert!(result_map[&root_b_ns.namespace_id].is_root());
+        assert_eq!(result_map[&root_a_ns.namespace_id].parents.len(), 0);
+        assert_eq!(result_map[&root_b_ns.namespace_id].parents.len(), 0);
+
+        // List children of root A
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: Some(root_a.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Should only return A.1 with correct parent
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        let a1_hierarchy = &result_map[&child_a1_ns.namespace_id];
+        assert_eq!(a1_hierarchy.depth(), 1);
+        assert_eq!(&**a1_hierarchy.parent().unwrap(), &root_a_ns);
+        assert_eq!(&**a1_hierarchy.root(), &root_a_ns);
+
+        // List children of root B
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: Some(root_b.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Should only return B.1 with correct parent
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        let b1_hierarchy = &result_map[&child_b1_ns.namespace_id];
+        assert_eq!(b1_hierarchy.depth(), 1);
+        assert_eq!(&**b1_hierarchy.parent().unwrap(), &root_b_ns);
+        assert_eq!(&**b1_hierarchy.root(), &root_b_ns);
+    }
+
+    #[sqlx::test]
+    async fn test_list_namespaces_pagination_with_hierarchy(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Create parent and multiple children
+        let parent = NamespaceIdent::from_vec(vec!["parent".to_string()]).unwrap();
+        let parent_ns = initialize_namespace(state.clone(), warehouse_id, &parent, None).await;
+
+        let child1 =
+            NamespaceIdent::from_vec(vec!["parent".to_string(), "child1".to_string()]).unwrap();
+        let child1_ns = initialize_namespace(state.clone(), warehouse_id, &child1, None).await;
+
+        let child2 =
+            NamespaceIdent::from_vec(vec!["parent".to_string(), "child2".to_string()]).unwrap();
+        let child2_ns = initialize_namespace(state.clone(), warehouse_id, &child2, None).await;
+
+        let child3 =
+            NamespaceIdent::from_vec(vec!["parent".to_string(), "child3".to_string()]).unwrap();
+        let child3_ns = initialize_namespace(state.clone(), warehouse_id, &child3, None).await;
+
+        // List children with pagination (page_size = 2)
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(2),
+                parent: Some(parent.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // First page: 2 children
+        assert_eq!(result.len(), 2);
+        let next_token = result.next_token().map(ToString::to_string);
+        assert!(next_token.is_some());
+
+        let result_map = result.into_hashmap();
+
+        // All returned children should have parent hierarchy
+        assert!(
+            result_map.contains_key(&child1_ns.namespace_id)
+                || result_map.contains_key(&child2_ns.namespace_id)
+                || result_map.contains_key(&child3_ns.namespace_id)
+        );
+
+        for hierarchy in result_map.values() {
+            assert_eq!(hierarchy.depth(), 1);
+            assert_eq!(&**hierarchy.parent().unwrap(), &parent_ns);
+            assert_eq!(&**hierarchy.root(), &parent_ns);
+        }
+
+        // Get second page
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: next_token.map_or(PageToken::Empty, PageToken::Present),
+                page_size: Some(2),
+                parent: Some(parent.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Second page: 1 child
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        // This child should also have parent hierarchy
+        for hierarchy in result_map.values() {
+            assert_eq!(hierarchy.depth(), 1);
+            assert_eq!(&**hierarchy.parent().unwrap(), &parent_ns);
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_list_namespaces_deep_hierarchy(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Create a 4-level deep hierarchy
+        let level1 = NamespaceIdent::from_vec(vec!["level1".to_string()]).unwrap();
+        let level1_ns = initialize_namespace(state.clone(), warehouse_id, &level1, None).await;
+
+        let level2 =
+            NamespaceIdent::from_vec(vec!["level1".to_string(), "level2".to_string()]).unwrap();
+        let level2_ns = initialize_namespace(state.clone(), warehouse_id, &level2, None).await;
+
+        let level3 = NamespaceIdent::from_vec(vec![
+            "level1".to_string(),
+            "level2".to_string(),
+            "level3".to_string(),
+        ])
+        .unwrap();
+        let level3_ns = initialize_namespace(state.clone(), warehouse_id, &level3, None).await;
+
+        let level4 = NamespaceIdent::from_vec(vec![
+            "level1".to_string(),
+            "level2".to_string(),
+            "level3".to_string(),
+            "level4".to_string(),
+        ])
+        .unwrap();
+        let level4_ns = initialize_namespace(state.clone(), warehouse_id, &level4, None).await;
+
+        // List at level 4 (deepest)
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                parent: Some(level3.clone()),
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let result_map = result.into_hashmap();
+
+        let level4_hierarchy = &result_map[&level4_ns.namespace_id];
+        assert_eq!(level4_hierarchy.depth(), 3);
+        assert_eq!(level4_hierarchy.parents.len(), 3);
+
+        // Verify parent chain: level3 -> level2 -> level1
+        assert_eq!(&*level4_hierarchy.parents[0], &level3_ns);
+        assert_eq!(&*level4_hierarchy.parents[1], &level2_ns);
+        assert_eq!(&*level4_hierarchy.parents[2], &level1_ns);
+
+        // Verify convenience methods
+        assert_eq!(&**level4_hierarchy.parent().unwrap(), &level3_ns);
+        assert_eq!(&**level4_hierarchy.root(), &level1_ns);
+        assert!(!level4_hierarchy.is_root());
     }
 }

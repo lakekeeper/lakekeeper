@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE namespace\n        SET namespace_properties = $1\n        WHERE warehouse_id = $2 AND namespace_id = $3\n        AND warehouse_id IN (\n            SELECT warehouse_id FROM warehouse WHERE status = 'active'\n        )\n        RETURNING namespace_name as \"namespace_name: Vec<String>\", protected, created_at, updated_at, namespace_properties as \"properties: Json<Option<HashMap<String, String>>>\", version\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_name: Vec<String>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 1,
+        "name": "protected",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "properties: Json<Option<HashMap<String, String>>>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "df8f3a61ce9d07c3bb1805b6a322f29e25cee0e18762d3329a941f1f1b33a9ad"
+}

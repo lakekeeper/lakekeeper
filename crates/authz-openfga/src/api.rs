@@ -1670,7 +1670,10 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::{Namespace, NamespaceIdent};
+    use std::sync::Arc;
+
+    use lakekeeper::service::{Namespace, NamespaceHierarchy, NamespaceIdent};
+    use sqlx::types::chrono;
 
     use super::*;
 
@@ -1683,14 +1686,19 @@ mod tests {
         );
     }
 
-    fn random_namespace(namespace_id: NamespaceId) -> Namespace {
-        Namespace {
-            namespace_ident: NamespaceIdent::new(format!("ns-{namespace_id}")),
-            namespace_id,
-            protected: false,
-            warehouse_id: uuid::Uuid::nil().into(),
-            properties: None,
-            updated_at: None,
+    fn random_namespace(namespace_id: NamespaceId) -> NamespaceHierarchy {
+        NamespaceHierarchy {
+            namespace: Arc::new(Namespace {
+                namespace_ident: NamespaceIdent::new(format!("ns-{namespace_id}")),
+                namespace_id,
+                protected: false,
+                warehouse_id: uuid::Uuid::nil().into(),
+                properties: None,
+                updated_at: None,
+                created_at: chrono::Utc::now(),
+                version: 0.into(),
+            }),
+            parents: vec![],
         }
     }
 

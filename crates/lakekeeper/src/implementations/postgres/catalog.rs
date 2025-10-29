@@ -74,9 +74,9 @@ use crate::{
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateTableError, CreateViewError,
         DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
         ListNamespacesQuery, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
-        MarkTabularAsDeletedError, Namespace, NamespaceDropInfo, NamespaceId, NamespaceIdentOrId,
-        ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId,
-        SearchTabularError, ServerInfo, SetTabularProtectionError,
+        MarkTabularAsDeletedError, Namespace, NamespaceDropInfo, NamespaceHierarchy, NamespaceId,
+        NamespaceIdentOrId, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result,
+        RoleId, SearchTabularError, ServerInfo, SetTabularProtectionError,
         SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
         TabularIdentBorrowed, TabularListFlags, Transaction, UpdateWarehouseStorageProfileError,
@@ -117,8 +117,10 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError>
-    {
+    ) -> std::result::Result<
+        PaginatedMapping<NamespaceId, NamespaceHierarchy>,
+        CatalogListNamespaceError,
+    > {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
@@ -135,7 +137,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         namespace: NamespaceIdentOrId,
         state: Self::State,
-    ) -> std::result::Result<Option<Namespace>, CatalogGetNamespaceError> {
+    ) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
         get_namespace(warehouse_id, namespace, &state.read_pool()).await
     }
 

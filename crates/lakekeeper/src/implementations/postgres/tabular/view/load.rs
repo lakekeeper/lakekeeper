@@ -376,7 +376,7 @@ async fn get_default_namespace_ident(
             );
             EMPTY_NAMESPACE_IDENT.clone()
         },
-        |n| n.namespace_ident,
+        |n| n.namespace_ident().clone(),
     );
     Ok(namespace_ident)
 }

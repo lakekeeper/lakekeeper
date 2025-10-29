@@ -11,8 +11,8 @@ use lakekeeper::{
             CatalogServerAction, CatalogUserAction, ListProjectsResponse, NamespaceParent,
         },
         health::Health,
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, Namespace, NamespaceId,
-        RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
+        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
+        NamespaceId, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
     ProjectId, WarehouseId,
@@ -323,13 +323,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
-        namespace: &Namespace,
+        namespace: &NamespaceHierarchy,
         action: Self::NamespaceAction,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: namespace.namespace_id.to_openfga(),
+            object: namespace.namespace_id().to_openfga(),
         })
         .await
         .map_err(Into::into)
@@ -338,14 +338,14 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&Namespace, Self::NamespaceAction)],
+        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = actions
             .iter()
             .map(|(namespace, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
-                object: namespace.namespace_id.to_openfga(),
+                object: namespace.namespace_id().to_openfga(),
             })
             .collect();
         self.batch_check(items).await.map_err(Into::into)

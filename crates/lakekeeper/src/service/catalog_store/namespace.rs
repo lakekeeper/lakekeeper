@@ -8,22 +8,103 @@ use lakekeeper_io::Location;
 use crate::{
     api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
     service::{
-        define_transparent_error, impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
-        CatalogBackendError, CatalogStore, InternalParseLocationError, InvalidPaginationToken,
-        ListNamespacesQuery, NamespaceId, TableIdent, TabularId, Transaction, WarehouseIdNotFound,
+        define_transparent_error, define_version_newtype, impl_error_stack_methods,
+        impl_from_with_detail, tasks::TaskId, CatalogBackendError, CatalogStore,
+        InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
+        TableIdent, TabularId, Transaction, WarehouseIdNotFound,
     },
     WarehouseId,
 };
 
+define_version_newtype!(NamespaceVersion);
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Namespace {
-    /// Reference to one or more levels of a namespace
     pub namespace_ident: NamespaceIdent,
     pub protected: bool,
     pub namespace_id: NamespaceId,
     pub warehouse_id: WarehouseId,
-    pub properties: Option<Arc<std::collections::HashMap<String, String>>>,
+    pub properties: Option<std::collections::HashMap<String, String>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub version: NamespaceVersion,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceHierarchy {
+    /// The target namespace (leaf in the hierarchy)
+    pub namespace: Arc<Namespace>,
+    /// Parent namespaces ordered from immediate parent to root.
+    /// Empty if this namespace is a root namespace (i.e., directly in the warehouse).
+    /// Root namespace = a namespace that is directly contained in the warehouse with no parent.
+    pub parents: Vec<Arc<Namespace>>,
+}
+
+impl NamespaceHierarchy {
+    /// Get the immediate parent namespace, if any.
+    /// Returns None if this is a root namespace (directly in the warehouse).
+    #[must_use]
+    pub fn parent(&self) -> Option<&Arc<Namespace>> {
+        self.parents.first()
+    }
+
+    /// Get the root namespace (furthest ancestor in the hierarchy).
+    /// A root namespace is one that is directly contained in the warehouse.
+    /// If this namespace is itself a root namespace, returns itself.
+    #[must_use]
+    pub fn root(&self) -> &Arc<Namespace> {
+        self.parents.last().unwrap_or(&self.namespace)
+    }
+
+    /// Check if this is a root namespace (directly in the warehouse, no parents)
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.parents.is_empty()
+    }
+
+    /// Get the depth in the hierarchy.
+    /// - 0 = root namespace (directly in warehouse)
+    /// - 1 = one level deep
+    /// - 2 = two levels deep, etc.
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.parents.len()
+    }
+
+    #[must_use]
+    pub fn namespace_ident(&self) -> &NamespaceIdent {
+        &self.namespace.namespace_ident
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> NamespaceId {
+        self.namespace.namespace_id
+    }
+
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        self.namespace.warehouse_id
+    }
+
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        self.namespace.protected
+    }
+
+    #[must_use]
+    pub fn properties(&self) -> Option<&HashMap<String, String>> {
+        self.namespace.properties.as_ref()
+    }
+
+    #[must_use]
+    pub fn version(&self) -> NamespaceVersion {
+        self.namespace.version
+    }
+
+    #[must_use]
+    pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.namespace.updated_at
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -384,7 +465,7 @@ where
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId> + Send,
         catalog_state: Self::State,
-    ) -> Result<Option<Namespace>, CatalogGetNamespaceError> {
+    ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
         Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await
     }
 
@@ -392,8 +473,10 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<PaginatedMapping<NamespaceId, Namespace>, CatalogListNamespaceError>
-    {
+    ) -> std::result::Result<
+        PaginatedMapping<NamespaceId, NamespaceHierarchy>,
+        CatalogListNamespaceError,
+    > {
         Self::list_namespaces_impl(warehouse_id, query, transaction).await
     }
 

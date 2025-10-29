@@ -82,7 +82,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
 
     let view_location = determine_tabular_location(
-        &namespace,
+        &namespace.namespace,
         request.location.clone(),
         view_id,
         &warehouse.storage_profile,
@@ -123,7 +123,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     C::create_view(
         warehouse_id,
-        namespace.namespace_id,
+        namespace.namespace_id(),
         &view,
         &metadata_build_result.metadata,
         &metadata_location,
@@ -173,7 +173,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             ViewId::from(metadata_build_result.metadata.uuid()),
-            namespace.namespace_id,
+            namespace.namespace_id(),
         )
         .await?;
 

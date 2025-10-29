@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{collections::HashMap, ops::Deref};
 
 use futures::FutureExt;
 use http::StatusCode;
@@ -169,7 +169,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         .zip(responses.into_iter())
                         .zip(tokens.into_iter())
                         .map(|((allowed, namespace), token)| {
-                            let namespace_id = namespace.namespace_id;
+                            let namespace_id = namespace.namespace_id();
                             (namespace, namespace_id, token, allowed)
                         })
                         .multiunzip();
@@ -190,7 +190,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         t.commit().await?;
         let (namespaces, protection): (Vec<_>, Vec<_>) = idents
             .into_iter()
-            .map(|n| (n.namespace_ident, n.protected))
+            .map(|n| (n.namespace_ident().clone(), n.is_protected()))
             .unzip();
         Ok(ListNamespacesResponse {
             next_page_token,
@@ -254,7 +254,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     CatalogNamespaceAction::CanCreateNamespace,
                 )
                 .await?;
-            Some(parent_namespace.namespace_id)
+            Some(parent_namespace.namespace_id())
         } else {
             authorizer
                 .require_warehouse_action(
@@ -291,7 +291,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(&request_metadata, namespace_id, authz_parent)
             .await?;
         t.commit().await?;
-        let mut properties = r.properties.map(Arc::unwrap_or_clone).unwrap_or_default();
+        let mut properties = r.properties.clone().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(CreateNamespaceResponse {
             namespace: r.namespace_ident,
@@ -326,15 +326,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id;
-        let mut properties = namespace
-            .properties
-            .map(Arc::unwrap_or_clone)
-            .unwrap_or_default();
+        let namespace_id = namespace.namespace_id();
+        let mut properties = namespace.properties().cloned().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(GetNamespaceResponse {
             properties: Some(properties),
-            namespace: namespace.namespace_ident,
+            namespace: namespace.namespace_ident().clone(),
             namespace_uuid: return_uuid.then_some(*namespace_id),
         })
     }
@@ -412,7 +409,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id;
+        let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if flags.recursive {
             try_recursive_drop::<_, C>(
@@ -478,14 +475,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id;
+        let namespace_id = namespace.namespace_id();
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let (new_properties, r) = update_namespace_properties(
-            namespace.properties.map(Arc::unwrap_or_clone),
-            updates,
-            removals,
-        );
+        let (new_properties, r) =
+            update_namespace_properties(namespace.properties().cloned(), updates, removals);
         C::update_namespace_properties(warehouse_id, namespace_id, new_properties, t.transaction())
             .await?;
         t.commit().await?;
@@ -870,7 +864,7 @@ mod tests {
                         .await
                         .unwrap()
                         .unwrap()
-                        .namespace_id
+                        .namespace_id()
                     ));
                 }
             }
