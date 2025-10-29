@@ -5,6 +5,7 @@ use std::{
 
 use axum_prometheus::metrics;
 use moka::{future::Cache, notification::RemovalCause};
+use unicase::UniCase;
 
 #[cfg(feature = "router")]
 use crate::{
@@ -68,7 +69,7 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
                         NAME_TO_ID_CACHE
                             .invalidate(&(
                                 value.warehouse.project_id.clone(),
-                                value.warehouse.name.clone(),
+                                UniCase::new(value.warehouse.name.clone()),
                             ))
                             .await;
                     }
@@ -78,12 +79,14 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
     });
 
 // Secondary index: (project_id, name) → warehouse_id
-static NAME_TO_ID_CACHE: LazyLock<Cache<(ProjectId, String), WarehouseId>> = LazyLock::new(|| {
-    Cache::builder()
-        .max_capacity(CONFIG.cache.warehouse.capacity)
-        .initial_capacity(50)
-        .build()
-});
+// Uses UniCase for case-insensitive warehouse name lookups
+static NAME_TO_ID_CACHE: LazyLock<Cache<(ProjectId, UniCase<String>), WarehouseId>> =
+    LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(CONFIG.cache.warehouse.capacity)
+            .initial_capacity(50)
+            .build()
+    });
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedWarehouse {
@@ -131,7 +134,7 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
         tracing::debug!("Inserting warehouse id {warehouse_id} into cache");
         tokio::join!(
             WAREHOUSE_CACHE.insert(warehouse_id, CachedWarehouse { warehouse }),
-            NAME_TO_ID_CACHE.insert((project_id, name), warehouse_id),
+            NAME_TO_ID_CACHE.insert((project_id, UniCase::new(name)), warehouse_id),
         );
         update_cache_size_metric();
     }
@@ -166,7 +169,7 @@ pub(super) async fn warehouse_cache_get_by_name(
 ) -> Option<Arc<ResolvedWarehouse>> {
     update_cache_size_metric();
     let Some(warehouse_id) = NAME_TO_ID_CACHE
-        .get(&(project_id.clone(), name.to_string()))
+        .get(&(project_id.clone(), UniCase::new(name.to_string())))
         .await
     else {
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
@@ -707,5 +710,39 @@ mod tests {
         let cached2 = warehouse_cache_get_by_name(&name, &project_id2).await;
         assert!(cached2.is_some());
         assert_eq!(cached2.unwrap().warehouse_id, warehouse2_id);
+    }
+
+    #[tokio::test]
+    async fn test_warehouse_cache_case_insensitive_lookup() {
+        let warehouse_id = WarehouseId::new_random();
+        let project_id = ProjectId::new_random();
+        let name = "Test-Warehouse".to_string();
+        let warehouse = test_warehouse(
+            warehouse_id,
+            name.clone(),
+            project_id.clone(),
+            Some(Utc::now()),
+            0,
+        );
+
+        // Insert warehouse with mixed-case name
+        warehouse_cache_insert(warehouse.clone()).await;
+
+        // Verify we can retrieve it with different case variations
+        let cached_lower = warehouse_cache_get_by_name("test-warehouse", &project_id).await;
+        assert!(cached_lower.is_some());
+        assert_eq!(cached_lower.unwrap().warehouse_id, warehouse_id);
+
+        let cached_upper = warehouse_cache_get_by_name("TEST-WAREHOUSE", &project_id).await;
+        assert!(cached_upper.is_some());
+        assert_eq!(cached_upper.unwrap().warehouse_id, warehouse_id);
+
+        let cached_mixed = warehouse_cache_get_by_name("TeSt-WaReHoUsE", &project_id).await;
+        assert!(cached_mixed.is_some());
+        assert_eq!(cached_mixed.unwrap().warehouse_id, warehouse_id);
+
+        let cached_exact = warehouse_cache_get_by_name(&name, &project_id).await;
+        assert!(cached_exact.is_some());
+        assert_eq!(cached_exact.unwrap().warehouse_id, warehouse_id);
     }
 }

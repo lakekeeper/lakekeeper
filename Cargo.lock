@@ -3954,6 +3954,7 @@ dependencies = [
  "tracing-test",
  "tryhard",
  "typed-builder 0.22.0",
+ "unicase",
  "url",
  "urlencoding",
  "utoipa",
