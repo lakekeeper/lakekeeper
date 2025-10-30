@@ -17,6 +17,7 @@ rust-version = "1.87.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+unicase = "2.8.1"
 anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }

@@ -97,6 +97,7 @@ strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+unicase = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
