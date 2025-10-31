@@ -203,7 +203,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             .map(|id| Uuid::from(id))
             .collect::<Vec<uuid::Uuid>>() as Vec<Uuid>,
         filter_name.is_empty(),
-        filter_name.to_string(),
+        filter_name.clone(),
         token_ts,
         token_id,
         page_size,

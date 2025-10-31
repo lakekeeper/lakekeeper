@@ -130,7 +130,7 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         LIMIT $7
         "#,
         filter_name.is_empty(),
-        filter_name.to_string(),
+        filter_name.clone(),
         filter_user_id.is_none(),
         filter_user_id
             .unwrap_or_default()

@@ -230,7 +230,7 @@ async fn resolve_warehouses(
             e.keys().filter_map(|epi| {
                 epi.warehouse_name
                     .as_ref()
-                    .map(|warehouse| (p.to_string(), warehouse.to_string()))
+                    .map(|warehouse| (p.to_string(), warehouse.clone()))
             })
         })
         .unique()

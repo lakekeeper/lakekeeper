@@ -175,7 +175,7 @@ pub(crate) async fn set_view_properties(
 ) -> Result<(), CatalogBackendError> {
     let (keys, vals): (Vec<String>, Vec<String>) = properties
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| (k.clone(), v.clone()))
         .unzip();
     sqlx::query!(
         r#"INSERT INTO view_properties (warehouse_id, view_id, key, value)

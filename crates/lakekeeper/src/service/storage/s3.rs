@@ -429,12 +429,12 @@ impl S3Profile {
             config.insert(&s3::PathStyleAccess(true));
         }
 
-        config.insert(&s3::Region(self.region.to_string()));
+        config.insert(&s3::Region(self.region.clone()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
-            value: self.region.to_string(),
+            value: self.region.clone(),
         });
-        config.insert(&client::Region(self.region.to_string()));
+        config.insert(&client::Region(self.region.clone()));
 
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));

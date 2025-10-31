@@ -878,7 +878,7 @@ mod tests {
         CatalogServer,
         ListNamespacesQuery,
         namespaces,
-        |ns| ns.inner()[0].to_string()
+        |ns| ns.inner()[0].clone()
     );
 
     #[sqlx::test]

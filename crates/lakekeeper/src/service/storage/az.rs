@@ -272,7 +272,7 @@ impl AdlsProfile {
                     OffsetDateTime::now_utc()
                         .saturating_sub(time::Duration::minutes(5))
                         .saturating_add(time::Duration::days(7)),
-                    azure_core::auth::Secret::new(key.to_string()),
+                    azure_core::auth::Secret::new(key.clone()),
                 )?,
                 AzCredential::AzureSystemIdentity {} => {
                     let client = self.blob_service_client(credential).await?;
@@ -483,7 +483,7 @@ impl AdlsProfile {
 #[must_use]
 pub(crate) fn reduce_scheme_string(path: &str) -> String {
     AdlsLocation::try_from_str(path, true)
-        .map(|l| format!("/{}", l.blob_name().to_string().trim_start_matches('/')))
+        .map(|l| format!("/{}", l.blob_name().clone().trim_start_matches('/')))
         .unwrap_or(path.to_string())
 }
 
@@ -557,7 +557,7 @@ pub(super) fn get_file_io_from_table_config(
     let mut sas_token = None;
     for (key, value) in &config {
         if key.starts_with(sas_token_prefix) {
-            sas_token = Some(value.to_string());
+            sas_token = Some(value.clone());
             break;
         }
     }
@@ -647,7 +647,7 @@ pub(crate) mod test {
             let key_prefix = format!("test-{}", uuid::Uuid::now_v7());
             AdlsProfile {
                 filesystem,
-                key_prefix: Some(key_prefix.to_string()),
+                key_prefix: Some(key_prefix.clone()),
                 account_name,
                 authority_host: None,
                 host: None,

@@ -10,10 +10,10 @@ license = { workspace = true }
 description = "OpenFGA Authorizer for Lakekeeper"
 keywords = ["iceberg", "rest", "lakekeeper", "openfga"]
 
+[lib]
+
 [features]
 open-api = ["dep:utoipa", "lakekeeper/open-api"]
-
-[lib]
 
 [dependencies]
 anyhow = { workspace = true }

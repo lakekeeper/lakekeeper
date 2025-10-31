@@ -610,7 +610,7 @@ pub(crate) async fn set_table_properties(
     }
     let (keys, vals): (Vec<String>, Vec<String>) = properties
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| (k.clone(), v.clone()))
         .unzip();
     sqlx::query!(
         r#"WITH drop as (DELETE FROM table_properties WHERE warehouse_id = $1 AND table_id = $2)
