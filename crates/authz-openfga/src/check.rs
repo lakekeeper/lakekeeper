@@ -146,7 +146,7 @@ async fn check_warehouse(
         .await?;
     Ok((
         action.to_openfga().to_string(),
-        warehouse_id.to_openfga().to_string(),
+        warehouse_id.to_openfga().clone(),
     ))
 }
 
@@ -181,7 +181,7 @@ async fn check_server(
     for_principal: &mut Option<UserOrRole>,
     action: &APIServerAction,
 ) -> Result<(String, String)> {
-    let openfga_server = authorizer.openfga_server().to_string();
+    let openfga_server = authorizer.openfga_server().clone();
     if for_principal.is_some() {
         authorizer
             .require_action(

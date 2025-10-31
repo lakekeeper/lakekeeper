@@ -550,9 +550,9 @@ impl CloudEventsPublisherBackgroundTask {
                 .extension("tabular-type", tabular_id.typ_str())
                 .extension("tabular-id", tabular_id.to_string())
                 .extension("warehouse-id", warehouse_id.to_string())
-                .extension("name", name.to_string())
-                .extension("namespace", namespace.to_string())
-                .extension("prefix", prefix.to_string())
+                .extension("name", name.clone())
+                .extension("namespace", namespace.clone())
+                .extension("prefix", prefix.clone())
                 .extension("num-events", i64::try_from(num_events).unwrap_or(i64::MAX))
                 .extension(
                     "sequence-number",

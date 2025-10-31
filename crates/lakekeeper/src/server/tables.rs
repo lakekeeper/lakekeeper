@@ -4049,7 +4049,7 @@ pub(crate) mod test {
         // Test without overwrite flag - should fail
         let register_request = iceberg_ext::catalog::rest::RegisterTableRequest::builder()
             .name("test_overwrite".to_string())
-            .metadata_location(second_table.metadata_location.as_ref().unwrap().to_string())
+            .metadata_location(second_table.metadata_location.as_ref().unwrap().clone())
             .build();
 
         CatalogServer::register_table(
@@ -4065,7 +4065,7 @@ pub(crate) mod test {
         let register_request_with_overwrite =
             iceberg_ext::catalog::rest::RegisterTableRequest::builder()
                 .name("test_overwrite".to_string())
-                .metadata_location(second_table.metadata_location.as_ref().unwrap().to_string())
+                .metadata_location(second_table.metadata_location.as_ref().unwrap().clone())
                 .overwrite(true)
                 .build();
 

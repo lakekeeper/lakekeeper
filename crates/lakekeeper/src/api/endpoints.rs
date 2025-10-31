@@ -440,7 +440,7 @@ mod test {
             // Remove leading "/" to match normalized paths from YAML
             assert!(path.starts_with('/'), "Path should start with '/'");
             let normalized_path = path.trim_start_matches('/');
-            actual_endpoints.insert((method.to_string(), normalized_path.to_string()));
+            actual_endpoints.insert((method.clone(), normalized_path.to_string()));
         }
 
         // Find missing endpoints

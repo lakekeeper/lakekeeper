@@ -207,7 +207,7 @@ mod test {
         let loaded_view = load_view(
             api_context.clone(),
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
         )
@@ -216,7 +216,7 @@ mod test {
         assert_eq!(loaded_view.metadata, created_view.metadata);
         drop_view(
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
@@ -232,7 +232,7 @@ mod test {
         let error = load_view(
             api_context.clone(),
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
             },
         )
@@ -284,7 +284,7 @@ mod test {
         let loaded_view = load_view(
             api_context.clone(),
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
         )
@@ -304,7 +304,7 @@ mod test {
 
         let e = drop_view(
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
@@ -331,7 +331,7 @@ mod test {
 
         drop_view(
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
@@ -347,7 +347,7 @@ mod test {
         let error = load_view(
             api_context,
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
             },
         )
@@ -379,7 +379,7 @@ mod test {
         let loaded_view = load_view(
             api_context.clone(),
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
         )
@@ -399,7 +399,7 @@ mod test {
 
         drop_view(
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
@@ -415,7 +415,7 @@ mod test {
         let error = load_view(
             api_context,
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
             },
         )

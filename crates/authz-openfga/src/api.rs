@@ -402,7 +402,7 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
-    let openfga_server = authorizer.openfga_server().to_string();
+    let openfga_server = authorizer.openfga_server().clone();
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -836,7 +836,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
     Query(query): Query<GetServerAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let server_id = authorizer.openfga_server().to_string();
+    let server_id = authorizer.openfga_server().clone();
     authorizer
         .require_action(&metadata, AllServerAction::CanReadAssignments, &server_id)
         .await?;
@@ -1073,7 +1073,7 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateServerAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    let server_id = authorizer.openfga_server().to_string();
+    let server_id = authorizer.openfga_server().clone();
     checked_write(
         authorizer,
         metadata.actor(),
@@ -1522,7 +1522,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     let actions = A::iter().collect::<Vec<_>>();
     let for_principal = for_principal
         .map(super::entities::OpenFgaEntity::to_openfga)
-        .unwrap_or(openfga_actor.to_string());
+        .unwrap_or(openfga_actor.clone());
 
     let actions = actions.iter().map(|action| async {
         let key = CheckRequestTupleKey {
@@ -1764,7 +1764,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1900,7 +1900,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1938,7 +1938,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1968,7 +1968,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1991,7 +1991,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -2026,7 +2026,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user1_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,

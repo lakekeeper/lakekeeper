@@ -189,7 +189,7 @@ pub(crate) mod test {
         let loaded_view = load_view(
             api_context,
             ViewParameters {
-                prefix: Some(Prefix(prefix.to_string())),
+                prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
             },
         )

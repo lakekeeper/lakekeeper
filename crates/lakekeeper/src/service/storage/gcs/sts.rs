@@ -193,7 +193,7 @@ impl From<&GcsServiceKey> for CredentialsFile {
         }: &GcsServiceKey,
     ) -> Self {
         Self {
-            tp: tp.to_string(),
+            tp: tp.clone(),
             client_email: Some(client_email.clone()),
             private_key_id: Some(private_key_id.clone()),
             private_key: Some(private_key.clone()),

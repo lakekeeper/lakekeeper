@@ -172,7 +172,7 @@ impl Authorizer for OpenFGAAuthorizer {
             Some(vec![TupleKey {
                 user: user.to_openfga(),
                 relation: relation.to_string(),
-                object: self.openfga_server().to_string(),
+                object: self.openfga_server().clone(),
                 condition: None,
             }]),
             None,
@@ -235,7 +235,7 @@ impl Authorizer for OpenFGAAuthorizer {
             };
         }
 
-        let server_id = self.openfga_server().to_string();
+        let server_id = self.openfga_server().clone();
         match action {
             // Currently, given a user-id, all information about a user can be retrieved.
             // For multi-tenant setups, we need to restrict this to a tenant.
@@ -268,7 +268,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: self.openfga_server().to_string(),
+            object: self.openfga_server().clone(),
         })
         .await
         .map_err(Into::into)
@@ -471,7 +471,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(project_id).await?;
-        let server = self.openfga_server().to_string();
+        let server = self.openfga_server().clone();
         let this_id = project_id.to_openfga();
         self.write(
             Some(vec![
@@ -725,7 +725,7 @@ impl OpenFGAAuthorizer {
             .check(CheckRequestTupleKey {
                 user: actor.to_openfga(),
                 relation: ServerRelation::CanListAllProjects.to_string(),
-                object: self.openfga_server().to_string(),
+                object: self.openfga_server().clone(),
             })
             .await?;
 

@@ -17,7 +17,7 @@ impl HealthExt for OpenFGAAuthorizer {
             .check(CheckRequestTupleKey {
                 user: ProjectId::new_random().to_openfga(),
                 relation: ServerRelation::Project.to_string(),
-                object: self.openfga_server().to_string(),
+                object: self.openfga_server().clone(),
             })
             .await;
 

@@ -613,7 +613,7 @@ async fn setup_drop_test(
         let _ = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
-            ns_name.to_string(),
+            ns_name.clone(),
         )
         .await;
         for i in 0..n_tabs {

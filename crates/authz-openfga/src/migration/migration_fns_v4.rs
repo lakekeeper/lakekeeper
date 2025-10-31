@@ -238,7 +238,7 @@ async fn get_all_warehouses(
             let tuples = client
                 .read_all_pages(
                     Some(ReadRequestTupleKey {
-                        user: p.to_string(),
+                        user: p.clone(),
                         relation: WarehouseRelation::Project.to_string(),
                         object: "warehouse:".to_string(),
                     }),
@@ -597,13 +597,13 @@ mod openfga_integration_tests {
             .write(
                 Some(vec![
                     TupleKey {
-                        user: authorizer.openfga_server().to_string(),
+                        user: authorizer.openfga_server().clone(),
                         relation: ProjectRelation::Server.to_string(),
                         object: "project:p1".to_string(),
                         condition: None,
                     },
                     TupleKey {
-                        user: authorizer.openfga_server().to_string(),
+                        user: authorizer.openfga_server().clone(),
                         relation: ProjectRelation::Server.to_string(),
                         object: "project:p2".to_string(),
                         condition: None,
@@ -1733,7 +1733,7 @@ mod openfga_integration_tests {
                 Some(vec![
                     // Project structure
                     TupleKey {
-                        user: authorizer.openfga_server().to_string(),
+                        user: authorizer.openfga_server().clone(),
                         relation: ProjectRelation::Server.to_string(),
                         object: project_openfga.clone(),
                         condition: None,

@@ -158,7 +158,7 @@ impl LakekeeperStorage for GcsStorage {
         };
 
         if bytes.len() < MAX_BYTES_PER_REQUEST {
-            let mut media = Media::new(location.object_name().to_string());
+            let mut media = Media::new(location.object_name().clone());
             media.content_length = Some(bytes.len() as u64);
             let upload_type = UploadType::Simple(media);
 
