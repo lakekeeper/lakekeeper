@@ -369,8 +369,9 @@ where
         .serialize(serializer)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum AuthZBackend {
+    #[default]
     AllowAll,
     External(String),
 }
@@ -400,12 +401,6 @@ impl Serialize for AuthZBackend {
             AuthZBackend::AllowAll => "allowall".serialize(serializer),
             AuthZBackend::External(s) => s.to_lowercase().serialize(serializer),
         }
-    }
-}
-
-impl Default for AuthZBackend {
-    fn default() -> Self {
-        Self::AllowAll
     }
 }
 
