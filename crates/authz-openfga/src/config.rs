@@ -82,9 +82,10 @@ pub struct OpenFGAConfig {
     pub max_batch_check_size: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, veil::Redact)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, veil::Redact)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenFGAAuth {
+    #[default]
     Anonymous,
     ClientCredentials {
         client_id: String,
@@ -95,12 +96,6 @@ pub enum OpenFGAAuth {
     },
     #[redact(all)]
     ApiKey(String),
-}
-
-impl Default for OpenFGAAuth {
-    fn default() -> Self {
-        Self::Anonymous
-    }
 }
 
 fn deserialize_openfga_config<'de, D>(deserializer: D) -> Result<Option<OpenFGAConfig>, D::Error>
