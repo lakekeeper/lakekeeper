@@ -303,7 +303,7 @@ async fn test_get_namespace_not_found(pool: PgPool) {
 
 // ==================== Cache Tests ====================
 
-/// Test cache is populated by `get_namespace``
+/// Test cache is populated by `get_namespace`
 #[sqlx::test]
 async fn test_namespace_cache_populated_by_get_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
@@ -470,7 +470,7 @@ async fn test_cache_respects_min_version(pool: PgPool) {
     assert_eq!(namespace_fresh.properties(), Some(&new_props));
 }
 
-/// Test ``CachePolicy::Skip bypasses cache
+/// Test `CachePolicy::Skip` bypasses cache
 #[sqlx::test]
 async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     let storage_profile = memory_io_profile();
@@ -564,7 +564,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     assert_eq!(namespace_fresh.properties(), Some(&updated_props));
 }
 
-/// Test cache invalidation when updating namespace properties via `ApiServer``
+/// Test cache invalidation when updating namespace properties via `ApiServer`
 #[sqlx::test]
 async fn test_cache_invalidation_on_api_update_properties(pool: PgPool) {
     let storage_profile = memory_io_profile();
