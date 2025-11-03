@@ -47,7 +47,9 @@ pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, CachedNamespace>>
         Cache::builder()
             .max_capacity(CONFIG.cache.namespace.capacity)
             .initial_capacity(50)
-            .time_to_live(Duration::from_secs(CONFIG.cache.namespace.time_to_live_secs))
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.namespace.time_to_live_secs,
+            ))
             .async_eviction_listener(|key, value: CachedNamespace, cause| {
                 Box::pin(async move {
                     // Evictions:
@@ -137,14 +139,9 @@ pub(super) async fn namespace_cache_insert(namespace: &NamespaceWithParentVersio
                     );
                     return;
                 }
-                std::cmp::Ordering::Equal => {
-                    tracing::debug!(
-                        "Skipping insert of namespace id {namespace_id} into cache; versions are equal"
-                    );
-                    return;
-                }
-                std::cmp::Ordering::Greater => {
-                    // New entry is newer; proceed with insert
+                std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
+                    // New entry is newer; proceed with insert.
+                    // Also insert equal versions to avoid expiration
                 }
             }
         }
@@ -186,14 +183,9 @@ pub(super) async fn namespace_cache_insert_hierarchy(namespace_hierarchy: &Names
                     );
                     return;
                 }
-                std::cmp::Ordering::Equal => {
-                    tracing::debug!(
-                        "Skipping insert of namespace id {namespace_id} into cache; versions are equal"
-                    );
-                    return;
-                }
-                std::cmp::Ordering::Greater => {
-                    // New entry is newer; proceed with insert
+                std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
+                    // New entry is newer; proceed with insert.
+                    // Also insert equal versions to avoid expiration
                 }
             }
         }

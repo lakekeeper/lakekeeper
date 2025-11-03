@@ -30,8 +30,8 @@ use crate::{
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskFilter, TaskMetadata,
         },
-        CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps, NamedEntity,
-        NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
+        NamedEntity, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
     },
     CONFIG,
 };
@@ -440,13 +440,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Ok(())
         };
 
-        state
-            .v1_state
-            .hooks
-            .drop_namespace(warehouse_id, namespace_id, Arc::new(request_metadata))
-            .await;
-
-        r
+        match r {
+            Ok(()) => {
+                state
+                    .v1_state
+                    .hooks
+                    .drop_namespace(warehouse_id, namespace_id, Arc::new(request_metadata))
+                    .await;
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Set or remove properties on a namespace
@@ -476,9 +480,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let namespace = C::get_namespace(
+        let namespace = C::get_namespace_cache_aware(
             warehouse_id,
             &parameters.namespace,
+            CachePolicy::Skip,
             state.v1_state.catalog.clone(),
         )
         .await;

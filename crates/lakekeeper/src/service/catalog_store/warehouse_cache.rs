@@ -47,7 +47,9 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
             .initial_capacity(50)
-            .time_to_live(Duration::from_secs(CONFIG.cache.warehouse.time_to_live_secs))
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.warehouse.time_to_live_secs,
+            ))
             .async_eviction_listener(|key, value: CachedWarehouse, cause| {
                 Box::pin(async move {
                     // Evictions:
@@ -119,15 +121,9 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
                     // Existing entry is newer; skip insert
                     return;
                 }
-                std::cmp::Ordering::Equal => {
-                    tracing::debug!(
-                        "Skipping insert of warehouse id {warehouse_id} into cache; versions are equal"
-                    );
-                    // Existing entry is same; skip insert
-                    return;
-                }
-                std::cmp::Ordering::Greater => {
-                    // New entry is newer; proceed with insert
+                std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
+                    // New entry is newer; proceed with insert.
+                    // Also insert equal versions to avoid expiration
                 }
             }
         }
