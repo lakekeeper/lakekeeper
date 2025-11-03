@@ -47,7 +47,7 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
             .initial_capacity(50)
-            .time_to_live(Duration::from_secs(30))
+            .time_to_live(Duration::from_secs(CONFIG.cache.warehouse.time_to_live_secs))
             .async_eviction_listener(|key, value: CachedWarehouse, cause| {
                 Box::pin(async move {
                     // Evictions:

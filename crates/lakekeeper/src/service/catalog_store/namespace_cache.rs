@@ -47,7 +47,7 @@ pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, CachedNamespace>>
         Cache::builder()
             .max_capacity(CONFIG.cache.namespace.capacity)
             .initial_capacity(50)
-            .time_to_live(Duration::from_secs(30))
+            .time_to_live(Duration::from_secs(CONFIG.cache.namespace.time_to_live_secs))
             .async_eviction_listener(|key, value: CachedNamespace, cause| {
                 Box::pin(async move {
                     // Evictions:

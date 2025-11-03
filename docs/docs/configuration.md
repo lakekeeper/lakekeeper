@@ -266,18 +266,37 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 
 Caches warehouse metadata to reduce database queries for warehouse lookups.
 
-| Configuration Key                                    | Type    | Default | Description |
-|------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__ENABLED`<nobr>  | boolean | `true`  | Enable/disable warehouse caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`<nobr> | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
+| Configuration Key                                             | Type    | Default | Description |
+|---------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable warehouse caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__TIME_TO_LIVE_SECS`<nobr> | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
-If the cache is enabled, changes to Storage Profile may take up to 30 seconds to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
+If the cache is enabled, changes to Storage Profile may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
 
 *Metrics*: The Warehouse cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_warehouse_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
 - `lakekeeper_warehouse_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
 - `lakekeeper_warehouse_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
+
+**Namespace Cache**
+
+Caches namespace metadata and hierarchies to reduce database queries for namespace lookups. Namespace lookups are also required for table & view operations.
+
+| Configuration Key                                             | Type    | Default | Description |
+|---------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable namespace caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of namespaces to cache. Default: `1000` |
+| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__TIME_TO_LIVE_SECS`<nobr> | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
+
+If the cache is enabled, changes to namespace properties may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
+
+*Metrics*: The Namespace cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_namespace_cache_size{cache_type="namespace"}`: Current number of entries in the cache
+- `lakekeeper_namespace_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
+- `lakekeeper_namespace_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
 
 ### Endpoint Statistics
 

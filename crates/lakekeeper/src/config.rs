@@ -459,6 +459,8 @@ impl std::default::Default for STCCache {
 pub(crate) struct WarehouseCache {
     pub(crate) enabled: bool,
     pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 60 seconds.
+    pub(crate) time_to_live_secs: u64,
 }
 
 impl std::default::Default for WarehouseCache {
@@ -466,6 +468,7 @@ impl std::default::Default for WarehouseCache {
         Self {
             enabled: true,
             capacity: 1000,
+            time_to_live_secs: 60,
         }
     }
 }
@@ -475,6 +478,8 @@ impl std::default::Default for WarehouseCache {
 pub(crate) struct NamespaceCache {
     pub(crate) enabled: bool,
     pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 60 seconds.
+    pub(crate) time_to_live_secs: u64,
 }
 
 impl std::default::Default for NamespaceCache {
@@ -482,6 +487,7 @@ impl std::default::Default for NamespaceCache {
         Self {
             enabled: true,
             capacity: 1000,
+            time_to_live_secs: 60,
         }
     }
 }
