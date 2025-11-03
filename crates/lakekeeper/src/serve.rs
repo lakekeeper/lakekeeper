@@ -370,6 +370,14 @@ async fn serve_inner<
     } else {
         tracing::info!("Warehouse cache is disabled");
     }
+    if CONFIG.cache.namespace.enabled {
+        tracing::info!("Namespace cache is enabled, registering namespace cache endpoint hook");
+        hooks.append(Arc::new(
+            crate::service::namespace_cache::NamespaceCacheEndpointHook {},
+        ));
+    } else {
+        tracing::info!("Namespace cache is disabled");
+    }
 
     // Task queues
     let task_queue_registry = TaskQueueRegistry::new();

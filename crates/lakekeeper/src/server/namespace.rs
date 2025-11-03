@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use futures::FutureExt;
 use http::StatusCode;
@@ -281,7 +281,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request.properties = Some(namespace_props.into());
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction())
+            .await
+            .map(Arc::new)?;
         let authz_parent = if let Some(parent_id) = parent_namespace {
             NamespaceParent::Namespace(parent_id)
         } else {
@@ -291,10 +293,18 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(&request_metadata, namespace_id, authz_parent)
             .await?;
         t.commit().await?;
-        let mut properties = r.properties.clone().unwrap_or_default();
+
+        state
+            .v1_state
+            .hooks
+            .create_namespace(warehouse_id, r.clone(), Arc::new(request_metadata))
+            .await;
+
+        let r_namespace = r.namespace.clone();
+        let mut properties = r_namespace.properties.clone().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(CreateNamespaceResponse {
-            namespace: r.namespace_ident,
+            namespace: r_namespace.namespace_ident.clone(),
             properties: Some(properties),
         })
     }
@@ -411,7 +421,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        if flags.recursive {
+        let r = if flags.recursive {
             try_recursive_drop::<_, C>(
                 flags,
                 authorizer,
@@ -428,7 +438,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
             t.commit().await?;
             Ok(())
-        }
+        };
+
+        state
+            .v1_state
+            .hooks
+            .drop_namespace(warehouse_id, namespace_id, Arc::new(request_metadata))
+            .await;
+
+        r
     }
 
     /// Set or remove properties on a namespace
@@ -478,11 +496,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let namespace_id = namespace.namespace_id();
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let (new_properties, r) =
+        let (updated_properties, r) =
             update_namespace_properties(namespace.properties().cloned(), updates, removals);
-        C::update_namespace_properties(warehouse_id, namespace_id, new_properties, t.transaction())
-            .await?;
+        let updated_namespace = C::update_namespace_properties(
+            warehouse_id,
+            namespace_id,
+            updated_properties,
+            t.transaction(),
+        )
+        .await
+        .map(Arc::new)?;
         t.commit().await?;
+
+        state
+            .v1_state
+            .hooks
+            .update_namespace_properties(
+                warehouse_id,
+                updated_namespace,
+                Arc::new(r.clone()),
+                Arc::new(request_metadata),
+            )
+            .await;
+
         Ok(r)
     }
 }

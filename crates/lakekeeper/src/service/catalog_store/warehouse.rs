@@ -529,12 +529,12 @@ where
                 // Check cache first
                 let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
 
-                if let Some(warehouse) = &cached_warehouse {
+                if let Some(warehouse) = cached_warehouse {
                     // Determine if cache is valid based on version
                     let cache_is_valid = warehouse.version.0 >= require_min_version;
 
                     if cache_is_valid {
-                        Some(warehouse.clone())
+                        Some(warehouse)
                     } else {
                         tracing::debug!(
                             "Detected stale cache for warehouse {}: cached={:?}, required={:?}. Refreshing.",

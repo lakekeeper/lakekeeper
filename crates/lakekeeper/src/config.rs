@@ -434,6 +434,8 @@ pub(crate) struct Cache {
     pub(crate) stc: STCCache,
     /// Warehouse cache configuration.
     pub(crate) warehouse: WarehouseCache,
+    /// Namespace cache configuration.
+    pub(crate) namespace: NamespaceCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -460,6 +462,22 @@ pub(crate) struct WarehouseCache {
 }
 
 impl std::default::Default for WarehouseCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 1000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct NamespaceCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+}
+
+impl std::default::Default for NamespaceCache {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -1139,6 +1157,32 @@ mod test {
             let config = get_config();
             assert!(config.cache.warehouse.enabled);
             assert_eq!(config.cache.warehouse.capacity, 2000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_namespace_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.namespace.enabled);
+            assert_eq!(config.cache.namespace.capacity, 1000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__NAMESPACE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.namespace.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__NAMESPACE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__NAMESPACE__CAPACITY", "2000");
+            let config = get_config();
+            assert!(config.cache.namespace.enabled);
+            assert_eq!(config.cache.namespace.capacity, 2000);
             Ok(())
         });
     }

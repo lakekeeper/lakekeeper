@@ -97,7 +97,6 @@ strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
-unicase = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
@@ -109,6 +108,7 @@ tower-http = { workspace = true, optional = true, features = [
 tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
+unicase = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 utoipa = { workspace = true, features = ["uuid"], optional = true }

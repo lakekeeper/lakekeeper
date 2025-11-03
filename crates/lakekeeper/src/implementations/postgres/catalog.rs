@@ -74,14 +74,14 @@ use crate::{
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateTableError, CreateViewError,
         DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
         ListNamespacesQuery, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
-        MarkTabularAsDeletedError, Namespace, NamespaceDropInfo, NamespaceHierarchy, NamespaceId,
-        NamespaceIdentOrId, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result,
-        RoleId, SearchTabularError, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, Transaction, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
-        WarehouseStatus,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceHierarchy, NamespaceId,
+        NamespaceIdentOrId, NamespaceWithParentVersion, ProjectId, RenameTabularError,
+        ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchTabularError, ServerInfo,
+        SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
+        SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Transaction,
+        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseId, WarehouseStatus,
     },
     SecretId,
 };
@@ -129,7 +129,7 @@ impl CatalogStore for super::PostgresBackend {
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<Namespace, CatalogCreateNamespaceError> {
+    ) -> std::result::Result<NamespaceWithParentVersion, CatalogCreateNamespaceError> {
         create_namespace(warehouse_id, namespace_id, request, transaction).await
     }
 
@@ -155,7 +155,8 @@ impl CatalogStore for super::PostgresBackend {
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError> {
+    ) -> std::result::Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError>
+    {
         update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
     }
 
@@ -613,7 +614,7 @@ impl CatalogStore for super::PostgresBackend {
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError> {
+    ) -> std::result::Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError> {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
     }
 

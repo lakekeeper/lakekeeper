@@ -197,7 +197,8 @@ mod test {
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
-                .namespace_ident;
+                .namespace_ident
+                .clone();
 
         let view_name = "my-view";
         let rq: CreateViewRequest = create_view_request(Some(view_name), None);

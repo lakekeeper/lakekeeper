@@ -176,7 +176,8 @@ mod test {
             None,
         )
         .await
-        .namespace_ident;
+        .namespace_ident
+        .clone();
         (api_context, namespace, warehouse_id)
     }
 

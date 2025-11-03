@@ -44,6 +44,7 @@ mod namespace;
 pub use namespace::*;
 mod tabular;
 pub use tabular::*;
+pub(crate) mod namespace_cache;
 mod warehouse;
 pub(crate) mod warehouse_cache;
 pub use warehouse::*;
@@ -260,7 +261,7 @@ where
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Namespace, CatalogCreateNamespaceError>;
+    ) -> std::result::Result<NamespaceWithParentVersion, CatalogCreateNamespaceError>;
 
     // Should only return a namespace if the warehouse is active.
     async fn get_namespace_impl<'a>(
@@ -285,14 +286,14 @@ where
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError>;
+    ) -> std::result::Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError>;
 
     async fn set_namespace_protected_impl(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError>;
+    ) -> std::result::Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError>;
 
     // ---------------- Tabular Management ----------------
     async fn list_tabulars_impl(

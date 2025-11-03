@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
@@ -21,7 +23,7 @@ where
     async fn set_namespace_protection(
         namespace_id: NamespaceId,
         warehouse_id: WarehouseId,
-        protected: bool,
+        protected_request: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
@@ -43,16 +45,34 @@ where
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         tracing::debug!(
-            "Setting protection status for namespace: {:?} to {protected}",
+            "Setting protection status for namespace: {:?} to {protected_request}",
             namespace_id
         );
-        let status =
-            C::set_namespace_protected(warehouse_id, namespace_id, protected, t.transaction())
-                .await?;
+        let status = C::set_namespace_protected(
+            warehouse_id,
+            namespace_id,
+            protected_request,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
+
+        let protected = status.namespace.protected;
+        let updated_at = status.namespace.updated_at;
+
+        state
+            .v1_state
+            .hooks
+            .set_namespace_protection(
+                protected_request,
+                Arc::new(status),
+                Arc::new(request_metadata),
+            )
+            .await;
+
         let protection_response = ProtectionResponse {
-            protected: status.protected,
-            updated_at: status.updated_at,
+            protected,
+            updated_at,
         };
         Ok(protection_response)
     }

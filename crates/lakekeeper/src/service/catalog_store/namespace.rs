@@ -9,9 +9,15 @@ use crate::{
     api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
     service::{
         define_transparent_error, define_version_newtype, impl_error_stack_methods,
-        impl_from_with_detail, tasks::TaskId, CatalogBackendError, CatalogStore,
-        InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
-        TableIdent, TabularId, Transaction, WarehouseIdNotFound,
+        impl_from_with_detail,
+        namespace_cache::{
+            namespace_cache_get_by_id, namespace_cache_get_by_ident,
+            namespace_cache_insert_hierarchy,
+        },
+        tasks::TaskId,
+        CachePolicy, CatalogBackendError, CatalogStore, InternalParseLocationError,
+        InvalidPaginationToken, ListNamespacesQuery, NamespaceId, TableIdent, TabularId,
+        Transaction, WarehouseIdNotFound,
     },
     WarehouseId,
 };
@@ -28,6 +34,44 @@ pub struct Namespace {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     pub version: NamespaceVersion,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct NamespaceWithParentVersion {
+    pub namespace: Arc<Namespace>,
+    pub parent: Option<(NamespaceId, NamespaceVersion)>,
+}
+
+impl NamespaceWithParentVersion {
+    #[must_use]
+    pub fn namespace_id(&self) -> NamespaceId {
+        self.namespace.namespace_id
+    }
+
+    #[must_use]
+    pub fn namespace_ident(&self) -> &NamespaceIdent {
+        &self.namespace.namespace_ident
+    }
+
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        self.namespace.warehouse_id
+    }
+
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        self.namespace.protected
+    }
+
+    #[must_use]
+    pub fn properties(&self) -> Option<&HashMap<String, String>> {
+        self.namespace.properties.as_ref()
+    }
+
+    #[must_use]
+    pub fn version(&self) -> NamespaceVersion {
+        self.namespace.version
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -292,10 +336,12 @@ define_transparent_error! {
     pub enum CatalogCreateNamespaceError,
     stack_message: "Error creating Namespace in catalog",
     variants: [
+        NamespaceNotFound, // for parent namespace check
         CatalogBackendError,
         NamespacePropertiesSerializationError,
         NamespaceAlreadyExists,
-        WarehouseIdNotFound
+        WarehouseIdNotFound,
+        InvalidNamespaceIdentifier
     ]
 }
 
@@ -466,18 +512,117 @@ where
         namespace: impl Into<NamespaceIdentOrId> + Send,
         catalog_state: Self::State,
     ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
-        Self::get_namespace_impl(warehouse_id, namespace.into(), catalog_state).await
+        let namespace = namespace.into();
+        let cached = match namespace {
+            NamespaceIdentOrId::Id(namespace_id) => namespace_cache_get_by_id(namespace_id).await,
+            NamespaceIdentOrId::Name(ref namespace_ident) => {
+                namespace_cache_get_by_ident(namespace_ident, warehouse_id).await
+            }
+        };
+
+        if let Some(cached_namespace) = cached {
+            return Ok(Some(cached_namespace));
+        }
+        let namespace_hierarchy =
+            Self::get_namespace_impl(warehouse_id, namespace, catalog_state).await?;
+
+        if let Some(namespace_hierarchy) = &namespace_hierarchy {
+            namespace_cache_insert_hierarchy(namespace_hierarchy).await;
+        }
+
+        Ok(namespace_hierarchy)
+    }
+
+    /// Get warehouse by ID, invalidating cache if it's older than the provided timestamp
+    async fn get_namespace_cache_aware(
+        warehouse_id: WarehouseId,
+        namespace: impl Into<NamespaceIdentOrId> + Send,
+        cache_policy: CachePolicy,
+        state: Self::State,
+    ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
+        let provided_namespace = namespace.into();
+        let namespace = match cache_policy {
+            CachePolicy::Skip => {
+                // Skip cache entirely
+                let namespace =
+                    Self::get_namespace_impl(warehouse_id, provided_namespace, state).await?;
+
+                // Update cache with fresh data
+                if let Some(namespace) = &namespace {
+                    namespace_cache_insert_hierarchy(namespace).await;
+                }
+
+                namespace
+            }
+            CachePolicy::Use => {
+                // Use cache if available
+                Self::get_namespace(warehouse_id, provided_namespace, state).await?
+            }
+            CachePolicy::RequireMinimumVersion(require_min_version) => {
+                // Check cache first
+                let cached = match provided_namespace {
+                    NamespaceIdentOrId::Id(namespace_id) => {
+                        namespace_cache_get_by_id(namespace_id).await
+                    }
+                    NamespaceIdentOrId::Name(ref namespace_ident) => {
+                        namespace_cache_get_by_ident(namespace_ident, warehouse_id).await
+                    }
+                };
+
+                if let Some(namespace) = cached {
+                    // Determine if cache is valid based on version
+                    let cache_is_valid = namespace.version().0 >= require_min_version;
+
+                    if cache_is_valid {
+                        Some(namespace)
+                    } else {
+                        tracing::debug!(
+                            "Detected stale cache for namespace {}: cached={:?}, required={:?}. Refreshing.",
+                            provided_namespace,
+                            namespace.version(),
+                            require_min_version
+                        );
+                        // Cache is stale: fetch fresh data
+                        let namespace =
+                            Self::get_namespace_impl(warehouse_id, provided_namespace, state)
+                                .await?;
+                        // Update cache with fresh data
+                        if let Some(namespace) = &namespace {
+                            namespace_cache_insert_hierarchy(namespace).await;
+                        }
+                        namespace
+                    }
+                } else {
+                    // No cache entry: fetch fresh data
+                    let namespace =
+                        Self::get_namespace_impl(warehouse_id, provided_namespace, state).await?;
+                    // Update cache with fresh data
+                    if let Some(namespace) = &namespace {
+                        namespace_cache_insert_hierarchy(namespace).await;
+                    }
+                    namespace
+                }
+            }
+        };
+
+        Ok(namespace)
     }
 
     async fn list_namespaces<'a>(
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<
-        PaginatedMapping<NamespaceId, NamespaceHierarchy>,
-        CatalogListNamespaceError,
-    > {
-        Self::list_namespaces_impl(warehouse_id, query, transaction).await
+    ) -> Result<PaginatedMapping<NamespaceId, NamespaceHierarchy>, CatalogListNamespaceError> {
+        let namespaces = Self::list_namespaces_impl(warehouse_id, query, transaction).await?;
+
+        let mut tasks = Vec::with_capacity(namespaces.len());
+        for (_namespace_id, namespace) in &namespaces {
+            tasks.push(namespace_cache_insert_hierarchy(namespace));
+        }
+
+        futures::future::join_all(tasks).await;
+
+        Ok(namespaces)
     }
 
     async fn create_namespace<'a>(
@@ -485,7 +630,7 @@ where
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Namespace, CatalogCreateNamespaceError> {
+    ) -> Result<NamespaceWithParentVersion, CatalogCreateNamespaceError> {
         Self::create_namespace_impl(warehouse_id, namespace_id, request, transaction).await
     }
 
@@ -494,7 +639,7 @@ where
         namespace_id: NamespaceId,
         flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
+    ) -> Result<NamespaceDropInfo, CatalogNamespaceDropError> {
         Self::drop_namespace_impl(warehouse_id, namespace_id, flags, transaction).await
     }
 
@@ -503,7 +648,7 @@ where
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError> {
+    ) -> Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError> {
         Self::update_namespace_properties_impl(warehouse_id, namespace_id, properties, transaction)
             .await
     }
@@ -513,7 +658,7 @@ where
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError> {
+    ) -> Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError> {
         Self::set_namespace_protected_impl(warehouse_id, namespace_id, protect, transaction).await
     }
 }

@@ -21,8 +21,8 @@ use crate::{
         InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
         NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
         NamespaceHierarchy, NamespaceId, NamespaceIdent, NamespaceIdentOrId, NamespaceNotEmpty,
-        NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected, Result,
-        TabularId, WarehouseIdNotFound,
+        NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
+        NamespaceWithParentVersion, Result, TabularId, WarehouseIdNotFound,
     },
     WarehouseId, CONFIG,
 };
@@ -70,6 +70,52 @@ impl NamespaceRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             version: self.version.into(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct NamespaceWithParentVersionRow {
+    namespace_id: NamespaceId,
+    namespace_name: Vec<String>,
+    warehouse_id: WarehouseId,
+    protected: bool,
+    properties: Json<Option<HashMap<String, String>>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    version: i64,
+    parent_namespace_id: Option<Uuid>,
+    parent_version: Option<i64>,
+}
+
+impl NamespaceWithParentVersionRow {
+    fn into_namespace_with_parent_version(
+        self,
+        warehouse_id: WarehouseId,
+    ) -> std::result::Result<NamespaceWithParentVersion, InvalidNamespaceIdentifier> {
+        let parent = if let (Some(parent_id), Some(parent_version)) =
+            (self.parent_namespace_id, self.parent_version)
+        {
+            Some((parent_id.into(), parent_version.into()))
+        } else {
+            None
+        };
+
+        let namespace = NamespaceRow {
+            namespace_id: self.namespace_id,
+            namespace_name: self.namespace_name,
+            warehouse_id: self.warehouse_id,
+            protected: self.protected,
+            properties: self.properties,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            version: self.version,
+        }
+        .into_namespace(warehouse_id)?;
+
+        Ok(NamespaceWithParentVersion {
+            namespace: Arc::new(namespace),
+            parent,
         })
     }
 }
@@ -433,31 +479,68 @@ pub(crate) async fn create_namespace(
     namespace_id: NamespaceId,
     request: CreateNamespaceRequest,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<Namespace, CatalogCreateNamespaceError> {
+) -> std::result::Result<NamespaceWithParentVersion, CatalogCreateNamespaceError> {
     let CreateNamespaceRequest {
         namespace,
         properties,
     } = request;
+    let parent = namespace.parent();
+    let has_parent = parent.is_some();
 
-    let r = sqlx::query!(
+    let row = sqlx::query_as!(
+        NamespaceWithParentVersionRow,
         r#"
-        INSERT INTO namespace (warehouse_id, namespace_id, namespace_name, namespace_properties)
-        (
-            SELECT $1, $2, $3, $4
-            WHERE EXISTS (
-                SELECT 1
-                FROM warehouse
-                WHERE warehouse_id = $1
-                AND status = 'active'
-        ))
-        RETURNING namespace_id, created_at, updated_at, version
+        WITH inserted_ns AS (
+            INSERT INTO namespace (warehouse_id, namespace_id, namespace_name, namespace_properties)
+            (
+                SELECT $1, $2, $3, $4
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM warehouse
+                    WHERE warehouse_id = $1
+                    AND status = 'active'
+            ))
+            RETURNING
+                namespace_id,
+                namespace_name,
+                warehouse_id,
+                protected,
+                namespace_properties,
+                created_at,
+                updated_at,
+                version
+        ),
+        parent_ns AS (
+            SELECT
+                namespace_id,
+                version
+            FROM namespace
+            WHERE warehouse_id = $1
+            AND $6
+            AND namespace_name = $5
+        )
+        SELECT
+            i.namespace_id as "namespace_id!",
+            i.namespace_name as "namespace_name!",
+            i.warehouse_id as "warehouse_id!",
+            i.protected as "protected!",
+            i.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
+            i.created_at as "created_at!",
+            i.updated_at,
+            i.version as "version!",
+            p.namespace_id as "parent_namespace_id",
+            p.version as "parent_version"
+        FROM inserted_ns i
+        LEFT JOIN parent_ns p ON $6
         "#,
         *warehouse_id,
         *namespace_id,
         &*namespace,
         serde_json::to_value(properties.clone()).map_err(|e| {
             NamespacePropertiesSerializationError::new(warehouse_id, namespace.clone(), e)
-        })?
+        })?,
+        parent.as_deref(),
+        has_parent
     )
     .fetch_one(&mut **transaction)
     .await
@@ -483,18 +566,18 @@ pub(crate) async fn create_namespace(
         }
     })?;
 
-    // If inner is empty, return None
-    let properties = properties.and_then(|h| if h.is_empty() { None } else { Some(h) });
-    Ok(Namespace {
-        namespace_ident: namespace,
-        properties: properties.filter(|p| !p.is_empty()),
-        protected: false,
-        namespace_id,
-        warehouse_id,
-        updated_at: r.updated_at,
-        created_at: r.created_at,
-        version: r.version.into(),
-    })
+    // Check if parent was expected but not found
+    if let Some(parent) = parent {
+        if row.parent_namespace_id.is_none() {
+            return Err(CatalogCreateNamespaceError::from(NamespaceNotFound::new(
+                warehouse_id,
+                parent,
+            )));
+        }
+    }
+
+    row.into_namespace_with_parent_version(warehouse_id)
+        .map_err(Into::into)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -717,15 +800,48 @@ pub(crate) async fn set_namespace_protected(
     namespace_id: NamespaceId,
     protect: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<Namespace, CatalogSetNamespaceProtectedError> {
-    let row = sqlx::query!(
+) -> std::result::Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError> {
+    let row = sqlx::query_as!(
+        NamespaceWithParentVersionRow,
         r#"
-        UPDATE namespace
-        SET protected = $1
-        WHERE namespace_id = $2 AND warehouse_id IN (
-            SELECT warehouse_id FROM warehouse WHERE status = 'active'
+        WITH updated_ns AS (
+            UPDATE namespace
+            SET protected = $1
+            WHERE namespace_id = $2 AND warehouse_id IN (
+                SELECT warehouse_id FROM warehouse WHERE status = 'active'
+            )
+            RETURNING
+                namespace_id,
+                namespace_name,
+                warehouse_id,
+                protected,
+                namespace_properties,
+                created_at,
+                updated_at,
+                version
+        ),
+        parent_ns AS (
+            SELECT
+                p.namespace_id,
+                p.version
+            FROM updated_ns u
+            INNER JOIN namespace p ON p.warehouse_id = u.warehouse_id
+                AND p.namespace_name = u.namespace_name[1:array_length(u.namespace_name, 1) - 1]
+            WHERE array_length(u.namespace_name, 1) > 1
         )
-        returning protected, created_at, updated_at, namespace_name as "namespace_name: Vec<String>", namespace_properties as "properties: Json<Option<HashMap<String, String>>>", version
+        SELECT
+            u.namespace_id as "namespace_id!",
+            u.namespace_name as "namespace_name!",
+            u.warehouse_id as "warehouse_id!",
+            u.protected as "protected!",
+            u.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
+            u.created_at as "created_at!",
+            u.updated_at,
+            u.version as "version!",
+            p.namespace_id as "parent_namespace_id",
+            p.version as "parent_version"
+        FROM updated_ns u
+        LEFT JOIN parent_ns p ON TRUE
         "#,
         protect,
         *namespace_id
@@ -734,27 +850,18 @@ pub(crate) async fn set_namespace_protected(
     .await
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
-            CatalogSetNamespaceProtectedError::from(NamespaceNotFound::new(warehouse_id, namespace_id))
+            CatalogSetNamespaceProtectedError::from(NamespaceNotFound::new(
+                warehouse_id,
+                namespace_id,
+            ))
         } else {
             tracing::error!("Error setting namespace protection: {e:?}");
             e.into_catalog_backend_error().into()
         }
     })?;
 
-    Ok(Namespace {
-        namespace_ident: parse_namespace_identifier_from_vec(
-            &row.namespace_name,
-            warehouse_id,
-            Some(namespace_id),
-        )?,
-        protected: row.protected,
-        properties: row.properties.0.filter(|p| !p.is_empty()),
-        namespace_id,
-        warehouse_id,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        version: row.version.into(),
-    })
+    row.into_namespace_with_parent_version(warehouse_id)
+        .map_err(Into::into)
 }
 
 pub(crate) async fn update_namespace_properties(
@@ -762,19 +869,52 @@ pub(crate) async fn update_namespace_properties(
     namespace_id: NamespaceId,
     properties: HashMap<String, String>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<Namespace, CatalogUpdateNamespacePropertiesError> {
+) -> std::result::Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError> {
     let properties = serde_json::to_value(properties)
         .map_err(|e| NamespacePropertiesSerializationError::new(warehouse_id, namespace_id, e))?;
 
-    let row = sqlx::query!(
+    let row = sqlx::query_as!(
+        NamespaceWithParentVersionRow,
         r#"
-        UPDATE namespace
-        SET namespace_properties = $1
-        WHERE warehouse_id = $2 AND namespace_id = $3
-        AND warehouse_id IN (
-            SELECT warehouse_id FROM warehouse WHERE status = 'active'
+        WITH updated_ns AS (
+            UPDATE namespace
+            SET namespace_properties = $1
+            WHERE warehouse_id = $2 AND namespace_id = $3
+            AND warehouse_id IN (
+                SELECT warehouse_id FROM warehouse WHERE status = 'active'
+            )
+            RETURNING
+                namespace_id,
+                namespace_name,
+                warehouse_id,
+                protected,
+                namespace_properties,
+                created_at,
+                updated_at,
+                version
+        ),
+        parent_ns AS (
+            SELECT
+                p.namespace_id,
+                p.version
+            FROM updated_ns u
+            INNER JOIN namespace p ON p.warehouse_id = u.warehouse_id
+                AND p.namespace_name = u.namespace_name[1:array_length(u.namespace_name, 1) - 1]
+            WHERE array_length(u.namespace_name, 1) > 1
         )
-        RETURNING namespace_name as "namespace_name: Vec<String>", protected, created_at, updated_at, namespace_properties as "properties: Json<Option<HashMap<String, String>>>", version
+        SELECT
+            u.namespace_id as "namespace_id!",
+            u.namespace_name as "namespace_name!",
+            u.warehouse_id as "warehouse_id!",
+            u.protected as "protected!",
+            u.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
+            u.created_at as "created_at!",
+            u.updated_at,
+            u.version as "version!",
+            p.namespace_id as "parent_namespace_id",
+            p.version as "parent_version"
+        FROM updated_ns u
+        LEFT JOIN parent_ns p ON TRUE
         "#,
         properties,
         *warehouse_id,
@@ -783,24 +923,14 @@ pub(crate) async fn update_namespace_properties(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| match e {
-        sqlx::Error::RowNotFound => CatalogUpdateNamespacePropertiesError::from(NamespaceNotFound::new(warehouse_id, namespace_id)),
+        sqlx::Error::RowNotFound => CatalogUpdateNamespacePropertiesError::from(
+            NamespaceNotFound::new(warehouse_id, namespace_id),
+        ),
         _ => e.into_catalog_backend_error().into(),
     })?;
 
-    Ok(Namespace {
-        namespace_ident: parse_namespace_identifier_from_vec(
-            &row.namespace_name,
-            warehouse_id,
-            Some(namespace_id),
-        )?,
-        protected: row.protected,
-        properties: row.properties.0.filter(|p| !p.is_empty()),
-        namespace_id,
-        warehouse_id,
-        updated_at: row.updated_at,
-        created_at: row.created_at,
-        version: row.version.into(),
-    })
+    row.into_namespace_with_parent_version(warehouse_id)
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -849,7 +979,7 @@ pub(crate) mod tests {
 
         transaction.commit().await.unwrap();
 
-        response
+        Arc::unwrap_or_clone(response.namespace)
     }
 
     #[sqlx::test]
@@ -882,6 +1012,7 @@ pub(crate) mod tests {
             &namespace_hierarchy_by_name.namespace
         );
         assert_eq!(namespace_hierarchy_by_name.depth(), 0);
+        assert_eq!(*namespace_hierarchy_by_name.version(), 0);
         let namespace_id = namespace_hierarchy_by_name.namespace_id();
 
         assert_eq!(&*namespace_hierarchy_by_name.namespace, &namespace_info);
@@ -1361,7 +1492,7 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
 
         // Check that the namespace is created with the correct case
-        assert_eq!(response.namespace_ident, namespace_1);
+        assert_eq!(response.namespace_ident(), &namespace_1);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1393,12 +1524,13 @@ pub(crate) mod tests {
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        assert_eq!(*response.version, 0);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
 
-        PostgresBackend::set_namespace_protected(
+        let protected_response = PostgresBackend::set_namespace_protected(
             warehouse_id,
             response.namespace_id,
             true,
@@ -1406,6 +1538,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(*protected_response.version(), 1);
 
         let result = drop_namespace(
             warehouse_id,

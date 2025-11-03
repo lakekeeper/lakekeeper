@@ -11,7 +11,7 @@ use iceberg::{
 };
 use iceberg_ext::catalog::rest::{
     CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
-    RegisterTableRequest, RenameTableRequest,
+    RegisterTableRequest, RenameTableRequest, UpdateNamespacePropertiesResponse,
 };
 use lakekeeper_io::Location;
 
@@ -28,7 +28,10 @@ use crate::{
         RequestMetadata,
     },
     server::tables::CommitContext,
-    service::{ResolvedWarehouse, TableId, TableInfo, ViewId, ViewOrTableInfo},
+    service::{
+        NamespaceId, NamespaceWithParentVersion, ResolvedWarehouse, TableId, TableInfo, ViewId,
+        ViewOrTableInfo,
+    },
     SecretId, WarehouseId,
 };
 
@@ -498,6 +501,88 @@ impl EndpointHookCollection {
         }))
         .await;
     }
+
+    pub(crate) async fn set_namespace_protection(
+        &self,
+        requested_protected: bool,
+        updated_namespace: Arc<NamespaceWithParentVersion>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.set_namespace_protection(
+                requested_protected,
+                updated_namespace.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on set_namespace_protection: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn create_namespace(
+        &self,
+        warehouse_id: WarehouseId,
+        namespace: Arc<NamespaceWithParentVersion>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.create_namespace(warehouse_id, namespace.clone(), request_metadata.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Hook '{}' encountered error on create_namespace: {e:?}",
+                        hook.to_string()
+                    );
+                })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn drop_namespace(
+        &self,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.drop_namespace(warehouse_id, namespace_id, request_metadata.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Hook '{}' encountered error on drop_namespace: {e:?}",
+                        hook.to_string()
+                    );
+                })
+        }))
+        .await;
+    }
+
+    pub(crate) async fn update_namespace_properties(
+        &self,
+        warehouse_id: WarehouseId,
+        namespace: Arc<NamespaceWithParentVersion>,
+        updated_properties: Arc<UpdateNamespacePropertiesResponse>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.update_namespace_properties(
+                warehouse_id,
+                namespace.clone(),
+                updated_properties.clone(),
+                request_metadata.clone(),
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error on update_namespace_properties: {e:?}",
+                    hook.to_string()
+                );
+            })
+        }))
+        .await;
+    }
 }
 
 /// `EndpointHook` is a trait that allows for custom hooks to be executed within the context of
@@ -689,6 +774,43 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _request: Arc<UpdateWarehouseCredentialRequest>,
         _old_secret_id: Option<SecretId>,
         _updated_warehouse: Arc<ResolvedWarehouse>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn set_namespace_protection(
+        &self,
+        _requested_protected: bool,
+        _updated_namespace: Arc<NamespaceWithParentVersion>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn create_namespace(
+        &self,
+        _warehouse_id: WarehouseId,
+        _namespace: Arc<NamespaceWithParentVersion>,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn drop_namespace(
+        &self,
+        _warehouse_id: WarehouseId,
+        _namespace_id: NamespaceId,
+        _request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn update_namespace_properties(
+        &self,
+        _warehouse_id: WarehouseId,
+        _namespace: Arc<NamespaceWithParentVersion>,
+        _updated_properties: Arc<UpdateNamespacePropertiesResponse>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
