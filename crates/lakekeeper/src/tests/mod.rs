@@ -30,6 +30,8 @@ mod drop_warehouse;
 #[cfg(test)]
 mod endpoint_stats;
 #[cfg(test)]
+mod namespace_ops;
+#[cfg(test)]
 mod soft_deletion;
 #[cfg(test)]
 mod stats;

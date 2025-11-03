@@ -1279,12 +1279,14 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace_parent = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_lower =
             NamespaceIdent::from_vec(vec!["my_namespace".to_string(), "child".to_string()])
                 .unwrap();
         let namespace_upper =
             NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string(), "CHILD".to_string()])
                 .unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace_parent, None).await;
         initialize_namespace(state.clone(), warehouse_id, &namespace_lower, None).await;
 
         let table_ident_lower = TableIdent {

@@ -950,7 +950,7 @@ pub(crate) mod tests {
             },
             CatalogState, PostgresTransaction,
         },
-        service::{CatalogNamespaceOps, Transaction as _},
+        service::{CachePolicy, CatalogNamespaceOps, Transaction as _},
     };
 
     pub(crate) async fn initialize_namespace(
@@ -1071,10 +1071,15 @@ pub(crate) mod tests {
 
         transaction.commit().await.unwrap();
 
-        let response = PostgresBackend::get_namespace(warehouse_id, namespace_id, state.clone())
-            .await
-            .unwrap()
-            .expect("Namespace should exist");
+        let response = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            namespace_id,
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("Namespace should exist");
         assert_eq!(response.properties().unwrap(), &new_props);
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
