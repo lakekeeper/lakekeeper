@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH updated_ns AS (\n            UPDATE namespace\n            SET namespace_properties = $1\n            WHERE warehouse_id = $2 AND namespace_id = $3\n            AND warehouse_id IN (\n                SELECT warehouse_id FROM warehouse WHERE status = 'active'\n            )\n            RETURNING\n                namespace_id,\n                namespace_name,\n                warehouse_id,\n                protected,\n                namespace_properties,\n                created_at,\n                updated_at,\n                version\n        ),\n        parent_ns AS (\n            SELECT\n                p.namespace_id,\n                p.version\n            FROM updated_ns u\n            INNER JOIN namespace p ON p.warehouse_id = u.warehouse_id\n                AND p.namespace_name = u.namespace_name[1:array_length(u.namespace_name, 1) - 1]\n            WHERE array_length(u.namespace_name, 1) > 1\n        )\n        SELECT\n            u.namespace_id as \"namespace_id!\",\n            u.namespace_name as \"namespace_name!\",\n            u.warehouse_id as \"warehouse_id!\",\n            u.protected as \"protected!\",\n            u.namespace_properties as \"properties!: Json<Option<HashMap<String, String>>>\",\n            u.created_at as \"created_at!\",\n            u.updated_at,\n            u.version as \"version!\",\n            p.namespace_id as \"parent_namespace_id\",\n            p.version as \"parent_version\"\n        FROM updated_ns u\n        LEFT JOIN parent_ns p ON TRUE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace_name!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "properties!: Json<Option<HashMap<String, String>>>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "version!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "parent_namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "19212bea0026fda02c6c0f06cbd98970197c5b362de85349b463fa3f9e30810e"
+}
