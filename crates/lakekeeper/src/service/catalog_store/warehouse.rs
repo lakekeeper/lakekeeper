@@ -547,7 +547,8 @@ where
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
         let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
         if let Some(warehouse) = cached_warehouse {
-            return Ok(Some(warehouse));
+            let warehouse = Some(warehouse).filter(|w| status_filter.contains(&w.status));
+            return Ok(warehouse);
         }
 
         let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)
@@ -668,7 +669,8 @@ where
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByNameError> {
         let cached_warehouse = warehouse_cache_get_by_name(warehouse_name, project_id).await;
         if let Some(warehouse) = cached_warehouse {
-            return Ok(Some(warehouse));
+            let warehouse = Some(warehouse).filter(|w| status_filter.contains(&w.status));
+            return Ok(warehouse);
         }
 
         let warehouse = Self::get_warehouse_by_name_impl(warehouse_name, project_id, catalog_state)
