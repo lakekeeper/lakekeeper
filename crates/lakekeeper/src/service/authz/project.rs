@@ -18,12 +18,14 @@ where
 
 impl ProjectAction for CatalogProjectAction {}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListProjectsResponse {
     /// List of projects that the user is allowed to see.
     Projects(HashSet<ProjectId>),
     /// The user is allowed to see all projects.
     All,
+    /// Unsupported by the authorization backend.
+    Unsupported,
 }
 
 // --------------------------- Errors ---------------------------
@@ -94,6 +96,37 @@ pub trait AuthZProjectOps: Authorizer {
         } else {
             self.list_projects_impl(metadata).await
         }
+    }
+
+    async fn are_allowed_project_actions_vec<A: Into<Self::ProjectAction> + Send + Copy + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        projects_with_actions: &[(&ProjectId, A)],
+    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; projects_with_actions.len()])
+        } else {
+            let converted: Vec<(&ProjectId, Self::ProjectAction)> = projects_with_actions
+                .iter()
+                .map(|(id, action)| (*id, (*action).into()))
+                .collect();
+            let decisions = self.are_allowed_project_actions_impl(metadata, &converted)
+                .await;
+
+            #[cfg(debug_assertions)]
+            {
+                if let Ok(ref decisions) = decisions {
+                    assert_eq!(
+                        decisions.len(),
+                        projects_with_actions.len(),
+                        "The number of decisions returned by are_allowed_project_actions_impl does not match the number of project-action pairs provided."
+                    );
+                }
+            }
+
+            decisions            
+        }
+        .map(MustUse::from)
     }
 
     async fn is_allowed_project_action(

@@ -211,17 +211,48 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<ListProjectsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        let projects = authorizer.list_projects(&request_metadata).await?;
+        let authz_projects_response = authorizer.list_projects(&request_metadata).await?;
 
         // ------------------- Business Logic -------------------
-        let project_id_filter = match projects {
-            AuthZListProjectsResponse::All => None,
+        let authz_list_unsupported =
+            authz_projects_response == AuthZListProjectsResponse::Unsupported;
+        let project_id_filter = match authz_projects_response {
+            AuthZListProjectsResponse::All | AuthZListProjectsResponse::Unsupported => None,
             AuthZListProjectsResponse::Projects(projects) => Some(projects),
         };
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
-
         let projects = C::list_projects(project_id_filter, trx.transaction()).await?;
         trx.commit().await?;
+
+        let projects = if authz_list_unsupported {
+            tracing::debug!(
+                "Authorization backend does not support listing projects, filtering per project."
+            );
+            let decisions = authorizer
+                .are_allowed_project_actions_vec(
+                    &request_metadata,
+                    &projects
+                        .iter()
+                        .map(|p| (&p.project_id, CatalogProjectAction::CanGetMetadata))
+                        .collect::<Vec<_>>(),
+                )
+                .await?;
+            projects
+                .into_iter()
+                .zip(decisions.into_inner())
+                .filter_map(
+                    |(project, is_allowed)| {
+                        if is_allowed {
+                            Some(project)
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .collect()
+        } else {
+            projects
+        };
 
         Ok(ListProjectsResponse {
             projects: projects

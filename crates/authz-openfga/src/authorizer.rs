@@ -289,6 +289,22 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
+    async fn are_allowed_project_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let items: Vec<_> = projects_with_actions
+            .iter()
+            .map(|(project, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: project.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
+    }
+
     async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,

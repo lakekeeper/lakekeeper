@@ -239,10 +239,14 @@ where
     async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
     /// Return Err only for internal errors.
+    /// If unsupported is returned, Lakekeeper will run checks for every project individually using
+    /// `are_allowed_project_actions`.
     async fn list_projects_impl(
         &self,
-        metadata: &RequestMetadata,
-    ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable>;
+        _metadata: &RequestMetadata,
+    ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+        Ok(ListProjectsResponse::Unsupported)
+    }
 
     /// Search users
     async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool>;
@@ -320,6 +324,29 @@ where
         project_id: &ProjectId,
         action: Self::ProjectAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+
+    async fn are_allowed_project_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let n_inputs = projects_with_actions.len();
+        let futures: Vec<_> = projects_with_actions
+            .iter()
+            .map(|(project, a)| async move {
+                self.is_allowed_project_action(metadata, project, *a)
+                    .await
+                    .map(MustUse::into_inner)
+            })
+            .collect();
+        let results = try_join_all(futures).await?;
+        debug_assert_eq!(
+            results.len(),
+            n_inputs,
+            "are_allowed_project_actions_impl to return as many results as provided inputs"
+        );
+        Ok(results)
+    }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
