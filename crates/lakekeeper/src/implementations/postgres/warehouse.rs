@@ -372,7 +372,6 @@ pub(super) async fn get_warehouse_by_name(
             version
         FROM warehouse
         WHERE warehouse_name = $1 AND project_id = $2
-        AND status = 'active'
         "#,
         warehouse_name.to_string(),
         project_id
@@ -412,7 +411,7 @@ pub(crate) async fn get_warehouse_by_id<
             updated_at,
             version
         FROM warehouse
-        WHERE warehouse_id = $1 AND status = 'active'
+        WHERE warehouse_id = $1
         "#,
         *warehouse_id
     )
@@ -850,6 +849,7 @@ pub(crate) mod test {
         let fetched_warehouse = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
             &ProjectId::from(uuid::Uuid::nil()),
+            WarehouseStatus::active(),
             state.clone(),
         )
         .await
@@ -993,9 +993,10 @@ pub(crate) mod test {
             .unwrap();
         transaction.commit().await.unwrap();
 
-        let warehouse = PostgresBackend::get_warehouse_by_id(warehouse_id, state)
-            .await
-            .unwrap();
+        let warehouse =
+            PostgresBackend::get_warehouse_by_id(warehouse_id, WarehouseStatus::active(), state)
+                .await
+                .unwrap();
         assert_eq!(warehouse.unwrap().name, "new_name");
     }
 

@@ -45,7 +45,7 @@ pub(super) fn determine_tabular_location(
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
+    ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
         |ps, page_token, trx| {
             use ::paste::paste;
 
@@ -56,6 +56,7 @@ macro_rules! list_entities {
             let warehouse_id = $namespace_response.warehouse_id();
             let namespace_id = $namespace_response.namespace_id();
             let namespace_response = $namespace_response.clone();
+            let resolved_warehouse = $resolved_warehouse.clone();
             async move {
                 let query = crate::api::iceberg::v1::PaginationQuery {
                     page_size: Some(ps),
@@ -72,6 +73,7 @@ macro_rules! list_entities {
                 let can_list_everything = authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
+                        &resolved_warehouse,
                         &namespace_response,
                         CatalogNamespaceAction::CanListEverything,
                     )

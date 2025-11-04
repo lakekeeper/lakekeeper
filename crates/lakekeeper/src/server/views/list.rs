@@ -11,9 +11,11 @@ use crate::{
     server::{require_warehouse_id, tabular::list_entities},
     service::{
         authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction,
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogViewAction,
         },
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, SecretStore, State, Transaction,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
+        State, Transaction,
     },
 };
 
@@ -34,17 +36,20 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let namespace = C::get_namespace(
-        warehouse_id,
-        &provided_namespace,
-        state.v1_state.catalog.clone(),
-    )
-    .await;
+    let (warehouse, namespace) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_namespace(
+            warehouse_id,
+            &provided_namespace,
+            state.v1_state.catalog.clone()
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let namespace = authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
+            &warehouse,
             provided_namespace,
             namespace,
             CatalogNamespaceAction::CanListViews,
@@ -58,7 +63,14 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
         crate::server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token,
-            list_entities!(View, list_views, namespace, authorizer, request_metadata),
+            list_entities!(
+                View,
+                list_views,
+                warehouse,
+                namespace,
+                authorizer,
+                request_metadata
+            ),
             &mut t,
         )
         .await?;

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     super::{io::write_file, require_warehouse_id},
-    require_active_warehouse, validate_table_or_view_ident, validate_table_properties,
+    validate_table_or_view_ident, validate_table_properties,
 };
 use crate::{
     api::iceberg::v1::{
@@ -20,7 +20,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{compression_codec::CompressionCodec, tabular::determine_tabular_location},
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, ValidationError},
         CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogWarehouseOps, State,
@@ -152,13 +152,16 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let namespace =
-        C::get_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
+    let (namespace, warehouse) = tokio::join!(
+        C::get_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()),
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let namespace = authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
+            &warehouse,
             provided_ns,
             namespace,
             CatalogNamespaceAction::CanCreateTable,
@@ -169,10 +172,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let table_id = guard.table_id();
     let tabular_id = TabularId::Table(table_id);
 
-    let warehouse =
-        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
     let storage_profile = &warehouse.storage_profile;
-    require_active_warehouse(warehouse.status)?;
 
     let table_location = determine_tabular_location(
         &namespace.namespace,

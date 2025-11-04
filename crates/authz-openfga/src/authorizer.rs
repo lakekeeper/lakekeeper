@@ -12,7 +12,8 @@ use lakekeeper::{
         },
         health::Health,
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
-        NamespaceId, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
+        NamespaceId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, UserId,
+        ViewId,
     },
     tokio::sync::RwLock,
     ProjectId, WarehouseId,
@@ -292,13 +293,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
+        warehouse: &ResolvedWarehouse,
         action: Self::WarehouseAction,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: warehouse_id.to_openfga(),
+            object: warehouse.warehouse_id.to_openfga(),
         })
         .await
         .map_err(Into::into)
@@ -307,14 +308,14 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouses_with_actions: &[(WarehouseId, Self::WarehouseAction)],
+        warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = warehouses_with_actions
             .iter()
-            .map(|(id, a)| CheckRequestTupleKey {
+            .map(|(wh, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
-                object: id.to_openfga(),
+                object: wh.warehouse_id.to_openfga(),
             })
             .collect();
         self.batch_check(items).await.map_err(Into::into)
@@ -323,6 +324,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
         namespace: &NamespaceHierarchy,
         action: Self::NamespaceAction,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
@@ -338,6 +340,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
         actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = actions

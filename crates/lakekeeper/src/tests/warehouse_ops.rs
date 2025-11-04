@@ -161,6 +161,7 @@ async fn test_get_warehouse_by_id(pool: PgPool) {
     // Get warehouse by ID
     let warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -187,10 +188,13 @@ async fn test_get_warehouse_by_id_not_found(pool: PgPool) {
     let non_existent_id = WarehouseId::new_random();
 
     // Get warehouse by non-existent ID
-    let warehouse =
-        PostgresBackend::get_warehouse_by_id(non_existent_id, ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let warehouse = PostgresBackend::get_warehouse_by_id(
+        non_existent_id,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
 
     assert!(warehouse.is_none());
 }
@@ -208,27 +212,28 @@ async fn test_require_warehouse_by_id(pool: PgPool) {
         .await;
 
     // Require warehouse (should succeed)
-    let warehouse = PostgresBackend::require_warehouse_by_id(
+    let warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .expect("Warehouse should exist");
 
     assert_eq!(warehouse.warehouse_id, warehouse_resp.warehouse_id);
 
     // Require non-existent warehouse (should fail)
     let non_existent_id = WarehouseId::new_random();
-    let result =
-        PostgresBackend::require_warehouse_by_id(non_existent_id, ctx.v1_state.catalog.clone())
-            .await;
+    let result = PostgresBackend::get_warehouse_by_id(
+        non_existent_id,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        crate::service::CatalogGetWarehouseByIdError::WarehouseIdNotFound(_)
-    ));
+    assert!(result.is_none());
 }
 
 #[sqlx::test]
@@ -249,6 +254,7 @@ async fn test_get_warehouse_by_name(pool: PgPool) {
     let warehouse = PostgresBackend::get_warehouse_by_name(
         &warehouse_resp.warehouse_name,
         &project_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -278,53 +284,13 @@ async fn test_get_warehouse_by_name_not_found(pool: PgPool) {
     let warehouse = PostgresBackend::get_warehouse_by_name(
         "non-existent-warehouse",
         &project_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
     .unwrap();
 
     assert!(warehouse.is_none());
-}
-
-#[sqlx::test]
-async fn test_require_warehouse_by_name(pool: PgPool) {
-    let storage_profile = memory_io_profile();
-    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
-        .pool(pool.clone())
-        .storage_profile(storage_profile.clone())
-        .authorizer(AllowAllAuthorizer::default())
-        .number_of_warehouses(1)
-        .build()
-        .setup()
-        .await;
-
-    let project_id = ProjectId::from(Uuid::nil());
-
-    // Require warehouse (should succeed)
-    let warehouse = PostgresBackend::require_warehouse_by_name(
-        &warehouse_resp.warehouse_name,
-        &project_id,
-        ctx.v1_state.catalog.clone(),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(warehouse.name, warehouse_resp.warehouse_name);
-
-    // Require non-existent warehouse (should fail)
-    let result = PostgresBackend::require_warehouse_by_name(
-        "non-existent-warehouse",
-        &project_id,
-        ctx.v1_state.catalog.clone(),
-    )
-    .await;
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        crate::service::CatalogGetWarehouseByNameError::WarehouseNameNotFound(_)
-    ));
 }
 
 #[sqlx::test]
@@ -489,6 +455,40 @@ async fn test_set_warehouse_status(pool: PgPool) {
         .unwrap();
 
     assert_eq!(warehouse.status, WarehouseStatus::Inactive);
+
+    // Verify get respects status
+    let warehouse = PostgresBackend::get_warehouse_by_id(
+        warehouse_resp.warehouse_id,
+        WarehouseStatus::inactive(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("Warehouse should exist");
+
+    assert_eq!(warehouse.status, WarehouseStatus::Inactive);
+
+    let warehouse_none = PostgresBackend::get_warehouse_by_id(
+        warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert!(warehouse_none.is_none());
+
+    let warehouse = PostgresBackend::get_warehouse_by_name(
+        &warehouse_resp.warehouse_name,
+        &updated_warehouse.project_id,
+        WarehouseStatus::active_and_inactive(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("Warehouse should exist");
+
+    assert_eq!(warehouse.status, WarehouseStatus::Inactive);
 }
 
 #[sqlx::test]
@@ -536,6 +536,7 @@ async fn test_set_warehouse_status_reactivate(pool: PgPool) {
 
     let warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Skip,
         ctx.v1_state.catalog.clone(),
     )
@@ -583,6 +584,7 @@ async fn test_set_warehouse_deletion_profile(pool: PgPool) {
     // Verify the profile persisted
     let warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -631,6 +633,7 @@ async fn test_update_storage_profile(pool: PgPool) {
     // Verify the update persisted
     let warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Skip,
         ctx.v1_state.catalog.clone(),
     )
@@ -678,6 +681,7 @@ async fn test_set_warehouse_protection(pool: PgPool) {
 
     let warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Use,
         ctx.v1_state.catalog.clone(),
     )
@@ -779,6 +783,7 @@ async fn test_warehouse_cache_populated_by_get_id(pool: PgPool) {
     // Get warehouse by ID - should populate cache
     let warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -792,6 +797,7 @@ async fn test_warehouse_cache_populated_by_get_id(pool: PgPool) {
     // Verify by getting the warehouse again - should hit cache
     let warehouse2 = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -859,6 +865,7 @@ async fn test_cache_respects_min_version(pool: PgPool) {
     // First get - populates cache
     let warehouse1 = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -887,6 +894,7 @@ async fn test_cache_respects_min_version(pool: PgPool) {
     // Get warehouse using the cache, should return stale data
     let warehouse_cached = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Use,
         ctx.v1_state.catalog.clone(),
     )
@@ -899,6 +907,7 @@ async fn test_cache_respects_min_version(pool: PgPool) {
     // This should fetch fresh data since the warehouse was updated
     let warehouse_fresh = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::RequireMinimumVersion(original_version + 1),
         ctx.v1_state.catalog.clone(),
     )
@@ -931,6 +940,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     // Populate cache
     let original_warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -956,6 +966,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
 
     let cached_warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Use,
         ctx.v1_state.catalog.clone(),
     )
@@ -966,6 +977,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
 
     let warehouse_fresh = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Skip,
         ctx.v1_state.catalog.clone(),
     )
@@ -996,6 +1008,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
 
     let warehouse1 = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1024,6 +1037,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
     let warehouse2 = PostgresBackend::get_warehouse_by_name(
         &warehouse_resp.warehouse_name,
         &project_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1053,6 +1067,7 @@ async fn test_version_not_updated_if_nothing_changed(pool: PgPool) {
     // Get initial warehouse
     let warehouse_before = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1082,6 +1097,7 @@ async fn test_version_not_updated_if_nothing_changed(pool: PgPool) {
     // Verify from cache
     let warehouse_after = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         CachePolicy::Skip,
         ctx.v1_state.catalog.clone(),
     )
@@ -1109,6 +1125,7 @@ async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
     // Populate cache
     let warehouse_before = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1139,6 +1156,7 @@ async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
     // Get from cache - should have updated name
     let warehouse_after = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1165,6 +1183,7 @@ async fn test_cache_invalidation_on_api_update_storage(pool: PgPool) {
     // Populate cache
     let warehouse_before = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1190,6 +1209,7 @@ async fn test_cache_invalidation_on_api_update_storage(pool: PgPool) {
     // Get from cache - should have fresh data with updated_at timestamp changed
     let warehouse_after = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1217,6 +1237,7 @@ async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
     // Populate cache
     let warehouse_before = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
         ctx.v1_state.catalog.clone(),
     )
     .await
@@ -1244,11 +1265,14 @@ async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
     .unwrap();
 
     // Get from cache - should have updated profile
-    let warehouse_after =
-        PostgresBackend::get_warehouse_by_id(warehouse_resp.warehouse_id, ctx.v1_state.catalog)
-            .await
-            .unwrap()
-            .unwrap();
+    let warehouse_after = PostgresBackend::get_warehouse_by_id(
+        warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog,
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     assert!(matches!(
         warehouse_after.tabular_delete_profile,

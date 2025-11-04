@@ -6,18 +6,18 @@ use crate::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZTableOps, Authorizer, CatalogTableAction,
             CatalogViewAction, RequireTableActionError,
         },
-        CatalogStore, CatalogTabularOps, TabularId, TabularListFlags,
+        CatalogStore, CatalogTabularOps, ResolvedWarehouse, TabularId, TabularListFlags,
     },
-    WarehouseId,
 };
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
-    warehouse_id: WarehouseId,
+    warehouse: &ResolvedWarehouse,
     request: &UndropTabularsRequest,
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
 ) -> api::Result<()> {
+    let warehouse_id = warehouse.warehouse_id;
     let tabulars = C::get_tabular_infos_by_id(
         warehouse_id,
         &request.targets,

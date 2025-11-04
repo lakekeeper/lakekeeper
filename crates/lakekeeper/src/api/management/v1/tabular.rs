@@ -9,7 +9,7 @@ use crate::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
         },
-        CatalogStore, CatalogTabularOps, SecretStore, State, TabularId,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore, State, TabularId,
     },
     WarehouseId,
 };
@@ -33,12 +33,16 @@ where
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let [authz_can_use, authz_list_all] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
                 &[
-                    (warehouse_id, CatalogWarehouseAction::CanUse),
-                    (warehouse_id, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CatalogWarehouseAction::CanListEverything),
                 ],
             )
             .await?

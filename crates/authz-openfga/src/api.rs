@@ -1704,7 +1704,7 @@ mod tests {
 
     mod openfga_integration_tests {
         use lakekeeper::{
-            service::{authn::UserId, authz::Authorizer},
+            service::{authn::UserId, authz::Authorizer, ResolvedWarehouse},
             tokio,
         };
         use openfga_client::client::TupleKey;
@@ -1822,6 +1822,7 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
+                    &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
                         .map(|id| (id, AllNamespaceRelations::CanDelete))
@@ -1843,6 +1844,7 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
+                    &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
                         .map(|id| (id, AllNamespaceRelations::CanDelete))

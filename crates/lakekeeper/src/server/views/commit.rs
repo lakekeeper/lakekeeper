@@ -16,7 +16,7 @@ use crate::{
         io::{remove_all, write_file},
         require_warehouse_id,
         tables::{
-            determine_table_ident, extract_count_from_metadata_location, require_active_warehouse,
+            determine_table_ident, extract_count_from_metadata_location,
             validate_table_or_view_ident, MAX_RETRIES_ON_CONCURRENT_UPDATE,
         },
         views::validate_view_updates,
@@ -60,18 +60,16 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    authorizer
-        .require_warehouse_use(&request_metadata, warehouse_id)
-        .await?;
-
-    let view_info = C::get_view_info(
-        warehouse_id,
-        view_ident.clone(),
-        TabularListFlags::active(),
-        state.v1_state.catalog.clone(),
-    )
-    .await;
-
+    let (warehouse, view_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_view_info(
+            warehouse_id,
+            view_ident.clone(),
+            TabularListFlags::active(),
+            state.v1_state.catalog.clone(),
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
     let view_info = authorizer
         .require_view_action(
             &request_metadata,
@@ -86,11 +84,8 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // Verify assertions
     check_requirements(requirements.as_ref(), view_info.view_id())?;
 
-    let warehouse =
-        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
-    require_active_warehouse(warehouse.status)?;
 
     // Start the retry loop
     let request = Arc::new(request);

@@ -8,11 +8,12 @@ use crate::{
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogViewAction,
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogViewAction,
         },
         contract_verification::ContractVerification,
-        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, Result,
-        SecretStore, State, TabularId, TabularListFlags, Transaction,
+        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
     },
 };
 
@@ -37,6 +38,10 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // 2) renaming the old view
     let authorizer = state.v1_state.authz;
 
+    let warehouse =
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
     // Check 1)
     let destination_namespace = C::get_namespace(
         warehouse_id,
@@ -48,7 +53,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let _ = authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
+            &warehouse,
             user_provided_namespace,
             destination_namespace,
             CatalogNamespaceAction::CanCreateTable,

@@ -11,7 +11,9 @@ use super::{SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
-    service::{tasks::TaskQueueName, CatalogStore, CatalogWarehouseOps, SecretStore},
+    service::{
+        tasks::TaskQueueName, CatalogStore, CatalogWarehouseOps, SecretStore, WarehouseIdNotFound,
+    },
 };
 
 const QN_STR: &str = "tabular_purge";
@@ -137,8 +139,10 @@ where
 {
     let tabular_location_str = &task.data.tabular_location;
     let warehouse_id = task.task_metadata.warehouse_id;
-    let warehouse = C::require_warehouse_by_id(warehouse_id, catalog_state)
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state)
         .await
+        .map_err(ErrorModel::from)
+        .and_then(|w| w.ok_or_else(|| WarehouseIdNotFound::new(warehouse_id).into()))
         .map_err(|e| {
             e.append_detail(format!(
                 "Failed to get warehouse {warehouse_id} for Tabular Purge task."

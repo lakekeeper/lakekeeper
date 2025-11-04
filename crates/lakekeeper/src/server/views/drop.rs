@@ -9,7 +9,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        authz::{AuthZViewOps, Authorizer, AuthzWarehouseOps, CatalogViewAction},
         contract_verification::ContractVerification,
         tasks::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -39,13 +39,17 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let view_info = C::get_view_info(
-        warehouse_id,
-        view.clone(),
-        TabularListFlags::all(),
-        state.v1_state.catalog.clone(),
-    )
-    .await;
+    let (warehouse, view_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_view_info(
+            warehouse_id,
+            view.clone(),
+            TabularListFlags::active(),
+            state.v1_state.catalog.clone(),
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
     let view_info = authorizer
         .require_view_action(
             &request_metadata,
@@ -58,10 +62,6 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let view_id = view_info.view_id();
 
     // ------------------- BUSINESS LOGIC -------------------
-
-    let warehouse =
-        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
-
     state
         .v1_state
         .contract_verifiers

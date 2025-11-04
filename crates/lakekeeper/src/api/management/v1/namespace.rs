@@ -4,8 +4,9 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
-        CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State, Transaction,
+        authz::{Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction},
+        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceId, SecretStore, State,
+        Transaction,
     },
     WarehouseId,
 };
@@ -30,13 +31,16 @@ where
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
         let namespace =
             C::get_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
 
         authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 namespace_id,
                 namespace,
                 CatalogNamespaceAction::CanDelete,
@@ -86,13 +90,16 @@ where
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
         let namespace =
             C::get_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
 
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 namespace_id,
                 namespace,
                 CatalogNamespaceAction::CanGetMetadata,

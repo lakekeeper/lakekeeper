@@ -4,12 +4,14 @@ use lakekeeper::{
     axum::{extract::State as AxumState, Extension, Json},
     iceberg::{NamespaceIdent, TableIdent},
     service::{
-        authz::{AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps as _},
+        authz::{
+            AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps as _, AuthzWarehouseOps,
+        },
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId, TableIdentOrId,
-        TabularListFlags, ViewId, ViewIdentOrId,
+        CatalogWarehouseOps, NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
+        TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
     },
-    ProjectId, WarehouseId,
+    tokio, ProjectId, WarehouseId,
 };
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
@@ -217,14 +219,17 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
             warehouse_id,
         } => (*warehouse_id, NamespaceIdentOrId::from(namespace.clone())),
     };
-    let namespace = C::get_namespace(
-        warehouse_id,
-        user_provided_ns.clone(),
-        api_context.v1_state.catalog,
-    )
-    .await;
+    let (warehouse, namespace) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone(),),
+        C::get_namespace(
+            warehouse_id,
+            user_provided_ns.clone(),
+            api_context.v1_state.catalog,
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
     let namespace = authorizer
-        .require_namespace_action(metadata, warehouse_id, user_provided_ns, namespace, action)
+        .require_namespace_action(metadata, &warehouse, user_provided_ns, namespace, action)
         .await?;
 
     Ok(namespace.namespace_id().to_openfga())

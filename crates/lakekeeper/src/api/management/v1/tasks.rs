@@ -21,9 +21,9 @@ use crate::{
             TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
             TaskStatus as TQTaskStatus,
         },
-        CatalogStore, CatalogTabularOps, CatalogTaskOps, InvalidTabularIdentifier, ResolvedTask,
-        Result, SecretStore, State, TableNamed, TabularId, TabularListFlags, Transaction,
-        ViewNamed, ViewOrTableInfo,
+        CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
+        InvalidTabularIdentifier, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
+        TableNamed, TabularId, TabularListFlags, Transaction, ViewNamed, ViewOrTableInfo,
     },
     WarehouseId,
 };
@@ -350,11 +350,15 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         authorize_list_tasks::<A, C>(
             &authorizer,
             context.v1_state.catalog.clone(),
             &request_metadata,
-            warehouse_id,
+            &warehouse,
             query.entities.as_ref(),
         )
         .await?;
@@ -377,12 +381,16 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let [authz_can_use, authz_get_all_warehouse] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
                 &[
-                    (warehouse_id, CatalogWarehouseAction::CanUse),
-                    (warehouse_id, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
+                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
                 ],
             )
             .await?
@@ -437,12 +445,16 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let [authz_can_use, authz_control_all] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
                 &[
-                    (warehouse_id, CatalogWarehouseAction::CanUse),
-                    (warehouse_id, CONTROL_TASK_WAREHOUSE_PERMISSION),
+                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CONTROL_TASK_WAREHOUSE_PERMISSION),
                 ],
             )
             .await?
@@ -518,15 +530,17 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
-    warehouse_id: WarehouseId,
+    warehouse: &ResolvedWarehouse,
     entities: Option<&Vec<TaskEntity>>,
 ) -> Result<()> {
+    let warehouse_id = warehouse.warehouse_id;
+
     let [can_use, can_list_everything] = authorizer
         .are_allowed_warehouse_actions_arr(
             request_metadata,
             &[
-                (warehouse_id, CatalogWarehouseAction::CanUse),
-                (warehouse_id, CatalogWarehouseAction::CanListEverything),
+                (warehouse, CatalogWarehouseAction::CanUse),
+                (warehouse, CatalogWarehouseAction::CanListEverything),
             ],
         )
         .await?

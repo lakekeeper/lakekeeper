@@ -18,7 +18,7 @@ use crate::{
         views::validate_view_properties,
     },
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction},
         storage::{StorageLocations as _, StoragePermissions},
         CatalogNamespaceOps, CatalogStore, CatalogViewOps, CatalogWarehouseOps, Result,
         SecretStore, State, TabularId, Transaction, ViewId,
@@ -59,13 +59,16 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- AUTHZ -------------------
     let authorizer = &state.v1_state.authz;
 
-    let namespace =
-        C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
+    let (warehouse, namespace) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let namespace = authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
+            &warehouse,
             provided_ns,
             namespace,
             CatalogNamespaceAction::CanCreateView,
@@ -73,9 +76,6 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let warehouse =
-        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
-
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     require_active_warehouse(warehouse.status)?;
 

@@ -70,13 +70,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let [can_use_warehouse, can_list_namespaces, can_list_everything] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
                 &[
-                    (warehouse_id, CatalogWarehouseAction::CanUse),
-                    (warehouse_id, CatalogWarehouseAction::CanListNamespaces),
-                    (warehouse_id, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CatalogWarehouseAction::CanListNamespaces),
+                    (&warehouse, CatalogWarehouseAction::CanListEverything),
                 ],
             )
             .await?
@@ -97,7 +101,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             let parent_namespace = authorizer
                 .require_namespace_action(
                     &request_metadata,
-                    warehouse_id,
+                    &warehouse,
                     parent_ident,
                     parent_namespace,
                     CatalogNamespaceAction::CanListNamespaces,
@@ -109,6 +113,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 || authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
+                        &warehouse,
                         &parent_namespace,
                         CatalogNamespaceAction::CanListEverything,
                     )
@@ -125,6 +130,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 let parent = parent.clone();
                 let authorizer = authorizer.clone();
                 let request_metadata = request_metadata.clone();
+                let warehouse = warehouse.clone();
                 async move {
                     let query = ListNamespacesQuery {
                         page_size: Some(ps),
@@ -150,6 +156,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         authorizer
                             .are_allowed_namespace_actions_vec(
                                 &request_metadata,
+                                &warehouse,
                                 &responses
                                     .iter()
                                     .map(|id| (id, CatalogNamespaceAction::CanGetMetadata))
@@ -238,7 +245,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let parent_namespace = if let Some(namespace_parent) = namespace.parent() {
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+        let (warehouse, parent_namespace) = if let Some(namespace_parent) = namespace.parent() {
             let parent_namespace = C::get_namespace(
                 warehouse_id,
                 &namespace_parent,
@@ -248,28 +259,27 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             let parent_namespace = authorizer
                 .require_namespace_action(
                     &request_metadata,
-                    warehouse_id,
+                    &warehouse,
                     namespace_parent,
                     parent_namespace,
                     CatalogNamespaceAction::CanCreateNamespace,
                 )
                 .await?;
-            Some(parent_namespace.namespace_id())
+            (warehouse, Some(parent_namespace.namespace_id()))
         } else {
-            authorizer
+            let warehouse = authorizer
                 .require_warehouse_action(
                     &request_metadata,
                     warehouse_id,
+                    Ok(Some(warehouse)),
                     CatalogWarehouseAction::CanCreateNamespace,
                 )
                 .await?;
-            None
+            (warehouse, None)
         };
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = NamespaceId::new_random();
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
@@ -323,12 +333,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let namespace =
-            C::get_namespace(warehouse_id, &parameters.namespace, state.v1_state.catalog).await;
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
+            C::get_namespace_cache_aware(
+                warehouse_id,
+                &parameters.namespace,
+                CachePolicy::Skip,
+                state.v1_state.catalog
+            ),
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 parameters.namespace,
                 namespace,
                 CatalogNamespaceAction::CanGetMetadata,
@@ -357,16 +375,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let namespace = C::get_namespace(
-            warehouse_id,
-            &parameters.namespace,
-            state.v1_state.catalog.clone(),
-        )
-        .await;
-        authorizer
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
+            C::get_namespace(warehouse_id, &parameters.namespace, state.v1_state.catalog),
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let _namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 parameters.namespace,
                 namespace,
                 CatalogNamespaceAction::CanGetMetadata,
@@ -400,23 +417,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let namespace = C::get_namespace(
-            warehouse_id,
-            &parameters.namespace,
-            state.v1_state.catalog.clone(),
-        )
-        .await;
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
+            C::get_namespace(
+                warehouse_id,
+                &parameters.namespace,
+                state.v1_state.catalog.clone()
+            ),
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 parameters.namespace,
                 namespace,
                 CatalogNamespaceAction::CanDelete,
             )
             .await?;
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
@@ -480,17 +498,21 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let namespace = C::get_namespace_cache_aware(
-            warehouse_id,
-            &parameters.namespace,
-            CachePolicy::Skip,
-            state.v1_state.catalog.clone(),
-        )
-        .await;
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
+            C::get_namespace_cache_aware(
+                warehouse_id,
+                &parameters.namespace,
+                CachePolicy::Skip,
+                state.v1_state.catalog.clone(),
+            ),
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 parameters.namespace,
                 namespace,
                 CatalogNamespaceAction::CanUpdateProperties,

@@ -197,7 +197,7 @@ where
 
     /// Get the warehouse metadata. Return only active warehouses.
     ///
-    /// Return Ok(None) if the warehouse does not exist or is not active.
+    /// Return Ok(None) if the warehouse does not exist.
     async fn get_warehouse_by_id_impl<'a>(
         warehouse_id: WarehouseId,
         state: Self::State,
@@ -205,7 +205,7 @@ where
 
     /// Get the warehouse metadata. Return only active warehouses.
     ///
-    /// Return Ok(None) if the warehouse does not exist or is not active.
+    /// Return Ok(None) if the warehouse does not exist.
     async fn get_warehouse_by_name_impl(
         warehouse_name: &str,
         project_id: &ProjectId,

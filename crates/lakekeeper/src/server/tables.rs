@@ -65,9 +65,9 @@ use crate::{
             EntityId, TaskMetadata,
         },
         AuthZTableInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps,
-        CatalogWarehouseOps, NamedEntity, State, TableCommit, TableCreation, TableId,
-        TableIdentOrId, TableInfo, TabularId, TabularListFlags, TabularNotFound, Transaction,
-        WarehouseStatus, CONCURRENT_UPDATE_ERROR_TYPE,
+        CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation,
+        TableId, TableIdentOrId, TableInfo, TabularId, TabularListFlags, TabularNotFound,
+        Transaction, WarehouseStatus, CONCURRENT_UPDATE_ERROR_TYPE,
     },
     WarehouseId,
 };
@@ -93,22 +93,31 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let return_uuids = query.return_uuids;
         // ------------------- VALIDATIONS -------------------
         let NamespaceParameters {
-            namespace: provided_ns,
+            namespace: provided_namespace,
             prefix,
         } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-        validate_namespace_ident(&provided_ns)?;
+        validate_namespace_ident(&provided_namespace)?;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let namespace =
-            C::get_namespace(warehouse_id, &provided_ns, state.v1_state.catalog.clone()).await;
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+            C::get_namespace(
+                warehouse_id,
+                &provided_namespace,
+                state.v1_state.catalog.clone()
+            )
+        );
+
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
-                provided_ns,
+                &warehouse,
+                provided_namespace,
                 namespace,
                 CatalogNamespaceAction::CanListTables,
             )
@@ -120,7 +129,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
-                list_entities!(Table, list_tables, namespace, authorizer, request_metadata),
+                list_entities!(
+                    Table,
+                    list_tables,
+                    warehouse,
+                    namespace,
+                    authorizer,
+                    request_metadata
+                ),
                 &mut t,
             )
             .await?;
@@ -173,12 +189,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let namespace =
-            C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone()).await;
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+            C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
         let namespace = authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
                 provided_ns,
                 namespace,
                 CatalogNamespaceAction::CanCreateTable,
@@ -187,8 +206,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
@@ -360,9 +377,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
-        let (tabular_details, storage_permissions) = authorize_load_table::<C, A>(
+        let (warehouse, tabular_details, storage_permissions) = authorize_load_table::<C, A>(
             &request_metadata,
-            table,
+            table.clone(),
             warehouse_id,
             TabularListFlags::active_and_staged(),
             state.v1_state.authz,
@@ -370,13 +387,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
         let storage_permission = storage_permissions.ok_or(ErrorModel::forbidden(
-            "No storage permissions for table",
+            format!("User has no storage permissions for table `{table}`"),
             "NoStoragePermissions",
             None,
         ))?;
-
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
 
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
@@ -470,17 +484,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        authorizer
-            .require_warehouse_use(&request_metadata, warehouse_id)
-            .await?;
 
-        let table_info = C::get_table_info(
-            warehouse_id,
-            table.clone(),
-            TabularListFlags::active_and_staged(),
-            state.v1_state.catalog.clone(),
-        )
-        .await; // We can't fail before AuthZ
+        let (warehouse, table_info) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+            C::get_table_info(
+                warehouse_id,
+                table.clone(),
+                TabularListFlags::active_and_staged(),
+                state.v1_state.catalog.clone(),
+            )
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
         let table_info = authorizer
             .require_table_action(
@@ -494,9 +508,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let table_id = table_info.tabular_id;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
-
         state
             .v1_state
             .contract_verifiers
@@ -652,45 +663,46 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // 2) renaming the old table
         let authorizer = state.v1_state.authz;
 
-        // Check 1)
-        let destination_namespace = C::get_namespace(
-            warehouse_id,
-            &destination.namespace,
-            state.v1_state.catalog.clone(),
-        )
-        .await;
-        let user_provided_namespace = &destination.namespace;
-        let _ = authorizer
-            .require_namespace_action(
-                &request_metadata,
+        let (warehouse, destination_namespace, source_table_info) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
+            C::get_namespace(
                 warehouse_id,
+                &destination.namespace,
+                state.v1_state.catalog.clone(),
+            ),
+            C::get_table_info(
+                warehouse_id,
+                source.clone(),
+                TabularListFlags::active(),
+                state.v1_state.catalog.clone(),
+            )
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+        let user_provided_namespace = &destination.namespace;
+        let (destination_namespace, source_table_info) = tokio::join!(
+            // Check 1)
+            authorizer.require_namespace_action(
+                &request_metadata,
+                &warehouse,
                 user_provided_namespace,
                 destination_namespace,
                 CatalogNamespaceAction::CanCreateTable,
-            )
-            .await?;
-
-        // Check 2)
-        let source_table_info = C::get_table_info(
-            warehouse_id,
-            source.clone(),
-            TabularListFlags::active(),
-            state.v1_state.catalog.clone(),
-        )
-        .await;
-
-        let source_table_info = authorizer
-            .require_table_action(
+            ),
+            // Check 2)
+            authorizer.require_table_action(
                 &request_metadata,
                 warehouse_id,
                 source.clone(),
                 source_table_info,
                 CatalogTableAction::CanRename,
             )
-            .await?;
+        );
+
+        let _destination_namespace = destination_namespace?;
+        let source_table_info = source_table_info?;
 
         // ------------------- BUSINESS LOGIC -------------------
-
         if source == destination {
             return Ok(());
         }
@@ -749,10 +761,19 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     list_flags: TabularListFlags,
     authorizer: A,
     state: C::State,
-) -> Result<(TableInfo, Option<StoragePermissions>)> {
+) -> Result<(
+    Arc<ResolvedWarehouse>,
+    TableInfo,
+    Option<StoragePermissions>,
+)> {
     let table = table.into();
-    let table_infos = C::get_table_info(warehouse_id, table.clone(), list_flags, state)
-        .await
+    let (warehouse, table_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.clone()),
+        C::get_table_info(warehouse_id, table.clone(), list_flags, state.clone())
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let table_infos = table_info
         .map_err(RequireTableActionError::from)?
         .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, table.clone()))?;
 
@@ -780,7 +801,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     } else {
         None
     };
-    Ok((table_infos, storage_permissions))
+    Ok((warehouse, table_infos, storage_permissions))
 }
 
 /// Validate commit table requests
@@ -852,20 +873,21 @@ async fn commit_tables_inner<
     S: SecretStore,
     H: ::std::hash::BuildHasher + 'static + Send + Sync,
 >(
-    warehouse_id: WarehouseId,
+    warehouse: &ResolvedWarehouse,
     request: CommitTransactionRequest,
     table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<Vec<CommitContext>> {
     let include_deleted = false;
+    let warehouse_id = warehouse.warehouse_id;
 
     // Start the retry loop
     let mut attempt = 0;
     loop {
         let result = try_commit_tables::<C, A, S, _>(
             &request,
-            warehouse_id,
+            warehouse,
             table_ident_map.clone(),
             &state,
             include_deleted,
@@ -943,9 +965,9 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
-    authorizer
-        .require_warehouse_use(&request_metadata, warehouse_id)
-        .await?;
+    let warehouse =
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let identifiers = request
         .table_changes
@@ -983,7 +1005,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
 
     // ------------------- BUSINESS LOGIC -------------------
     commit_tables_inner(
-        warehouse_id,
+        &warehouse,
         request,
         Arc::new(table_ident_to_info),
         state,
@@ -1001,14 +1023,12 @@ async fn try_commit_tables<
     H: ::std::hash::BuildHasher,
 >(
     request: &CommitTransactionRequest,
-    warehouse_id: WarehouseId,
+    warehouse: &ResolvedWarehouse,
     table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
 ) -> Result<Vec<CommitContext>> {
-    let warehouse =
-        C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await?;
-
+    let warehouse_id = warehouse.warehouse_id;
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // Load old metadata

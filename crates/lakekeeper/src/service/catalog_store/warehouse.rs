@@ -51,6 +51,23 @@ pub enum WarehouseStatus {
     Inactive,
 }
 
+impl WarehouseStatus {
+    #[must_use]
+    pub fn active_and_inactive() -> &'static [WarehouseStatus] {
+        &[WarehouseStatus::Active, WarehouseStatus::Inactive]
+    }
+
+    #[must_use]
+    pub fn active() -> &'static [WarehouseStatus] {
+        &[WarehouseStatus::Active]
+    }
+
+    #[must_use]
+    pub fn inactive() -> &'static [WarehouseStatus] {
+        &[WarehouseStatus::Inactive]
+    }
+}
+
 define_version_newtype!(WarehouseVersion);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +93,49 @@ pub struct ResolvedWarehouse {
     /// Version of the warehouse entity.
     /// Increments on each update to the warehouse.
     pub version: WarehouseVersion,
+}
+
+impl ResolvedWarehouse {
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn new_random() -> Self {
+        use crate::service::storage::MemoryProfile;
+        let warehouse_id = WarehouseId::new_random();
+        let name = format!("warehouse_{}", warehouse_id.as_u128());
+
+        Self {
+            warehouse_id,
+            name,
+            project_id: ProjectId::new_random(),
+            storage_profile: MemoryProfile::default().into(),
+            storage_secret_id: None,
+            status: WarehouseStatus::Active,
+            tabular_delete_profile: TabularDeleteProfile::default(),
+            protected: false,
+            updated_at: None,
+            version: WarehouseVersion(0),
+        }
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn new_with_id(warehouse_id: WarehouseId) -> Self {
+        use crate::service::storage::MemoryProfile;
+        let name = format!("warehouse_{}", warehouse_id.as_u128());
+
+        Self {
+            warehouse_id,
+            name,
+            project_id: ProjectId::new_random(),
+            storage_profile: MemoryProfile::default().into(),
+            storage_secret_id: None,
+            status: WarehouseStatus::Active,
+            tabular_delete_profile: TabularDeleteProfile::default(),
+            protected: false,
+            updated_at: None,
+            version: WarehouseVersion(0),
+        }
+    }
 }
 
 // --------------------------- GENERAL ERROR ---------------------------
@@ -336,7 +396,6 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         DatabaseIntegrityError,
-        WarehouseIdNotFound,
     ]
 }
 
@@ -483,6 +542,7 @@ where
     /// Return Ok(None) if the warehouse does not exist.
     async fn get_warehouse_by_id<'a>(
         warehouse_id: WarehouseId,
+        status_filter: &[WarehouseStatus],
         state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
         let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
@@ -498,12 +558,22 @@ where
             warehouse_cache_insert(warehouse).await;
         }
 
+        let warehouse = warehouse.filter(|w| status_filter.contains(&w.status));
+
         Ok(warehouse)
+    }
+
+    async fn get_active_warehouse_by_id(
+        warehouse_id: WarehouseId,
+        state: Self::State,
+    ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
+        Self::get_warehouse_by_id(warehouse_id, WarehouseStatus::active(), state).await
     }
 
     /// Get warehouse by ID, invalidating cache if it's older than the provided timestamp
     async fn get_warehouse_by_id_cache_aware(
         warehouse_id: WarehouseId,
+        status_filter: &[WarehouseStatus],
         cache_policy: CachePolicy,
         state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
@@ -523,7 +593,7 @@ where
             }
             CachePolicy::Use => {
                 // Use cache if available
-                Self::get_warehouse_by_id(warehouse_id, state).await?
+                Self::get_warehouse_by_id(warehouse_id, status_filter, state).await?
             }
             CachePolicy::RequireMinimumVersion(require_min_version) => {
                 // Check cache first
@@ -564,34 +634,36 @@ where
                     warehouse
                 }
             }
-        };
+        }.filter(|w| status_filter.contains(&w.status));
 
         Ok(warehouse)
     }
 
-    /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
-    async fn require_warehouse_by_id<'a>(
-        warehouse_id: WarehouseId,
-        state: Self::State,
-    ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-        Self::get_warehouse_by_id(warehouse_id, state)
-            .await?
-            .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
-    }
+    // /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
+    // async fn require_warehouse_by_id<'a>(
+    //     warehouse_id: WarehouseId,
+    //     state: Self::State,
+    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
+    //     Self::get_warehouse_by_id(warehouse_id, state)
+    //         .await?
+    //         .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
+    // }
 
-    async fn require_warehouse_by_id_cache_aware(
-        warehouse_id: WarehouseId,
-        cache_policy: CachePolicy,
-        state: Self::State,
-    ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-        Self::get_warehouse_by_id_cache_aware(warehouse_id, cache_policy, state)
-            .await?
-            .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
-    }
+    // async fn require_warehouse_by_id_cache_aware(
+    //     warehouse_id: WarehouseId,
+    //     status_filter: &[WarehouseStatus],
+    //     cache_policy: CachePolicy,
+    //     state: Self::State,
+    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
+    //     Self::get_warehouse_by_id_cache_aware(warehouse_id, status_filter, cache_policy, state)
+    //         .await?
+    //         .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
+    // }
 
     async fn get_warehouse_by_name(
         warehouse_name: &str,
         project_id: &ProjectId,
+        status_filter: &[WarehouseStatus],
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByNameError> {
         let cached_warehouse = warehouse_cache_get_by_name(warehouse_name, project_id).await;
@@ -605,20 +677,23 @@ where
         if let Some(warehouse) = warehouse.clone() {
             warehouse_cache_insert(warehouse).await;
         }
+
+        let warehouse = warehouse.filter(|w| status_filter.contains(&w.status));
+
         Ok(warehouse)
     }
 
-    /// Wrapper around `get_warehouse_by_name` that returns
-    /// not found error if the warehouse does not exist.
-    async fn require_warehouse_by_name(
-        warehouse_name: &str,
-        project_id: &ProjectId,
-        catalog_state: Self::State,
-    ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByNameError> {
-        Self::get_warehouse_by_name(warehouse_name, project_id, catalog_state)
-            .await?
-            .ok_or(WarehouseNameNotFound::new(warehouse_name.to_string()).into())
-    }
+    // /// Wrapper around `get_warehouse_by_name` that returns
+    // /// not found error if the warehouse does not exist.
+    // async fn require_warehouse_by_name(
+    //     warehouse_name: &str,
+    //     project_id: &ProjectId,
+    //     catalog_state: Self::State,
+    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByNameError> {
+    //     Self::get_warehouse_by_name(warehouse_name, project_id, catalog_state)
+    //         .await?
+    //         .ok_or(WarehouseNameNotFound::new(warehouse_name.to_string()).into())
+    // }
 
     /// Set warehouse deletion profile
     async fn set_warehouse_deletion_profile<'a>(

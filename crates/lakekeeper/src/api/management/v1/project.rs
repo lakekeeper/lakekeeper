@@ -20,9 +20,9 @@ use crate::{
             ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
-        CatalogStore, State, Transaction,
+        CatalogStore, CatalogWarehouseOps, State, Transaction,
     },
-    ProjectId,
+    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -244,10 +244,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         match request.warehouse {
             WarehouseFilter::WarehouseId { id } => {
+                let warehouse = C::get_active_warehouse_by_id(
+                    WarehouseId::from(id),
+                    context.v1_state.catalog.clone(),
+                )
+                .await;
+
                 authorizer
                     .require_warehouse_action(
                         &request_metadata,
                         id.into(),
+                        warehouse,
                         CatalogWarehouseAction::CanGetMetadata,
                     )
                     .await?;

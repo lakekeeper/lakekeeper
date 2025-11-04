@@ -18,7 +18,8 @@ use crate::{
         },
         health::{Health, HealthExt},
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId,
-        ProjectId, RoleId, SecretStore, ServerId, State, TableId, ViewId, WarehouseId,
+        ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, ViewId,
+        WarehouseId,
     },
 };
 
@@ -138,7 +139,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_warehouse_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
+        _warehouse: &ResolvedWarehouse,
         _action: Self::WarehouseAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
@@ -147,6 +148,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_namespace_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         _action: Self::NamespaceAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {

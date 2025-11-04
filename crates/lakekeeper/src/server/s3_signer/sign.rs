@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::SystemTime, vec};
+use std::{collections::HashMap, time::SystemTime, vec};
 
 use aws_sigv4::{
     http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
@@ -18,15 +18,16 @@ use crate::{
     service::{
         authz::{
             AuthZTableOps, Authorizer, AuthzWarehouseOps, CatalogTableAction,
-            RequireTableActionError,
+            CatalogWarehouseAction, RequireTableActionError,
         },
         secrets::SecretStore,
         storage::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
-            ValidationError,
+            StorageProfile, ValidationError,
         },
         AuthZTableInfo, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        GetTabularInfoByLocationError, State, TableId, TableInfo, TabularListFlags,
+        GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
+        TabularListFlags,
     },
     WarehouseId,
 };
@@ -63,8 +64,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<S3SignResponse> {
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let authorizer = state.v1_state.authz.clone();
-        authorizer
-            .require_warehouse_use(&request_metadata, warehouse_id)
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
+
+        let warehouse = authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::CanUse,
+            )
             .await?;
 
         let S3SignRequest {
@@ -77,7 +87,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let (parsed_url, operation) = s3_utils::parse_s3_url(
             &request_url,
-            s3_url_style_detection::<C>(state.v1_state.catalog.clone(), warehouse_id).await?,
+            s3_url_style_detection(&warehouse)?,
             &request_method,
             request_body.as_deref(),
         )?;
@@ -155,18 +165,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         };
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        let (table_info, warehouse) = tokio::join!(
-            authorizer.require_table_action(
+        let table_info = authorizer
+            .require_table_action(
                 &request_metadata,
                 warehouse_id,
                 table_info.table_ident().clone(),
                 Ok::<_, RequireTableActionError>(Some(table_info)),
                 action,
-            ),
-            C::require_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone())
-        );
-        let table_info = table_info?;
-        let warehouse = warehouse?;
+            )
+            .await?;
         let table_id = table_info.table_id();
         let location = table_info.location;
 
@@ -224,42 +231,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-async fn s3_url_style_detection<C: CatalogStore>(
-    state: C::State,
-    warehouse_id: WarehouseId,
+fn s3_url_style_detection(
+    warehouse: &ResolvedWarehouse,
 ) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
-    let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
-        .try_get_with(warehouse_id, async {
-            tracing::trace!("No cache hit for {warehouse_id}");
-            let result = C::require_warehouse_by_id(warehouse_id, state)
-                .await
-                .map(|w| {
-                    w.storage_profile.clone()
-                        .try_into_s3()
-                        .map(|s| s.remote_signing_url_style)
-                        .map_err(|e| {
-                            IcebergErrorResponse::from(ErrorModel::bad_request(
-                                "Warehouse storage profile is not an S3 profile",
-                                "InvalidWarehouse",
-                                Some(Box::new(e)),
-                            ))
-                        })
-                })?;
-            result
-        })
-        .await
-        .map_err(|e: Arc<IcebergErrorResponse>| {
-            tracing::debug!("Failed to get warehouse S3 URL style detection mode from cache due to error: '{e:?}'");
-            IcebergErrorResponse::from(ErrorModel::new(
-                e.error.message.as_str(),
-                e.error.r#type.as_str(),
-                e.error.code,
-                // moka Arcs errors, our errors have a non-clone backtrace, and we can't get it out
-                // so we don't forward the error here. We log it above tho.
-                None,
-            ))
-        })?;
-    Ok(t)
+    let storage_profile = &warehouse.storage_profile;
+    if let StorageProfile::S3(s3_profile) = storage_profile {
+        return Ok(s3_profile.remote_signing_url_style);
+    }
+
+    Err(IcebergErrorResponse::from(ErrorModel::bad_request(
+        "Warehouse storage profile is not an S3 profile",
+        "InvalidWarehouse",
+        None,
+    )))
 }
 
 async fn sign(

@@ -9,17 +9,15 @@ use crate::{
         ApiContext,
     },
     request_metadata::RequestMetadata,
-    server::{
-        require_warehouse_id,
-        tables::{require_active_warehouse, validate_table_or_view_ident},
-    },
+    server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, CatalogViewAction, RequireViewActionError,
+            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzWarehouseOps, CatalogViewAction,
+            RequireViewActionError,
         },
         storage::{StorageCredential, StoragePermissions},
-        AuthZViewInfo as _, CachePolicy, CatalogStore, CatalogTabularOps, CatalogViewOps,
-        CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State, Transaction,
+        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogViewOps, CatalogWarehouseOps,
+        InternalParseLocationError, Result, SecretStore, State, TabularListFlags, Transaction,
     },
 };
 
@@ -45,15 +43,21 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let view_info = C::get_view_info(
-        warehouse_id,
-        view.clone(),
-        crate::service::TabularListFlags::active(),
-        state.v1_state.catalog.clone(),
-    )
-    .await
-    .map_err(RequireViewActionError::from)?
-    .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, view.clone()))?;
+    let (warehouse, view_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_view_info(
+            warehouse_id,
+            view.clone(),
+            TabularListFlags::active(),
+            state.v1_state.catalog.clone(),
+        )
+    );
+
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let view_info = view_info
+        .map_err(RequireViewActionError::from)?
+        .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, view.clone()))?;
 
     let view_id = view_info.view_id();
 
@@ -76,14 +80,6 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
     let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
     t.commit().await?;
-
-    let warehouse = C::require_warehouse_by_id_cache_aware(
-        warehouse_id,
-        CachePolicy::RequireMinimumVersion(*view.warehouse_version),
-        state.v1_state.catalog,
-    )
-    .await?;
-    require_active_warehouse(warehouse.status)?;
 
     let view_location =
         Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;

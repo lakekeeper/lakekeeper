@@ -16,6 +16,7 @@ use crate::{
             CatalogWarehouseAction,
         },
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
+        WarehouseNameNotFound, WarehouseStatus,
     },
     CONFIG,
 };
@@ -44,20 +45,23 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                     CatalogProjectAction::CanListWarehouses,
                 )
                 .await?;
-            C::require_warehouse_by_name(
+            C::get_warehouse_by_name(
                 &warehouse_from_arg,
                 &project_id,
+                WarehouseStatus::active(),
                 api_context.v1_state.catalog.clone(),
             )
             .await?
+            .ok_or_else(|| ErrorModel::from(WarehouseNameNotFound::new(warehouse_from_arg)))?
         } else {
             return Err(ErrorModel::bad_request("No warehouse specified. Please specify the 'warehouse' parameter in the GET /config request.".to_string(), "GetConfigNoWarehouseProvided", None).into());
         };
 
-        authorizer
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse.warehouse_id,
+                Ok(Some(warehouse)),
                 CatalogWarehouseAction::CanGetConfig,
             )
             .await?;

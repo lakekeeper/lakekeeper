@@ -10,7 +10,9 @@ use super::{
 use crate::{
     api::iceberg::v1::Result,
     request_metadata::RequestMetadata,
-    service::{AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy, ServerId, TableInfo},
+    service::{
+        AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy, ResolvedWarehouse, ServerId, TableInfo,
+    },
 };
 
 mod error;
@@ -326,7 +328,7 @@ where
     async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
+        warehouse: &ResolvedWarehouse,
         action: Self::WarehouseAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
 
@@ -335,6 +337,7 @@ where
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
         namespace: &NamespaceHierarchy,
         action: Self::NamespaceAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
@@ -342,13 +345,13 @@ where
     async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        warehouses_with_actions: &[(WarehouseId, Self::WarehouseAction)],
+        warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let n_inputs = warehouses_with_actions.len();
         let futures: Vec<_> = warehouses_with_actions
             .iter()
             .map(|(warehouse, a)| async move {
-                self.is_allowed_warehouse_action(metadata, *warehouse, *a)
+                self.is_allowed_warehouse_action(metadata, warehouse, *a)
                     .await
                     .map(MustUse::into_inner)
             })
@@ -365,13 +368,14 @@ where
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
         actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let futures: Vec<_> = actions
             .iter()
             .map(|(ns, a)| async move {
                 let namespace = (*ns).clone();
-                self.is_allowed_namespace_action(metadata, &namespace, *a)
+                self.is_allowed_namespace_action(metadata, warehouse, &namespace, *a)
                     .await
                     .map(MustUse::into_inner)
             })
@@ -603,6 +607,7 @@ pub(crate) mod tests {
 
     use iceberg::NamespaceIdent;
     use paste::paste;
+    use uuid::Uuid;
 
     use super::*;
     use crate::service::{health::Health, Namespace};
@@ -844,18 +849,20 @@ pub(crate) mod tests {
         async fn is_allowed_warehouse_action_impl(
             &self,
             _metadata: &RequestMetadata,
-            warehouse_id: WarehouseId,
+            warehouse: &ResolvedWarehouse,
             action: Self::WarehouseAction,
         ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("warehouse:{action}").as_str()) {
                 return Ok(false);
             }
+            let warehouse_id = warehouse.warehouse_id;
             Ok(self.check_available(format!("warehouse:{warehouse_id}").as_str()))
         }
 
         async fn is_allowed_namespace_action_impl(
             &self,
             _metadata: &RequestMetadata,
+            _warehouse: &ResolvedWarehouse,
             namespace: &NamespaceHierarchy,
             action: Self::NamespaceAction,
         ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
@@ -991,7 +998,7 @@ pub(crate) mod tests {
     }
 
     macro_rules! test_block_action {
-        ($entity:ident, $action:path, $object_id:expr) => {
+        ($entity:ident, $action:path, $($check_arguments:expr),+) => {
             paste! {
                 #[tokio::test]
                 async fn [<test_block_ $entity _action>]() {
@@ -1001,7 +1008,7 @@ pub(crate) mod tests {
                     assert!(authz
                         .[<is_allowed_ $entity _action>](
                             &RequestMetadata::new_unauthenticated(),
-                            $object_id,
+                            $($check_arguments),+,
                             $action
                         )
                         .await
@@ -1016,43 +1023,7 @@ pub(crate) mod tests {
                     assert!(!authz
                         .[<is_allowed_ $entity _action>](
                             &RequestMetadata::new_unauthenticated(),
-                            $object_id,
-                            $action
-                        )
-                        .await
-                        .unwrap()
-                        .into_inner());
-                }
-            }
-        };
-    }
-    macro_rules! test_block_namespace_action {
-        ($action:path, $object_id:expr) => {
-            paste! {
-                #[tokio::test]
-                async fn test_block_namespace_action() {
-                    let authz = HidingAuthorizer::new();
-
-                    // Nothing is hidden, so the action is allowed.
-                    assert!(authz
-                        .is_allowed_namespace_action(
-                            &RequestMetadata::new_unauthenticated(),
-                            $object_id,
-                            $action
-                        )
-                        .await
-                        .unwrap()
-                        .into_inner());
-
-                    // Generates "namespace:can_list_everything" for macro invoked with
-                    // (namespace, CatalogNamespaceAction::CanListEverything)
-                    authz.block_action(format!("namespace:{}", $action).as_str());
-
-                    // After blocking the action it must not be allowed anymore.
-                    assert!(!authz
-                        .is_allowed_namespace_action(
-                            &RequestMetadata::new_unauthenticated(),
-                            $object_id,
+                            $($check_arguments),+,
                             $action
                         )
                         .await
@@ -1071,15 +1042,17 @@ pub(crate) mod tests {
     test_block_action!(
         warehouse,
         CatalogWarehouseAction::CanCreateNamespace,
-        WarehouseId::new_random()
+        &ResolvedWarehouse::new_random()
     );
-    test_block_namespace_action!(
+    test_block_action!(
+        namespace,
         CatalogNamespaceAction::CanListViews,
+        &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: Arc::new(Namespace {
                 namespace_ident: NamespaceIdent::new("test".to_string()),
                 namespace_id: NamespaceId::new_random(),
-                warehouse_id: WarehouseId::new_random(),
+                warehouse_id: Uuid::nil().into(),
                 protected: false,
                 properties: None,
                 created_at: chrono::Utc::now(),

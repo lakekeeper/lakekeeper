@@ -14,9 +14,11 @@ use crate::{
         tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
     },
     service::{
-        authz::Authorizer, secrets::SecretStore, AuthZTableInfo as _, CachePolicy, CatalogStore,
-        CatalogTableOps, CatalogWarehouseOps, LoadTableResponse as CatalogLoadTableResult, State,
-        TableId, TableIdentOrId, TabularListFlags, TabularNotFound, Transaction,
+        authz::{Authorizer, AuthzWarehouseOps},
+        secrets::SecretStore,
+        AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
+        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
+        TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -47,12 +49,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     let authorizer = state.v1_state.authz;
     let catalog_state = state.v1_state.catalog;
 
-    let (table_info, storage_permissions) = authorize_load_table::<C, A>(
+    let (warehouse, table_info, storage_permissions) = authorize_load_table::<C, A>(
         &request_metadata,
         table,
         warehouse_id,
         TabularListFlags::active(),
-        authorizer,
+        authorizer.clone(),
         catalog_state.clone(),
     )
     .await?;
@@ -76,12 +78,19 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     .await?;
     t.commit().await?;
 
-    let warehouse = C::require_warehouse_by_id_cache_aware(
-        warehouse_id,
-        CachePolicy::RequireMinimumVersion(*warehouse_version),
-        catalog_state.clone(),
-    )
-    .await?;
+    // Refetch warehouse if version is stale
+    let warehouse = if warehouse.version < warehouse_version {
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::RequireMinimumVersion(*warehouse_version),
+            catalog_state.clone(),
+        )
+        .await;
+        authorizer.require_warehouse_presence(warehouse_id, warehouse)?
+    } else {
+        warehouse
+    };
 
     let table_location =
         parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;

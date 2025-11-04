@@ -35,8 +35,8 @@ use crate::{
         },
         secrets::SecretStore,
         tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, NamespaceId, State,
-        TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
+        CachePolicy, CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
+        NamespaceId, State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
     },
     ProjectId, WarehouseId,
 };
@@ -442,7 +442,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 &warehouses
                     .iter()
-                    .map(|w| (w.warehouse_id, CatalogWarehouseAction::CanIncludeInList))
+                    .map(|w| (&**w, CatalogWarehouseAction::CanIncludeInList))
                     .collect::<Vec<_>>(),
             )
             .await?
@@ -466,23 +466,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetWarehouseResponse> {
-        // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog,
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
-
-        // ------------------- Business Logic -------------------
-        let warehouse = C::require_warehouse_by_id_cache_aware(
-            warehouse_id,
-            crate::service::CachePolicy::Skip,
-            context.v1_state.catalog,
-        )
-        .await?;
         Ok((*warehouse).clone().into())
     }
 
@@ -494,10 +494,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<WarehouseStatisticsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Use,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
@@ -506,7 +514,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         C::get_warehouse_stats(
             warehouse_id,
             query.to_pagination_query(),
-            context.v1_state.catalog.clone(),
+            context.v1_state.catalog,
         )
         .await
     }
@@ -519,10 +527,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanDelete,
             )
             .await?;
@@ -552,10 +569,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<ProtectionResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Use,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanDelete,
             )
             .await?;
@@ -591,10 +617,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Use,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanRename,
             )
             .await?;
@@ -629,10 +664,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanModifySoftDeletion,
             )
             .await?;
@@ -667,10 +706,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanDeactivate,
             )
             .await?;
@@ -697,10 +745,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanActivate,
             )
             .await?;
@@ -728,10 +785,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanUpdateStorage,
             )
             .await?;
@@ -751,8 +817,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
         .await?;
 
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let storage_profile = warehouse
             .storage_profile
@@ -816,11 +880,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                CatalogWarehouseAction::CanUpdateStorageCredential,
+                warehouse,
+                CatalogWarehouseAction::CanUpdateStorage,
             )
             .await?;
 
@@ -829,8 +902,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let UpdateWarehouseCredentialRequest {
             new_storage_credential,
         } = request;
-        let warehouse =
-            C::require_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let old_secret_id = warehouse.storage_secret_id;
 
@@ -900,20 +971,28 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             return Ok(());
         }
         // ------------------- AuthZ -------------------
-        context
-            .v1_state
-            .authz
+        let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanUse,
             )
             .await?;
 
         undrop::require_undrop_permissions::<A, C>(
-            warehouse_id,
+            &warehouse,
             &request,
-            &context.v1_state.authz,
+            &authorizer,
             context.v1_state.catalog.clone(),
             &request_metadata,
         )
@@ -976,13 +1055,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog = context.v1_state.catalog;
         let authorizer = context.v1_state.authz;
 
+        let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
         let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
                 &[
-                    (warehouse_id, CatalogWarehouseAction::CanUse),
-                    (warehouse_id, CatalogWarehouseAction::CanListDeletedTabulars),
-                    (warehouse_id, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CatalogWarehouseAction::CanListDeletedTabulars),
+                    (&warehouse, CatalogWarehouseAction::CanListEverything),
                 ],
             )
             .await?
@@ -1119,10 +1201,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanModifyTaskQueueConfig,
             )
             .await?;
@@ -1170,10 +1256,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetTaskQueueConfigResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanGetTaskQueueConfig,
             )
             .await?;
