@@ -124,7 +124,7 @@ pub trait AuthZProjectOps: Authorizer {
                 }
             }
 
-            decisions            
+            decisions
         }
         .map(MustUse::from)
     }
