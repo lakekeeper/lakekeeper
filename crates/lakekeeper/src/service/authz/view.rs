@@ -305,6 +305,13 @@ pub trait AuthZViewOps: Authorizer {
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, A)],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        #[cfg(debug_assertions)]
+        {
+            let namespaces: Vec<&NamespaceWithParent> =
+                actions.iter().map(|(ns, _, _)| *ns).collect();
+            super::table::validate_namespace_hierarchy(&namespaces, parent_namespaces);
+        }
+
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
         } else {

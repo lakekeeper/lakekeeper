@@ -1002,7 +1002,7 @@ async fn test_namespace_deep_hierarchy(pool: PgPool) {
     let warehouse_id = warehouse_resp.warehouse_id;
 
     // Create 5-level hierarchy: a.b.c.d.e
-    let levels = vec!["a", "b", "c", "d", "e"];
+    let levels = ["a", "b", "c", "d", "e"];
     let mut namespace_ids = Vec::new();
 
     for i in 0..levels.len() {
@@ -1012,7 +1012,7 @@ async fn test_namespace_deep_hierarchy(pool: PgPool) {
         .await
         .unwrap();
 
-        let ident_parts: Vec<String> = levels[0..=i].iter().map(|s| s.to_string()).collect();
+        let ident_parts: Vec<String> = levels[0..=i].iter().map(ToString::to_string).collect();
         let ident = NamespaceIdent::from_vec(ident_parts).unwrap();
         let id = NamespaceId::new_random();
 
@@ -1060,8 +1060,7 @@ async fn test_namespace_deep_hierarchy(pool: PgPool) {
         assert_eq!(
             ns.namespace_id(),
             namespace_ids[4 - i],
-            "Namespace ID at level {} should match",
-            i
+            "Namespace ID at level {i} should match",
         );
         // Validate that parent linkage is correct
         if i < all_namespaces.len() - 1 {
@@ -1069,7 +1068,7 @@ async fn test_namespace_deep_hierarchy(pool: PgPool) {
             if let Some((parent_id, _)) = ns.parent {
                 assert_eq!(parent_id, expected_parent_id);
             } else {
-                panic!("Namespace at level {} should have a parent", i);
+                panic!("Namespace at level {i} should have a parent");
             }
         }
     }

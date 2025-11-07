@@ -21,6 +21,48 @@ use crate::{
 
 const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::CanGetMetadata;
 
+/// Validates that the full namespace hierarchy is provided for all namespaces.
+/// This is a debug assertion to ensure data consistency.
+#[cfg(debug_assertions)]
+pub(super) fn validate_namespace_hierarchy(
+    namespaces: &[&NamespaceWithParent],
+    parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+) {
+    for ns in namespaces {
+        let mut this_ns = *ns;
+        while let Some((parent_id, parent_version)) = this_ns.parent {
+            assert!(
+                parent_namespaces.contains_key(&parent_id),
+                "Parent namespace ID {} of namespace ID {} not found in provided parent namespaces",
+                parent_id,
+                this_ns.namespace_id()
+            );
+
+            let parent_ns = parent_namespaces
+                .get(&parent_id)
+                .expect("Parent namespace must exist");
+            assert!(
+                parent_ns.version() == parent_version,
+                "Parent namespace version mismatch for namespace ID {}: expected {}, found {}",
+                this_ns.namespace_id(),
+                parent_version,
+                parent_ns.version()
+            );
+            let expected_parent_ns = this_ns.namespace_ident().clone().parent().unwrap();
+
+            assert!(
+                &expected_parent_ns == parent_ns.namespace_ident(),
+                "Parent namespace identifier mismatch for namespace ID {}: expected {:?}, found {:?}",
+                this_ns.namespace_id(),
+                expected_parent_ns,
+                parent_ns.namespace_ident()
+            );
+
+            this_ns = parent_ns;
+        }
+    }
+}
+
 pub trait TableAction
 where
     Self: std::hash::Hash
@@ -425,6 +467,13 @@ pub trait AuthZTableOps: Authorizer {
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&NamespaceWithParent, &impl AuthZTableInfo, A)],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        #[cfg(debug_assertions)]
+        {
+            let namespaces: Vec<&NamespaceWithParent> =
+                actions.iter().map(|(ns, _, _)| *ns).collect();
+            validate_namespace_hierarchy(&namespaces, parent_namespaces);
+        }
+
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
         } else {
@@ -597,4 +646,318 @@ impl<T> AuthZTableOps for T where T: Authorizer {}
 pub enum ActionOnTableOrView<'a, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
     Table((&'a IT, AT)),
     View((&'a IV, AV)),
+}
+
+#[cfg(test)]
+mod tests {
+    use iceberg::{NamespaceIdent, TableIdent};
+    use sqlx::PgPool;
+
+    use super::*;
+    use crate::{
+        implementations::postgres::PostgresBackend,
+        service::{
+            authz::{tests::HidingAuthorizer, CatalogTableAction, CatalogViewAction},
+            catalog_store::TabularListFlags,
+            CatalogNamespaceOps as _, CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
+        },
+        tests::{create_ns, create_table, create_view, memory_io_profile, SetupTestCatalog},
+    };
+
+    #[sqlx::test]
+    async fn test_are_allowed_tabular_actions_vec_all_allowed(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        // Create a namespace, table, and view
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _table = create_table(ctx.clone(), &prefix, "test_ns", "t1", false)
+            .await
+            .unwrap();
+        let _view = create_view(ctx.clone(), &prefix, "test_ns", "v1", None)
+            .await
+            .unwrap();
+
+        // Construct table identifiers
+        let table_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "t1".to_string());
+        let view_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "v1".to_string());
+
+        // Load tabular info
+        let tabulars = vec![
+            TabularIdentBorrowed::Table(&table_ident),
+            TabularIdentBorrowed::View(&view_ident),
+        ];
+        let infos = PostgresBackend::get_tabular_infos_by_ident(
+            warehouse_resp.warehouse_id,
+            &tabulars,
+            TabularListFlags::active(),
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+
+        let table_info = infos[0].clone().into_table_info().unwrap();
+        let view_info = infos[1].clone().into_view_info().unwrap();
+
+        // Get namespace hierarchy
+        let warehouse = PostgresBackend::get_active_warehouse_by_id(
+            warehouse_resp.warehouse_id,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ns_hierarchy = PostgresBackend::get_namespace(
+            warehouse_resp.warehouse_id,
+            &ns.namespace,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Test with both table and view actions
+        let actions = vec![
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::Table((&table_info, CatalogTableAction::CanGetMetadata)),
+            ),
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::View((&view_info, CatalogViewAction::CanGetMetadata)),
+            ),
+        ];
+
+        let parents = ns_hierarchy
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
+        let result = authz
+            .are_allowed_tabular_actions_vec(
+                &crate::tests::random_request_metadata(),
+                &warehouse,
+                &parents,
+                &actions,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(result, vec![true, true]);
+    }
+
+    #[sqlx::test]
+    async fn test_are_allowed_tabular_actions_vec_hidden_table(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _table = create_table(ctx.clone(), &prefix, "test_ns", "t1", false)
+            .await
+            .unwrap();
+        let _view = create_view(ctx.clone(), &prefix, "test_ns", "v1", None)
+            .await
+            .unwrap();
+
+        let table_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "t1".to_string());
+        let view_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "v1".to_string());
+
+        let tabulars = vec![
+            TabularIdentBorrowed::Table(&table_ident),
+            TabularIdentBorrowed::View(&view_ident),
+        ];
+        let infos = PostgresBackend::get_tabular_infos_by_ident(
+            warehouse_resp.warehouse_id,
+            &tabulars,
+            TabularListFlags::active(),
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+
+        let table_info = infos[0].clone().into_table_info().unwrap();
+        let view_info = infos[1].clone().into_view_info().unwrap();
+
+        // Hide the table
+        authz.hide(&format!(
+            "table:{}/{}",
+            warehouse_resp.warehouse_id, table_info.tabular_id
+        ));
+
+        let warehouse = PostgresBackend::get_active_warehouse_by_id(
+            warehouse_resp.warehouse_id,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ns_hierarchy = PostgresBackend::get_namespace(
+            warehouse_resp.warehouse_id,
+            &ns.namespace,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let parent_namespaces = ns_hierarchy
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
+
+        let actions = vec![
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::Table((&table_info, CatalogTableAction::CanGetMetadata)),
+            ),
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::View((&view_info, CatalogViewAction::CanGetMetadata)),
+            ),
+        ];
+
+        let result = authz
+            .are_allowed_tabular_actions_vec(
+                &crate::tests::random_request_metadata(),
+                &warehouse,
+                &parent_namespaces,
+                &actions,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Table is hidden, view is visible
+        assert_eq!(result, vec![false, true]);
+    }
+
+    #[sqlx::test]
+    async fn test_are_allowed_tabular_actions_vec_mixed_order(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _table1 = create_table(ctx.clone(), &prefix, "test_ns", "t1", false)
+            .await
+            .unwrap();
+        let _view1 = create_view(ctx.clone(), &prefix, "test_ns", "v1", None)
+            .await
+            .unwrap();
+        let _table2 = create_table(ctx.clone(), &prefix, "test_ns", "t2", false)
+            .await
+            .unwrap();
+
+        let table1_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "t1".to_string());
+        let view1_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "v1".to_string());
+        let table2_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "t2".to_string());
+
+        let tabulars = vec![
+            TabularIdentBorrowed::Table(&table1_ident),
+            TabularIdentBorrowed::View(&view1_ident),
+            TabularIdentBorrowed::Table(&table2_ident),
+        ];
+        let infos = PostgresBackend::get_tabular_infos_by_ident(
+            warehouse_resp.warehouse_id,
+            &tabulars,
+            TabularListFlags::active(),
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+
+        let table1_info = infos[0].clone().into_table_info().unwrap();
+        let view1_info = infos[1].clone().into_view_info().unwrap();
+        let table2_info = infos[2].clone().into_table_info().unwrap();
+
+        // Hide table2 and block view action
+        authz.hide(&format!(
+            "table:{}/{}",
+            warehouse_resp.warehouse_id, table2_info.tabular_id
+        ));
+        authz.block_action(&format!("view:{}", CatalogViewAction::CanDrop));
+
+        let warehouse = PostgresBackend::get_active_warehouse_by_id(
+            warehouse_resp.warehouse_id,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ns_hierarchy = PostgresBackend::get_namespace(
+            warehouse_resp.warehouse_id,
+            &ns.namespace,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let parent_namespaces = ns_hierarchy
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
+
+        // Mix tables and views in different order
+        let actions = vec![
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::Table((&table1_info, CatalogTableAction::CanGetMetadata)),
+            ),
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::View((&view1_info, CatalogViewAction::CanDrop)), // Blocked
+            ),
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::Table((&table2_info, CatalogTableAction::CanReadData)), // Hidden
+            ),
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::View((&view1_info, CatalogViewAction::CanGetMetadata)), // Allowed
+            ),
+        ];
+
+        let result = authz
+            .are_allowed_tabular_actions_vec(
+                &crate::tests::random_request_metadata(),
+                &warehouse,
+                &parent_namespaces,
+                &actions,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Expected: table1 allowed, view1 drop blocked, table2 hidden, view1 get allowed
+        assert_eq!(result, vec![true, false, false, true]);
+    }
 }

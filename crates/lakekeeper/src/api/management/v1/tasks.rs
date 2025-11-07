@@ -686,7 +686,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 catalog_state.clone(),
             )
             .await
-            .map_err(RequireTableActionError::from)?
+            .map_err(RequireViewActionError::from)?
             .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, *view_id))?;
 
             let namespace_id = view_info.namespace_id;

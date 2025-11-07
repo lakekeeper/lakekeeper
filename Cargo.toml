@@ -164,4 +164,5 @@ veil = "0.2.0"
 tracing-test = "0.2.5"
 
 [profile.dev.build-override]
+debug-assertions = true
 opt-level = 3

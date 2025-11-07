@@ -323,12 +323,13 @@ impl EndpointHook for NamespaceCacheEndpointHook {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use chrono::Utc;
     use iceberg::NamespaceIdent;
 
     use super::*;
     use crate::{service::catalog_store::namespace::Namespace, WarehouseId};
-    use std::sync::Arc;
 
     /// Helper function to create a test namespace
     fn test_namespace(

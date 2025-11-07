@@ -60,7 +60,7 @@ pub(crate) async fn set_tabular_protected(
             UPDATE tabular t
             SET protected = $3
             FROM selected_tabular as st, w, ns
-            WHERE t.tabular_id = st.tabular_id
+            WHERE t.tabular_id = st.tabular_id AND t.warehouse_id = $1
             RETURNING 
                 t.tabular_id,
                 t.namespace_id,
