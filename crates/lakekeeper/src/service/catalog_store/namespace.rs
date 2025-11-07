@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use http::StatusCode;
 use iceberg::NamespaceIdent;
@@ -12,12 +15,13 @@ use crate::{
         impl_from_with_detail,
         namespace_cache::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
-            namespace_cache_insert_hierarchy,
+            namespace_cache_insert_multiple,
         },
         tasks::TaskId,
-        CachePolicy, CatalogBackendError, CatalogStore, InternalParseLocationError,
-        InvalidPaginationToken, ListNamespacesQuery, NamespaceId, TableIdent, TabularId,
-        Transaction, WarehouseIdNotFound,
+        BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
+        InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
+        SerializationError, StateOrTransaction, TableIdent, TabularId, Transaction,
+        WarehouseIdNotFound,
     },
     WarehouseId,
 };
@@ -37,12 +41,12 @@ pub struct Namespace {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct NamespaceWithParentVersion {
+pub struct NamespaceWithParent {
     pub namespace: Arc<Namespace>,
     pub parent: Option<(NamespaceId, NamespaceVersion)>,
 }
 
-impl NamespaceWithParentVersion {
+impl NamespaceWithParent {
     #[must_use]
     pub fn namespace_id(&self) -> NamespaceId {
         self.namespace.namespace_id
@@ -72,23 +76,38 @@ impl NamespaceWithParentVersion {
     pub fn version(&self) -> NamespaceVersion {
         self.namespace.version
     }
+
+    #[must_use]
+    pub fn parent_namespaces_id(&self) -> Option<NamespaceId> {
+        self.parent.as_ref().map(|(id, _)| *id)
+    }
+
+    #[must_use]
+    pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.namespace.updated_at
+    }
+
+    #[must_use]
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.namespace.created_at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceHierarchy {
     /// The target namespace (leaf in the hierarchy)
-    pub namespace: Arc<Namespace>,
+    pub namespace: NamespaceWithParent,
     /// Parent namespaces ordered from immediate parent to root.
     /// Empty if this namespace is a root namespace (i.e., directly in the warehouse).
     /// Root namespace = a namespace that is directly contained in the warehouse with no parent.
-    pub parents: Vec<Arc<Namespace>>,
+    pub parents: Vec<NamespaceWithParent>,
 }
 
 impl NamespaceHierarchy {
     /// Get the immediate parent namespace, if any.
     /// Returns None if this is a root namespace (directly in the warehouse).
     #[must_use]
-    pub fn parent(&self) -> Option<&Arc<Namespace>> {
+    pub fn parent(&self) -> Option<&NamespaceWithParent> {
         self.parents.first()
     }
 
@@ -96,7 +115,7 @@ impl NamespaceHierarchy {
     /// A root namespace is one that is directly contained in the warehouse.
     /// If this namespace is itself a root namespace, returns itself.
     #[must_use]
-    pub fn root(&self) -> &Arc<Namespace> {
+    pub fn root(&self) -> &NamespaceWithParent {
         self.parents.last().unwrap_or(&self.namespace)
     }
 
@@ -117,37 +136,58 @@ impl NamespaceHierarchy {
 
     #[must_use]
     pub fn namespace_ident(&self) -> &NamespaceIdent {
-        &self.namespace.namespace_ident
+        self.namespace.namespace_ident()
     }
 
     #[must_use]
     pub fn namespace_id(&self) -> NamespaceId {
-        self.namespace.namespace_id
+        self.namespace.namespace_id()
     }
 
     #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
-        self.namespace.warehouse_id
+        self.namespace.warehouse_id()
     }
 
     #[must_use]
     pub fn is_protected(&self) -> bool {
-        self.namespace.protected
+        self.namespace.is_protected()
     }
 
     #[must_use]
     pub fn properties(&self) -> Option<&HashMap<String, String>> {
-        self.namespace.properties.as_ref()
+        self.namespace.properties()
     }
 
     #[must_use]
     pub fn version(&self) -> NamespaceVersion {
-        self.namespace.version
+        self.namespace.version()
     }
 
     #[must_use]
     pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        self.namespace.updated_at
+        self.namespace.updated_at()
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn new_wih_id(warehouse_id: WarehouseId, namespace_id: NamespaceId) -> Self {
+        Self {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new(format!("ns-{namespace_id}")),
+                    protected: false,
+                    namespace_id,
+                    warehouse_id,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: None,
+                    version: 0.into(),
+                }),
+                parent: None,
+            },
+            parents: Vec::new(),
+        }
     }
 }
 
@@ -317,6 +357,7 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         InvalidNamespaceIdentifier,
+        SerializationError,
     ]
 }
 
@@ -501,17 +542,251 @@ define_transparent_error! {
     ]
 }
 
+fn build_namespace_hierarchy_from_vec(
+    namespaces: Vec<NamespaceWithParent>,
+) -> Option<NamespaceHierarchy> {
+    if namespaces.is_empty() {
+        return None;
+    }
+
+    let mut parent_lookup = HashMap::new();
+    for ns in &namespaces {
+        parent_lookup.insert(ns.namespace_id(), ns.clone());
+    }
+
+    // namespace with longest ident
+    let target_namespace = namespaces
+        .iter()
+        .max_by_key(|ns| ns.namespace_ident().len())?;
+    Some(build_namespace_hierarchy(target_namespace, &parent_lookup))
+}
+
+/// Build a `NamespaceHierarchy` from a `NamespaceWithParent` and a lookup map of parent namespaces.
+/// This follows the parent chain using `parent_namespaces_id` to look up parents.
+/// Returns None if a required parent cannot be found (logs warning in that case).
+pub(crate) fn build_namespace_hierarchy(
+    namespace: &NamespaceWithParent,
+    parent_lookup: &HashMap<NamespaceId, NamespaceWithParent>,
+) -> NamespaceHierarchy {
+    let mut parents = Vec::new();
+    let mut current_parent_id = namespace.parent_namespaces_id();
+
+    while let Some(parent_id) = current_parent_id {
+        // Find the parent in the lookup map
+        if let Some(parent_ns) = parent_lookup.get(&parent_id) {
+            parents.push((*parent_ns).clone());
+            current_parent_id = parent_ns.parent_namespaces_id();
+        } else {
+            // Parent not found - log warning and abort hierarchy build
+            #[cfg(debug_assertions)]
+            {
+                debug_assert!(
+                    false,
+                    "Parent namespace with id {parent_id} not found in parent_namespaces for namespace {}",
+                    namespace.namespace_id()
+                );
+            }
+            tracing::warn!(
+                "Parent namespace with id {parent_id} not found in parent_namespaces for namespace {}. Aborting hierarchy build.",
+                namespace.namespace_id()
+            );
+            break;
+        }
+    }
+
+    let hierarchy = NamespaceHierarchy {
+        namespace: namespace.clone(),
+        parents,
+    };
+
+    #[cfg(debug_assertions)]
+    {
+        debug_assert!(
+            hierarchy.root().namespace_ident().len() == 1,
+            "Root namespace should have ident length 1, got {} as root for namespace {}",
+            hierarchy.root().namespace_ident(),
+            namespace.namespace_ident()
+        );
+    }
+
+    hierarchy
+}
+
+/// Helper function to fetch namespace from database and convert to hierarchy
+async fn fetch_namespace<'a, S: CatalogStore, SOT>(
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdentOrId,
+    state_or_transaction: &mut SOT,
+) -> Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
+where
+    SOT: StateOrTransaction<S::State, <S::Transaction as Transaction<S::State>>::Transaction<'a>>,
+{
+    match namespace {
+        NamespaceIdentOrId::Id(namespace_id) => {
+            S::get_namespaces_by_id_impl(warehouse_id, &[namespace_id], state_or_transaction).await
+        }
+        NamespaceIdentOrId::Name(ref namespace_ident) => {
+            S::get_namespaces_by_ident_impl(warehouse_id, &[namespace_ident], state_or_transaction)
+                .await
+        }
+    }
+}
+
+/// Helper function to check for version conflicts between cached and DB namespaces
+/// Returns true if conflicts are detected and a full refetch is needed
+fn check_namespace_version_conflicts(
+    namespaces_from_cache: &HashMap<NamespaceId, NamespaceWithParent>,
+    db_namespaces: &[NamespaceWithParent],
+    warehouse_id: WarehouseId,
+) -> bool {
+    for db_namespace in db_namespaces {
+        if let Some(ns_cached) = namespaces_from_cache.get(&db_namespace.namespace_id()) {
+            // Check if namespace ident matches
+            if db_namespace.namespace_ident() != ns_cached.namespace_ident() {
+                tracing::debug!(
+                    "Cached Namespace ident mismatch for namespace ID {} in warehouse {warehouse_id}: cached='{}', db='{}'. Refetching all namespaces.",
+                    db_namespace.namespace_id(),
+                    ns_cached.namespace_ident(),
+                    db_namespace.namespace_ident()
+                );
+                return true;
+            }
+
+            // Check if DB version >= cached version
+            if db_namespace.version() < ns_cached.version() {
+                tracing::debug!(
+                    "Cached Namespace version is newer than DB for namespace {} in warehouse {warehouse_id}: cached={:?}, db={:?}. Refetching all namespaces.",
+                    db_namespace.namespace_ident(),
+                    ns_cached.version(),
+                    db_namespace.version()
+                );
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Helper to add a namespace hierarchy to the cache map
+fn add_hierarchy_to_cache_map(
+    hierarchy: NamespaceHierarchy,
+    cache_map: &mut HashMap<NamespaceId, NamespaceWithParent>,
+) {
+    cache_map.insert(hierarchy.namespace_id(), hierarchy.namespace);
+    hierarchy.parents.into_iter().for_each(|parent_ns| {
+        cache_map.insert(parent_ns.namespace_id(), parent_ns);
+    });
+}
+
+/// Generic helper to get namespaces with caching, conflict detection, and optional refetch
+async fn get_namespaces_with_cache<'a, SOT, S, K, F>(
+    warehouse_id: WarehouseId,
+    keys: &[K],
+    get_from_cache: impl Fn(&K) -> F,
+    fetch_from_db: impl for<'b> Fn(
+        WarehouseId,
+        Vec<K>,
+        &'b mut SOT,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>,
+                > + Send
+                + 'b,
+        >,
+    >,
+    state_or_transaction: &mut SOT,
+) -> Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>
+where
+    S: CatalogStore,
+    K: Clone + Eq + std::hash::Hash,
+    F: std::future::Future<Output = Option<NamespaceHierarchy>>,
+    SOT: StateOrTransaction<S::State, <S::Transaction as Transaction<S::State>>::Transaction<'a>>,
+{
+    // Step 1: Deduplicate and get from cache
+    let keys = keys
+        .iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut namespaces_from_cache = HashMap::new();
+    let mut missing_keys = Vec::new();
+
+    for key in &keys {
+        match get_from_cache(key).await {
+            Some(hierarchy) => {
+                add_hierarchy_to_cache_map(hierarchy, &mut namespaces_from_cache);
+            }
+            None => missing_keys.push(key.clone()),
+        }
+    }
+
+    // Step 2: Fetch missing from DB & Update Cache
+    let db_namespaces = if missing_keys.is_empty() {
+        Vec::new()
+    } else {
+        let fetched = fetch_from_db(warehouse_id, missing_keys, state_or_transaction).await?;
+        namespace_cache_insert_multiple(fetched.clone()).await;
+        fetched
+    };
+
+    // Step 3: Check for conflicts between cache and DB versions
+    let version_conflicts =
+        check_namespace_version_conflicts(&namespaces_from_cache, &db_namespaces, warehouse_id);
+
+    // Step 4: If conflicts detected, refetch everything from DB
+    let final_namespaces = if version_conflicts {
+        let refetched = fetch_from_db(warehouse_id, keys, state_or_transaction).await?;
+        namespace_cache_insert_multiple(refetched.clone()).await;
+        refetched
+            .into_iter()
+            .map(|ns| (ns.namespace_id(), ns))
+            .collect()
+    } else {
+        // Merge cached and DB hierarchies, preferring DB versions on conflict
+        namespaces_from_cache.extend(db_namespaces.into_iter().map(|ns| (ns.namespace_id(), ns)));
+        namespaces_from_cache
+    };
+
+    Ok(final_namespaces)
+}
+
+pub(crate) fn require_namespace_for_tabular<'a>(
+    namespaces: &'a std::collections::HashMap<NamespaceId, NamespaceWithParent>,
+    tabular: &impl BasicTabularInfo,
+) -> Result<&'a NamespaceWithParent, ErrorModel> {
+    namespaces.get(&tabular.namespace_id()).ok_or_else(|| {
+        ErrorModel::internal(
+            format!(
+                "Namespace with ID '{}' not found for tabular '{}'",
+                tabular.namespace_id(),
+                tabular.tabular_ident()
+            ),
+            "NamespaceNotFoundForTabular",
+            None,
+        )
+    })
+}
+
 #[async_trait::async_trait]
 pub trait CatalogNamespaceOps
 where
     Self: CatalogStore,
 {
     /// Get a namespace by its ID or name.
-    async fn get_namespace<'a>(
+    async fn get_namespace<'a, SOT>(
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId> + Send,
-        catalog_state: Self::State,
-    ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
+        mut state_or_transaction: SOT,
+    ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>
+    where
+        SOT: StateOrTransaction<
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
+    {
         let namespace = namespace.into();
         let cached = match namespace {
             NamespaceIdentOrId::Id(namespace_id) => namespace_cache_get_by_id(namespace_id).await,
@@ -523,40 +798,100 @@ where
         if let Some(cached_namespace) = cached {
             return Ok(Some(cached_namespace));
         }
-        let namespace_hierarchy =
-            Self::get_namespace_impl(warehouse_id, namespace, catalog_state).await?;
 
-        if let Some(namespace_hierarchy) = &namespace_hierarchy {
-            namespace_cache_insert_hierarchy(namespace_hierarchy).await;
-        }
-
+        let namespaces =
+            fetch_namespace::<Self, _>(warehouse_id, namespace, &mut state_or_transaction).await?;
+        namespace_cache_insert_multiple(namespaces.clone()).await;
+        let namespace_hierarchy = build_namespace_hierarchy_from_vec(namespaces);
         Ok(namespace_hierarchy)
     }
 
+    /// Get all namespaces including their parents.
+    /// If a namespace is not found, it is not in the returned Vec.
+    async fn get_namespaces_by_id<'a, SOT>(
+        warehouse_id: WarehouseId,
+        namespaces: &[NamespaceId],
+        mut state_or_transaction: SOT,
+    ) -> Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>
+    where
+        SOT: StateOrTransaction<
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
+    {
+        get_namespaces_with_cache::<SOT, Self, _, _>(
+            warehouse_id,
+            namespaces,
+            |namespace_id| namespace_cache_get_by_id(*namespace_id),
+            |wh_id, ns_ids, state| {
+                Box::pin(
+                    async move { Self::get_namespaces_by_id_impl(wh_id, &ns_ids, state).await },
+                )
+            },
+            &mut state_or_transaction,
+        )
+        .await
+    }
+
+    /// Get all namespaces including their parents.
+    /// If a namespace is not found, it is not in the returned Vec.
+    async fn get_namespaces_by_ident<'a, SOT>(
+        warehouse_id: WarehouseId,
+        namespaces: &[&NamespaceIdent],
+        mut state_or_transaction: SOT,
+    ) -> Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>
+    where
+        SOT: StateOrTransaction<
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
+    {
+        get_namespaces_with_cache::<SOT, Self, _, _>(
+            warehouse_id,
+            namespaces,
+            |namespace_ident| namespace_cache_get_by_ident(namespace_ident, warehouse_id),
+            |wh_id, ns_ids, state| {
+                let ns_ids = ns_ids.iter().map(|ns| (*ns).clone()).collect::<Vec<_>>();
+                Box::pin(async move {
+                    let ns_ids_refs = ns_ids.iter().collect::<Vec<_>>();
+                    Self::get_namespaces_by_ident_impl(wh_id, &ns_ids_refs, state).await
+                })
+            },
+            &mut state_or_transaction,
+        )
+        .await
+    }
+
     /// Get warehouse by ID, invalidating cache if it's older than the provided timestamp
-    async fn get_namespace_cache_aware(
+    async fn get_namespace_cache_aware<'a, SOT>(
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId> + Send,
         cache_policy: CachePolicy,
-        state: Self::State,
-    ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
+        mut state_or_transaction: SOT,
+    ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>
+    where
+        SOT: StateOrTransaction<
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
+    {
         let provided_namespace = namespace.into();
         let namespace = match cache_policy {
             CachePolicy::Skip => {
                 // Skip cache entirely
-                let namespace =
-                    Self::get_namespace_impl(warehouse_id, provided_namespace, state).await?;
-
+                let namespaces = fetch_namespace::<Self, _>(
+                    warehouse_id,
+                    provided_namespace,
+                    &mut state_or_transaction,
+                )
+                .await?;
                 // Update cache with fresh data
-                if let Some(namespace) = &namespace {
-                    namespace_cache_insert_hierarchy(namespace).await;
-                }
-
-                namespace
+                namespace_cache_insert_multiple(namespaces.clone()).await;
+                build_namespace_hierarchy_from_vec(namespaces)
             }
             CachePolicy::Use => {
                 // Use cache if available
-                Self::get_namespace(warehouse_id, provided_namespace, state).await?
+                Self::get_namespace(warehouse_id, provided_namespace, state_or_transaction).await?
             }
             CachePolicy::RequireMinimumVersion(require_min_version) => {
                 // Check cache first
@@ -583,24 +918,26 @@ where
                             require_min_version
                         );
                         // Cache is stale: fetch fresh data
-                        let namespace =
-                            Self::get_namespace_impl(warehouse_id, provided_namespace, state)
-                                .await?;
+                        let namespaces = fetch_namespace::<Self, _>(
+                            warehouse_id,
+                            provided_namespace,
+                            &mut state_or_transaction,
+                        )
+                        .await?;
                         // Update cache with fresh data
-                        if let Some(namespace) = &namespace {
-                            namespace_cache_insert_hierarchy(namespace).await;
-                        }
-                        namespace
+                        namespace_cache_insert_multiple(namespaces.clone()).await;
+                        build_namespace_hierarchy_from_vec(namespaces)
                     }
                 } else {
                     // No cache entry: fetch fresh data
-                    let namespace =
-                        Self::get_namespace_impl(warehouse_id, provided_namespace, state).await?;
-                    // Update cache with fresh data
-                    if let Some(namespace) = &namespace {
-                        namespace_cache_insert_hierarchy(namespace).await;
-                    }
-                    namespace
+                    let namespace = fetch_namespace::<Self, _>(
+                        warehouse_id,
+                        provided_namespace,
+                        &mut state_or_transaction,
+                    )
+                    .await?;
+                    namespace_cache_insert_multiple(namespace.clone()).await;
+                    build_namespace_hierarchy_from_vec(namespace)
                 }
             }
         };
@@ -615,12 +952,17 @@ where
     ) -> Result<PaginatedMapping<NamespaceId, NamespaceHierarchy>, CatalogListNamespaceError> {
         let namespaces = Self::list_namespaces_impl(warehouse_id, query, transaction).await?;
 
-        let mut tasks = Vec::with_capacity(namespaces.len());
-        for (_namespace_id, namespace) in &namespaces {
-            tasks.push(namespace_cache_insert_hierarchy(namespace));
-        }
-
-        futures::future::join_all(tasks).await;
+        let namespaces_dedup = namespaces
+            .iter()
+            .flat_map(|(_, hierarchy)| {
+                hierarchy
+                    .parents
+                    .iter()
+                    .chain(std::iter::once(&hierarchy.namespace))
+            })
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect::<HashMap<_, _>>();
+        namespace_cache_insert_multiple(namespaces_dedup.into_values()).await;
 
         Ok(namespaces)
     }
@@ -630,7 +972,7 @@ where
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<NamespaceWithParentVersion, CatalogCreateNamespaceError> {
+    ) -> Result<NamespaceWithParent, CatalogCreateNamespaceError> {
         Self::create_namespace_impl(warehouse_id, namespace_id, request, transaction).await
     }
 
@@ -648,7 +990,7 @@ where
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError> {
+    ) -> Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
         Self::update_namespace_properties_impl(warehouse_id, namespace_id, properties, transaction)
             .await
     }
@@ -658,7 +1000,7 @@ where
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError> {
+    ) -> Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
         Self::set_namespace_protected_impl(warehouse_id, namespace_id, protect, transaction).await
     }
 }

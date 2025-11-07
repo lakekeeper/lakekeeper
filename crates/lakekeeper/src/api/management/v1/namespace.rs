@@ -67,11 +67,7 @@ where
         state
             .v1_state
             .hooks
-            .set_namespace_protection(
-                protected_request,
-                Arc::new(status),
-                Arc::new(request_metadata),
-            )
+            .set_namespace_protection(protected_request, status, Arc::new(request_metadata))
             .await;
 
         let protection_response = ProtectionResponse {

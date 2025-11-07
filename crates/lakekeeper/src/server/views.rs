@@ -144,7 +144,8 @@ mod test {
         service::{
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
-            CatalogTabularOps, CatalogViewOps as _, Namespace, State, TabularListFlags, ViewId,
+            CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State, TabularListFlags,
+            ViewId,
         },
         WarehouseId,
     };
@@ -176,7 +177,7 @@ mod test {
             None,
         )
         .await
-        .namespace_ident
+        .namespace_ident()
         .clone();
         (api_context, namespace, warehouse_id)
     }
@@ -206,15 +207,15 @@ mod test {
     async fn assert_view_exists(
         ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         view_id: ViewId,
-        namespace: &Namespace,
+        namespace: &NamespaceWithParent,
         include_deleted: bool,
         expected_num_views: usize,
         assert_msg: &str,
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
         let views = PostgresBackend::list_views(
-            namespace.warehouse_id,
-            Some(namespace.namespace_id),
+            namespace.warehouse_id(),
+            Some(namespace.namespace_id()),
             TabularListFlags {
                 include_deleted,
                 include_active: true,
@@ -237,15 +238,15 @@ mod test {
     async fn assert_view_doesnt_exist(
         ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         view_id: ViewId,
-        namespace: &Namespace,
+        namespace: &NamespaceWithParent,
         include_deleted: bool,
         expected_num_views: usize,
         assert_msg: &str,
     ) {
         let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
         let views = PostgresBackend::list_views(
-            namespace.warehouse_id,
-            Some(namespace.namespace_id),
+            namespace.warehouse_id(),
+            Some(namespace.namespace_id()),
             TabularListFlags {
                 include_deleted,
                 include_active: true,
@@ -279,7 +280,7 @@ mod test {
         let v_name = "v1".to_string();
 
         // Create views with the same table ID across different warehouses.
-        for (wh_id, namespace, ns_params) in &wh_ns_data {
+        for (wh_id, ns_with_parent, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
             let view_metadata = view_request(Some(*v_id), &location);
             let ident = TableIdent {
@@ -289,7 +290,7 @@ mod test {
             let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
             PostgresBackend::create_view(
                 *wh_id,
-                namespace.namespace_id,
+                ns_with_parent.namespace_id(),
                 &ident,
                 &view_metadata,
                 &meta_location,
@@ -303,7 +304,7 @@ mod test {
             assert_view_exists(
                 ctx.clone(),
                 v_id,
-                namespace,
+                ns_with_parent,
                 false,
                 1,
                 "view should be created",
@@ -366,7 +367,7 @@ mod test {
         let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
         PostgresBackend::create_view(
             deleted_view_data.0,
-            deleted_view_data.1.namespace_id,
+            deleted_view_data.1.namespace_id(),
             &ident,
             &view_metadata,
             &meta_location,
@@ -413,7 +414,7 @@ mod test {
             let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
             PostgresBackend::create_view(
                 *wh_id,
-                namespace.namespace_id,
+                namespace.namespace_id(),
                 &ident,
                 &view_metadata,
                 &meta_location,

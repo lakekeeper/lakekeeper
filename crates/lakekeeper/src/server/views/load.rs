@@ -12,12 +12,13 @@ use crate::{
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzWarehouseOps, CatalogViewAction,
-            RequireViewActionError,
+            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogViewAction, RequireViewActionError,
         },
         storage::{StorageCredential, StoragePermissions},
-        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogViewOps, CatalogWarehouseOps,
-        InternalParseLocationError, Result, SecretStore, State, TabularListFlags, Transaction,
+        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
+        CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State,
+        TabularListFlags, Transaction,
     },
 };
 
@@ -58,12 +59,22 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let view_info = view_info
         .map_err(RequireViewActionError::from)?
         .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, view.clone()))?;
-
     let view_id = view_info.view_id();
+
+    let namespace = C::get_namespace(
+        warehouse_id,
+        view_info.namespace_id(),
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+    let namespace =
+        authorizer.require_namespace_presence(warehouse_id, view_info.namespace_id(), namespace)?;
 
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
             &request_metadata,
+            &warehouse,
+            &namespace,
             &view_info,
             &[
                 CatalogViewAction::CanGetMetadata,

@@ -8,16 +8,13 @@ use iceberg::NamespaceIdent;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
-use super::namespace::{Namespace, NamespaceVersion};
 #[cfg(feature = "router")]
 use crate::{
     api::{RequestMetadata, UpdateNamespacePropertiesResponse},
     service::endpoint_hooks::EndpointHook,
 };
 use crate::{
-    service::{
-        catalog_store::namespace::NamespaceHierarchy, NamespaceId, NamespaceWithParentVersion,
-    },
+    service::{catalog_store::namespace::NamespaceHierarchy, NamespaceId, NamespaceWithParent},
     WarehouseId, CONFIG,
 };
 
@@ -42,7 +39,7 @@ static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
 });
 
 // Main cache: stores individual namespaces by ID
-pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, CachedNamespace>> =
+pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =
     LazyLock::new(|| {
         Cache::builder()
             .max_capacity(CONFIG.cache.namespace.capacity)
@@ -50,7 +47,7 @@ pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, CachedNamespace>>
             .time_to_live(Duration::from_secs(
                 CONFIG.cache.namespace.time_to_live_secs,
             ))
-            .async_eviction_listener(|key, value: CachedNamespace, cause| {
+            .async_eviction_listener(|key, value: NamespaceWithParent, cause| {
                 Box::pin(async move {
                     // Evictions:
                     // - Replaced: only invalidate old-name mapping if the current entry
@@ -94,19 +91,6 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> = Lazy
         .build()
 });
 
-#[derive(Debug, Clone)]
-pub(crate) struct CachedNamespace {
-    pub(super) namespace: Arc<Namespace>,
-    /// ID of the immediate parent namespace.
-    /// Used to efficiently walk up the hierarchy without ident-to-id lookups.
-    /// None if this is a root namespace (no parent).
-    pub(super) parent_id: Option<NamespaceId>,
-    /// Version of the immediate parent namespace at the time this was cached.
-    /// Used to detect staleness when parent namespaces are updated.
-    /// None if this is a root namespace (no parent).
-    pub(super) parent_version: Option<NamespaceVersion>,
-}
-
 #[allow(dead_code)] // Not required for all features
 async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     if CONFIG.cache.namespace.enabled {
@@ -117,18 +101,12 @@ async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
 }
 
 #[allow(dead_code)] // Only required for hooks which are behind a feature flag
-pub(super) async fn namespace_cache_insert(namespace: &NamespaceWithParentVersion) {
+pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
     if CONFIG.cache.namespace.enabled {
-        let cached_namespace = CachedNamespace {
-            namespace: namespace.namespace.clone(),
-            parent_id: namespace.parent.map(|p| p.0),
-            parent_version: namespace.parent.map(|p| p.1),
-        };
-
         let namespace_id = namespace.namespace.namespace_id;
         let warehouse_id = namespace.namespace.warehouse_id;
 
-        let current_entry: Option<CachedNamespace> = NAMESPACE_CACHE.get(&namespace_id).await;
+        let current_entry = NAMESPACE_CACHE.get(&namespace_id).await;
         if let Some(existing) = &current_entry {
             let current_version = existing.namespace.version;
             let new_version = namespace.namespace.version;
@@ -149,7 +127,7 @@ pub(super) async fn namespace_cache_insert(namespace: &NamespaceWithParentVersio
         tracing::debug!("Inserting namespace id {namespace_id} into cache");
         let cache_key = namespace_ident_to_cache_key(&namespace.namespace.namespace_ident);
         tokio::join!(
-            NAMESPACE_CACHE.insert(namespace_id, cached_namespace),
+            NAMESPACE_CACHE.insert(namespace_id, namespace.clone()),
             IDENT_TO_ID_CACHE.insert((warehouse_id, cache_key), namespace_id),
         );
 
@@ -157,93 +135,15 @@ pub(super) async fn namespace_cache_insert(namespace: &NamespaceWithParentVersio
     }
 }
 
-/// Insert a namespace hierarchy into the cache by separating it into individual namespaces.
-/// Each namespace in the hierarchy is cached individually with its parent version.
-pub(super) async fn namespace_cache_insert_hierarchy(namespace_hierarchy: &NamespaceHierarchy) {
-    if CONFIG.cache.namespace.enabled {
-        // Cache the target namespace
-        let namespace = namespace_hierarchy.namespace.clone();
-        let namespace_id = namespace.namespace_id;
-        let warehouse_id = namespace.warehouse_id;
+pub(super) async fn namespace_cache_insert_multiple(
+    namespaces: impl IntoIterator<Item = NamespaceWithParent>,
+) {
+    let futures = namespaces
+        .into_iter()
+        .map(namespace_cache_insert)
+        .collect::<Vec<_>>();
 
-        // Get parent ID and version (immediate parent only)
-        let (parent_id, parent_version) = namespace_hierarchy
-            .parent()
-            .map(|parent| (parent.namespace_id, parent.version))
-            .unzip();
-
-        let current_entry: Option<CachedNamespace> = NAMESPACE_CACHE.get(&namespace_id).await;
-        if let Some(existing) = &current_entry {
-            let current_version = existing.namespace.version;
-            let new_version = namespace.version;
-            match new_version.cmp(&current_version) {
-                std::cmp::Ordering::Less => {
-                    tracing::debug!(
-                        "Skipping insert of namespace id {namespace_id} into cache; existing version {current_version} is newer than new version {new_version}"
-                    );
-                    return;
-                }
-                std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
-                    // New entry is newer; proceed with insert.
-                    // Also insert equal versions to avoid expiration
-                }
-            }
-        }
-
-        tracing::debug!("Inserting namespace id {namespace_id} into cache");
-        let cache_key =
-            namespace_ident_to_cache_key(&namespace_hierarchy.namespace.namespace_ident);
-        tokio::join!(
-            NAMESPACE_CACHE.insert(
-                namespace_id,
-                CachedNamespace {
-                    namespace,
-                    parent_id,
-                    parent_version,
-                }
-            ),
-            IDENT_TO_ID_CACHE.insert((warehouse_id, cache_key), namespace_id),
-        );
-
-        // Also cache all parent namespaces in the hierarchy
-        for (i, parent) in namespace_hierarchy.parents.iter().enumerate() {
-            let parent_id = parent.namespace_id;
-            let parent_warehouse_id = parent.warehouse_id;
-
-            // Get the parent's parent ID and version (if it exists)
-            let (parent_parent_id, parent_parent_version) = namespace_hierarchy
-                .parents
-                .get(i + 1)
-                .map(|grandparent| (grandparent.namespace_id, grandparent.version))
-                .unzip();
-
-            // Check if we should insert this parent
-            let should_insert = if let Some(existing_parent) = NAMESPACE_CACHE.get(&parent_id).await
-            {
-                parent.version > existing_parent.namespace.version
-            } else {
-                true
-            };
-
-            if should_insert {
-                tracing::debug!("Inserting parent namespace id {parent_id} into cache");
-                let parent_cache_key = namespace_ident_to_cache_key(&parent.namespace_ident);
-                tokio::join!(
-                    NAMESPACE_CACHE.insert(
-                        parent_id,
-                        CachedNamespace {
-                            namespace: parent.clone(),
-                            parent_id: parent_parent_id,
-                            parent_version: parent_parent_version,
-                        }
-                    ),
-                    IDENT_TO_ID_CACHE.insert((parent_warehouse_id, parent_cache_key), parent_id),
-                );
-            }
-        }
-
-        update_cache_size_metric();
-    }
+    futures::future::join_all(futures).await;
 }
 
 /// Update the cache size metric with the current number of entries
@@ -262,37 +162,8 @@ pub(super) async fn namespace_cache_get_by_id(
     update_cache_size_metric();
     let cached = NAMESPACE_CACHE.get(&namespace_id).await?;
 
-    // Verify parent version hasn't changed
-    if let (Some(parent_id), Some(expected_parent_version)) =
-        (cached.parent_id, cached.parent_version)
-    {
-        let parent_cached = NAMESPACE_CACHE.get(&parent_id).await?;
-
-        if parent_cached.namespace.version != expected_parent_version {
-            tracing::debug!(
-                "Namespace id {namespace_id} found in cache but parent version is stale; invalidating"
-            );
-            NAMESPACE_CACHE.invalidate(&namespace_id).await;
-            metrics::counter!(METRIC_NAMESPACE_CACHE_MISSES, "cache_type" => "namespace")
-                .increment(1);
-            return None;
-        }
-
-        // Verify parent ident matches expected (shortened namespace)
-        let expected_parent_ident = get_parent_ident(&cached.namespace.namespace_ident)?;
-        if parent_cached.namespace.namespace_ident != expected_parent_ident {
-            tracing::debug!(
-                "Namespace id {namespace_id} found in cache but parent ident doesn't match expected; invalidating"
-            );
-            NAMESPACE_CACHE.invalidate(&namespace_id).await;
-            metrics::counter!(METRIC_NAMESPACE_CACHE_MISSES, "cache_type" => "namespace")
-                .increment(1);
-            return None;
-        }
-    }
-
     // Reconstruct hierarchy by collecting parents
-    if let Some(hierarchy) = build_hierarchy_from_cache(&cached.namespace).await {
+    if let Some(hierarchy) = build_hierarchy_from_cache(&cached).await {
         tracing::debug!("Namespace id {namespace_id} found in cache with valid parent versions");
         metrics::counter!(METRIC_NAMESPACE_CACHE_HITS, "cache_type" => "namespace").increment(1);
         Some(hierarchy)
@@ -320,43 +191,41 @@ pub(super) async fn namespace_cache_get_by_ident(
 
 /// Build a `NamespaceHierarchy` by collecting parents from the cache.
 /// Uses `parent_id` for efficient lookups and validates parent idents and versions match expectations.
-async fn build_hierarchy_from_cache(namespace: &Arc<Namespace>) -> Option<NamespaceHierarchy> {
+async fn build_hierarchy_from_cache(namespace: &NamespaceWithParent) -> Option<NamespaceHierarchy> {
     let mut parents = Vec::new();
     let mut current_namespace = namespace.clone();
 
     // Walk up the hierarchy using parent_id
-    while let Some(expected_parent_ident) = get_parent_ident(&current_namespace.namespace_ident) {
-        // Look up the cached entry for the current namespace to get parent_id and expected version
-        let current_cached = NAMESPACE_CACHE.get(&current_namespace.namespace_id).await?;
-
-        let parent_id = current_cached.parent_id?;
-        let expected_parent_version = current_cached.parent_version?;
-
+    while let Some((parent_id, expected_parent_version)) = current_namespace.parent {
         let parent_cached = NAMESPACE_CACHE.get(&parent_id).await?;
 
         // Verify parent version matches expected
-        if parent_cached.namespace.version != expected_parent_version {
+        if parent_cached.namespace.version < expected_parent_version {
             tracing::debug!(
-                "Parent version mismatch for namespace {:?}: expected version {:?}, got {:?}",
-                current_namespace.namespace_ident,
-                expected_parent_version,
+                "Parent version mismatch for namespace {}: expected version {expected_parent_version}, got {}. Skipping cache use.",
+                current_namespace.namespace_ident(),
                 parent_cached.namespace.version
             );
+            namespace_cache_invalidate(namespace.namespace_id()).await;
             return None;
         }
 
         // Verify parent ident matches expected (shortened namespace)
-        if parent_cached.namespace.namespace_ident != expected_parent_ident {
+        if !is_parent_ident(
+            current_namespace.namespace_ident(),
+            parent_cached.namespace_ident(),
+        ) {
             tracing::debug!(
-                "Parent ident mismatch: expected {:?}, got {:?}",
-                expected_parent_ident,
-                parent_cached.namespace.namespace_ident
+                "Detected parent ident mismatch for namespace {}: Parent namespace has name `{}`, which is not the parent. Invalidating Cache.",
+                current_namespace.namespace_ident(),
+                parent_cached.namespace_ident()
             );
+            namespace_cache_invalidate(namespace.namespace_id()).await;
             return None;
         }
 
-        parents.push(parent_cached.namespace.clone());
-        current_namespace = parent_cached.namespace;
+        parents.push(parent_cached.clone());
+        current_namespace = parent_cached;
     }
 
     Some(NamespaceHierarchy {
@@ -376,15 +245,24 @@ fn namespace_ident_to_cache_key(ident: &NamespaceIdent) -> Vec<UniCase<String>> 
         .collect()
 }
 
-/// Get the parent identifier from a namespace identifier.
-/// Returns None if this is a root namespace (no parent).
-fn get_parent_ident(ident: &NamespaceIdent) -> Option<NamespaceIdent> {
-    let parts: Vec<String> = ident.clone().inner();
-    if parts.len() <= 1 {
-        None
-    } else {
-        NamespaceIdent::from_vec(parts[..parts.len() - 1].to_vec()).ok()
-    }
+fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceIdent) -> bool {
+    let child_ident_unicase = child_ident
+        .as_ref()
+        .iter()
+        .map(UniCase::new)
+        .collect::<Vec<_>>();
+    let found_parent_ident_unicase = found_parent_ident
+        .as_ref()
+        .iter()
+        .map(UniCase::new)
+        .collect::<Vec<_>>();
+
+    // Get the expected parent by removing the last element from child
+    let expected_parent_ident_unicase =
+        &child_ident_unicase[..child_ident_unicase.len().saturating_sub(1)];
+
+    // Compare the expected parent with the found parent
+    expected_parent_ident_unicase == found_parent_ident_unicase.as_slice()
 }
 
 #[cfg(feature = "router")]
@@ -404,10 +282,10 @@ impl EndpointHook for NamespaceCacheEndpointHook {
     async fn create_namespace(
         &self,
         _warehouse_id: WarehouseId,
-        namespace: Arc<NamespaceWithParentVersion>,
+        namespace: NamespaceWithParent,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
-        namespace_cache_insert(&namespace).await;
+        namespace_cache_insert(namespace).await;
         Ok(())
     }
 
@@ -426,21 +304,21 @@ impl EndpointHook for NamespaceCacheEndpointHook {
     async fn update_namespace_properties(
         &self,
         _warehouse_id: WarehouseId,
-        namespace: Arc<NamespaceWithParentVersion>,
+        namespace: NamespaceWithParent,
         _updated_properties: Arc<UpdateNamespacePropertiesResponse>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
-        namespace_cache_insert(&namespace).await;
+        namespace_cache_insert(namespace).await;
         Ok(())
     }
 
     async fn set_namespace_protection(
         &self,
         _requested_protected: bool,
-        updated_namespace: Arc<NamespaceWithParentVersion>,
+        updated_namespace: NamespaceWithParent,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
-        namespace_cache_insert(&updated_namespace).await;
+        namespace_cache_insert(updated_namespace).await;
         Ok(())
     }
 }
@@ -473,12 +351,15 @@ mod tests {
         })
     }
 
-    /// Helper function to create a test namespace hierarchy
-    fn test_namespace_hierarchy(
+    /// Helper function to create a test namespace with parent
+    fn test_namespace_with_parent(
         namespace: Arc<Namespace>,
-        parents: Vec<Arc<Namespace>>,
-    ) -> NamespaceHierarchy {
-        NamespaceHierarchy { namespace, parents }
+        parent: Option<(NamespaceId, i64)>,
+    ) -> NamespaceWithParent {
+        NamespaceWithParent {
+            namespace,
+            parent: parent.map(|(id, version)| (id, version.into())),
+        }
     }
 
     #[tokio::test]
@@ -494,10 +375,10 @@ mod tests {
             Some(Utc::now()),
             0,
         );
-        let hierarchy = test_namespace_hierarchy(namespace, vec![]);
+        let namespace_with_parent = test_namespace_with_parent(namespace, None);
 
         // Insert namespace into cache
-        namespace_cache_insert_hierarchy(&hierarchy).await;
+        namespace_cache_insert_multiple(vec![namespace_with_parent]).await;
 
         // Retrieve by ID
         let cached = namespace_cache_get_by_id(namespace_id).await;
@@ -521,10 +402,10 @@ mod tests {
             Some(Utc::now()),
             0,
         );
-        let hierarchy = test_namespace_hierarchy(namespace, vec![]);
+        let namespace_with_parent = test_namespace_with_parent(namespace, None);
 
         // Insert namespace into cache
-        namespace_cache_insert_hierarchy(&hierarchy).await;
+        namespace_cache_insert_multiple(vec![namespace_with_parent]).await;
 
         // Retrieve by ident
         let cached = namespace_cache_get_by_ident(&namespace_ident, warehouse_id).await;
@@ -547,10 +428,10 @@ mod tests {
             Some(Utc::now()),
             0,
         );
-        let hierarchy = test_namespace_hierarchy(namespace, vec![]);
+        let namespace_with_parent = test_namespace_with_parent(namespace, None);
 
         // Insert namespace with mixed-case ident
-        namespace_cache_insert_hierarchy(&hierarchy).await;
+        namespace_cache_insert_multiple(vec![namespace_with_parent]).await;
 
         // Verify we can retrieve it with different case variations
         let cached_lower = namespace_cache_get_by_ident(
@@ -604,12 +485,13 @@ mod tests {
             0,
         );
 
-        // Create hierarchy with parent
-        let child_hierarchy =
-            test_namespace_hierarchy(child_namespace.clone(), vec![parent_namespace.clone()]);
+        // Create namespace with parent relationships
+        let parent_with_parent = test_namespace_with_parent(parent_namespace.clone(), None);
+        let child_with_parent =
+            test_namespace_with_parent(child_namespace.clone(), Some((parent_id, 0)));
 
-        // Insert child into cache (this should also cache the parent)
-        namespace_cache_insert_hierarchy(&child_hierarchy).await;
+        // Insert both into cache
+        namespace_cache_insert_multiple(vec![parent_with_parent, child_with_parent]).await;
 
         // Verify child is cached and hierarchy is reconstructed correctly
         let cached_child = namespace_cache_get_by_id(child_id).await;
@@ -617,7 +499,7 @@ mod tests {
         let cached_child = cached_child.unwrap();
         assert_eq!(cached_child.namespace_id(), child_id);
         assert_eq!(cached_child.parents.len(), 1);
-        assert_eq!(cached_child.parent().unwrap().namespace_id, parent_id);
+        assert_eq!(cached_child.parent().unwrap().namespace_id(), parent_id);
 
         // Verify parent is also cached independently
         let cached_parent = namespace_cache_get_by_id(parent_id).await;
@@ -634,15 +516,21 @@ mod tests {
             Some(Utc::now()),
             1, // new version
         );
-        let updated_parent_hierarchy = test_namespace_hierarchy(updated_parent, vec![]);
-        namespace_cache_insert_hierarchy(&updated_parent_hierarchy).await;
+        let updated_parent_with_parent = test_namespace_with_parent(updated_parent, None);
+        namespace_cache_insert_multiple(vec![updated_parent_with_parent]).await;
 
-        // Now when we fetch the child, it should detect parent version mismatch and return None
+        // The child should still be valid because it has a minimum version requirement
+        // Child expects parent version >= 0, and the cached parent is version 1, so it's valid
         let cached_child = namespace_cache_get_by_id(child_id).await;
         assert!(
-            cached_child.is_none(),
-            "Child should be invalidated when parent version changes"
+            cached_child.is_some(),
+            "Child should still be valid when parent version increases"
         );
+        let cached_child = cached_child.unwrap();
+        assert_eq!(cached_child.namespace_id(), child_id);
+        // The parent in the hierarchy should be the updated version
+        assert_eq!(cached_child.parents.len(), 1);
+        assert_eq!(cached_child.parent().unwrap().namespace.version, 1.into());
     }
 
     #[tokio::test]
@@ -662,13 +550,13 @@ mod tests {
             Some(old_time),
             0,
         );
-        let old_hierarchy = test_namespace_hierarchy(old_namespace, vec![]);
-        namespace_cache_insert_hierarchy(&old_hierarchy).await;
+        let old_namespace_with_parent = test_namespace_with_parent(old_namespace, None);
+        namespace_cache_insert_multiple(vec![old_namespace_with_parent]).await;
 
         // Verify older version is cached
         let cached = namespace_cache_get_by_id(namespace_id).await;
         assert!(cached.is_some());
-        assert_eq!(cached.unwrap().namespace.updated_at, Some(old_time));
+        assert_eq!(cached.unwrap().namespace.updated_at(), Some(old_time));
 
         // Insert newer version
         let new_namespace = test_namespace(
@@ -678,13 +566,13 @@ mod tests {
             Some(new_time),
             1,
         );
-        let new_hierarchy = test_namespace_hierarchy(new_namespace, vec![]);
-        namespace_cache_insert_hierarchy(&new_hierarchy).await;
+        let new_namespace_with_parent = test_namespace_with_parent(new_namespace, None);
+        namespace_cache_insert_multiple(vec![new_namespace_with_parent]).await;
 
         // Verify newer version replaced the old one
         let cached = namespace_cache_get_by_id(namespace_id).await;
         assert!(cached.is_some());
-        assert_eq!(cached.unwrap().namespace.updated_at, Some(new_time));
+        assert_eq!(cached.unwrap().namespace.updated_at(), Some(new_time));
     }
 
     #[tokio::test]
@@ -704,13 +592,13 @@ mod tests {
             Some(new_time),
             1,
         );
-        let new_hierarchy = test_namespace_hierarchy(new_namespace, vec![]);
-        namespace_cache_insert_hierarchy(&new_hierarchy).await;
+        let new_namespace_with_parent = test_namespace_with_parent(new_namespace, None);
+        namespace_cache_insert_multiple(vec![new_namespace_with_parent]).await;
 
         // Verify newer version is cached
         let cached = namespace_cache_get_by_id(namespace_id).await;
         assert!(cached.is_some());
-        assert_eq!(cached.unwrap().namespace.updated_at, Some(new_time));
+        assert_eq!(cached.unwrap().namespace.updated_at(), Some(new_time));
 
         // Try to insert older version
         let old_namespace = test_namespace(
@@ -720,13 +608,13 @@ mod tests {
             Some(old_time),
             0,
         );
-        let old_hierarchy = test_namespace_hierarchy(old_namespace, vec![]);
-        namespace_cache_insert_hierarchy(&old_hierarchy).await;
+        let old_namespace_with_parent = test_namespace_with_parent(old_namespace, None);
+        namespace_cache_insert_multiple(vec![old_namespace_with_parent]).await;
 
         // Verify newer version is still cached (old one was ignored)
         let cached = namespace_cache_get_by_id(namespace_id).await;
         assert!(cached.is_some());
-        assert_eq!(cached.unwrap().namespace.updated_at, Some(new_time));
+        assert_eq!(cached.unwrap().namespace.updated_at(), Some(new_time));
     }
 
     #[tokio::test]
@@ -742,10 +630,10 @@ mod tests {
             Some(Utc::now()),
             0,
         );
-        let hierarchy = test_namespace_hierarchy(namespace, vec![]);
+        let namespace_with_parent = test_namespace_with_parent(namespace, None);
 
         // Insert namespace into cache
-        namespace_cache_insert_hierarchy(&hierarchy).await;
+        namespace_cache_insert_multiple(vec![namespace_with_parent]).await;
 
         // Verify it's cached
         let cached = namespace_cache_get_by_id(namespace_id).await;

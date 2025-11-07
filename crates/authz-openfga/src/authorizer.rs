@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use futures::future::try_join_all;
 use lakekeeper::{
@@ -12,8 +15,8 @@ use lakekeeper::{
         },
         health::Health,
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
-        NamespaceId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, UserId,
-        ViewId,
+        NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
+        TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
     ProjectId, WarehouseId,
@@ -373,6 +376,8 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_table_action_impl(
         &self,
         metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         action: Self::TableAction,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
@@ -390,11 +395,17 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_table_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        tables_with_actions: &[(&impl AuthZTableInfo, Self::TableAction)],
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        tables_with_actions: &[(
+            &NamespaceWithParent,
+            &impl AuthZTableInfo,
+            Self::TableAction,
+        )],
     ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = tables_with_actions
             .iter()
-            .map(|(table, a)| CheckRequestTupleKey {
+            .map(|(_ns, table, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
                 object: (table.warehouse_id(), table.table_id()).to_openfga(),
@@ -406,6 +417,8 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_view_action_impl(
         &self,
         metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: Self::ViewAction,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
@@ -421,11 +434,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_view_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        views_with_actions: &[(&impl AuthZViewInfo, Self::ViewAction)],
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
     ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let items: Vec<_> = views_with_actions
             .iter()
-            .map(|(view, a)| CheckRequestTupleKey {
+            .map(|(_ns, view, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
                 object: (view.warehouse_id(), view.view_id()).to_openfga(),

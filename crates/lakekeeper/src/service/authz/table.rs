@@ -13,6 +13,7 @@ use crate::{
         },
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogBackendError, GetTabularInfoByLocationError,
         GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
         SerializationError, TableId, TableIdentOrId, TabularNotFound, UnexpectedTabularInResponse,
     },
     WarehouseId,
@@ -212,23 +213,36 @@ impl From<BackendUnavailableOrCountMismatch> for RequireTabularActionsError {
 
 #[async_trait::async_trait]
 pub trait AuthZTableOps: Authorizer {
+    fn require_table_presence<T: AuthZTableInfo>(
+        &self,
+        warehouse_id: WarehouseId,
+        user_provided_table: impl Into<TableIdentOrId> + Send,
+        table: Result<Option<T>, impl Into<RequireTableActionError> + Send>,
+    ) -> Result<T, RequireTableActionError> {
+        let table = table.map_err(Into::into)?;
+        let Some(table) = table else {
+            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_table).into());
+        };
+        Ok(table)
+    }
+
     async fn require_table_action<T: AuthZTableInfo>(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
+        warehouse: &ResolvedWarehouse,
+        namespace: &NamespaceHierarchy,
         user_provided_table: impl Into<TableIdentOrId> + Send,
         table: Result<Option<T>, impl Into<RequireTableActionError> + Send>,
         action: impl Into<Self::TableAction> + Send,
     ) -> Result<T, RequireTableActionError> {
         let actor = metadata.actor();
+        let warehouse_id = warehouse.warehouse_id;
         // OK to return because this goes via the Into method
         // of RequireTableActionError
-        let table = table.map_err(Into::into)?;
-        let Some(table) = table else {
-            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_table).into());
-        };
-        let table_ident = table.table_ident().clone();
         let user_provided_table = user_provided_table.into();
+        let table =
+            self.require_table_presence(warehouse_id, user_provided_table.clone(), table)?;
+        let table_ident = table.table_ident().clone();
         let cant_see_err =
             AuthZCannotSeeTable::new(warehouse_id, user_provided_table.clone()).into();
         let action = action.into();
@@ -256,7 +270,7 @@ pub trait AuthZTableOps: Authorizer {
 
         if action == CAN_SEE_PERMISSION.into() {
             let is_allowed = self
-                .is_allowed_table_action(metadata, &table, action)
+                .is_allowed_table_action(metadata, warehouse, namespace, &table, action)
                 .await?
                 .into_inner();
             is_allowed.then_some(table).ok_or(cant_see_err)
@@ -264,6 +278,8 @@ pub trait AuthZTableOps: Authorizer {
             let [can_see_table, is_allowed] = self
                 .are_allowed_table_actions_arr(
                     metadata,
+                    warehouse,
+                    namespace,
                     &table,
                     &[CAN_SEE_PERMISSION.into(), action],
                 )
@@ -288,41 +304,49 @@ pub trait AuthZTableOps: Authorizer {
     async fn require_table_actions<T: AuthZTableInfo>(
         &self,
         metadata: &RequestMetadata,
-        tables_with_actions: &[(&T, impl Into<Self::TableAction> + Send + Sync + Copy)],
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        tables_with_actions: &[(
+            &NamespaceWithParent,
+            &T,
+            impl Into<Self::TableAction> + Send + Sync + Copy,
+        )],
         // OK Output is a sideproduct that caller may use
     ) -> Result<(), RequireTableActionError> {
         let actor = metadata.actor();
 
-        let tables_with_actions: HashMap<(WarehouseId, TableId), (&T, HashSet<Self::TableAction>)> =
-            tables_with_actions
-                .iter()
-                .fold(HashMap::new(), |mut acc, (table, action)| {
-                    acc.entry((table.warehouse_id(), table.table_id()))
-                        .or_insert_with(|| (table, HashSet::new()))
-                        .1
-                        .insert((*action).into());
-                    acc
-                });
+        let tables_with_actions: HashMap<
+            (WarehouseId, TableId),
+            (&NamespaceWithParent, &T, HashSet<Self::TableAction>),
+        > = tables_with_actions
+            .iter()
+            .fold(HashMap::new(), |mut acc, (ns, table, action)| {
+                acc.entry((table.warehouse_id(), table.table_id()))
+                    .or_insert_with(|| (ns, table, HashSet::new()))
+                    .2
+                    .insert((*action).into());
+                acc
+            });
 
         // Prepare batch authorization requests.
         // Make sure CAN_SEE_PERMISSION comes first for each table.
         let batch_requests = tables_with_actions
             .into_iter()
-            .flat_map(|(_id, (table, mut actions))| {
+            .flat_map(|(_id, (ns, table, mut actions))| {
                 actions.remove(&CAN_SEE_PERMISSION.into());
                 itertools::chain(std::iter::once(CAN_SEE_PERMISSION.into()), actions)
-                    .map(move |action| (table, action))
+                    .map(move |action| (ns, table, action))
             })
             .collect_vec();
         // Perform batch authorization
         let decisions = self
-            .are_allowed_table_actions_vec(metadata, &batch_requests)
+            .are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &batch_requests)
             .await?
             .into_inner();
 
         // Check authorization results.
         // Due to ordering above, CAN_SEE_PERMISSION is always first for each table.
-        for ((table, action), &is_allowed) in batch_requests.iter().zip(decisions.iter()) {
+        for ((_ns, table, action), &is_allowed) in batch_requests.iter().zip(decisions.iter()) {
             if !is_allowed {
                 if *action == CAN_SEE_PERMISSION.into() {
                     return Err(
@@ -345,13 +369,15 @@ pub trait AuthZTableOps: Authorizer {
     async fn is_allowed_table_action(
         &self,
         metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
+        namespace: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         action: impl Into<Self::TableAction> + Send,
     ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_table_action_impl(metadata, table, action.into())
+            self.is_allowed_table_action_impl(metadata, warehouse, namespace, table, action.into())
                 .await
         }
         .map(MustUse::from)
@@ -363,15 +389,26 @@ pub trait AuthZTableOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
+        namespace_hierarchy: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         actions: &[A; N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let actions = actions
             .iter()
-            .map(|a| (table, (*a).into()))
+            .map(|a| (&namespace_hierarchy.namespace, table, (*a).into()))
             .collect::<Vec<_>>();
         let result = self
-            .are_allowed_table_actions_vec(metadata, &actions)
+            .are_allowed_table_actions_vec(
+                metadata,
+                warehouse,
+                &namespace_hierarchy
+                    .parents
+                    .iter()
+                    .map(|ns| (ns.namespace_id(), ns.clone()))
+                    .collect(),
+                &actions,
+            )
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -384,17 +421,19 @@ pub trait AuthZTableOps: Authorizer {
     async fn are_allowed_table_actions_vec<A: Into<Self::TableAction> + Send + Copy + Sync>(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&impl AuthZTableInfo, A)],
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&NamespaceWithParent, &impl AuthZTableInfo, A)],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
         } else {
             let converted = actions
                 .iter()
-                .map(|(id, action)| (*id, (*action).into()))
+                .map(|(ns, id, action)| (*ns, *id, (*action).into()))
                 .collect::<Vec<_>>();
             let decisions = self
-                .are_allowed_table_actions_impl(metadata, &converted)
+                .are_allowed_table_actions_impl(metadata, warehouse, parent_namespaces, &converted)
                 .await?;
 
             if decisions.len() != actions.len() {
@@ -417,20 +456,30 @@ pub trait AuthZTableOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        actions: &[ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>],
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
+        )],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
         } else {
-            let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|a| match a {
-                ActionOnTableOrView::Table((t, a)) => itertools::Either::Left((*t, (*a).into())),
-                ActionOnTableOrView::View((v, a)) => itertools::Either::Right((*v, (*a).into())),
-            });
+            let (tables, views): (Vec<_>, Vec<_>) =
+                actions.iter().partition_map(|(ns, a)| match a {
+                    ActionOnTableOrView::Table((t, a)) => {
+                        itertools::Either::Left((*ns, *t, (*a).into()))
+                    }
+                    ActionOnTableOrView::View((v, a)) => {
+                        itertools::Either::Right((*ns, *v, (*a).into()))
+                    }
+                });
 
             let table_results = if tables.is_empty() {
                 Vec::new()
             } else {
-                self.are_allowed_table_actions_vec(metadata, &tables)
+                self.are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &tables)
                     .await?
                     .into_inner()
             };
@@ -438,7 +487,7 @@ pub trait AuthZTableOps: Authorizer {
             let view_results = if views.is_empty() {
                 Vec::new()
             } else {
-                self.are_allowed_view_actions_vec(metadata, &views)
+                self.are_allowed_view_actions_vec(metadata, warehouse, parent_namespaces, &views)
                     .await?
                     .into_inner()
             };
@@ -465,7 +514,7 @@ pub trait AuthZTableOps: Authorizer {
             let mut view_idx = 0;
             let ordered_results: Vec<bool> = actions
                 .iter()
-                .map(|action| match action {
+                .map(|(_ns, action)| match action {
                     ActionOnTableOrView::Table(_) => {
                         let result = table_results[table_idx];
                         table_idx += 1;
@@ -501,14 +550,19 @@ pub trait AuthZTableOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        tabulars: &[ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>],
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        tabulars: &[(
+            &NamespaceWithParent,
+            ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
+        )],
     ) -> Result<(), RequireTabularActionsError> {
         let decisions = self
-            .are_allowed_tabular_actions_vec(metadata, tabulars)
+            .are_allowed_tabular_actions_vec(metadata, warehouse, parent_namespaces, tabulars)
             .await?
             .into_inner();
 
-        for (t, &allowed) in tabulars.iter().zip(decisions.iter()) {
+        for ((_ns, t), &allowed) in tabulars.iter().zip(decisions.iter()) {
             if !allowed {
                 match t {
                     ActionOnTableOrView::View((info, action)) => {

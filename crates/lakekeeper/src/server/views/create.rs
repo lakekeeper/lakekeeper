@@ -65,7 +65,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
-    let namespace = authorizer
+    let ns_hierarchy = authorizer
         .require_namespace_action(
             &request_metadata,
             &warehouse,
@@ -82,7 +82,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
 
     let view_location = determine_tabular_location(
-        &namespace.namespace,
+        &ns_hierarchy.namespace.namespace,
         request.location.clone(),
         view_id,
         &warehouse.storage_profile,
@@ -123,7 +123,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     C::create_view(
         warehouse_id,
-        namespace.namespace_id(),
+        ns_hierarchy.namespace_id(),
         &view,
         &metadata_build_result.metadata,
         &metadata_location,
@@ -173,7 +173,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             ViewId::from(metadata_build_result.metadata.uuid()),
-            namespace.namespace_id(),
+            ns_hierarchy.namespace_id(),
         )
         .await?;
 
@@ -288,7 +288,7 @@ pub(crate) mod test {
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
-                .namespace_ident
+                .namespace_ident()
                 .clone();
 
         let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))

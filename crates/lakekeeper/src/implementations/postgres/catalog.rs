@@ -1,16 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
-use iceberg::spec::ViewMetadata;
+use iceberg::{spec::ViewMetadata, NamespaceIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 
 use super::{
     bootstrap::{bootstrap, get_validation_data},
-    namespace::{
-        create_namespace, drop_namespace, get_namespace, list_namespaces,
-        update_namespace_properties,
-    },
+    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
     role::{create_role, delete_role, list_roles, update_role},
     tabular::table::load_tables,
     warehouse::{
@@ -41,7 +38,7 @@ use crate::{
     },
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
-        namespace::set_namespace_protected,
+        namespace::{get_namespaces_by_id, get_namespaces_by_name, set_namespace_protected},
         role::search_role,
         tabular::{
             clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
@@ -75,13 +72,13 @@ use crate::{
         DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
         ListNamespacesQuery, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
         MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceHierarchy, NamespaceId,
-        NamespaceIdentOrId, NamespaceWithParentVersion, ProjectId, RenameTabularError,
-        ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchTabularError, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
-        SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
-        TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Transaction,
-        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        NamespaceWithParent, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse,
+        Result, RoleId, SearchTabularError, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Transaction, UpdateWarehouseStorageProfileError,
+        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
+        WarehouseStatus,
     },
     SecretId,
 };
@@ -129,16 +126,54 @@ impl CatalogStore for super::PostgresBackend {
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParentVersion, CatalogCreateNamespaceError> {
+    ) -> std::result::Result<NamespaceWithParent, CatalogCreateNamespaceError> {
         create_namespace(warehouse_id, namespace_id, request, transaction).await
     }
 
-    async fn get_namespace_impl<'a>(
+    async fn get_namespaces_by_id_impl<'a, 'b, SOT>(
         warehouse_id: WarehouseId,
-        namespace: NamespaceIdentOrId,
-        state: Self::State,
-    ) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError> {
-        get_namespace(warehouse_id, namespace, &state.read_pool()).await
+        namespaces: &[NamespaceId],
+        state_or_transaction: &'b mut SOT,
+    ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
+    where
+        SOT: crate::service::StateOrTransaction<
+            Self::State,
+            <Self::Transaction as crate::service::Transaction<Self::State>>::Transaction<'a>,
+        >,
+        'a: 'b,
+    {
+        use crate::service::StateOrTransactionEnum;
+        match state_or_transaction.as_enum_mut() {
+            StateOrTransactionEnum::State(state) => {
+                get_namespaces_by_id(warehouse_id, namespaces, &state.read_pool()).await
+            }
+            StateOrTransactionEnum::Transaction(transaction) => {
+                get_namespaces_by_id(warehouse_id, namespaces, &mut ***transaction).await
+            }
+        }
+    }
+
+    async fn get_namespaces_by_ident_impl<'a, 'b, SOT>(
+        warehouse_id: WarehouseId,
+        namespaces: &[&NamespaceIdent],
+        state_or_transaction: &'b mut SOT,
+    ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
+    where
+        SOT: crate::service::StateOrTransaction<
+            Self::State,
+            <Self::Transaction as crate::service::Transaction<Self::State>>::Transaction<'a>,
+        >,
+        'a: 'b,
+    {
+        use crate::service::StateOrTransactionEnum;
+        match state_or_transaction.as_enum_mut() {
+            StateOrTransactionEnum::State(state) => {
+                get_namespaces_by_name(warehouse_id, namespaces, &state.read_pool()).await
+            }
+            StateOrTransactionEnum::Transaction(transaction) => {
+                get_namespaces_by_name(warehouse_id, namespaces, &mut ***transaction).await
+            }
+        }
     }
 
     async fn drop_namespace_impl<'a>(
@@ -155,8 +190,7 @@ impl CatalogStore for super::PostgresBackend {
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError>
-    {
+    ) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
         update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
     }
 
@@ -614,7 +648,7 @@ impl CatalogStore for super::PostgresBackend {
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError> {
+    ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
     }
 

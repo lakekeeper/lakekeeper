@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::Router;
 use futures::future::try_join_all;
 use strum::EnumIter;
@@ -11,7 +13,8 @@ use crate::{
     api::iceberg::v1::Result,
     request_metadata::RequestMetadata,
     service::{
-        AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy, ResolvedWarehouse, ServerId, TableInfo,
+        build_namespace_hierarchy, AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy,
+        NamespaceWithParent, ResolvedWarehouse, ServerId, TableInfo,
     },
 };
 
@@ -416,6 +419,8 @@ where
     async fn is_allowed_table_action_impl(
         &self,
         metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
+        namespace: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         action: Self::TableAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
@@ -431,14 +436,22 @@ where
     async fn are_allowed_table_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        actions: &[(&impl AuthZTableInfo, Self::TableAction)],
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            &impl AuthZTableInfo,
+            Self::TableAction,
+        )],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        // Build lookup map once for efficiency
         let futures: Vec<_> = actions
             .iter()
-            .map(|(table, a)| async move {
-                self.is_allowed_table_action(metadata, *table, *a)
+            .map(|(namespace_with_parent, table, action)| async {
+                // Build the hierarchy for this table's namespace
+                let hierarchy = build_namespace_hierarchy(namespace_with_parent, parent_namespaces);
+                self.is_allowed_table_action_impl(metadata, warehouse, &hierarchy, *table, *action)
                     .await
-                    .map(MustUse::into_inner)
             })
             .collect();
 
@@ -450,6 +463,8 @@ where
     async fn is_allowed_view_action_impl(
         &self,
         metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
+        namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: Self::ViewAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
@@ -465,14 +480,22 @@ where
     async fn are_allowed_view_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        views_with_actions: &[(&impl AuthZViewInfo, Self::ViewAction)],
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
     ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
-        try_join_all(views_with_actions.iter().map(|(view, a)| async move {
-            self.is_allowed_view_action(metadata, *view, *a)
-                .await
-                .map(MustUse::into_inner)
-        }))
-        .await
+        // Build lookup map once for efficiency
+        let futures: Vec<_> = views_with_actions
+            .iter()
+            .map(|(namespace_with_parent, view, action)| async {
+                // Build the hierarchy for this table's namespace
+                let hierarchy = build_namespace_hierarchy(namespace_with_parent, parent_namespaces);
+                self.is_allowed_view_action_impl(metadata, warehouse, &hierarchy, *view, *action)
+                    .await
+            })
+            .collect();
+
+        try_join_all(futures).await
     }
 
     /// Hook that is called when a user is deleted.
@@ -903,6 +926,8 @@ pub(crate) mod tests {
         async fn is_allowed_table_action_impl(
             &self,
             _metadata: &RequestMetadata,
+            _warehouse: &ResolvedWarehouse,
+            _namespace: &NamespaceHierarchy,
             table: &impl AuthZTableInfo,
             action: Self::TableAction,
         ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
@@ -917,6 +942,8 @@ pub(crate) mod tests {
         async fn is_allowed_view_action_impl(
             &self,
             _metadata: &RequestMetadata,
+            _warehouse: &ResolvedWarehouse,
+            _namespace: &NamespaceHierarchy,
             view: &impl AuthZViewInfo,
             action: Self::ViewAction,
         ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
@@ -1076,27 +1103,64 @@ pub(crate) mod tests {
         CatalogNamespaceAction::CanListViews,
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
-            namespace: Arc::new(Namespace {
-                namespace_ident: NamespaceIdent::new("test".to_string()),
-                namespace_id: NamespaceId::new_random(),
-                warehouse_id: Uuid::nil().into(),
-                protected: false,
-                properties: None,
-                created_at: chrono::Utc::now(),
-                updated_at: Some(chrono::Utc::now()),
-                version: 0.into(),
-            }),
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+            },
             parents: vec![]
         }
     );
     test_block_action!(
         table,
         CatalogTableAction::CanDrop,
+        &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
+        &NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+            },
+            parents: vec![]
+        },
         &crate::service::TableInfo::new_random()
     );
     test_block_action!(
         view,
         CatalogViewAction::CanDrop,
+        &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
+        &NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+            },
+            parents: vec![]
+        },
         &crate::service::ViewInfo::new_random()
     );
 }

@@ -1,3 +1,4 @@
+use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +10,8 @@ use crate::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
         },
-        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore, State, TabularId,
+        require_namespace_for_tabular, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, SecretStore, State, TabularId,
     },
     WarehouseId,
 };
@@ -57,25 +59,43 @@ where
         if search.chars().count() > 64 {
             search = search.chars().take(64).collect();
         }
-        let all_matches = C::search_tabular(warehouse_id, &search, context.v1_state.catalog)
-            .await?
-            .search_results;
+        let all_matches =
+            C::search_tabular(warehouse_id, &search, context.v1_state.catalog.clone())
+                .await?
+                .search_results;
+        let namespaces = C::get_namespaces_by_id(
+            warehouse_id,
+            &all_matches
+                .iter()
+                .map(|t| t.tabular.namespace_id())
+                .collect_vec(),
+            context.v1_state.catalog,
+        )
+        .await?;
 
         let actions = all_matches
             .iter()
             .map(|t| {
-                t.tabular.as_action_request(
-                    CatalogViewAction::CanIncludeInList,
-                    CatalogTableAction::CanIncludeInList,
-                )
+                Ok::<_, ErrorModel>((
+                    require_namespace_for_tabular(&namespaces, t)?,
+                    t.tabular.as_action_request(
+                        CatalogViewAction::CanIncludeInList,
+                        CatalogTableAction::CanIncludeInList,
+                    ),
+                ))
             })
-            .collect_vec();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let authz_decisions = if authz_list_all {
             vec![true; actions.len()]
         } else {
             authorizer
-                .are_allowed_tabular_actions_vec(&request_metadata, &actions)
+                .are_allowed_tabular_actions_vec(
+                    &request_metadata,
+                    &warehouse,
+                    &namespaces,
+                    &actions,
+                )
                 .await?
                 .into_inner()
         };

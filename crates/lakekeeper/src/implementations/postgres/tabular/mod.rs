@@ -3,7 +3,7 @@ mod protection;
 pub mod table;
 pub(crate) mod view;
 
-use std::{default::Default, fmt::Debug, str::FromStr as _};
+use std::{collections::HashMap, default::Default, fmt::Debug, str::FromStr as _};
 
 use chrono::Utc;
 use lakekeeper_io::Location;
@@ -66,7 +66,9 @@ impl From<FromTabularRowError> for GetTabularInfoError {
 #[derive(Debug, FromRow)]
 struct TabularRow {
     tabular_id: Uuid,
+    warehouse_version: i64,
     namespace_name: Vec<String>,
+    namespace_version: i64,
     namespace_id: Uuid,
     tabular_name: String,
     updated_at: Option<chrono::DateTime<Utc>>,
@@ -78,6 +80,10 @@ struct TabularRow {
     typ: TabularType,
     fs_location: String,
     fs_protocol: String,
+    view_properties_keys: Option<Vec<String>>,
+    view_properties_values: Option<Vec<String>>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
 }
 
 impl TabularRow {
@@ -110,6 +116,12 @@ impl TabularRow {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
+                properties: prepare_properties(
+                    self.table_properties_keys,
+                    self.table_properties_values,
+                ),
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
             }),
             TabularType::View => ViewOrTableInfo::View(ViewInfo {
                 namespace_id: self.namespace_id.into(),
@@ -120,6 +132,12 @@ impl TabularRow {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
+                properties: prepare_properties(
+                    self.view_properties_keys,
+                    self.view_properties_values,
+                ),
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
             }),
         };
 
@@ -127,6 +145,7 @@ impl TabularRow {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn get_tabular_infos_by_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     tabulars: &[TabularId],
@@ -164,23 +183,63 @@ where
         r#"
         WITH q AS (
             SELECT id, typ FROM UNNEST($2::uuid[], $3::tabular_type[]) u(id, typ)
+        ),
+        selected_tabulars AS (
+            SELECT t.tabular_id,
+                t.namespace_id,
+                t.name as tabular_name,
+                t.tabular_namespace_name as namespace_name,
+                t.typ,
+                t.metadata_location,
+                t.updated_at,
+                t.protected,
+                t.fs_location,
+                t.fs_protocol,
+                w.version as warehouse_version,
+                n.version as namespace_version
+            FROM tabular t 
+            INNER JOIN q ON t.warehouse_id = $1 AND t.tabular_id = q.id AND t.typ = q.typ
+            INNER JOIN warehouse w ON w.warehouse_id = $1
+            INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
+            WHERE w.status = 'active'
+                AND (t.deleted_at is NULL OR $4)
+                AND (t.metadata_location is not NULL OR $5)
+        ),
+        selected_views AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
         )
-        SELECT t.tabular_id,
-            t.namespace_id,
-            t.name as tabular_name,
-            t.tabular_namespace_name as namespace_name,
-            t.typ as "typ: TabularType",
-            t.metadata_location,
-            t.updated_at,
-            t.protected,
-            t.fs_location,
-            t.fs_protocol
-        FROM tabular t 
-        INNER JOIN q ON t.warehouse_id = $1 AND t.tabular_id = q.id AND t.typ = q.typ
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE w.status = 'active'
-            AND (t.deleted_at is NULL OR $4)
-            AND (t.metadata_location is not NULL OR $5)
+        SELECT st.tabular_id,
+               st.warehouse_version,
+               st.namespace_name,
+               st.namespace_version,
+               st.namespace_id,
+               st.tabular_name,
+               st.updated_at,
+               st.metadata_location,
+               st.protected,
+               st.typ as "typ: TabularType",
+               st.fs_location,
+               st.fs_protocol,
+               vp.view_properties_keys,
+               vp.view_properties_values,
+               tp.keys as table_properties_keys,
+               tp.values as table_properties_values
+        FROM selected_tabulars st
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON st.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON st.tabular_id = tp.table_id
         "#,
         *warehouse_id,
         t_ids.as_slice() as _,
@@ -250,35 +309,75 @@ where
     let rows = sqlx::query_as!(
         TabularRow,
         r#"
-        SELECT t.tabular_id,
-            in_ns.name as "namespace_name!",
-            in_t.name as "tabular_name!",
-            t.namespace_id,
-            t.typ as "typ: TabularType",
-            t.metadata_location,
-            t.updated_at,
-            t.protected as "protected!",
-            t.fs_location,
-            t.fs_protocol
-        FROM LATERAL (
-            SELECT (
-                SELECT array_agg(val ORDER BY ord)
-                FROM jsonb_array_elements_text(x.name) WITH ORDINALITY AS e(val, ord)
-            ) AS name, x.idx
-            FROM jsonb_array_elements($2) WITH ORDINALITY AS x(name, idx)
-        ) in_ns
-        INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])
-            WITH ORDINALITY AS in_t(name, typ, idx)
-            ON in_ns.idx = in_t.idx
-        INNER JOIN tabular t ON t.warehouse_id = $1 AND
-            t.name = in_t.name AND t.typ = in_t.typ
-        INNER JOIN namespace n ON n.warehouse_id = $1
-            AND t.namespace_id = n.namespace_id AND n.namespace_name = in_ns.name
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
-            AND w.status = 'active'
-            AND (t.deleted_at is NULL OR $5)
-            AND (t.metadata_location is not NULL OR $6) "#,
+        WITH selected_tabulars AS (
+            SELECT t.tabular_id,
+                in_ns.name as namespace_name,
+                in_t.name as tabular_name,
+                t.namespace_id,
+                t.typ,
+                t.metadata_location,
+                t.updated_at,
+                t.protected,
+                t.fs_location,
+                t.fs_protocol,
+                w.version as warehouse_version,
+                n.version as namespace_version
+            FROM LATERAL (
+                SELECT (
+                    SELECT array_agg(val ORDER BY ord)
+                    FROM jsonb_array_elements_text(x.name) WITH ORDINALITY AS e(val, ord)
+                ) AS name, x.idx
+                FROM jsonb_array_elements($2) WITH ORDINALITY AS x(name, idx)
+            ) in_ns
+            INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])
+                WITH ORDINALITY AS in_t(name, typ, idx)
+                ON in_ns.idx = in_t.idx
+            INNER JOIN tabular t ON t.warehouse_id = $1 AND
+                t.name = in_t.name AND t.typ = in_t.typ
+            INNER JOIN namespace n ON n.warehouse_id = $1
+                AND t.namespace_id = n.namespace_id AND n.namespace_name = in_ns.name
+            INNER JOIN warehouse w ON w.warehouse_id = $1
+            WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
+                AND w.status = 'active'
+                AND (t.deleted_at is NULL OR $5)
+                AND (t.metadata_location is not NULL OR $6)
+        ),
+        selected_views AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+        )
+        SELECT st.tabular_id,
+               st.warehouse_version,
+               st.namespace_name as "namespace_name!",
+               st.namespace_version,
+               st.namespace_id,
+               st.tabular_name as "tabular_name!",
+               st.updated_at,
+               st.metadata_location,
+               st.protected as "protected!",
+               st.typ as "typ: TabularType",
+               st.fs_location,
+               st.fs_protocol,
+               vp.view_properties_keys,
+               vp.view_properties_values,
+               tp.keys as table_properties_keys,
+               tp.values as table_properties_values
+        FROM selected_tabulars st
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON st.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+        "#,
         *warehouse_id,
         ns_names_json as _,
         t_names.as_slice() as _,
@@ -352,21 +451,42 @@ pub(crate) async fn create_tabular(
     let tabular_id = sqlx::query_as!(
         TabularRow,
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
-        SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
-        FROM namespace n
-        WHERE n.namespace_id = $3 AND n.warehouse_id = $4
-        RETURNING 
-            tabular_id,
-            namespace_id,
-            name as tabular_name,
-            tabular_namespace_name as namespace_name,
-            typ as "typ: TabularType",
-            metadata_location,
-            updated_at,
-            protected,
-            fs_location,
-            fs_protocol
+        WITH inserted AS (
+            INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+            SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
+            FROM namespace n
+            WHERE n.namespace_id = $3 AND n.warehouse_id = $4
+            RETURNING 
+                tabular_id,
+                namespace_id,
+                name as tabular_name,
+                tabular_namespace_name as namespace_name,
+                typ,
+                metadata_location,
+                updated_at,
+                protected,
+                fs_location,
+                fs_protocol
+        )
+        SELECT i.tabular_id,
+               w.version as warehouse_version,
+               i.namespace_name,
+               n.version as namespace_version,
+               i.namespace_id,
+               i.tabular_name,
+               i.updated_at,
+               i.metadata_location,
+               i.protected,
+               i.typ as "typ: TabularType",
+               i.fs_location,
+               i.fs_protocol,
+               NULL::text[] as view_properties_keys,
+               NULL::text[] as view_properties_values,
+               NULL::text[] as table_properties_keys,
+               NULL::text[] as table_properties_values
+        FROM inserted i
+        INNER JOIN warehouse w ON w.warehouse_id = $4
+        INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4
         "#,
         id,
         name,
@@ -395,7 +515,6 @@ pub(crate) async fn create_tabular(
                SELECT 1
                FROM tabular ta
                WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
-                      -- TODO: revisit this after knowing performance impact, may need an index
                       (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
                ) AND tabular_id != $3
            ) as "exists!""#,
@@ -438,6 +557,12 @@ struct TabularRowWithDeletion {
     deleted_at: Option<chrono::DateTime<Utc>>,
     deletion_scheduled_for: Option<chrono::DateTime<Utc>>,
     deletion_task_id: Option<Uuid>,
+    namespace_version: i64,
+    warehouse_version: i64,
+    view_properties_keys: Option<Vec<String>>,
+    view_properties_values: Option<Vec<String>>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
 }
 
 impl TabularRowWithDeletion {
@@ -456,6 +581,12 @@ impl TabularRowWithDeletion {
             typ: self.typ,
             fs_location: self.fs_location,
             fs_protocol: self.fs_protocol,
+            warehouse_version: self.warehouse_version,
+            namespace_version: self.namespace_version,
+            view_properties_keys: self.view_properties_keys,
+            view_properties_values: self.view_properties_values,
+            table_properties_keys: self.table_properties_keys,
+            table_properties_values: self.table_properties_values,
         };
 
         let tabular_info = row.try_into_table_or_view(warehouse_id)?;
@@ -532,37 +663,81 @@ where
     let tables = sqlx::query_as!(
         TabularRowWithDeletion,
         r#"
-        SELECT
-            t.tabular_id,
-            t.name as "tabular_name",
-            t.tabular_namespace_name as namespace_name,
-            t.namespace_id,
-            t.metadata_location,
-            t.typ as "typ: TabularType",
-            t.updated_at,
-            t.created_at,
-            t.deleted_at,
-            tt.scheduled_for as "deletion_scheduled_for?",
-            tt.task_id as "deletion_task_id?",
-            t.protected,
-            t.fs_location,
-            t.fs_protocol
-        FROM tabular t
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
-        WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND (t.namespace_id = $2 OR $2 IS NULL)
-            AND w.status = 'active'
-            AND (t.typ = $3 OR $3 IS NULL)
-            -- active tables are tables that are not staged (metadata_location is set) and not deleted
-            AND (
-                (t.deleted_at IS NULL AND t.metadata_location IS NOT NULL AND $4) OR   -- include_active
-                (t.deleted_at IS NOT NULL AND $5) OR                                   -- include_deleted  
-                (t.metadata_location IS NULL AND $6)                                   -- include_staged
-            )
-            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
+        WITH selected_tabulars AS (
+            SELECT
+                t.tabular_id,
+                t.name as tabular_name,
+                t.tabular_namespace_name as namespace_name,
+                t.namespace_id,
+                t.metadata_location,
+                t.typ,
+                t.updated_at,
+                t.created_at,
+                t.deleted_at,
+                tt.scheduled_for as deletion_scheduled_for,
+                tt.task_id as deletion_task_id,
+                t.protected,
+                t.fs_location,
+                t.fs_protocol,
+                w.version as warehouse_version,
+                n.version as namespace_version
+            FROM tabular t
+            INNER JOIN warehouse w ON w.warehouse_id = $1
+            INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
+            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
+            WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
+                AND (t.namespace_id = $2 OR $2 IS NULL)
+                AND w.status = 'active'
+                AND (t.typ = $3 OR $3 IS NULL)
+                -- active tables are tables that are not staged (metadata_location is set) and not deleted
+                AND (
+                    (t.deleted_at IS NULL AND t.metadata_location IS NOT NULL AND $4) OR   -- include_active
+                    (t.deleted_at IS NOT NULL AND $5) OR                                   -- include_deleted  
+                    (t.metadata_location IS NULL AND $6)                                   -- include_staged
+                )
+                AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
             ORDER BY t.created_at, t.tabular_id ASC
             LIMIT $9
+        ),
+        selected_views AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+        )
+        SELECT st.tabular_id,
+               st.tabular_name,
+               st.namespace_name,
+               st.namespace_id,
+               st.metadata_location,
+               st.typ as "typ: TabularType",
+               st.updated_at,
+               st.created_at,
+               st.deleted_at,
+               st.deletion_scheduled_for as "deletion_scheduled_for?",
+               st.deletion_task_id as "deletion_task_id?",
+               st.protected,
+               st.fs_location,
+               st.fs_protocol,
+               st.namespace_version,
+               st.warehouse_version,
+               vp.view_properties_keys,
+               vp.view_properties_values,
+               tp.keys as table_properties_keys,
+               tp.values as table_properties_values
+        FROM selected_tabulars st
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON st.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON st.tabular_id = tp.table_id
         "#,
         *warehouse_id,
         namespace_id.map(|n| *n),
@@ -602,6 +777,7 @@ struct PostgresSearchTabularInfo {
     tabular_id: Uuid,
     namespace_id: Uuid,
     namespace_name: Vec<String>,
+    namespace_version: i64,
     tabular_name: String,
     typ: TabularType,
     metadata_location: Option<String>,
@@ -610,6 +786,11 @@ struct PostgresSearchTabularInfo {
     distance: Option<f32>,
     fs_location: String,
     fs_protocol: String,
+    warehouse_version: i64,
+    view_properties_keys: Option<Vec<String>>,
+    view_properties_values: Option<Vec<String>>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
 }
 
 impl PostgresSearchTabularInfo {
@@ -643,6 +824,12 @@ impl PostgresSearchTabularInfo {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+                properties: prepare_properties(
+                    self.table_properties_keys,
+                    self.table_properties_values,
+                ),
             }),
             TabularType::View => ViewOrTableInfo::View(ViewInfo {
                 namespace_id: self.namespace_id.into(),
@@ -653,6 +840,12 @@ impl PostgresSearchTabularInfo {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+                properties: prepare_properties(
+                    self.view_properties_keys,
+                    self.view_properties_values,
+                ),
             }),
         };
 
@@ -668,6 +861,7 @@ impl PostgresSearchTabularInfo {
 /// If the search term corresponds to an uuid, it instead searches for a table or namespace
 /// with that uuid. If a namespace with that uuid exists, the response contains tabulars inside the
 /// namespace.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     warehouse_id: WarehouseId,
     search_term: &str,
@@ -678,26 +872,67 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
         Ok(id) => sqlx::query_as!(
             PostgresSearchTabularInfo,
             r#"
-            SELECT tabular_id,
-                namespace_id,
-                tabular_namespace_name as namespace_name,
-                name as tabular_name,
-                typ as "typ: TabularType",
-                metadata_location,
-                t.updated_at,
-                t.protected,
-                t.fs_location,
-                t.fs_protocol,
-                NULL::float4 as distance
-            FROM tabular t
-            INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
-            WHERE t.warehouse_id = $1
-                AND w.status = 'active'
-                AND t.deleted_at IS NULL
-                AND t.metadata_location IS NOT NULL
-                AND (tabular_id = $2 OR namespace_id = $2)
-            ORDER BY (tabular_id = $2) DESC
-            LIMIT 10
+            WITH selected_tabulars AS (
+                SELECT tabular_id,
+                    t.namespace_id,
+                    tabular_namespace_name as namespace_name,
+                    name as tabular_name,
+                    typ,
+                    metadata_location,
+                    t.updated_at,
+                    t.protected,
+                    t.fs_location,
+                    t.fs_protocol,
+                    w.version as warehouse_version,
+                    n.version as namespace_version,
+                    NULL::float4 as distance
+                FROM tabular t
+                INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
+                INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id
+                WHERE t.warehouse_id = $1
+                    AND w.status = 'active'
+                    AND t.deleted_at IS NULL
+                    AND t.metadata_location IS NOT NULL
+                    AND (t.tabular_id = $2 OR t.namespace_id = $2)
+                ORDER BY (t.tabular_id = $2) DESC
+                LIMIT 10
+            ),
+            selected_views AS (
+                SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
+            ),
+            selected_tables AS (
+                SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+            )
+            SELECT st.tabular_id,
+                st.namespace_id,
+                st.namespace_name,
+                st.namespace_version,
+                st.tabular_name,
+                st.typ as "typ: TabularType",
+                st.metadata_location,
+                st.updated_at,
+                st.protected,
+                st.distance,
+                st.fs_location,
+                st.fs_protocol,
+                st.warehouse_version,
+                vp.view_properties_keys,
+                vp.view_properties_values,
+                tp.keys as table_properties_keys,
+                tp.values as table_properties_values
+            FROM selected_tabulars st
+            LEFT JOIN (SELECT view_id,
+                        ARRAY_AGG(key)   AS view_properties_keys,
+                        ARRAY_AGG(value) AS view_properties_values
+                FROM view_properties
+                WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+                GROUP BY view_id) vp ON st.tabular_id = vp.view_id
+            LEFT JOIN (SELECT table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM table_properties
+                    WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                    GROUP BY table_id) tp ON st.tabular_id = tp.table_id
             "#,
             *warehouse_id,
             id,
@@ -713,29 +948,71 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
         Err(_) => sqlx::query_as!(
             PostgresSearchTabularInfo,
             r#"
-            with data as (
+            WITH selected_tabulars AS (
                 SELECT  tabular_id,
-                    namespace_id,
+                    t.namespace_id,
                     tabular_namespace_name as namespace_name,
                     name as tabular_name,
-                    typ as "typ: TabularType",
+                    typ,
                     metadata_location,
                     t.updated_at,
                     t.protected,
                     t.fs_location,
                     t.fs_protocol,
+                    w.version as warehouse_version,
+                    n.version as namespace_version,
                     concat_namespace_name_tabular_name(tabular_namespace_name, name) <-> $2 AS distance
                 FROM tabular t
                 INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id
+                INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
                     AND t.metadata_location IS NOT NULL
                 ORDER BY distance ASC
                 LIMIT 10
+            ),
+            filtered_tabulars AS (
+                SELECT * FROM selected_tabulars
+                WHERE distance < 1.0
+            ),
+            selected_views AS (
+                SELECT tabular_id FROM filtered_tabulars WHERE typ = 'view'
+            ),
+            selected_tables AS (
+                SELECT tabular_id FROM filtered_tabulars WHERE typ = 'table'
             )
-            SELECT * FROM data
-            WHERE distance < 1.0
+            SELECT st.tabular_id,
+                st.namespace_id,
+                st.namespace_name,
+                st.namespace_version,
+                st.tabular_name,
+                st.typ as "typ: TabularType",
+                st.metadata_location,
+                st.updated_at,
+                st.protected,
+                st.distance,
+                st.fs_location,
+                st.fs_protocol,
+                st.warehouse_version,
+                vp.view_properties_keys,
+                vp.view_properties_values,
+                tp.keys as table_properties_keys,
+                tp.values as table_properties_values
+            FROM filtered_tabulars st
+            LEFT JOIN (SELECT view_id,
+                        ARRAY_AGG(key)   AS view_properties_keys,
+                        ARRAY_AGG(value) AS view_properties_values
+                FROM view_properties
+                WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+                GROUP BY view_id) vp ON st.tabular_id = vp.view_id
+            LEFT JOIN (SELECT table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM table_properties
+                    WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                    GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+            ORDER BY distance ASC
             "#,
             *warehouse_id,
             search_term,
@@ -785,7 +1062,7 @@ pub(crate) async fn rename_tabular(
             TabularRow,
             r#"
             WITH locked_tabular AS (
-                SELECT tabular_id, name, namespace_id
+                SELECT tabular_id, name, namespace_id, typ
                 FROM tabular
                 WHERE tabular_id = $2
                     AND warehouse_id = $4
@@ -812,26 +1089,65 @@ pub(crate) async fn rename_tabular(
                 JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
                 WHERE t.name = $1
                 FOR UPDATE
+            ),
+            updated AS (
+                UPDATE tabular t
+                SET name = $1
+                FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn
+                WHERE t.tabular_id = lt.tabular_id
+                    AND t.warehouse_id = $4
+                    AND wc.warehouse_id = $4
+                    AND lsn.namespace_id IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM conflict_check)
+                RETURNING 
+                    t.tabular_id,
+                    t.namespace_id,
+                    t.name as tabular_name,
+                    t.tabular_namespace_name as namespace_name,
+                    t.typ,
+                    t.metadata_location,
+                    t.updated_at,
+                    t.protected,
+                    t.fs_location,
+                    t.fs_protocol
+            ),
+            selected_views AS (
+                SELECT tabular_id FROM updated WHERE typ = 'view'
+            ),
+            selected_tables AS (
+                SELECT tabular_id FROM updated WHERE typ = 'table'
             )
-            UPDATE tabular t
-            SET name = $1
-            FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn
-            WHERE t.tabular_id = lt.tabular_id
-                AND t.warehouse_id = $4
-                AND wc.warehouse_id = $4
-                AND lsn.namespace_id IS NOT NULL
-                AND NOT EXISTS (SELECT 1 FROM conflict_check)
-            RETURNING 
-                t.tabular_id,
-                t.namespace_id,
-                t.name as tabular_name,
-                t.tabular_namespace_name as namespace_name,
-                t.typ as "typ: TabularType",
-                t.metadata_location,
-                t.updated_at,
-                t.protected,
-                t.fs_location,
-                t.fs_protocol
+            SELECT u.tabular_id,
+                w.version as warehouse_version,
+                u.namespace_name,
+                n.version as namespace_version,
+                u.namespace_id,
+                u.tabular_name,
+                u.updated_at,
+                u.metadata_location,
+                u.protected,
+                u.typ as "typ: TabularType",
+                u.fs_location,
+                u.fs_protocol,
+                vp.view_properties_keys,
+                vp.view_properties_values,
+                tp.keys as table_properties_keys,
+                tp.values as table_properties_values
+            FROM updated u
+            INNER JOIN warehouse w ON w.warehouse_id = $4
+            INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $4
+            LEFT JOIN (SELECT view_id,
+                        ARRAY_AGG(key)   AS view_properties_keys,
+                        ARRAY_AGG(value) AS view_properties_values
+                FROM view_properties
+                WHERE warehouse_id = $4 and view_id in (SELECT tabular_id FROM selected_views)
+                GROUP BY view_id) vp ON u.tabular_id = vp.view_id
+            LEFT JOIN (SELECT table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM table_properties
+                    WHERE warehouse_id = $4 AND table_id in (SELECT tabular_id FROM selected_tables)
+                    GROUP BY table_id) tp ON u.tabular_id = tp.table_id
             "#,
             &**dest_name,
             *source_id,
@@ -851,7 +1167,7 @@ pub(crate) async fn rename_tabular(
             TabularRow,
             r#"
             WITH locked_tabular AS (
-                SELECT tabular_id, name, namespace_id
+                SELECT tabular_id, name, namespace_id, typ
                 FROM tabular
                 WHERE tabular_id = $4
                     AND warehouse_id = $2
@@ -884,26 +1200,65 @@ pub(crate) async fn rename_tabular(
                 JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $2
                 WHERE t.name = $1
                 FOR UPDATE
+            ),
+            updated AS (
+                UPDATE tabular t
+                SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
+                FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
+                    WHERE t.tabular_id = lt.tabular_id
+                    AND t.warehouse_id = $2
+                    AND ln.namespace_id IS NOT NULL
+                    AND wc.warehouse_id = $2
+                    AND lsn.namespace_id IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM conflict_check)
+                RETURNING t.tabular_id,
+                    t.namespace_id,
+                    t.name as tabular_name,
+                    t.tabular_namespace_name as namespace_name,
+                    t.typ,
+                    t.metadata_location,
+                    t.updated_at,
+                    t.protected,
+                    t.fs_location,
+                    t.fs_protocol
+            ),
+            selected_views AS (
+                SELECT tabular_id FROM updated WHERE typ = 'view'
+            ),
+            selected_tables AS (
+                SELECT tabular_id FROM updated WHERE typ = 'table'
             )
-            UPDATE tabular t
-            SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
-            FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
-                WHERE t.tabular_id = lt.tabular_id
-                AND t.warehouse_id = $2
-                AND ln.namespace_id IS NOT NULL
-                AND wc.warehouse_id = $2
-                AND lsn.namespace_id IS NOT NULL
-                AND NOT EXISTS (SELECT 1 FROM conflict_check)
-            RETURNING t.tabular_id,
-                t.namespace_id,
-                t.name as tabular_name,
-                t.tabular_namespace_name as namespace_name,
-                t.typ as "typ: TabularType",
-                t.metadata_location,
-                t.updated_at,
-                t.protected,
-                t.fs_location,
-                t.fs_protocol
+            SELECT u.tabular_id,
+                w.version as warehouse_version,
+                u.namespace_name,
+                n.version as namespace_version,
+                u.namespace_id,
+                u.tabular_name,
+                u.updated_at,
+                u.metadata_location,
+                u.protected,
+                u.typ as "typ: TabularType",
+                u.fs_location,
+                u.fs_protocol,
+                vp.view_properties_keys,
+                vp.view_properties_values,
+                tp.keys as table_properties_keys,
+                tp.values as table_properties_values
+            FROM updated u
+            INNER JOIN warehouse w ON w.warehouse_id = $2
+            INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $2
+            LEFT JOIN (SELECT view_id,
+                        ARRAY_AGG(key)   AS view_properties_keys,
+                        ARRAY_AGG(value) AS view_properties_values
+                FROM view_properties
+                WHERE warehouse_id = $2 and view_id in (SELECT tabular_id FROM selected_views)
+                GROUP BY view_id) vp ON u.tabular_id = vp.view_id
+            LEFT JOIN (SELECT table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM table_properties
+                    WHERE warehouse_id = $2 AND table_id in (SELECT tabular_id FROM selected_tables)
+                    GROUP BY table_id) tp ON u.tabular_id = tp.table_id
             "#,
             &**dest_name,
             *warehouse_id,
@@ -961,6 +1316,7 @@ impl From<FromTabularRowError> for ClearTabularDeletedAtError {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn clear_tabular_deleted_at(
     tabular_ids: &[TabularId],
     warehouse_id: WarehouseId,
@@ -970,7 +1326,7 @@ pub(crate) async fn clear_tabular_deleted_at(
     let undrop_tabular_informations = sqlx::query_as!(
         TabularRowWithDeletion,
         r#"WITH locked_tabulars AS (
-            SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name
+            SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name, t.typ
             FROM tabular t 
             JOIN namespace n ON t.namespace_id = n.namespace_id
             WHERE n.warehouse_id = $2
@@ -986,27 +1342,70 @@ pub(crate) async fn clear_tabular_deleted_at(
                 AND ta.warehouse_id = $2
                 AND ta.queue_name = 'tabular_expiration'
             FOR UPDATE OF ta
+        ),
+        updated AS (
+            UPDATE tabular t
+            SET deleted_at = NULL
+            FROM locked_tabulars lt
+            LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id
+            WHERE t.tabular_id = lt.tabular_id AND t.warehouse_id = $2
+            RETURNING
+                t.tabular_id,
+                t.name as tabular_name,
+                t.tabular_namespace_name as namespace_name,
+                t.namespace_id,
+                t.metadata_location,
+                t.typ,
+                t.updated_at,
+                t.created_at,
+                t.deleted_at,
+                lta.scheduled_for as deletion_scheduled_for,
+                lta.task_id as deletion_task_id,
+                t.protected,
+                t.fs_location,
+                t.fs_protocol
+        ),
+        selected_views AS (
+            SELECT tabular_id FROM updated WHERE typ = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM updated WHERE typ = 'table'
         )
-        UPDATE tabular t
-        SET deleted_at = NULL
-        FROM locked_tabulars lt
-        LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id
-        WHERE t.tabular_id = lt.tabular_id AND t.warehouse_id = $2
-        RETURNING
-            t.tabular_id,
-            t.name as "tabular_name",
-            t.tabular_namespace_name as namespace_name,
-            t.namespace_id,
-            t.metadata_location,
-            t.typ as "typ: TabularType",
-            t.updated_at,
-            t.created_at,
-            t.deleted_at,
-            lta.scheduled_for as "deletion_scheduled_for?",
-            lta.task_id as "deletion_task_id?",
-            t.protected,
-            t.fs_location,
-            t.fs_protocol
+        SELECT u.tabular_id,
+            u.namespace_name,
+            u.namespace_id,
+            u.tabular_name,
+            u.updated_at,
+            u.metadata_location,
+            u.protected,
+            u.typ as "typ: TabularType",
+            u.fs_location,
+            u.fs_protocol,
+            u.created_at,
+            u.deleted_at,
+            u.deletion_scheduled_for as "deletion_scheduled_for?",
+            u.deletion_task_id as "deletion_task_id?",
+            n.version as namespace_version,
+            w.version as warehouse_version,
+            vp.view_properties_keys,
+            vp.view_properties_values,
+            tp.keys as table_properties_keys,
+            tp.values as table_properties_values
+        FROM updated u
+        INNER JOIN warehouse w ON w.warehouse_id = $2
+        INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $2
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $2 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON u.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $2 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON u.tabular_id = tp.table_id
         "#,
         &tabular_ids_uuid,
         *warehouse_id,
@@ -1052,6 +1451,7 @@ impl From<FromTabularRowError> for MarkTabularAsDeletedError {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn mark_tabular_as_deleted(
     warehouse_id: WarehouseId,
     tabular_id: TabularId,
@@ -1059,7 +1459,8 @@ pub(crate) async fn mark_tabular_as_deleted(
     delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ViewOrTableInfo, MarkTabularAsDeletedError> {
-    let r = sqlx::query!(
+    let r = sqlx::query_as!(
+        TabularRow,
         r#"
         WITH locked_tabular AS (
             SELECT 
@@ -1085,20 +1486,60 @@ pub(crate) async fn mark_tabular_as_deleted(
                 AND tabular.warehouse_id = $1
                 AND ((NOT lt.protected) OR $4)
             RETURNING tabular.tabular_id
+        ),
+        result_tabulars AS (
+            SELECT 
+                lt.tabular_id,
+                lt.namespace_id,
+                lt.name as tabular_name,
+                lt.tabular_namespace_name as namespace_name,
+                lt.typ,
+                lt.metadata_location,
+                lt.updated_at,
+                lt.protected,
+                lt.fs_location,
+                lt.fs_protocol,
+                (SELECT tabular_id FROM marked) IS NOT NULL as was_marked
+            FROM locked_tabular lt
+        ),
+        selected_views AS (
+            SELECT tabular_id FROM result_tabulars WHERE typ = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM result_tabulars WHERE typ = 'table'
         )
         SELECT 
-            lt.tabular_id,
-            lt.namespace_id,
-            lt.name as tabular_name,
-            lt.tabular_namespace_name as namespace_name,
-            lt.typ as "typ: TabularType",
-            lt.metadata_location,
-            lt.updated_at,
-            lt.protected,
-            lt.fs_location,
-            lt.fs_protocol,
-            (SELECT tabular_id FROM marked) IS NOT NULL as "was_marked!"
-        FROM locked_tabular lt
+            rt.tabular_id,
+            w.version as warehouse_version,
+            rt.namespace_name,
+            n.version as namespace_version,
+            rt.namespace_id,
+            rt.tabular_name,
+            rt.updated_at,
+            rt.metadata_location,
+            rt.protected,
+            rt.typ as "typ: TabularType",
+            rt.fs_location,
+            rt.fs_protocol,
+            vp.view_properties_keys,
+            vp.view_properties_values,
+            tp.keys as table_properties_keys,
+            tp.values as table_properties_values
+        FROM result_tabulars rt
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        INNER JOIN namespace n ON n.namespace_id = rt.namespace_id AND n.warehouse_id = $1
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON rt.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON rt.tabular_id = tp.table_id
         "#,
         *warehouse_id,
         *tabular_id,
@@ -1114,26 +1555,11 @@ pub(crate) async fn mark_tabular_as_deleted(
             e.into_catalog_backend_error().into()
         }
     })?;
-
     if r.protected && !force {
         return Err(ProtectedTabularDeletionWithoutForce::new(warehouse_id, tabular_id).into());
     }
 
-    let row = TabularRow {
-        tabular_id: r.tabular_id,
-        namespace_id: r.namespace_id,
-        tabular_name: r.tabular_name,
-        namespace_name: r.namespace_name,
-        typ: r.typ,
-        metadata_location: r.metadata_location,
-        updated_at: r.updated_at,
-        protected: r.protected,
-        fs_location: r.fs_location,
-        fs_protocol: r.fs_protocol,
-    };
-
-    let tabular_info = row.try_into_table_or_view(warehouse_id)?;
-
+    let tabular_info = r.try_into_table_or_view(warehouse_id)?;
     Ok(tabular_info)
 }
 
@@ -1240,6 +1666,17 @@ impl From<TabularId> for TabularType {
     }
 }
 
+fn prepare_properties(
+    keys: Option<Vec<String>>,
+    values: Option<Vec<String>>,
+) -> HashMap<String, String> {
+    if let (Some(keys), Some(values)) = (keys, values) {
+        keys.into_iter().zip(values).collect()
+    } else {
+        HashMap::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr as _;
@@ -1262,7 +1699,7 @@ mod tests {
         let namespace =
             iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
-        let namespace_id = response.namespace_id;
+        let namespace_id = response.namespace_id();
 
         let table_name = format!("test_table_{}", Uuid::now_v7());
         let location = Location::from_str(&format!("s3://test-bucket/{table_name}/")).unwrap();
@@ -1488,18 +1925,34 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_search_tabular_no_results(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let res = search_tabular(
+            warehouse_id,
+            "non_existent_table",
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap();
+
+        assert!(res.search_results.is_empty());
+    }
+
+    #[sqlx::test]
     async fn test_search_tabular(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace1 = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
         let namespace1_id = initialize_namespace(state.clone(), warehouse_id, &namespace1, None)
             .await
-            .namespace_id;
+            .namespace_id();
         let namespace2 =
             iceberg_ext::NamespaceIdent::from_vec(vec!["finance_ns".to_string()]).unwrap();
         let namespace2_id = initialize_namespace(state.clone(), warehouse_id, &namespace2, None)
             .await
-            .namespace_id;
+            .namespace_id();
 
         let table_names = [10, 101, 1011, 42, 420]
             .into_iter()
@@ -1560,7 +2013,7 @@ mod tests {
         let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await
-            .namespace_id;
+            .namespace_id();
 
         let table_names = [10, 101, 1011, 42, 420]
             .into_iter()

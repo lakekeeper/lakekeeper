@@ -1,3 +1,5 @@
+use iceberg_ext::catalog::rest::ErrorModel;
+
 use crate::{
     api::{self, management::v1::warehouse::UndropTabularsRequest},
     request_metadata::RequestMetadata,
@@ -6,7 +8,8 @@ use crate::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZTableOps, Authorizer, CatalogTableAction,
             CatalogViewAction, RequireTableActionError,
         },
-        CatalogStore, CatalogTabularOps, ResolvedWarehouse, TabularId, TabularListFlags,
+        require_namespace_for_tabular, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo,
     },
 };
 
@@ -26,7 +29,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
             include_deleted: true,
             include_staged: false,
         },
-        catalog_state,
+        catalog_state.clone(),
     )
     .await
     .map_err(RequireTableActionError::from)?;
@@ -52,12 +55,27 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
         }
     }
 
+    let namespaces = C::get_namespaces_by_id(
+        warehouse_id,
+        &tabulars
+            .iter()
+            .map(ViewOrTableInfo::namespace_id)
+            .collect::<Vec<_>>(),
+        catalog_state,
+    )
+    .await?;
+
     let actions = tabulars
         .iter()
-        .map(|t| t.as_action_request(CatalogViewAction::CanUndrop, CatalogTableAction::CanUndrop))
-        .collect::<Vec<_>>();
+        .map(|t| {
+            Ok::<_, ErrorModel>((
+                require_namespace_for_tabular(&namespaces, t)?,
+                t.as_action_request(CatalogViewAction::CanUndrop, CatalogTableAction::CanUndrop),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     authorizer
-        .require_tabular_actions(request_metadata, &actions)
+        .require_tabular_actions(request_metadata, warehouse, &namespaces, &actions)
         .await?;
     Ok(())
 }

@@ -158,7 +158,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
-    let namespace = authorizer
+    let ns_hierarchy = authorizer
         .require_namespace_action(
             &request_metadata,
             &warehouse,
@@ -175,7 +175,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let storage_profile = &warehouse.storage_profile;
 
     let table_location = determine_tabular_location(
-        &namespace.namespace,
+        &ns_hierarchy.namespace.namespace,
         request.location.clone(),
         tabular_id,
         storage_profile,
@@ -204,7 +204,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let (_table_info, staged_table_id) = C::create_table(
         TableCreation {
             warehouse_id: warehouse.warehouse_id,
-            namespace_id: namespace.namespace_id(),
+            namespace_id: ns_hierarchy.namespace_id(),
             table_ident: &table,
             table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
@@ -279,7 +279,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &request_metadata,
             warehouse_id,
             table_id,
-            namespace.namespace_id(),
+            ns_hierarchy.namespace_id(),
         )
         .await?;
 

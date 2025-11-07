@@ -35,31 +35,64 @@ pub(crate) async fn set_tabular_protected(
         TabularRow,
         r#"
         WITH selected_tabular AS (
-            SELECT tabular_id
+            SELECT tabular_id, namespace_id, typ
             FROM tabular
             WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = $4
             FOR UPDATE
         ),
+        selected_views AS (
+            SELECT tabular_id FROM selected_tabular WHERE typ = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM selected_tabular WHERE typ = 'table'
+        ),
+        ns AS (
+            SELECT namespace_name, version as namespace_version
+            FROM namespace
+            WHERE warehouse_id = $1 AND namespace_id = (SELECT namespace_id FROM selected_tabular)
+        ),
         w AS (
-            SELECT warehouse_id
+            SELECT warehouse_id, version as warehouse_version
             FROM warehouse
             WHERE warehouse_id = $1 AND status = 'active'
+        ),
+        updated_tabular AS (
+            UPDATE tabular t
+            SET protected = $3
+            FROM selected_tabular as st, w, ns
+            WHERE t.tabular_id = st.tabular_id
+            RETURNING 
+                t.tabular_id,
+                t.namespace_id,
+                t.name as tabular_name,
+                t.tabular_namespace_name as namespace_name,
+                t.typ as "typ: TabularType",
+                t.metadata_location,
+                t.updated_at,
+                t.protected,
+                t.fs_location,
+                t.fs_protocol,
+                w.warehouse_version,
+                ns.namespace_version
         )
-        UPDATE tabular t
-        SET protected = $3
-        FROM selected_tabular as st, w
-        WHERE t.tabular_id = st.tabular_id
-        RETURNING 
-            t.tabular_id,
-            t.namespace_id,
-            t.name as tabular_name,
-            t.tabular_namespace_name as namespace_name,
-            t.typ as "typ: TabularType",
-            t.metadata_location,
-            t.updated_at,
-            t.protected,
-            t.fs_location,
-            t.fs_protocol
+        SELECT ut.*,
+               vp.view_properties_keys,
+               vp.view_properties_values,
+               tp.keys as table_properties_keys,
+               tp.values as table_properties_values
+        FROM updated_tabular ut
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON ut.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON ut.tabular_id = tp.table_id
         "#,
         *warehouse_id,
         *tabular_id,

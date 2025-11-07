@@ -6,6 +6,7 @@ use lakekeeper::{
     service::{
         authz::{
             AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps as _, AuthzWarehouseOps,
+            RequireTableActionError, RequireViewActionError,
         },
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
@@ -264,15 +265,37 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
         ),
     };
 
-    let table_info = C::get_table_info(
+    let (warehouse, table_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone()),
+        C::get_table_info(
+            warehouse_id,
+            table.clone(),
+            TabularListFlags::active(),
+            api_context.v1_state.catalog.clone(),
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
+    let namespace = C::get_namespace(
         warehouse_id,
-        table.clone(),
-        TabularListFlags::active(),
+        table_info.namespace_id(),
         api_context.v1_state.catalog,
     )
     .await;
+    let namespace = authorizer.require_namespace_presence(
+        warehouse_id,
+        table_info.namespace_id(),
+        namespace,
+    )?;
     let table_info = authorizer
-        .require_table_action(metadata, warehouse_id, table, table_info, action)
+        .require_table_action(
+            metadata,
+            &warehouse,
+            &namespace,
+            table,
+            Ok::<_, RequireTableActionError>(Some(table_info)),
+            action,
+        )
         .await?;
 
     Ok((warehouse_id, table_info.table_id()).to_openfga())
@@ -307,15 +330,35 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
         ),
     };
 
-    let view_info = C::get_view_info(
+    let (warehouse, table_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone()),
+        C::get_view_info(
+            warehouse_id,
+            view.clone(),
+            TabularListFlags::active(),
+            api_context.v1_state.catalog.clone(),
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let view_info = authorizer.require_view_presence(warehouse_id, view.clone(), table_info)?;
+    let namespace = C::get_namespace(
         warehouse_id,
-        view.clone(),
-        TabularListFlags::active(),
+        view_info.namespace_id(),
         api_context.v1_state.catalog,
     )
     .await;
+    let namespace =
+        authorizer.require_namespace_presence(warehouse_id, view_info.namespace_id(), namespace)?;
+
     let view_info = authorizer
-        .require_view_action(metadata, warehouse_id, view, view_info, action)
+        .require_view_action(
+            metadata,
+            &warehouse,
+            &namespace,
+            view,
+            Ok::<_, RequireViewActionError>(Some(view_info)),
+            action,
+        )
         .await?;
 
     Ok((warehouse_id, view_info.view_id()).to_openfga())

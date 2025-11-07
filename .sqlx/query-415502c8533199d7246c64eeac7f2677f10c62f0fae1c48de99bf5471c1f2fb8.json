@@ -1,0 +1,147 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH locked_tabulars AS (\n            SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name, t.typ\n            FROM tabular t \n            JOIN namespace n ON t.namespace_id = n.namespace_id\n            WHERE n.warehouse_id = $2\n                AND t.warehouse_id = $2\n                AND t.tabular_id = ANY($1::uuid[])\n            FOR UPDATE OF t\n        ),\n        locked_tasks AS (\n            SELECT task_id, entity_id, scheduled_for\n            FROM task ta\n            JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id\n            WHERE ta.entity_type in ('table', 'view')\n                AND ta.warehouse_id = $2\n                AND ta.queue_name = 'tabular_expiration'\n            FOR UPDATE OF ta\n        ),\n        updated AS (\n            UPDATE tabular t\n            SET deleted_at = NULL\n            FROM locked_tabulars lt\n            LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id\n            WHERE t.tabular_id = lt.tabular_id AND t.warehouse_id = $2\n            RETURNING\n                t.tabular_id,\n                t.name as tabular_name,\n                t.tabular_namespace_name as namespace_name,\n                t.namespace_id,\n                t.metadata_location,\n                t.typ,\n                t.updated_at,\n                t.created_at,\n                t.deleted_at,\n                lta.scheduled_for as deletion_scheduled_for,\n                lta.task_id as deletion_task_id,\n                t.protected,\n                t.fs_location,\n                t.fs_protocol\n        ),\n        selected_views AS (\n            SELECT tabular_id FROM updated WHERE typ = 'view'\n        ),\n        selected_tables AS (\n            SELECT tabular_id FROM updated WHERE typ = 'table'\n        )\n        SELECT u.tabular_id,\n            u.namespace_name,\n            u.namespace_id,\n            u.tabular_name,\n            u.updated_at,\n            u.metadata_location,\n            u.protected,\n            u.typ as \"typ: TabularType\",\n            u.fs_location,\n            u.fs_protocol,\n            u.created_at,\n            u.deleted_at,\n            u.deletion_scheduled_for as \"deletion_scheduled_for?\",\n            u.deletion_task_id as \"deletion_task_id?\",\n            n.version as namespace_version,\n            w.version as warehouse_version,\n            vp.view_properties_keys,\n            vp.view_properties_values,\n            tp.keys as table_properties_keys,\n            tp.values as table_properties_values\n        FROM updated u\n        INNER JOIN warehouse w ON w.warehouse_id = $2\n        INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $2\n        LEFT JOIN (SELECT view_id,\n                    ARRAY_AGG(key)   AS view_properties_keys,\n                    ARRAY_AGG(value) AS view_properties_values\n            FROM view_properties\n            WHERE warehouse_id = $2 and view_id in (SELECT tabular_id FROM selected_views)\n            GROUP BY view_id) vp ON u.tabular_id = vp.view_id\n        LEFT JOIN (SELECT table_id,\n                    ARRAY_AGG(key) as keys,\n                    ARRAY_AGG(value) as values\n                FROM table_properties\n                WHERE warehouse_id = $2 AND table_id in (SELECT tabular_id FROM selected_tables)\n                GROUP BY table_id) tp ON u.tabular_id = tp.table_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "tabular_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "metadata_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "protected",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "typ: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "deletion_scheduled_for?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "deletion_task_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "namespace_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "warehouse_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "view_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 17,
+        "name": "view_properties_values",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 18,
+        "name": "table_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 19,
+        "name": "table_properties_values",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "415502c8533199d7246c64eeac7f2677f10c62f0fae1c48de99bf5471c1f2fb8"
+}

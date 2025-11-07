@@ -29,7 +29,7 @@ use crate::{
     },
     server::tables::CommitContext,
     service::{
-        NamespaceId, NamespaceWithParentVersion, ResolvedWarehouse, TableId, TableInfo, ViewId,
+        NamespaceId, NamespaceWithParent, ResolvedWarehouse, TableId, TableInfo, ViewId,
         ViewOrTableInfo,
     },
     SecretId, WarehouseId,
@@ -505,7 +505,7 @@ impl EndpointHookCollection {
     pub(crate) async fn set_namespace_protection(
         &self,
         requested_protected: bool,
-        updated_namespace: Arc<NamespaceWithParentVersion>,
+        updated_namespace: NamespaceWithParent,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -527,7 +527,7 @@ impl EndpointHookCollection {
     pub(crate) async fn create_namespace(
         &self,
         warehouse_id: WarehouseId,
-        namespace: Arc<NamespaceWithParentVersion>,
+        namespace: NamespaceWithParent,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -563,7 +563,7 @@ impl EndpointHookCollection {
     pub(crate) async fn update_namespace_properties(
         &self,
         warehouse_id: WarehouseId,
-        namespace: Arc<NamespaceWithParentVersion>,
+        namespace: NamespaceWithParent,
         updated_properties: Arc<UpdateNamespacePropertiesResponse>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -782,7 +782,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
     async fn set_namespace_protection(
         &self,
         _requested_protected: bool,
-        _updated_namespace: Arc<NamespaceWithParentVersion>,
+        _updated_namespace: NamespaceWithParent,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -791,7 +791,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
     async fn create_namespace(
         &self,
         _warehouse_id: WarehouseId,
-        _namespace: Arc<NamespaceWithParentVersion>,
+        _namespace: NamespaceWithParent,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -809,7 +809,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
     async fn update_namespace_properties(
         &self,
         _warehouse_id: WarehouseId,
-        _namespace: Arc<NamespaceWithParentVersion>,
+        _namespace: NamespaceWithParent,
         _updated_properties: Arc<UpdateNamespacePropertiesResponse>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {

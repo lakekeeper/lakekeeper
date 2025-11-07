@@ -17,7 +17,7 @@ use crate::{
     server::require_warehouse_id,
     service::{
         authz::{
-            AuthZTableOps, Authorizer, AuthzWarehouseOps, CatalogTableAction,
+            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogTableAction,
             CatalogWarehouseAction, RequireTableActionError,
         },
         secrets::SecretStore,
@@ -25,7 +25,7 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             StorageProfile, ValidationError,
         },
-        AuthZTableInfo, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        AuthZTableInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
         TabularListFlags,
     },
@@ -165,10 +165,22 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         };
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
+        let namespace_hierarchy = C::get_namespace(
+            warehouse_id,
+            table_info.table_ident().namespace.clone(),
+            state.v1_state.catalog.clone(),
+        )
+        .await;
+        let namespace_hierarchy = authorizer.require_namespace_presence(
+            warehouse_id,
+            table_info.table_ident().namespace.clone(),
+            namespace_hierarchy,
+        )?;
         let table_info = authorizer
             .require_table_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
+                &namespace_hierarchy,
                 table_info.table_ident().clone(),
                 Ok::<_, RequireTableActionError>(Some(table_info)),
                 action,

@@ -9,15 +9,18 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{AuthZViewOps, Authorizer, AuthzWarehouseOps, CatalogViewAction},
+        authz::{
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
+        },
         contract_verification::ContractVerification,
         tasks::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
-        Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
+        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, NamedEntity, Result, SecretStore, State, TabularId, TabularListFlags,
+        Transaction,
     },
 };
 
@@ -39,8 +42,13 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let (warehouse, view_info) = tokio::join!(
+    let (warehouse, namespace, view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_namespace(
+            warehouse_id,
+            view.namespace.clone(),
+            state.v1_state.catalog.clone(),
+        ),
         C::get_view_info(
             warehouse_id,
             view.clone(),
@@ -49,11 +57,14 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         )
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let namespace =
+        authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
 
     let view_info = authorizer
         .require_view_action(
             &request_metadata,
-            warehouse_id,
+            &warehouse,
+            &namespace,
             view.clone(),
             view_info,
             CatalogViewAction::CanDrop,
@@ -267,13 +278,13 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
+        let create_view_request = create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
         let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
-            rq,
+            create_view_request,
             Some(prefix.into()),
         ))
         .await
@@ -281,11 +292,12 @@ mod test {
         let mut table_ident = namespace.clone().inner();
         table_ident.push(view_name.into());
 
+        let view_ident = TableIdent::new(namespace.clone(), view_name.to_string());
         let loaded_view = load_view(
             api_context.clone(),
             ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
-                view: TableIdent::from_strs(&table_ident).unwrap(),
+                view: view_ident.clone(),
             },
         )
         .await
@@ -294,7 +306,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseId::from_str_or_internal(prefix.as_str()).unwrap(),
+            whi,
             true,
             api_context.clone(),
             random_request_metadata(),
@@ -305,7 +317,7 @@ mod test {
         let e = drop_view(
             ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
-                view: TableIdent::from_strs(&table_ident).unwrap(),
+                view: view_ident,
             },
             DropParams {
                 purge_requested: true,
@@ -317,7 +329,7 @@ mod test {
         .await
         .expect_err("Protected View should not be droppable");
 
-        assert_eq!(e.error.code, StatusCode::CONFLICT);
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{}", e.error);
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),

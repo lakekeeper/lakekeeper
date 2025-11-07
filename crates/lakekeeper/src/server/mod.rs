@@ -278,8 +278,6 @@ where
 
 #[cfg(test)]
 pub(crate) mod test {
-    use std::sync::Arc;
-
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
@@ -307,7 +305,7 @@ pub(crate) mod test {
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile,
             },
-            CatalogNamespaceOps, CreateNamespaceResponse, Namespace, State, UserId,
+            CatalogNamespaceOps, CreateNamespaceResponse, NamespaceWithParent, State, UserId,
         },
         WarehouseId,
     };
@@ -409,7 +407,7 @@ pub(crate) mod test {
         delete_profile: TabularDeleteProfile,
     ) -> (
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        Vec<(WarehouseId, Namespace, NamespaceParameters)>,
+        Vec<(WarehouseId, NamespaceWithParent, NamespaceParameters)>,
         String,
     ) {
         let prof = crate::server::test::memory_io_profile();
@@ -437,7 +435,7 @@ pub(crate) mod test {
         for wh_id in wh_ids {
             crate::server::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
                 .await;
-            let namespace = PostgresBackend::get_namespace(
+            let namespace_hierarchy = PostgresBackend::get_namespace(
                 wh_id,
                 NamespaceIdent::new("myns".to_string()),
                 state.clone(),
@@ -447,9 +445,9 @@ pub(crate) mod test {
             .unwrap();
             let ns_params = NamespaceParameters {
                 prefix: Some(Prefix(wh_id.to_string())),
-                namespace: namespace.namespace_ident().clone(),
+                namespace: namespace_hierarchy.namespace_ident().clone(),
             };
-            wh_ns_data.push((wh_id, Arc::unwrap_or_clone(namespace.namespace), ns_params));
+            wh_ns_data.push((wh_id, namespace_hierarchy.namespace.clone(), ns_params));
         }
 
         (ctx, wh_ns_data, base_loc)

@@ -46,10 +46,15 @@ pub(super) fn determine_tabular_location(
 
 macro_rules! list_entities {
     ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
-        |ps, page_token, trx| {
+        |ps, page_token, trx: &mut _| {
             use ::paste::paste;
+            use iceberg_ext::catalog::rest::ErrorModel;
 
-            use crate::{server::UnfilteredPage, service::TabularListFlags};
+            use crate::{
+                server::UnfilteredPage,
+                service::{require_namespace_for_tabular, BasicTabularInfo, TabularListFlags},
+            };
+
             // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
@@ -57,6 +62,7 @@ macro_rules! list_entities {
             let namespace_id = $namespace_response.namespace_id();
             let namespace_response = $namespace_response.clone();
             let resolved_warehouse = $resolved_warehouse.clone();
+
             async move {
                 let query = crate::api::iceberg::v1::PaginationQuery {
                     page_size: Some(ps),
@@ -88,13 +94,28 @@ macro_rules! list_entities {
                     // be listed.
                     vec![true; ids.len()]
                 } else {
+                    let requested_namespace_ids = idents
+                        .iter()
+                        .map(|id| BasicTabularInfo::namespace_id(&id.tabular))
+                        .collect::<Vec<_>>();
+                    let namespaces = C::get_namespaces_by_id(
+                        warehouse_id,
+                        &requested_namespace_ids,
+                        trx.transaction(),
+                    )
+                    .await?;
+
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions_vec>](
                             &request_metadata,
-                            &idents.iter().map(|id| (
-                                id,
+                            &resolved_warehouse,
+                            &namespaces,
+                            &idents.iter().map(|t| Ok::<_, ErrorModel>((
+                                require_namespace_for_tabular(&namespaces, &t.tabular)?,
+                                t,
                                 [<Catalog $entity Action>]::CanIncludeInList)
-                            ).collect::<Vec<_>>(),
+                            )
+                            ).collect::<Result<Vec<_>, _>>()?,
                         ).await?.into_inner()
                     }
                 };

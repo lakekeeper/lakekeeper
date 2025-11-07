@@ -30,13 +30,16 @@ use crate::{
     service::{
         authz::{
             AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
-            AuthZWarehouseActionForbidden, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction,
         },
+        require_namespace_for_tabular,
         secrets::SecretStore,
         tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        CachePolicy, CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
-        NamespaceId, State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
+        ViewOrTableDeletionInfo,
     },
     ProjectId, WarehouseId,
 };
@@ -1082,6 +1085,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into());
         }
 
+        let can_list_everything = if can_list_everything {
+            can_list_everything
+        } else if let Some(namespace_id) = query.namespace_id {
+            let namespace = C::get_namespace(warehouse_id, namespace_id, catalog.clone()).await;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            authorizer
+                .is_allowed_namespace_action(
+                    &request_metadata,
+                    &warehouse,
+                    &namespace,
+                    CatalogNamespaceAction::CanListEverything,
+                )
+                .await?
+                .into_inner()
+        } else {
+            can_list_everything
+        };
+
         // ------------------- Business Logic -------------------
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
@@ -1092,6 +1114,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             |page_size, page_token, t| {
                 let authorizer = authorizer.clone();
                 let request_metadata = request_metadata.clone();
+                let warehouse = warehouse.clone();
                 async move {
                     let query = PaginationQuery {
                         page_size: Some(page_size),
@@ -1107,24 +1130,41 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         query,
                     )
                     .await?;
-                    let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                    let (ids, items, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         page.into_iter_with_page_tokens().multiunzip();
 
                     let authz_decisions = if can_list_everything {
                         vec![true; ids.len()]
                     } else {
-                        let actions = idents
+                        let namespaces = C::get_namespaces_by_id(
+                            warehouse_id,
+                            &items
+                                .iter()
+                                .map(ViewOrTableDeletionInfo::namespace_id)
+                                .collect_vec(),
+                            t.transaction(),
+                        )
+                        .await?;
+                        let actions = items
                             .iter()
                             .map(|t| {
-                                t.as_action_request(
-                                    CatalogViewAction::CanIncludeInList,
-                                    CatalogTableAction::CanIncludeInList,
-                                )
+                                Ok::<_, ErrorModel>((
+                                    require_namespace_for_tabular(&namespaces, t)?,
+                                    t.as_action_request(
+                                        CatalogViewAction::CanIncludeInList,
+                                        CatalogTableAction::CanIncludeInList,
+                                    ),
+                                ))
                             })
-                            .collect_vec();
+                            .collect::<Result<Vec<_>, _>>()?;
 
                         authorizer
-                            .are_allowed_tabular_actions_vec(&request_metadata, &actions)
+                            .are_allowed_tabular_actions_vec(
+                                &request_metadata,
+                                &warehouse,
+                                &namespaces,
+                                &actions,
+                            )
                             .await?
                             .into_inner()
                     };
@@ -1136,7 +1176,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         Vec<bool>,
                     ) = authz_decisions
                         .into_iter()
-                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(items.into_iter().zip(ids.into_iter()))
                         .zip(tokens.into_iter())
                         .map(|((allowed, namespace), token)| {
                             (namespace.0, namespace.1, token, allowed)

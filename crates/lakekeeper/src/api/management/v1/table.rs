@@ -2,9 +2,12 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{AuthZTableOps, Authorizer, CatalogTableAction},
-        CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularId, TabularListFlags,
-        Transaction,
+        authz::{
+            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogTableAction,
+            RequireTableActionError,
+        },
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
+        State, TableId, TabularId, TabularListFlags, Transaction,
     },
     WarehouseId,
 };
@@ -28,24 +31,43 @@ where
     ) -> Result<ProtectionResponse> {
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        let table = C::get_table_info(
+        let state_catalog = state.v1_state.catalog;
+
+        let (warehouse, table) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state_catalog.clone()),
+            C::get_table_info(
+                warehouse_id,
+                table_id,
+                TabularListFlags::all(),
+                state_catalog.clone(),
+            )
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let table = authorizer.require_table_presence(warehouse_id, table_id, table)?;
+        let namespace = C::get_namespace(
             warehouse_id,
-            table_id,
-            TabularListFlags::all(),
-            state.v1_state.catalog.clone(),
+            table.tabular_ident.namespace.clone(),
+            state_catalog.clone(),
         )
         .await;
+        let namespace = authorizer.require_namespace_presence(
+            warehouse_id,
+            table.tabular_ident.namespace.clone(),
+            namespace,
+        )?;
+
         authorizer
             .require_table_action(
                 &request_metadata,
-                warehouse_id,
+                &warehouse,
+                &namespace,
                 table_id,
-                table,
+                Ok::<_, RequireTableActionError>(Some(table)),
                 CatalogTableAction::CanDrop,
             )
             .await?;
 
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_write(state_catalog).await?;
         let status = C::set_tabular_protected(
             warehouse_id,
             TabularId::Table(table_id),
@@ -69,27 +91,45 @@ where
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
 
-        let info = C::get_table_info(
-            warehouse_id,
-            table_id,
-            TabularListFlags::all(),
-            state.v1_state.catalog,
-        )
-        .await;
+        let state_catalog = state.v1_state.catalog;
 
-        let info = authorizer
-            .require_table_action(
-                &request_metadata,
+        let (warehouse, table) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, state_catalog.clone()),
+            C::get_table_info(
                 warehouse_id,
                 table_id,
-                info,
+                TabularListFlags::all(),
+                state_catalog.clone(),
+            )
+        );
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let table = authorizer.require_table_presence(warehouse_id, table_id, table)?;
+        let namespace = C::get_namespace(
+            warehouse_id,
+            table.tabular_ident.namespace.clone(),
+            state_catalog.clone(),
+        )
+        .await;
+        let namespace = authorizer.require_namespace_presence(
+            warehouse_id,
+            table.tabular_ident.namespace.clone(),
+            namespace,
+        )?;
+
+        let table = authorizer
+            .require_table_action(
+                &request_metadata,
+                &warehouse,
+                &namespace,
+                table_id,
+                Ok::<_, RequireTableActionError>(Some(table)),
                 CatalogTableAction::CanGetMetadata,
             )
             .await?;
 
         Ok(ProtectionResponse {
-            protected: info.protected,
-            updated_at: info.updated_at,
+            protected: table.protected,
+            updated_at: table.updated_at,
         })
     }
 }

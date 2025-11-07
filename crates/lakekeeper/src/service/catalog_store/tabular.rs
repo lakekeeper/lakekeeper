@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use http::StatusCode;
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
@@ -11,8 +13,9 @@ use crate::{
     service::{
         authz::ActionOnTableOrView, define_simple_error, define_transparent_error,
         impl_error_stack_methods, impl_from_with_detail, tasks::TaskId, CatalogBackendError,
-        CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken, NamespaceId, Result,
-        TableId, TabularId, TabularIdentBorrowed, TabularIdentOwned, Transaction, ViewId,
+        CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken, NamespaceId,
+        NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed, TabularIdentOwned,
+        Transaction, ViewId, WarehouseVersion,
     },
     WarehouseId,
 };
@@ -72,12 +75,49 @@ pub struct ExpirationTaskInfo {
 pub struct TabularInfo<T: std::fmt::Debug + PartialEq + Copy> {
     pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
+    pub namespace_version: NamespaceVersion,
+    pub warehouse_version: WarehouseVersion,
     pub tabular_ident: TableIdent, // Not used to determine type
     pub tabular_id: T,             // Contains type info
     pub location: Location,
     pub metadata_location: Option<Location>,
     pub protected: bool,
+    pub properties: HashMap<String, String>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+impl BasicTabularInfo for TableInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn tabular_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+
+    fn tabular_id(&self) -> TabularId {
+        self.tabular_id.into()
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
+}
+impl BasicTabularInfo for ViewInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn tabular_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+
+    fn tabular_id(&self) -> TabularId {
+        self.tabular_id.into()
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
 }
 #[derive(Debug, Clone, PartialEq, derive_more::From)]
 pub enum ViewOrTableInfo {
@@ -173,6 +213,14 @@ impl ViewOrTableInfo {
     }
 
     #[must_use]
+    pub fn namespace_id(&self) -> NamespaceId {
+        match self {
+            Self::Table(info) => info.namespace_id,
+            Self::View(info) => info.namespace_id,
+        }
+    }
+
+    #[must_use]
     pub fn protected(&self) -> bool {
         match self {
             Self::Table(info) => info.protected,
@@ -231,6 +279,8 @@ impl TableInfo {
         TableInfo {
             warehouse_id: WarehouseId::new_random(),
             namespace_id: NamespaceId::new_random(),
+            namespace_version: 0.into(),
+            warehouse_version: 0.into(),
             tabular_ident,
             tabular_id: table_id,
             metadata_location: Some(
@@ -239,6 +289,7 @@ impl TableInfo {
             location,
             protected: false,
             updated_at: Some(chrono::Utc::now()),
+            properties: HashMap::new(),
         }
     }
 }
@@ -257,6 +308,8 @@ impl ViewInfo {
         ViewInfo {
             warehouse_id: WarehouseId::new_random(),
             namespace_id: NamespaceId::new_random(),
+            namespace_version: 0.into(),
+            warehouse_version: 0.into(),
             tabular_ident,
             tabular_id: view_id,
             metadata_location: Some(
@@ -265,6 +318,7 @@ impl ViewInfo {
             location,
             protected: false,
             updated_at: Some(chrono::Utc::now()),
+            properties: HashMap::new(),
         }
     }
 }
@@ -284,35 +338,13 @@ pub trait AuthZTableInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
     fn table_ident(&self) -> &TableIdent;
     fn table_id(&self) -> TableId;
+    fn namespace_id(&self) -> NamespaceId;
 }
 pub trait AuthZViewInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
     fn view_ident(&self) -> &TableIdent;
     fn view_id(&self) -> ViewId;
-}
-
-impl AuthZViewInfo for ViewNamed {
-    fn warehouse_id(&self) -> WarehouseId {
-        self.warehouse_id
-    }
-    fn view_ident(&self) -> &TableIdent {
-        &self.view_ident
-    }
-    fn view_id(&self) -> ViewId {
-        self.view_id
-    }
-}
-
-impl AuthZTableInfo for TableNamed {
-    fn warehouse_id(&self) -> WarehouseId {
-        self.warehouse_id
-    }
-    fn table_ident(&self) -> &TableIdent {
-        &self.table_ident
-    }
-    fn table_id(&self) -> TableId {
-        self.table_id
-    }
+    fn namespace_id(&self) -> NamespaceId;
 }
 
 impl AuthZTableInfo for TableInfo {
@@ -324,6 +356,9 @@ impl AuthZTableInfo for TableInfo {
     }
     fn table_id(&self) -> TableId {
         self.tabular_id
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
     }
 }
 
@@ -337,6 +372,9 @@ impl AuthZTableInfo for TableDeletionInfo {
     fn table_id(&self) -> TableId {
         self.tabular.tabular_id
     }
+    fn namespace_id(&self) -> NamespaceId {
+        self.tabular.namespace_id
+    }
 }
 
 impl AuthZViewInfo for ViewInfo {
@@ -349,6 +387,9 @@ impl AuthZViewInfo for ViewInfo {
     fn view_id(&self) -> ViewId {
         self.tabular_id
     }
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
 }
 
 impl AuthZViewInfo for ViewDeletionInfo {
@@ -360,6 +401,69 @@ impl AuthZViewInfo for ViewDeletionInfo {
     }
     fn view_id(&self) -> ViewId {
         self.tabular.tabular_id
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.tabular.namespace_id
+    }
+}
+
+pub trait BasicTabularInfo: Send + Sync {
+    fn warehouse_id(&self) -> WarehouseId;
+    fn tabular_ident(&self) -> &TableIdent;
+    fn tabular_id(&self) -> TabularId;
+    fn namespace_id(&self) -> NamespaceId;
+}
+
+impl BasicTabularInfo for ViewOrTableInfo {
+    fn namespace_id(&self) -> NamespaceId {
+        match self {
+            Self::Table(info) => info.namespace_id,
+            Self::View(info) => info.namespace_id,
+        }
+    }
+    fn warehouse_id(&self) -> WarehouseId {
+        match self {
+            Self::Table(info) => info.warehouse_id,
+            Self::View(info) => info.warehouse_id,
+        }
+    }
+    fn tabular_ident(&self) -> &TableIdent {
+        match self {
+            Self::Table(info) => &info.tabular_ident,
+            Self::View(info) => &info.tabular_ident,
+        }
+    }
+    fn tabular_id(&self) -> TabularId {
+        match self {
+            Self::Table(info) => TabularId::Table(info.tabular_id),
+            Self::View(info) => TabularId::View(info.tabular_id),
+        }
+    }
+}
+impl BasicTabularInfo for ViewOrTableDeletionInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        match self {
+            Self::Table(info) => info.tabular.warehouse_id,
+            Self::View(info) => info.tabular.warehouse_id,
+        }
+    }
+    fn tabular_ident(&self) -> &TableIdent {
+        match self {
+            Self::Table(info) => &info.tabular.tabular_ident,
+            Self::View(info) => &info.tabular.tabular_ident,
+        }
+    }
+    fn tabular_id(&self) -> TabularId {
+        match self {
+            Self::Table(info) => TabularId::Table(info.tabular.tabular_id),
+            Self::View(info) => TabularId::View(info.tabular.tabular_id),
+        }
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        match self {
+            Self::Table(info) => info.tabular.namespace_id,
+            Self::View(info) => info.tabular.namespace_id,
+        }
     }
 }
 
@@ -388,7 +492,6 @@ pub struct TabularDeletionInfo<T: std::fmt::Debug + PartialEq + Copy> {
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub expiration_task: Option<ExpirationTaskInfo>,
 }
-
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum ViewOrTableDeletionInfo {
     Table(TableDeletionInfo),
@@ -403,6 +506,14 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => ViewOrTableInfo::Table(info.tabular),
             Self::View(info) => ViewOrTableInfo::View(info.tabular),
+        }
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> NamespaceId {
+        match self {
+            Self::Table(info) => info.tabular.namespace_id,
+            Self::View(info) => info.tabular.namespace_id,
         }
     }
 
@@ -478,6 +589,21 @@ impl ViewOrTableDeletionInfo {
 pub struct CatalogSearchTabularInfo {
     pub tabular: ViewOrTableInfo,
     pub distance: Option<f32>,
+}
+
+impl BasicTabularInfo for CatalogSearchTabularInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.tabular.warehouse_id()
+    }
+    fn tabular_ident(&self) -> &TableIdent {
+        self.tabular.tabular_ident()
+    }
+    fn tabular_id(&self) -> TabularId {
+        self.tabular.tabular_id()
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.tabular.namespace_id()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -713,7 +839,7 @@ pub struct SerializationError {
     entity: String,
     stack: Vec<String>,
     #[source]
-    source: serde_json::Error,
+    source: Box<serde_json::Error>,
 }
 impl_error_stack_methods!(SerializationError);
 impl SerializationError {
@@ -722,7 +848,7 @@ impl SerializationError {
         Self {
             entity: entity.into(),
             stack: Vec::new(),
-            source,
+            source: Box::new(source),
         }
     }
 }
@@ -733,7 +859,7 @@ impl From<SerializationError> for ErrorModel {
             r#type: "SerializationError".to_string(),
             message: err.to_string(),
             stack: err.stack,
-            source: Some(Box::new(err.source)),
+            source: Some(err.source),
         }
     }
 }

@@ -86,6 +86,33 @@ macro_rules! define_version_newtype {
 
 pub(crate) use define_version_newtype;
 
+/// Enum to represent either a State or a Transaction reference
+/// This allows functions to accept either for database operations
+pub enum StateOrTransactionEnum<'e, S, T> {
+    State(S),
+    Transaction(&'e mut T),
+}
+
+impl<S: std::fmt::Debug, T: std::fmt::Debug> std::fmt::Debug for StateOrTransactionEnum<'_, S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateOrTransactionEnum::State(s) => f.debug_tuple("State").field(s).finish(),
+            StateOrTransactionEnum::Transaction(t) => {
+                f.debug_tuple("Transaction").field(t).finish()
+            }
+        }
+    }
+}
+
+/// Trait that can be implemented by both State and Transaction
+/// This allows functions to accept either without changing the call signature
+pub trait StateOrTransaction<S, T>: Send {
+    /// Convert self into the enum representation
+    /// Takes &mut self to allow multiple uses (State will be cloned, Transaction will be borrowed)
+    /// The returned enum cannot outlive the borrow lifetime 'b
+    fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, S, T>;
+}
+
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
@@ -110,6 +137,14 @@ where
 pub trait CatalogStore
 where
     Self: std::fmt::Debug + Clone + Send + Sync + 'static,
+    Self::State: for<'a> StateOrTransaction<
+        Self::State,
+        <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    >,
+    for<'a> <Self::Transaction as Transaction<Self::State>>::Transaction<'a>: StateOrTransaction<
+        Self::State,
+        <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    >,
 {
     type Transaction: Transaction<Self::State>;
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
@@ -261,14 +296,33 @@ where
         namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParentVersion, CatalogCreateNamespaceError>;
+    ) -> std::result::Result<NamespaceWithParent, CatalogCreateNamespaceError>;
 
-    // Should only return a namespace if the warehouse is active.
-    async fn get_namespace_impl<'a>(
+    // Return the specified namespaces and all parents
+    async fn get_namespaces_by_ident_impl<'a, 'b, SOT>(
         warehouse_id: WarehouseId,
-        namespace: NamespaceIdentOrId,
-        state: Self::State,
-    ) -> std::result::Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>;
+        namespaces: &[&NamespaceIdent],
+        state_or_transaction: &'b mut SOT,
+    ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
+    where
+        SOT: StateOrTransaction<
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
+        'a: 'b;
+
+    // Return the specified namespaces and all parents
+    async fn get_namespaces_by_id_impl<'a, 'b, SOT>(
+        warehouse_id: WarehouseId,
+        namespaces: &[NamespaceId],
+        state_or_transaction: &'b mut SOT,
+    ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
+    where
+        SOT: StateOrTransaction<
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
+        'a: 'b;
 
     async fn drop_namespace_impl<'a>(
         warehouse_id: WarehouseId,
@@ -286,14 +340,14 @@ where
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParentVersion, CatalogUpdateNamespacePropertiesError>;
+    ) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError>;
 
     async fn set_namespace_protected_impl(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<NamespaceWithParentVersion, CatalogSetNamespaceProtectedError>;
+    ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError>;
 
     // ---------------- Tabular Management ----------------
     async fn list_tabulars_impl(

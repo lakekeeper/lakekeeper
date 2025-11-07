@@ -22,13 +22,15 @@ use crate::{
         views::validate_view_updates,
     },
     service::{
-        authz::{AuthZViewOps, Authorizer, AuthzWarehouseOps, CatalogViewAction},
+        authz::{
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
+        },
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        AuthZViewInfo, CatalogStore, CatalogTabularOps, CatalogView, CatalogViewOps,
-        CatalogWarehouseOps, InternalParseLocationError, State, TabularListFlags, Transaction,
-        ViewCommit, ViewId, ViewInfo, CONCURRENT_UPDATE_ERROR_TYPE,
+        AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogView,
+        CatalogViewOps, CatalogWarehouseOps, InternalParseLocationError, State, TabularListFlags,
+        Transaction, ViewCommit, ViewId, ViewInfo, CONCURRENT_UPDATE_ERROR_TYPE,
     },
     SecretId,
 };
@@ -60,8 +62,13 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let (warehouse, view_info) = tokio::join!(
+    let (warehouse, namespace, view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+        C::get_namespace(
+            warehouse_id,
+            view_ident.namespace.clone(),
+            state.v1_state.catalog.clone(),
+        ),
         C::get_view_info(
             warehouse_id,
             view_ident.clone(),
@@ -70,10 +77,16 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         )
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let namespace = authorizer.require_namespace_presence(
+        warehouse_id,
+        view_ident.namespace.clone(),
+        namespace,
+    )?;
     let view_info = authorizer
         .require_view_action(
             &request_metadata,
-            warehouse_id,
+            &warehouse,
+            &namespace,
             view_ident,
             view_info,
             CatalogViewAction::CanCommit,

@@ -158,6 +158,8 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_table_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
         _table: &impl AuthZTableInfo,
         _action: Self::TableAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
@@ -167,6 +169,8 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_view_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
         _view: &impl AuthZViewInfo,
         _action: Self::ViewAction,
     ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {

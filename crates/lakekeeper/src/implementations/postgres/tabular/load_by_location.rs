@@ -9,7 +9,7 @@ use crate::{
         postgres::{
             dbutils::DBErrorHandler,
             namespace::parse_namespace_identifier_from_vec,
-            tabular::{get_partial_fs_locations, TabularType},
+            tabular::{get_partial_fs_locations, prepare_properties, TabularType},
         },
         CatalogState,
     },
@@ -21,6 +21,7 @@ use crate::{
     WarehouseId,
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn get_tabular_infos_by_s3_location(
     warehouse_id: WarehouseId,
     location: &Location,
@@ -38,27 +39,56 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
     // We need to make sure that the location starts with the table location.
     let row = sqlx::query!(
         r#"
-         SELECT
-             ti.tabular_id,
-             ti.name as "table_name",
-             ti.fs_location,
-             ti.fs_protocol,
-             ti.typ as "typ: TabularType",
-             ti.tabular_namespace_name as namespace_name,
-             ti.namespace_id,
-             ti.metadata_location,
-             ti.protected,
-             ti.updated_at,
-             w.storage_profile as "storage_profile: Json<StorageProfile>",
-             w."storage_secret_id"
-         FROM tabular ti
-         INNER JOIN warehouse w ON w.warehouse_id = $1
-         WHERE ti.warehouse_id = $1
-             AND ti.fs_location = ANY($2)
-             AND LENGTH(ti.fs_location) <= $3
-             AND w.status = 'active'
-             AND (ti.deleted_at IS NULL OR $4)
-         "#,
+        WITH selected_tabulars AS (
+            SELECT
+                ti.tabular_id,
+                ti.name as "table_name",
+                ti.fs_location,
+                ti.fs_protocol,
+                ti.typ as "typ: TabularType",
+                ti.namespace_id,
+                ti.metadata_location,
+                ti.protected,
+                ti.updated_at,
+                w.storage_profile as "storage_profile: Json<StorageProfile>",
+                w."storage_secret_id",
+                w.version as "warehouse_version",
+                ns.namespace_name,
+                ns.version as "namespace_version"
+            FROM tabular ti
+            INNER JOIN warehouse w ON w.warehouse_id = $1
+            INNER JOIN namespace ns ON ns.namespace_id = ti.namespace_id AND ns.warehouse_id = $1
+            WHERE ti.warehouse_id = $1
+                AND ti.fs_location = ANY($2)
+                AND LENGTH(ti.fs_location) <= $3
+                AND w.status = 'active'
+                AND (ti.deleted_at IS NULL OR $4)
+        ),
+        selected_views AS (
+            SELECT tabular_id FROM selected_tabulars WHERE "typ: TabularType" = 'view'
+        ),
+        selected_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE "typ: TabularType" = 'table'
+        )
+        SELECT t.*,
+               vp.view_properties_keys,
+               vp.view_properties_values,
+               tp.keys as table_properties_keys,
+               tp.values as table_properties_values
+        FROM selected_tabulars t
+        LEFT JOIN (SELECT view_id,
+                    ARRAY_AGG(key)   AS view_properties_keys,
+                    ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)
+            GROUP BY view_id) vp ON t.tabular_id = vp.view_id
+        LEFT JOIN (SELECT table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM table_properties
+                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
+                GROUP BY table_id) tp ON t.tabular_id = tp.table_id
+        "#,
         *warehouse_id,
         partial_locations.as_slice(),
         i32::try_from(fs_location.len()).unwrap_or(i32::MAX) + 1, // account for maybe trailing
@@ -106,6 +136,9 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
             metadata_location,
             updated_at: row.updated_at,
             location,
+            properties: prepare_properties(row.view_properties_keys, row.view_properties_values),
+            warehouse_version: row.warehouse_version.into(),
+            namespace_version: row.namespace_version.into(),
         }
         .into(),
         TabularType::Table => TableInfo {
@@ -117,6 +150,9 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
             metadata_location,
             updated_at: row.updated_at,
             location,
+            properties: prepare_properties(row.table_properties_keys, row.table_properties_values),
+            warehouse_version: row.warehouse_version.into(),
+            namespace_version: row.namespace_version.into(),
         }
         .into(),
     };

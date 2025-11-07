@@ -868,7 +868,7 @@ async fn test_cache_with_hierarchical_namespaces(pool: PgPool) {
 
     assert_eq!(child_hierarchy.depth(), 1);
     assert_eq!(child_hierarchy.namespace_id(), child_id);
-    assert_eq!(child_hierarchy.parent().unwrap().namespace_id, parent_id);
+    assert_eq!(child_hierarchy.parent().unwrap().namespace_id(), parent_id);
 
     // Verify both are now in cache
     let cached_child = NAMESPACE_CACHE.get(&child_id).await;

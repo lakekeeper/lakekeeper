@@ -127,7 +127,8 @@ define_transparent_error! {
         InvalidViewRepresentationsInternal,
         InternalParseLocationError,
         ViewMetadataValidationFailedInternal,
-        TabularNotFound
+        TabularNotFound,
+        SerializationError
     ]
 }
 impl From<CatalogGetNamespaceError> for LoadViewError {
@@ -139,6 +140,7 @@ impl From<CatalogGetNamespaceError> for LoadViewError {
             CatalogGetNamespaceError::CatalogBackendError(e) => {
                 LoadViewError::CatalogBackendError(e)
             }
+            CatalogGetNamespaceError::SerializationError(e) => LoadViewError::SerializationError(e),
         }
     }
 }

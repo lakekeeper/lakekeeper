@@ -20,7 +20,7 @@ use crate::{
     service::{
         CommitTableTransactionError, ConversionError, InternalBackendErrors,
         InternalParseLocationError, TableCommit, TableId, TableInfo, TabularNotFound,
-        TooManyUpdatesInCommit, UnexpectedTabularInResponse,
+        TooManyUpdatesInCommit, UnexpectedTabularInResponse, ViewOrTableInfo,
     },
     WarehouseId,
 };
@@ -47,7 +47,7 @@ pub(crate) async fn commit_table_transaction(
         .map(|c| c.new_metadata.uuid())
         .collect::<HashSet<_>>();
 
-    let results: Result<Vec<_>, _> = commits
+    let results = commits
         .into_iter()
         .map(|c| {
             let TableCommit {
@@ -70,7 +70,7 @@ pub(crate) async fn commit_table_transaction(
                 (updates, diffs),
             ))
         })
-        .collect::<Result<_, InternalParseLocationError>>();
+        .collect::<Result<Vec<_>, InternalParseLocationError>>();
     let (location_metadata_pairs, table_change_operations): (Vec<_>, Vec<_>) =
         results?.into_iter().unzip();
 
@@ -82,6 +82,11 @@ pub(crate) async fn commit_table_transaction(
         let updates = TableUpdateFlags::from(updates.as_slice());
         apply_metadata_changes(transaction, warehouse_id, updates, new_metadata, diffs).await?;
     }
+
+    let new_metadata_lookup = location_metadata_pairs
+        .iter()
+        .map(|t| (t.new_metadata.uuid(), t.new_metadata.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
 
     // Update tabular (metadata location, fs_location, fs_protocol) and top level table metadata
     // (format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id)
@@ -110,13 +115,36 @@ pub(crate) async fn commit_table_transaction(
     let table_infos = updated_tabulars
         .iter()
         .map(|row| {
-            let table_or_view_info = TabularRow::from_row(row)
+            let mut table_or_view_info = TabularRow::from_row(row)
                 .map_err(|e| {
                     e.into_catalog_backend_error()
                         .append_detail("Failed to build `TabularRow` after table commit")
                 })?
                 .try_into_table_or_view(warehouse_id)
                 .map_err(CommitTableTransactionError::from)?;
+
+            // Update properties from new metadata, as we don't return them from DB
+            // for performance reasons
+            let Some(properties) = new_metadata_lookup
+                .get(&*table_or_view_info.tabular_id())
+                .map(|m| m.properties().clone()) else {
+                    return Err(CommitTableTransactionError::from(
+                        UnexpectedTabularInResponse::new()
+                            .append_detail(format!(
+                                "Updated tabular id {} which was not part of the commit",
+                                table_or_view_info.tabular_id()
+                            )),
+                    ));
+                };
+            match &mut table_or_view_info {
+                ViewOrTableInfo::Table(table_info) => {
+                    table_info.properties = properties;
+                }
+               ViewOrTableInfo::View(_view_info) => {
+                    // This commit is for tables only
+                    debug_assert!(false, "Commit should not return views");
+                }
+            }
 
             let tabular_id = table_or_view_info.tabular_id();
             let Some(table_info) = table_or_view_info.into_table_info() else {
@@ -186,11 +214,12 @@ fn build_table_and_tabular_update_queries(
 
     let mut query_builder_tabular = sqlx::QueryBuilder::new(
         r#"
-        UPDATE "tabular" as t
-        SET "metadata_location" = c."new_metadata_location",
-        "fs_location" = c."fs_location",
-        "fs_protocol" = c."fs_protocol"
-        FROM (VALUES
+        WITH updated AS (
+            UPDATE "tabular" as t
+            SET "metadata_location" = c."new_metadata_location",
+            "fs_location" = c."fs_location",
+            "fs_protocol" = c."fs_protocol"
+            FROM (VALUES
         "#,
     );
     for (
@@ -264,17 +293,31 @@ fn build_table_and_tabular_update_queries(
     query_builder_table.push(" RETURNING t.table_id");
     // Copy from get_tabular_infos_by_ids
     query_builder_tabular.push(
-        r#" RETURNING                 
+        r#" RETURNING
+                t.warehouse_id,
                 t.tabular_id,
                 t.namespace_id,
                 t.name as tabular_name,
-                t.tabular_namespace_name as namespace_name,
                 t.typ as "typ: TabularType",
                 t.metadata_location,
                 t.updated_at,
                 t.protected,
                 t.fs_location,
-                t.fs_protocol"#,
+                t.fs_protocol
+        )
+        SELECT 
+            u.*, 
+            w.version as warehouse_version,
+            n.namespace_name,
+            n.version as namespace_version,
+            NULL::text[] as view_properties_keys,
+            NULL::text[] as view_properties_values,
+            NULL::text[] as table_properties_keys,
+            NULL::text[] as table_properties_values
+        FROM updated u
+        INNER JOIN warehouse w ON u.warehouse_id = w.warehouse_id
+        INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = u.warehouse_id
+        "#,
     );
 
     Ok((query_builder_table, query_builder_tabular))
@@ -679,9 +722,9 @@ mod tests {
 
         let table_creation = TableCreation {
             warehouse_id,
-            namespace_id: namespace.namespace_id,
+            namespace_id: namespace.namespace_id(),
             table_ident: &iceberg::TableIdent {
-                namespace: namespace.namespace_ident.clone(),
+                namespace: namespace.namespace_ident().clone(),
                 name: format!("table_{}", uuid::Uuid::now_v7()),
             },
             metadata_location: Some(&metadata_location),
@@ -729,6 +772,11 @@ mod tests {
             .into_builder(previous_table_info.metadata_location.map(|l| l.to_string()))
             .add_snapshot(snapshot)
             .unwrap()
+            .set_properties(HashMap::from_iter(vec![(
+                "new_property".to_string(),
+                "new_value".to_string(),
+            )]))
+            .unwrap()
             .build()
             .unwrap();
         let new_metadata = new_metadata_build_result.metadata;
@@ -761,6 +809,10 @@ mod tests {
         assert_eq!(
             new_table_info.warehouse_id,
             previous_table_info.warehouse_id
+        );
+        assert_eq!(
+            new_table_info.properties.get("new_property"),
+            Some(&"new_value".to_string())
         );
 
         let mut t = pool.begin().await.unwrap();

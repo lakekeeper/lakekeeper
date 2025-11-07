@@ -10,20 +10,20 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{
-            ActionOnTableOrView, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZTableOps as _, AuthZViewOps as _, Authorizer,
-            AuthzWarehouseOps, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireTableActionError, RequireViewActionError,
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableOps as _,
+            AuthZViewOps as _, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, RequireTableActionError,
+            RequireViewActionError,
         },
-        build_tabular_ident_from_vec,
+        require_namespace_for_tabular,
         tasks::{
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME, TaskEntity,
             TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
             TaskStatus as TQTaskStatus,
         },
-        CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
-        InvalidTabularIdentifier, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
-        TableNamed, TabularId, TabularListFlags, Transaction, ViewNamed, ViewOrTableInfo,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
+        TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
     },
     WarehouseId,
 };
@@ -75,23 +75,6 @@ pub struct Task {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// When the task was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-impl Task {
-    pub fn task_entity(&self) -> std::result::Result<TaskEntityNamed, InvalidTabularIdentifier> {
-        match self.entity {
-            TaskEntity::Table { table_id } => Ok(TaskEntityNamed::Table(TableNamed {
-                warehouse_id: self.warehouse_id,
-                table_ident: build_tabular_ident_from_vec(&self.entity_name)?,
-                table_id,
-            })),
-            TaskEntity::View { view_id } => Ok(TaskEntityNamed::View(ViewNamed {
-                warehouse_id: self.warehouse_id,
-                view_ident: build_tabular_ident_from_vec(&self.entity_name)?,
-                view_id,
-            })),
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -406,7 +389,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             warehouse_id,
             task_id,
             num_attempts,
-            context.v1_state.catalog,
+            context.v1_state.catalog.clone(),
         )
         .await?;
 
@@ -419,7 +402,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })?;
 
         if !authz_get_all_warehouse {
-            authorize_get_task_details(&authorizer, &request_metadata, &task_details).await?;
+            authorize_get_task_details::<A, C>(
+                context.v1_state.catalog,
+                &authorizer,
+                &request_metadata,
+                &warehouse,
+                &task_details,
+            )
+            .await?;
         }
 
         Ok(task_details)
@@ -437,6 +427,17 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             return Err(ErrorModel::bad_request(
                 "Cannot control more than 100 tasks at once.",
                 "TooManyTasks",
+                None,
+            )
+            .into());
+        }
+
+        // Each task id may only appear once
+        let unique_task_ids: HashSet<TaskId> = query.task_ids.iter().copied().collect();
+        if unique_task_ids.len() != query.task_ids.len() {
+            return Err(ErrorModel::bad_request(
+                "Duplicate task IDs are not allowed in the request.",
+                "DuplicateTaskIds",
                 None,
             )
             .into());
@@ -490,7 +491,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             })
             .collect_vec();
         if !authz_control_all {
-            authorize_control_tasks(&authorizer, &request_metadata, entities.values()).await?;
+            authorize_control_tasks::<_, C>(
+                &authorizer,
+                &request_metadata,
+                &warehouse,
+                &entities.values().collect::<Vec<_>>(),
+                context.v1_state.catalog.clone(),
+            )
+            .await?;
         }
 
         // -------------------- Business Logic --------------------
@@ -570,11 +578,11 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         })
         .collect::<Vec<_>>();
 
-    let tabulars = C::get_tabular_infos_by_id_impl(
+    let tabulars = C::get_tabular_infos_by_id(
         warehouse_id,
         &tabular_ids,
         TabularListFlags::all(),
-        catalog_state,
+        catalog_state.clone(),
     )
     .await
     // Use AuthZ Error for potential anonymization
@@ -600,71 +608,181 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         }
     }
 
+    let namespaces = C::get_namespaces_by_id(
+        warehouse_id,
+        &tabulars
+            .iter()
+            .map(ViewOrTableInfo::namespace_id)
+            .collect::<Vec<_>>(),
+        catalog_state,
+    )
+    .await?;
+
     let actions = tabulars
         .iter()
-        .map(|t| t.as_action_request(GET_TASK_PERMISSION_VIEW, GET_TASK_PERMISSION_TABLE))
-        .collect_vec();
+        .map(|t| {
+            Ok::<_, ErrorModel>((
+                require_namespace_for_tabular(&namespaces, t)?,
+                t.as_action_request(GET_TASK_PERMISSION_VIEW, GET_TASK_PERMISSION_TABLE),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     authorizer
-        .require_tabular_actions(request_metadata, &actions)
+        .require_tabular_actions(request_metadata, warehouse, &namespaces, &actions)
         .await?;
 
     Ok(())
 }
 
-async fn authorize_get_task_details<A: Authorizer>(
+async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
+    catalog_state: C::State,
     authorizer: &A,
     request_metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
     details: &GetTaskDetailsResponse,
 ) -> Result<()> {
-    let task_entity = details.task.task_entity()?;
+    let warehouse_id = warehouse.warehouse_id;
 
-    match task_entity {
-        TaskEntityNamed::Table(t) => {
+    match &details.task.entity {
+        TaskEntity::Table { table_id } => {
+            let tabular_info = C::get_table_info(
+                warehouse_id,
+                *table_id,
+                TabularListFlags::all(),
+                catalog_state.clone(),
+            )
+            .await
+            .map_err(RequireTableActionError::from)?
+            .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, *table_id))?;
+
+            let namespace_id = tabular_info.namespace_id;
+            let namespace = C::get_namespace_cache_aware(
+                warehouse_id,
+                namespace_id,
+                CachePolicy::RequireMinimumVersion(*tabular_info.namespace_version),
+                catalog_state.clone(),
+            )
+            .await;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+
             authorizer
                 .require_table_action(
                     request_metadata,
-                    t.warehouse_id,
-                    t.table_ident.clone(),
-                    Ok::<_, RequireTableActionError>(Some(t)),
+                    warehouse,
+                    &namespace,
+                    *table_id,
+                    Ok::<_, RequireTableActionError>(Some(tabular_info)),
                     GET_TASK_PERMISSION_TABLE,
                 )
                 .await?;
         }
-        TaskEntityNamed::View(v) => {
+        TaskEntity::View { view_id } => {
+            let view_info = C::get_view_info(
+                warehouse_id,
+                *view_id,
+                TabularListFlags::all(),
+                catalog_state.clone(),
+            )
+            .await
+            .map_err(RequireTableActionError::from)?
+            .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, *view_id))?;
+
+            let namespace_id = view_info.namespace_id;
+            let namespace = C::get_namespace_cache_aware(
+                warehouse_id,
+                view_info.namespace_id,
+                CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
+                catalog_state.clone(),
+            )
+            .await;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+
             authorizer
                 .require_view_action(
                     request_metadata,
-                    v.warehouse_id,
-                    v.view_ident.clone(),
-                    Ok::<_, RequireViewActionError>(Some(v)),
+                    warehouse,
+                    &namespace,
+                    *view_id,
+                    Ok::<_, RequireViewActionError>(Some(view_info)),
                     GET_TASK_PERMISSION_VIEW,
                 )
                 .await?;
         }
     }
-
     Ok(())
 }
 
-async fn authorize_control_tasks<A: Authorizer>(
+async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
-    tasks: impl Iterator<Item = &Arc<ResolvedTask>>,
+    warehouse: &ResolvedWarehouse,
+    tasks: &[&Arc<ResolvedTask>],
+    catalog_state: C::State,
 ) -> Result<()> {
-    let tabular_actions = tasks
+    let required_tabular_ids = tasks
+        .iter()
         .map(|t| match &t.entity {
-            TaskEntityNamed::Table(t) => {
-                ActionOnTableOrView::Table((t, CONTROL_TASK_PERMISSION_TABLE))
-            }
-            TaskEntityNamed::View(v) => {
-                ActionOnTableOrView::View((v, CONTROL_TASK_PERMISSION_VIEW))
-            }
+            TaskEntityNamed::Table(tabular) => TabularId::Table(tabular.table_id),
+            TaskEntityNamed::View(tabular) => TabularId::View(tabular.view_id),
         })
-        .collect_vec();
+        .collect::<Vec<_>>();
+    let required_namespace_idents = tasks
+        .iter()
+        .map(|t| match &t.entity {
+            TaskEntityNamed::Table(tabular) => &tabular.table_ident.namespace,
+            TaskEntityNamed::View(tabular) => &tabular.view_ident.namespace,
+        })
+        .collect::<Vec<_>>();
+
+    let (table_infos, namespaces) = tokio::join!(
+        C::get_tabular_infos_by_id(
+            warehouse.warehouse_id,
+            &required_tabular_ids,
+            TabularListFlags::all(),
+            catalog_state.clone(),
+        ),
+        C::get_namespaces_by_ident(
+            warehouse.warehouse_id,
+            &required_namespace_idents,
+            catalog_state,
+        ),
+    );
+    let table_infos = table_infos.map_err(RequireTableActionError::from)?;
+    let namespaces = namespaces?;
+
+    let found_table_ids = table_infos
+        .iter()
+        .map(ViewOrTableInfo::tabular_id)
+        .collect::<HashSet<_>>();
+
+    for required_tabular_id in required_tabular_ids {
+        if !found_table_ids.contains(&required_tabular_id) {
+            match required_tabular_id {
+                TabularId::Table(t) => {
+                    return Err(AuthZCannotSeeTable::new(warehouse.warehouse_id, t).into());
+                }
+                TabularId::View(v) => {
+                    return Err(AuthZCannotSeeView::new(warehouse.warehouse_id, v).into());
+                }
+            }
+        }
+    }
+
+    let tabular_actions = table_infos
+        .iter()
+        .map(|t| {
+            Ok::<_, ErrorModel>((
+                require_namespace_for_tabular(&namespaces, t)?,
+                t.as_action_request(CONTROL_TASK_PERMISSION_VIEW, CONTROL_TASK_PERMISSION_TABLE),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     authorizer
-        .require_tabular_actions(request_metadata, &tabular_actions)
+        .require_tabular_actions(request_metadata, warehouse, &namespaces, &tabular_actions)
         .await?;
 
     Ok(())

@@ -9,6 +9,7 @@ use crate::{
         },
         Actor, CatalogBackendError, CatalogGetNamespaceError, InvalidNamespaceIdentifier,
         NamespaceHierarchy, NamespaceIdentOrId, NamespaceNotFound, ResolvedWarehouse,
+        SerializationError,
     },
     WarehouseId,
 };
@@ -120,6 +121,7 @@ pub enum RequireNamespaceActionError {
     // Propagated directly
     CatalogBackendError(CatalogBackendError),
     InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
+    SerializationError(SerializationError),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireNamespaceActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
@@ -134,6 +136,7 @@ impl From<CatalogGetNamespaceError> for RequireNamespaceActionError {
         match err {
             CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
             CatalogGetNamespaceError::InvalidNamespaceIdentifier(e) => e.into(),
+            CatalogGetNamespaceError::SerializationError(e) => e.into(),
         }
     }
 }
@@ -146,6 +149,7 @@ impl From<RequireNamespaceActionError> for ErrorModel {
             RequireNamespaceActionError::AuthorizationBackendUnavailable(e) => e.into(),
             RequireNamespaceActionError::AuthZNamespaceActionForbidden(e) => e.into(),
             RequireNamespaceActionError::AuthorizationCountMismatch(e) => e.into(),
+            RequireNamespaceActionError::SerializationError(e) => e.into(),
         }
     }
 }
@@ -157,6 +161,22 @@ impl From<RequireNamespaceActionError> for IcebergErrorResponse {
 
 #[async_trait::async_trait]
 pub trait AuthzNamespaceOps: Authorizer {
+    fn require_namespace_presence(
+        &self,
+        warehouse_id: WarehouseId,
+        user_provided_namespace: impl Into<NamespaceIdentOrId> + Send,
+        namespace: Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>,
+    ) -> Result<NamespaceHierarchy, RequireNamespaceActionError> {
+        let namespace = namespace?;
+        let user_provided_namespace = user_provided_namespace.into();
+        let cant_see_err =
+            AuthZCannotSeeNamespace::new(warehouse_id, user_provided_namespace).into();
+        let Some(namespace) = namespace else {
+            return Err(cant_see_err);
+        };
+        Ok(namespace)
+    }
+
     async fn require_namespace_action(
         &self,
         metadata: &RequestMetadata,
@@ -168,14 +188,16 @@ pub trait AuthzNamespaceOps: Authorizer {
         let actor = metadata.actor();
         // OK to return because this goes via the Into method
         // of RequireNamespaceActionError
-        let namespace = namespace?;
         let user_provided_namespace = user_provided_namespace.into();
+        let namespace = self.require_namespace_presence(
+            warehouse.warehouse_id,
+            user_provided_namespace.clone(),
+            namespace,
+        )?;
         let cant_see_err =
             AuthZCannotSeeNamespace::new(warehouse.warehouse_id, user_provided_namespace.clone())
                 .into();
-        let Some(namespace) = namespace else {
-            return Err(cant_see_err);
-        };
+
         let namespace_name = namespace.namespace_ident().clone();
 
         let action = action.into();

@@ -20,13 +20,16 @@ use uuid::Uuid;
 use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler,
-        namespace::get_namespace_by_id,
-        tabular::view::{ViewFormatVersion, ViewRepresentationType},
+        tabular::{
+            prepare_properties,
+            view::{ViewFormatVersion, ViewRepresentationType},
+        },
+        PostgresBackend, PostgresTransactionType,
     },
     service::{
-        storage::join_location, CatalogBackendError, CatalogGetNamespaceError, CatalogView,
-        InternalParseLocationError, InvalidViewRepresentationsInternal, LoadViewError, NamespaceId,
-        RequiredViewComponentMissing, TabularNotFound, ViewId,
+        storage::join_location, CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps,
+        CatalogView, InternalParseLocationError, InvalidViewRepresentationsInternal, LoadViewError,
+        NamespaceId, RequiredViewComponentMissing, TabularNotFound, ViewId,
         ViewMetadataValidationFailedInternal,
     },
     WarehouseId,
@@ -36,7 +39,7 @@ pub(crate) async fn load_view(
     warehouse_id: WarehouseId,
     view_id: ViewId,
     include_deleted: bool,
-    conn: &mut PgConnection,
+    conn: PostgresTransactionType<'_>,
 ) -> Result<CatalogView, LoadViewError> {
     let Query {
         view_id,
@@ -207,7 +210,7 @@ FROM view v
 }
 
 async fn prepare_versions(
-    conn: &mut PgConnection,
+    conn: PostgresTransactionType<'_>,
     warehouse_id: WarehouseId,
     view_id: ViewId,
     VersionsPrep {
@@ -322,17 +325,6 @@ fn prepare_version_log(
     }
 }
 
-fn prepare_properties(
-    view_properties_keys: Option<Vec<String>>,
-    view_properties_values: Option<Vec<String>>,
-) -> HashMap<String, String> {
-    if let (Some(keys), Some(values)) = (view_properties_keys, view_properties_values) {
-        keys.into_iter().zip(values).collect()
-    } else {
-        HashMap::new()
-    }
-}
-
 fn prepare_schemas(
     warehouse_id: WarehouseId,
     view_id: ViewId,
@@ -362,13 +354,13 @@ static EMPTY_NAMESPACE_IDENT: LazyLock<NamespaceIdent> =
 async fn get_default_namespace_ident(
     warehouse_id: WarehouseId,
     default_namespace: Option<NamespaceId>,
-    conn: &mut PgConnection,
+    conn: PostgresTransactionType<'_>,
 ) -> Result<NamespaceIdent, CatalogGetNamespaceError> {
     let Some(default_namespace) = default_namespace else {
         return Ok(EMPTY_NAMESPACE_IDENT.clone());
     };
 
-    let namespace = get_namespace_by_id(warehouse_id, default_namespace, conn).await?;
+    let namespace = PostgresBackend::get_namespace(warehouse_id, default_namespace, conn).await?;
     let namespace_ident = namespace.map_or_else(
         || {
             tracing::warn!(

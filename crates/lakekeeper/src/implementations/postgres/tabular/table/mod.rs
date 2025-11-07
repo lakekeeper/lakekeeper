@@ -1487,7 +1487,7 @@ pub(crate) mod tests {
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await
-            .namespace_id;
+            .namespace_id();
         let tables = list_tabulars(
             warehouse_id,
             Some(namespace_id),
@@ -1558,7 +1558,7 @@ pub(crate) mod tests {
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await
-            .namespace_id;
+            .namespace_id();
         let tables = list_tabulars(
             warehouse_id,
             Some(namespace_id),

@@ -640,10 +640,11 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        let mut conn = state.read_pool().acquire().await.unwrap();
-        let metadata = load_view(warehouse_id, view_uuid, false, &mut conn)
+        let mut tx = pool.begin().await.unwrap();
+        let metadata = load_view(warehouse_id, view_uuid, false, &mut tx)
             .await
             .unwrap();
+        tx.commit().await.unwrap();
         assert_eq!(&*metadata.metadata, &request);
     }
 
@@ -662,14 +663,12 @@ pub(crate) mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        let err = load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            false,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect_err("dropped view should not be loadable");
+
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = load_view(warehouse_id, created_meta.uuid().into(), false, &mut tx)
+            .await
+            .expect_err("dropped view should not be loadable");
+        tx.commit().await.unwrap();
 
         assert!(
             matches!(err, LoadViewError::TabularNotFound(_)),
@@ -691,14 +690,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        let err = load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            false,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect_err("dropped view should not be loadable");
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = load_view(warehouse_id, created_meta.uuid().into(), false, &mut tx)
+            .await
+            .expect_err("dropped view should not be loadable");
+        tx.commit().await.unwrap();
 
         assert!(
             matches!(err, LoadViewError::TabularNotFound(_)),
@@ -754,16 +750,13 @@ pub(crate) mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            true,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
+        load_view(warehouse_id, created_meta.uuid().into(), true, &mut tx)
+            .await
+            .expect("soft-dropped view should loadable");
+        tx.commit().await.unwrap();
 
+        let mut tx = state.write_pool().begin().await.unwrap();
         super::super::drop_tabular(
             warehouse_id,
             ViewId::from(created_meta.uuid()).into(),
@@ -775,14 +768,11 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            true,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect_err("hard-delete view should not be loadable");
+        let mut tx = state.write_pool().begin().await.unwrap();
+        load_view(warehouse_id, created_meta.uuid().into(), true, &mut tx)
+            .await
+            .expect_err("hard-delete view should not be loadable");
+        tx.commit().await.unwrap();
     }
 
     #[sqlx::test]

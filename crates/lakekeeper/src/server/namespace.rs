@@ -291,9 +291,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request.properties = Some(namespace_props.into());
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction())
-            .await
-            .map(Arc::new)?;
+        let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
         let authz_parent = if let Some(parent_id) = parent_namespace {
             NamespaceParent::Namespace(parent_id)
         } else {
@@ -531,8 +529,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             updated_properties,
             t.transaction(),
         )
-        .await
-        .map(Arc::new)?;
+        .await?;
         t.commit().await?;
 
         state
@@ -867,11 +864,9 @@ mod tests {
             },
             ApiContext,
         },
-        implementations::postgres::{
-            namespace::get_namespace_by_name, PostgresBackend, SecretsState,
-        },
+        implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
-        server::{test::impl_pagination_tests, CatalogServer},
+        server::{test::impl_pagination_tests, CatalogServer, NAMESPACE_ID_PROPERTY},
         service::{
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
             ListNamespacesQuery, NamespaceId, State, UserId,
@@ -919,15 +914,11 @@ mod tests {
                 if n >= *range_start && n < *range_end {
                     authz.hide(&format!(
                         "namespace:{}",
-                        get_namespace_by_name(
-                            warehouse.warehouse_id,
-                            &ns.namespace,
-                            &ctx.v1_state.catalog.read_pool(),
-                        )
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .namespace_id()
+                        ns.properties
+                            .as_ref()
+                            .unwrap()
+                            .get(NAMESPACE_ID_PROPERTY)
+                            .unwrap()
                     ));
                 }
             }

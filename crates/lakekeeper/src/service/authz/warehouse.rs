@@ -257,44 +257,6 @@ pub trait AuthzWarehouseOps: Authorizer {
         }
     }
 
-    // async fn require_warehouse_action(
-    //     &self,
-    //     metadata: &RequestMetadata,
-    //     warehouse: &ResolvedWarehouse,
-    //     action: impl Into<Self::WarehouseAction> + Send,
-    // ) -> Result<(), RequireWarehouseActionError> {
-    //     let action = action.into();
-    //     let actor = metadata.actor();
-    //     let cant_see_err = AuthZCannotUseWarehouseId::new(warehouse.warehouse_id).into();
-    //     if action == CAN_SEE_PERMISSION.into() {
-    //         let is_allowed = self
-    //             .is_allowed_warehouse_action(metadata, warehouse, action)
-    //             .await?
-    //             .into_inner();
-    //         is_allowed.then_some(()).ok_or(cant_see_err)
-    //     } else {
-    //         let [can_see, is_allowed] = self
-    //             .are_allowed_warehouse_actions_arr(
-    //                 metadata,
-    //                 &[(warehouse, CAN_SEE_PERMISSION.into()), (warehouse, action)],
-    //             )
-    //             .await?
-    //             .into_inner();
-    //         if can_see {
-    //             is_allowed.then_some(()).ok_or_else(|| {
-    //                 AuthZWarehouseActionForbidden::new(
-    //                     warehouse.warehouse_id,
-    //                     action,
-    //                     actor.clone(),
-    //                 )
-    //                 .into()
-    //             })
-    //         } else {
-    //             return Err(cant_see_err);
-    //         }
-    //     }
-    // }
-
     async fn is_allowed_warehouse_action(
         &self,
         metadata: &RequestMetadata,
