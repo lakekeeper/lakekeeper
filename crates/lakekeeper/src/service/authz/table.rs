@@ -73,7 +73,7 @@ pub struct AuthZTableActionForbidden {
     warehouse_id: WarehouseId,
     table: TableIdentOrId,
     action: String,
-    actor: Actor,
+    actor: Box<Actor>,
 }
 impl AuthZTableActionForbidden {
     #[must_use]
@@ -87,7 +87,7 @@ impl AuthZTableActionForbidden {
             warehouse_id,
             table: table.into(),
             action: action.to_string(),
-            actor,
+            actor: Box::new(actor),
         }
     }
 }

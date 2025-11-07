@@ -34,6 +34,7 @@ impl From<FromTabularRowError> for CommitTableTransactionError {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn commit_table_transaction(
     warehouse_id: WarehouseId,
     commits: impl IntoIterator<Item = TableCommit> + Send,
@@ -189,6 +190,7 @@ struct CommitVerificationData {
     updated_tabulars_ids: HashSet<uuid::Uuid>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_table_and_tabular_update_queries(
     location_metadata_pairs: Vec<TableMetadataTransition>,
 ) -> Result<

@@ -70,7 +70,7 @@ pub struct AuthZNamespaceActionForbidden {
     warehouse_id: WarehouseId,
     namespace: NamespaceIdentOrId,
     action: String,
-    actor: Actor,
+    actor: Box<Actor>,
 }
 impl AuthZNamespaceActionForbidden {
     #[must_use]
@@ -84,7 +84,7 @@ impl AuthZNamespaceActionForbidden {
             warehouse_id,
             namespace: namespace.into(),
             action: action.to_string(),
-            actor,
+            actor: Box::new(actor),
         }
     }
 }

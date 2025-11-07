@@ -543,14 +543,14 @@ define_transparent_error! {
 }
 
 fn build_namespace_hierarchy_from_vec(
-    namespaces: Vec<NamespaceWithParent>,
+    namespaces: &[NamespaceWithParent],
 ) -> Option<NamespaceHierarchy> {
     if namespaces.is_empty() {
         return None;
     }
 
     let mut parent_lookup = HashMap::new();
-    for ns in &namespaces {
+    for ns in namespaces {
         parent_lookup.insert(ns.namespace_id(), ns.clone());
     }
 
@@ -802,7 +802,7 @@ where
         let namespaces =
             fetch_namespace::<Self, _>(warehouse_id, namespace, &mut state_or_transaction).await?;
         namespace_cache_insert_multiple(namespaces.clone()).await;
-        let namespace_hierarchy = build_namespace_hierarchy_from_vec(namespaces);
+        let namespace_hierarchy = build_namespace_hierarchy_from_vec(&namespaces);
         Ok(namespace_hierarchy)
     }
 
@@ -887,7 +887,7 @@ where
                 .await?;
                 // Update cache with fresh data
                 namespace_cache_insert_multiple(namespaces.clone()).await;
-                build_namespace_hierarchy_from_vec(namespaces)
+                build_namespace_hierarchy_from_vec(&namespaces)
             }
             CachePolicy::Use => {
                 // Use cache if available
@@ -926,7 +926,7 @@ where
                         .await?;
                         // Update cache with fresh data
                         namespace_cache_insert_multiple(namespaces.clone()).await;
-                        build_namespace_hierarchy_from_vec(namespaces)
+                        build_namespace_hierarchy_from_vec(&namespaces)
                     }
                 } else {
                     // No cache entry: fetch fresh data
@@ -937,7 +937,7 @@ where
                     )
                     .await?;
                     namespace_cache_insert_multiple(namespace.clone()).await;
-                    build_namespace_hierarchy_from_vec(namespace)
+                    build_namespace_hierarchy_from_vec(&namespace)
                 }
             }
         };

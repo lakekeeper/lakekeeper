@@ -61,7 +61,7 @@ pub struct AuthZViewActionForbidden {
     warehouse_id: WarehouseId,
     view: ViewIdentOrId,
     action: String,
-    actor: Actor,
+    actor: Box<Actor>,
 }
 impl AuthZViewActionForbidden {
     #[must_use]
@@ -75,7 +75,7 @@ impl AuthZViewActionForbidden {
             warehouse_id,
             view: view.into(),
             action: action.to_string(),
-            actor,
+            actor: Box::new(actor),
         }
     }
 }

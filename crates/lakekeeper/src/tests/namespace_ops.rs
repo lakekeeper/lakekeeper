@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest;
 use sqlx::PgPool;
@@ -12,7 +14,8 @@ use crate::{
     server::CatalogServer,
     service::{
         authz::AllowAllAuthorizer, namespace_cache::NAMESPACE_CACHE, CachePolicy,
-        CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest, NamespaceId, Transaction,
+        CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest, NamespaceId, NamespaceVersion,
+        Transaction,
     },
     tests::{memory_io_profile, random_request_metadata, SetupTestCatalog},
 };
@@ -876,4 +879,461 @@ async fn test_cache_with_hierarchical_namespaces(pool: PgPool) {
 
     let cached_parent = NAMESPACE_CACHE.get(&parent_id).await;
     assert!(cached_parent.is_some());
+}
+
+/// Test that cache is invalidated when parent version is stale
+#[sqlx::test]
+async fn test_namespace_cache_parent_version_staleness(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    // Create parent namespace
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let parent_ident = NamespaceIdent::from_vec(vec!["parent_stale".to_string()]).unwrap();
+    let parent_id = NamespaceId::new_random();
+
+    let parent_ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        parent_id,
+        CreateNamespaceRequest {
+            namespace: parent_ident.clone(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    let parent_version = parent_ns.namespace.version;
+    transaction.commit().await.unwrap();
+
+    // Create child namespace
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let child_ident =
+        NamespaceIdent::from_vec(vec!["parent_stale".to_string(), "child".to_string()]).unwrap();
+    let child_id = NamespaceId::new_random();
+
+    let child_ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        child_id,
+        CreateNamespaceRequest {
+            namespace: child_ident.clone(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    // Insert child into cache
+    NAMESPACE_CACHE.insert(child_id, child_ns.clone()).await;
+
+    // Insert parent with OLDER version (stale) into cache
+    let mut stale_parent_ns = (*parent_ns.namespace).clone();
+    stale_parent_ns.version = NamespaceVersion::from(*parent_version - 1);
+
+    let stale_parent = crate::service::NamespaceWithParent {
+        namespace: Arc::new(stale_parent_ns),
+        parent: None,
+    };
+
+    NAMESPACE_CACHE.insert(parent_id, stale_parent).await;
+
+    // Try to get child - should fail because parent version is stale
+    let hierarchy =
+        PostgresBackend::get_namespace(warehouse_id, child_id, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap();
+
+    if let Some(parent) = hierarchy.parent() {
+        assert!(
+            parent.namespace.version >= parent_version,
+            "Should not use stale cached parent"
+        );
+    }
+
+    // Verify child was invalidated due to stale parent
+    let cached_child_after = NAMESPACE_CACHE.get(&child_id).await;
+    // Child should either be invalidated or refetched with correct data
+    if let Some(cached) = cached_child_after {
+        // If still cached, parent must be correct version
+        if let Some((_, cached_parent_version)) = cached.parent {
+            assert!(
+                cached_parent_version >= parent_version,
+                "Cached child should not reference stale parent version"
+            );
+        }
+    }
+}
+
+/// Test deep namespace hierarchies (4+ levels)
+#[sqlx::test]
+async fn test_namespace_deep_hierarchy(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    // Create 5-level hierarchy: a.b.c.d.e
+    let levels = vec!["a", "b", "c", "d", "e"];
+    let mut namespace_ids = Vec::new();
+
+    for i in 0..levels.len() {
+        let mut transaction = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+
+        let ident_parts: Vec<String> = levels[0..=i].iter().map(|s| s.to_string()).collect();
+        let ident = NamespaceIdent::from_vec(ident_parts).unwrap();
+        let id = NamespaceId::new_random();
+
+        PostgresBackend::create_namespace(
+            warehouse_id,
+            id,
+            CreateNamespaceRequest {
+                namespace: ident.clone(),
+                properties: None,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        transaction.commit().await.unwrap();
+        namespace_ids.push(id);
+    }
+
+    // Clear cache and get deepest namespace
+    for id in &namespace_ids {
+        NAMESPACE_CACHE.invalidate(id).await;
+    }
+
+    let deepest_hierarchy = PostgresBackend::get_namespace(
+        warehouse_id,
+        namespace_ids[4],
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    // Verify all 4 parents are present
+    assert_eq!(deepest_hierarchy.depth(), 4, "Should have depth 4");
+
+    // Verify hierarchy is correct
+    assert_eq!(deepest_hierarchy.namespace_id(), namespace_ids[4]);
+    assert_eq!(deepest_hierarchy.parents.len(), 4);
+
+    // Check that parent order is correct
+    let mut all_namespaces = vec![deepest_hierarchy.namespace];
+    all_namespaces.extend(deepest_hierarchy.parents);
+    for (i, ns) in all_namespaces.iter().enumerate() {
+        assert_eq!(
+            ns.namespace_id(),
+            namespace_ids[4 - i],
+            "Namespace ID at level {} should match",
+            i
+        );
+        // Validate that parent linkage is correct
+        if i < all_namespaces.len() - 1 {
+            let expected_parent_id = namespace_ids[4 - (i + 1)];
+            if let Some((parent_id, _)) = ns.parent {
+                assert_eq!(parent_id, expected_parent_id);
+            } else {
+                panic!("Namespace at level {} should have a parent", i);
+            }
+        }
+    }
+
+    // Verify all are cached
+    for id in &namespace_ids {
+        let cached = NAMESPACE_CACHE.get(id).await;
+        assert!(
+            cached.is_some(),
+            "All namespaces in hierarchy should be cached"
+        );
+    }
+}
+
+/// Test that parent version is correctly tracked when child is created
+#[sqlx::test]
+async fn test_parent_version_tracking(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    // Create parent
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let parent_ident = NamespaceIdent::from_vec(vec!["track_parent".to_string()]).unwrap();
+    let parent_id = NamespaceId::new_random();
+
+    let parent_ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        parent_id,
+        CreateNamespaceRequest {
+            namespace: parent_ident.clone(),
+            properties: Some(std::collections::HashMap::from([(
+                "version".to_string(),
+                "1".to_string(),
+            )])),
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    let initial_parent_version = parent_ns.namespace.version;
+    transaction.commit().await.unwrap();
+
+    // Create first child - should capture initial parent version
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let child1_ident =
+        NamespaceIdent::from_vec(vec!["track_parent".to_string(), "child1".to_string()]).unwrap();
+
+    let child1_ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: child1_ident.clone(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    // Verify first child has initial parent version
+    assert!(child1_ns.parent.is_some(), "Child should have parent info");
+    let (captured_parent_id, captured_parent_version) = child1_ns.parent.as_ref().unwrap();
+    assert_eq!(*captured_parent_id, parent_id);
+    assert_eq!(*captured_parent_version, initial_parent_version);
+
+    // Update parent (increments version)
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    PostgresBackend::update_namespace_properties(
+        warehouse_id,
+        parent_id,
+        std::collections::HashMap::from([("version".to_string(), "2".to_string())]),
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    // Create second child - should capture UPDATED parent version
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let child2_ident =
+        NamespaceIdent::from_vec(vec!["track_parent".to_string(), "child2".to_string()]).unwrap();
+
+    let child2_ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: child2_ident.clone(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    // Verify second child has NEWER parent version
+    let (_, captured_parent_version2) = child2_ns.parent.as_ref().unwrap();
+    assert!(
+        *captured_parent_version2 > initial_parent_version,
+        "Second child should capture updated parent version"
+    );
+
+    // Verify first child still references original version (snapshot at creation)
+    assert_eq!(
+        *captured_parent_version, initial_parent_version,
+        "First child's parent version should remain unchanged"
+    );
+}
+
+/// Test cache eviction invalidates ident-to-id mapping
+#[sqlx::test]
+async fn test_cache_eviction_invalidates_mapping(pool: PgPool) {
+    use crate::service::namespace_cache::IDENT_TO_ID_CACHE;
+
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    // Create namespace
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let ident = NamespaceIdent::from_vec(vec!["evict_test".to_string()]).unwrap();
+    let id = NamespaceId::new_random();
+
+    PostgresBackend::create_namespace(
+        warehouse_id,
+        id,
+        CreateNamespaceRequest {
+            namespace: ident.clone(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    // Populate cache by getting namespace
+    PostgresBackend::get_namespace(warehouse_id, id, ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+
+    // Verify both caches have the entry
+    assert!(NAMESPACE_CACHE.get(&id).await.is_some());
+
+    let cache_key: Vec<unicase::UniCase<String>> = ident
+        .inner()
+        .into_iter()
+        .map(unicase::UniCase::new)
+        .collect();
+    assert!(IDENT_TO_ID_CACHE
+        .get(&(warehouse_id, cache_key.clone()))
+        .await
+        .is_some());
+
+    // Invalidate main cache entry
+    NAMESPACE_CACHE.invalidate(&id).await;
+
+    // Give eviction listener time to run
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Verify ident-to-id mapping is also invalidated
+    assert!(
+        IDENT_TO_ID_CACHE
+            .get(&(warehouse_id, cache_key))
+            .await
+            .is_none(),
+        "Ident-to-id mapping should be invalidated when main entry is evicted"
+    );
+}
+
+/// Test root namespaces (no parent) are handled correctly
+#[sqlx::test]
+async fn test_root_namespace_null_parent(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    // Create root namespace
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let root_ident = NamespaceIdent::from_vec(vec!["root_test".to_string()]).unwrap();
+    let root_id = NamespaceId::new_random();
+
+    let root_ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        root_id,
+        CreateNamespaceRequest {
+            namespace: root_ident.clone(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    // Verify root has no parent
+    assert!(
+        root_ns.parent.is_none(),
+        "Root namespace should have no parent"
+    );
+
+    // Verify it can be cached and retrieved
+    let hierarchy =
+        PostgresBackend::get_namespace(warehouse_id, root_id, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(hierarchy.depth(), 0, "Root should have depth 0");
+    assert!(hierarchy.parent().is_none(), "Root should have no parent");
 }

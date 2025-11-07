@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{sync::LazyLock, time::Duration};
 
 use axum_prometheus::metrics;
 use iceberg::NamespaceIdent;
@@ -84,12 +81,13 @@ type NamespaceCacheKey = (WarehouseId, Vec<UniCase<String>>);
 // Secondary index: (warehouse_id, namespace_ident) → namespace_id
 // Uses Vec<UniCase<String>> for case-insensitive namespace identifier lookups
 // Each component of the namespace path is stored as UniCase to handle dots in names correctly
-static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> = LazyLock::new(|| {
-    Cache::builder()
-        .max_capacity(CONFIG.cache.namespace.capacity)
-        .initial_capacity(50)
-        .build()
-});
+pub(crate) static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> =
+    LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(CONFIG.cache.namespace.capacity)
+            .initial_capacity(50)
+            .build()
+    });
 
 #[allow(dead_code)] // Not required for all features
 async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
@@ -283,7 +281,7 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         &self,
         _warehouse_id: WarehouseId,
         namespace: NamespaceWithParent,
-        _request_metadata: Arc<RequestMetadata>,
+        _request_metadata: std::sync::Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         namespace_cache_insert(namespace).await;
         Ok(())
@@ -293,7 +291,7 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         &self,
         _warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
-        _request_metadata: Arc<RequestMetadata>,
+        _request_metadata: std::sync::Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         // This is sufficient also for recursive drops, as the cache only supports loading the full
         // hierarchy, which breaks if any of the entries in the path are missing.
@@ -305,8 +303,8 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         &self,
         _warehouse_id: WarehouseId,
         namespace: NamespaceWithParent,
-        _updated_properties: Arc<UpdateNamespacePropertiesResponse>,
-        _request_metadata: Arc<RequestMetadata>,
+        _updated_properties: std::sync::Arc<UpdateNamespacePropertiesResponse>,
+        _request_metadata: std::sync::Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         namespace_cache_insert(namespace).await;
         Ok(())
@@ -316,7 +314,7 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         &self,
         _requested_protected: bool,
         updated_namespace: NamespaceWithParent,
-        _request_metadata: Arc<RequestMetadata>,
+        _request_metadata: std::sync::Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         namespace_cache_insert(updated_namespace).await;
         Ok(())
@@ -330,6 +328,7 @@ mod tests {
 
     use super::*;
     use crate::{service::catalog_store::namespace::Namespace, WarehouseId};
+    use std::sync::Arc;
 
     /// Helper function to create a test namespace
     fn test_namespace(

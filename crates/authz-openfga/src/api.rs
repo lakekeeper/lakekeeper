@@ -2188,5 +2188,243 @@ mod tests {
                 .await
                 .unwrap();
         }
+
+        /// Test batch warehouse authorization with mixed permissions
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_batch_warehouse_authorization_mixed() {
+            use lakekeeper::service::authz::Authorizer;
+
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // Create 5 warehouses
+            let warehouse_ids: Vec<WarehouseId> =
+                (0..5).map(|_| WarehouseId::from(Uuid::now_v7())).collect();
+
+            // Grant Describe permission to warehouses 1 and 3
+            for &warehouse_id in &[warehouse_ids[1], warehouse_ids[3]] {
+                authorizer
+                    .write(
+                        Some(vec![TupleKey {
+                            user: user_id.to_openfga(),
+                            relation: WarehouseRelation::Describe.to_openfga().to_string(),
+                            object: warehouse_id.to_openfga(),
+                            condition: None,
+                        }]),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let metadata = RequestMetadata::random_human(user_id);
+            let warehouses: Vec<ResolvedWarehouse> = warehouse_ids
+                .iter()
+                .map(|&id| ResolvedWarehouse::new_with_id(id))
+                .collect();
+
+            let actions: Vec<_> = warehouses
+                .iter()
+                .map(|w| (w, AllWarehouseRelation::CanGetMetadata))
+                .collect();
+
+            let results = authorizer
+                .are_allowed_warehouse_actions_impl(&metadata, &actions)
+                .await
+                .unwrap();
+
+            // Should be: false, true, false, true, false
+            assert_eq!(results, vec![false, true, false, true, false]);
+        }
+
+        /// Test batch namespace authorization with large batch to test batch chunking
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_batch_namespace_authorization_large_batch() {
+            use lakekeeper::service::authz::Authorizer;
+
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // Create a large number of namespaces (more than typical batch size of 50)
+            let num_namespaces = 120;
+            let namespace_ids: Vec<NamespaceId> = (0..num_namespaces)
+                .map(|_| NamespaceId::new_random())
+                .collect();
+
+            // Grant Modify permission to every other namespace
+            for (i, &namespace_id) in namespace_ids.iter().enumerate() {
+                if i % 2 == 0 {
+                    authorizer
+                        .write(
+                            Some(vec![TupleKey {
+                                user: user_id.to_openfga(),
+                                relation: NamespaceRelation::Modify.to_openfga().to_string(),
+                                object: namespace_id.to_openfga(),
+                                condition: None,
+                            }]),
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+
+            let metadata = RequestMetadata::random_human(user_id);
+            let warehouse = ResolvedWarehouse::new_random();
+
+            let namespaces: Vec<_> = namespace_ids
+                .iter()
+                .map(|&id| random_namespace(id))
+                .collect();
+
+            let actions: Vec<_> = namespaces
+                .iter()
+                .map(|ns| (ns, AllNamespaceRelations::CanDelete))
+                .collect();
+
+            let results = authorizer
+                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .await
+                .unwrap();
+
+            // Verify results match expected pattern (every other one allowed)
+            assert_eq!(results.len(), num_namespaces);
+            for (i, &allowed) in results.iter().enumerate() {
+                assert_eq!(allowed, i % 2 == 0, "Namespace {i} permission mismatch");
+            }
+        }
+
+        /// Test batch project authorization with mixed permissions
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_batch_project_authorization_mixed() {
+            use lakekeeper::service::authz::Authorizer;
+
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // Create 4 projects
+            let project_ids: Vec<ProjectId> =
+                (0..4).map(|_| ProjectId::from(Uuid::now_v7())).collect();
+
+            // Grant Describe to projects 0 and 2
+            for idx in [0, 2] {
+                authorizer
+                    .write(
+                        Some(vec![TupleKey {
+                            user: user_id.to_openfga(),
+                            relation: ProjectRelation::Describe.to_openfga().to_string(),
+                            object: project_ids[idx].to_openfga(),
+                            condition: None,
+                        }]),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let metadata = RequestMetadata::random_human(user_id);
+
+            let actions: Vec<_> = project_ids
+                .iter()
+                .map(|p| (p, AllProjectRelations::CanGetMetadata))
+                .collect();
+
+            let results = authorizer
+                .are_allowed_project_actions_impl(&metadata, &actions)
+                .await
+                .unwrap();
+
+            // Should be: true, false, true, false
+            assert_eq!(results, vec![true, false, true, false]);
+        }
+
+        /// Test that batch operations handle all denied permissions correctly
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_batch_authorization_all_denied() {
+            use lakekeeper::service::authz::Authorizer;
+
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // Create namespaces but don't grant any permissions
+            let namespace_ids: Vec<NamespaceId> =
+                (0..10).map(|_| NamespaceId::new_random()).collect();
+
+            let metadata = RequestMetadata::random_human(user_id);
+            let warehouse = ResolvedWarehouse::new_random();
+
+            let namespaces: Vec<_> = namespace_ids
+                .iter()
+                .map(|&id| random_namespace(id))
+                .collect();
+
+            let actions: Vec<_> = namespaces
+                .iter()
+                .map(|ns| (ns, AllNamespaceRelations::CanDelete))
+                .collect();
+
+            let results = authorizer
+                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .await
+                .unwrap();
+
+            // All should be denied
+            assert_eq!(results, vec![false; 10]);
+        }
+
+        /// Test that batch operations handle all allowed permissions correctly
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_batch_authorization_all_allowed() {
+            use lakekeeper::service::authz::Authorizer;
+
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // Create namespaces and grant all permissions
+            let namespace_ids: Vec<NamespaceId> =
+                (0..8).map(|_| NamespaceId::new_random()).collect();
+
+            // Grant Describe permission to all namespaces
+            for &namespace_id in &namespace_ids {
+                authorizer
+                    .write(
+                        Some(vec![TupleKey {
+                            user: user_id.to_openfga(),
+                            relation: NamespaceRelation::Describe.to_openfga().to_string(),
+                            object: namespace_id.to_openfga(),
+                            condition: None,
+                        }]),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let metadata = RequestMetadata::random_human(user_id);
+            let warehouse = ResolvedWarehouse::new_random();
+
+            let namespaces: Vec<_> = namespace_ids
+                .iter()
+                .map(|&id| random_namespace(id))
+                .collect();
+
+            let actions: Vec<_> = namespaces
+                .iter()
+                .map(|ns| (ns, AllNamespaceRelations::CanGetMetadata))
+                .collect();
+
+            let results = authorizer
+                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .await
+                .unwrap();
+
+            // All should be allowed
+            assert_eq!(results, vec![true; 8]);
+        }
     }
 }
