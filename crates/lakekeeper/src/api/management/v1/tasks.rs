@@ -661,7 +661,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 warehouse_id,
                 namespace_id,
                 CachePolicy::RequireMinimumVersion(*tabular_info.namespace_version),
-                catalog_state.clone(),
+                catalog_state,
             )
             .await;
             let namespace =
@@ -694,7 +694,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 warehouse_id,
                 view_info.namespace_id,
                 CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
-                catalog_state.clone(),
+                catalog_state,
             )
             .await;
             let namespace =

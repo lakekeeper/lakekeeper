@@ -63,15 +63,12 @@ where
             C::search_tabular(warehouse_id, &search, context.v1_state.catalog.clone())
                 .await?
                 .search_results;
-        let namespaces = C::get_namespaces_by_id(
-            warehouse_id,
-            &all_matches
-                .iter()
-                .map(|t| t.tabular.namespace_id())
-                .collect_vec(),
-            context.v1_state.catalog,
-        )
-        .await?;
+        let namespace_ids = all_matches
+            .iter()
+            .map(|t| t.tabular.namespace_id())
+            .collect_vec();
+        let namespaces =
+            C::get_namespaces_by_id(warehouse_id, &namespace_ids, context.v1_state.catalog).await?;
 
         let actions = all_matches
             .iter()
