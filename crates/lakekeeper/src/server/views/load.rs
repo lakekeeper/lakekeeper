@@ -15,7 +15,7 @@ use crate::{
             refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeView, AuthZViewOps,
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
         },
-        storage::{StorageCredential, StoragePermissions},
+        storage::StoragePermissions,
         AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
         CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State,
         TabularListFlags, Transaction,
@@ -97,19 +97,19 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let view_location =
         Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;
 
-    let storage_secret: Option<StorageCredential> =
-        if let Some(secret_id) = warehouse.storage_secret_id {
-            Some(
-                state
-                    .v1_state
-                    .secrets
-                    .get_secret_by_id(secret_id)
-                    .await?
-                    .secret,
-            )
-        } else {
-            None
-        };
+    let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
+        Some(
+            state
+                .v1_state
+                .secrets
+                .require_storage_secret_by_id(secret_id)
+                .await?
+                .secret,
+        )
+    } else {
+        None
+    };
+    let storage_secret_ref = storage_secret.as_deref();
 
     let storage_permissions = if can_write {
         StoragePermissions::ReadWriteDelete
@@ -121,7 +121,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .storage_profile
         .generate_table_config(
             data_access,
-            storage_secret.as_ref(),
+            storage_secret_ref,
             &view_location,
             storage_permissions,
             &request_metadata,

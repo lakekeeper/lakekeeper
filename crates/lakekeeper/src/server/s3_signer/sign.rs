@@ -22,8 +22,7 @@ use crate::{
         },
         secrets::SecretStore,
         storage::{
-            s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
-            StorageProfile, ValidationError,
+            s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageProfile, ValidationError,
         },
         AuthZTableInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
@@ -214,7 +213,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 state
                     .v1_state
                     .secrets
-                    .get_secret_by_id::<StorageCredential>(storage_secret_id)
+                    .require_storage_secret_by_id(storage_secret_id)
                     .await?
                     .secret,
             )

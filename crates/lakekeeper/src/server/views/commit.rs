@@ -217,16 +217,17 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state
                 .v1_state
                 .secrets
-                .get_secret_by_id(secret_id)
+                .require_storage_secret_by_id(secret_id)
                 .await?
                 .secret,
         )
     } else {
         None
     };
+    let storage_secret_ref = storage_secret.as_deref();
 
     // Write metadata file
-    let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
+    let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
     write_file(
         &file_io,
         &new_view.metadata_location,
@@ -245,7 +246,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .storage_profile
         .generate_table_config(
             ctx.data_access,
-            storage_secret.as_ref(),
+            storage_secret_ref,
             &new_view.metadata_location,
             StoragePermissions::ReadWriteDelete,
             request_metadata,

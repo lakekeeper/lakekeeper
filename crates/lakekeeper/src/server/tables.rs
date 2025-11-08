@@ -215,7 +215,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
-        let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
+        let storage_secret_ref = storage_secret.as_deref();
+        let file_io = storage_profile.file_io(storage_secret_ref).await?;
         let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
         validate_table_properties(table_metadata.properties().keys())?;
@@ -285,7 +286,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let config = storage_profile
             .generate_table_config(
                 DataAccess::not_specified().into(),
-                storage_secret.as_ref(),
+                storage_secret_ref,
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
                 &request_metadata,
@@ -397,11 +398,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+        let storage_secret_ref = storage_secret.as_deref();
         let storage_config = warehouse
             .storage_profile
             .generate_table_config(
                 data_access.into(),
-                storage_secret.as_ref(),
+                storage_secret_ref,
                 &parse_location(
                     tabular_details.location.as_str(),
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1233,11 +1235,12 @@ async fn try_commit_tables<
     // We don't commit the transaction yet, first we need to write the metadata file.
     let storage_secret =
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+    let storage_secret_ref = storage_secret.as_deref();
 
     // Write metadata files
     let file_io = warehouse
         .storage_profile
-        .file_io(storage_secret.as_ref())
+        .file_io(storage_secret_ref)
         .await?;
 
     let write_futures: Vec<_> = commits

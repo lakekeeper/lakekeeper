@@ -169,10 +169,11 @@ where
                 "Failed to get storage secret for warehouse {warehouse_id} for Tabular Purge task."
             ))
         })?;
+    let secret_ref = secret.as_deref();
 
     let file_io = warehouse
         .storage_profile
-        .file_io(secret.as_ref())
+        .file_io(secret_ref)
         .await
         .map_err(|e| {
             IcebergErrorResponse::from(e).append_detail(format!(

@@ -25,7 +25,7 @@ const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
 const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
 const METRIC_WAREHOUSE_CACHE_MISSES: &str = "lakekeeper_warehouse_cache_misses_total";
 
-/// Initialize metric descriptions for STC cache metrics
+/// Initialize metric descriptions for Warehouse cache metrics
 static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
     metrics::describe_gauge!(
         METRIC_WAREHOUSE_CACHE_SIZE,

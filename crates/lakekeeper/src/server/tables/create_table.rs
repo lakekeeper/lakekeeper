@@ -212,12 +212,18 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // We don't commit the transaction yet, first we need to write the metadata file.
     let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
         let secret_state = state.v1_state.secrets;
-        Some(secret_state.get_secret_by_id(secret_id).await?.secret)
+        Some(
+            secret_state
+                .require_storage_secret_by_id(secret_id)
+                .await?
+                .secret,
+        )
     } else {
         None
     };
+    let storage_secret_ref = storage_secret.as_deref();
 
-    let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
+    let file_io = storage_profile.file_io(storage_secret_ref).await?;
     if !crate::service::storage::is_empty(&file_io, &table_location).await? {
         return Err(ValidationError::from(InvalidLocationError::new(
             table_location.to_string(),
@@ -245,7 +251,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let config = storage_profile
         .generate_table_config(
             data_access,
-            storage_secret.as_ref(),
+            storage_secret_ref,
             &table_location,
             StoragePermissions::ReadWriteDelete,
             &request_metadata,

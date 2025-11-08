@@ -98,12 +98,13 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     let storage_config = if let Some(storage_permissions) = storage_permissions {
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+        let storage_secret_ref = storage_secret.as_deref();
         Some(
             warehouse
                 .storage_profile
                 .generate_table_config(
                     data_access.into(),
-                    storage_secret.as_ref(),
+                    storage_secret_ref,
                     &table_location,
                     storage_permissions,
                     &request_metadata,

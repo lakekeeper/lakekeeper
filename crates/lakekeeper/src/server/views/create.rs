@@ -128,10 +128,11 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // We don't commit the transaction yet, first we need to write the metadata file.
     let storage_secret =
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+    let storage_secret_ref = storage_secret.as_deref();
 
     let file_io = warehouse
         .storage_profile
-        .file_io(storage_secret.as_ref())
+        .file_io(storage_secret_ref)
         .await?;
     let compression_codec = CompressionCodec::try_from_metadata(&metadata_build_result.metadata)?;
     write_file(
@@ -153,7 +154,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .storage_profile
         .generate_table_config(
             data_access,
-            storage_secret.as_ref(),
+            storage_secret_ref,
             &view_location,
             StoragePermissions::Read,
             &request_metadata,

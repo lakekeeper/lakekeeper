@@ -298,6 +298,22 @@ If the cache is enabled, changes to namespace properties may take up to the conf
 - `lakekeeper_namespace_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
 - `lakekeeper_namespace_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
 
+**Secrets Cache**
+
+Caches storage secrets to reduce load on the secret store. Since Lakekeeper never updates secrets, long TTLs can significantly increase resilience against secret store outages, especially when the secret store is external to the main database backend.
+
+| Configuration Key                                             | Type    | Default | Description |
+|---------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__ENABLED`<nobr>            | boolean | `true`  | Enable/disable secrets caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__CAPACITY`<nobr>           | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS`<nobr>  | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
+
+*Metrics*: The Secrets cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_secrets_cache_size{cache_type="secrets"}`: Current number of entries in the cache
+- `lakekeeper_secrets_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
+- `lakekeeper_secrets_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:

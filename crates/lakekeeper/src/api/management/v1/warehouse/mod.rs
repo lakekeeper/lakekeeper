@@ -378,7 +378,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 context
                     .v1_state
                     .secrets
-                    .create_secret(storage_credential)
+                    .create_storage_secret(storage_credential)
                     .await?,
             )
         } else {
@@ -832,7 +832,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 context
                     .v1_state
                     .secrets
-                    .create_secret(storage_credential)
+                    .create_storage_secret(storage_credential)
                     .await?,
             )
         } else {
@@ -920,7 +920,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 context
                     .v1_state
                     .secrets
-                    .create_secret(new_storage_credential)
+                    .create_storage_secret(new_storage_credential)
                     .await?,
             )
         } else {
