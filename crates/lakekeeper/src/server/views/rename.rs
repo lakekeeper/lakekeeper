@@ -84,7 +84,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &warehouse,
             &destination.namespace,
             destination_namespace,
-            CatalogNamespaceAction::CanCreateTable,
+            CatalogNamespaceAction::CanCreateView,
         ),
         // Check 2)
         authorizer.require_view_action(
