@@ -812,9 +812,9 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         C::get_table_info(warehouse_id, table.clone(), list_flags, state.clone())
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
     let namespace =
         authorizer.require_namespace_presence(warehouse_id, table.namespace.clone(), namespace)?;
-    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
 
     // Refresh warehouse and namespace if required
 

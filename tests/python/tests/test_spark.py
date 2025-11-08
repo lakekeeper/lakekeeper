@@ -1079,6 +1079,35 @@ def test_case_insensitivity(
         spark.sql(f"SELECT * FROM {namespace.spark_name}.my_renamed_table").toPandas()
 
 
+def test_metadata_queries_tables(spark, namespace):
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
+    )
+    spark.sql(
+        f"INSERT INTO {namespace.spark_name}.my_table VALUES (1, 1.2, 'foo'), (2, 2.2, 'bar')"
+    )
+    all_data_files = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_data_files"
+    ).toPandas()
+    assert len(all_data_files) > 0
+    all_delete_files = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_delete_files"
+    ).toPandas()
+    assert len(all_delete_files) == 0
+    all_entries = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_entries"
+    ).toPandas()
+    assert len(all_entries) > 0
+    all_manifests = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_manifests"
+    ).toPandas()
+    assert len(all_manifests) > 0
+    metadata_log_entries = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.metadata_log_entries"
+    ).toPandas()
+    assert len(metadata_log_entries) > 0
+
+
 @pytest.mark.skipif(
     conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
 )

@@ -56,9 +56,9 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         )
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let view_info = authorizer.require_view_presence(warehouse_id, view.clone(), view_info)?;
     let namespace =
         authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
-    let view_info = authorizer.require_view_presence(warehouse_id, view.clone(), view_info)?;
 
     let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
         &authorizer,
