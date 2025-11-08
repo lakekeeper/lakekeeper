@@ -171,7 +171,7 @@ impl NamespaceHierarchy {
 
     #[cfg(feature = "test-utils")]
     #[must_use]
-    pub fn new_wih_id(warehouse_id: WarehouseId, namespace_id: NamespaceId) -> Self {
+    pub fn new_with_id(warehouse_id: WarehouseId, namespace_id: NamespaceId) -> Self {
         Self {
             namespace: NamespaceWithParent {
                 namespace: Arc::new(Namespace {
@@ -542,6 +542,9 @@ define_transparent_error! {
     ]
 }
 
+/// Input must contain full parent chain up to root namespace.
+/// Builds the full `NamespaceHierarchy` by following parent IDs using the provided lookup map.
+/// Starts from the namespace with the longest ident (deepest in hierarchy).
 fn build_namespace_hierarchy_from_vec(
     namespaces: &[NamespaceWithParent],
 ) -> Option<NamespaceHierarchy> {
@@ -549,10 +552,10 @@ fn build_namespace_hierarchy_from_vec(
         return None;
     }
 
-    let mut parent_lookup = HashMap::new();
-    for ns in namespaces {
-        parent_lookup.insert(ns.namespace_id(), ns.clone());
-    }
+    let parent_lookup = namespaces
+        .iter()
+        .map(|ns| (ns.namespace_id(), ns.clone()))
+        .collect();
 
     // namespace with longest ident
     let target_namespace = namespaces

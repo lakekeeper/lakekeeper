@@ -8,8 +8,9 @@ use crate::{
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogViewAction,
+            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeView, AuthZViewOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogViewAction, RequireViewActionError,
         },
         contract_verification::ContractVerification,
         AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -63,6 +64,18 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         source.namespace.clone(),
         source_namespace,
     )?;
+    let source_view_info =
+        authorizer.require_view_presence(warehouse_id, source.clone(), source_view_info)?;
+
+    let (warehouse, source_namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
+        &authorizer,
+        &warehouse,
+        &source_view_info,
+        source_namespace,
+        state.v1_state.catalog.clone(),
+        AuthZCannotSeeView::new(warehouse_id, source.clone()),
+    )
+    .await?;
 
     let (destination_namespace, source_view_info) = tokio::join!(
         // Check 1)
@@ -79,7 +92,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &warehouse,
             &source_namespace,
             source.clone(),
-            source_view_info,
+            Ok::<_, RequireViewActionError>(Some(source_view_info)),
             CatalogViewAction::CanRename,
         )
     );
@@ -94,7 +107,6 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let source_id = source_view_info.view_id();
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-
     C::rename_tabular(
         warehouse_id,
         source_view_info.view_id(),
@@ -103,7 +115,6 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         t.transaction(),
     )
     .await?;
-
     state
         .v1_state
         .contract_verifiers

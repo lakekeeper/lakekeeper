@@ -22,15 +22,13 @@ use crate::{
         views::validate_view_updates,
     },
     service::{
-        authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
-        },
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogView,
-        CatalogViewOps, CatalogWarehouseOps, InternalParseLocationError, State, TabularListFlags,
-        Transaction, ViewCommit, ViewId, ViewInfo, CONCURRENT_UPDATE_ERROR_TYPE,
+        AuthZViewInfo, CatalogStore, CatalogView, CatalogViewOps, InternalParseLocationError,
+        State, TabularListFlags, Transaction, ViewCommit, ViewId, ViewInfo,
+        CONCURRENT_UPDATE_ERROR_TYPE,
     },
     SecretId,
 };
@@ -62,34 +60,14 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let (warehouse, namespace, view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-        C::get_namespace(
-            warehouse_id,
-            view_ident.namespace.clone(),
-            state.v1_state.catalog.clone(),
-        ),
-        C::get_view_info(
-            warehouse_id,
-            view_ident.clone(),
-            TabularListFlags::active(),
-            state.v1_state.catalog.clone(),
-        )
-    );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let namespace = authorizer.require_namespace_presence(
-        warehouse_id,
-        view_ident.namespace.clone(),
-        namespace,
-    )?;
-    let view_info = authorizer
-        .require_view_action(
+    let (warehouse, _namespace, view_info) = authorizer
+        .load_and_authorize_view_operation::<C>(
             &request_metadata,
-            &warehouse,
-            &namespace,
+            warehouse_id,
             view_ident,
-            view_info,
+            TabularListFlags::active(),
             CatalogViewAction::CanCommit,
+            state.v1_state.catalog.clone(),
         )
         .await?;
 

@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools as _;
@@ -8,18 +11,203 @@ use crate::{
     service::{
         authz::{
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, BackendUnavailableOrCountMismatch,
-            CatalogTableAction, MustUse,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CatalogTableAction, MustUse,
+        },
+        catalog_store::{
+            BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+            CatalogWarehouseOps, TabularListFlags,
         },
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogBackendError, GetTabularInfoByLocationError,
         GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
         NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
-        SerializationError, TableId, TableIdentOrId, TabularNotFound, UnexpectedTabularInResponse,
+        SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
+        UnexpectedTabularInResponse, WarehouseStatus,
     },
     WarehouseId,
 };
 
 const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::CanGetMetadata;
+
+/// Refreshes warehouse and namespace if their versions are outdated.
+///
+/// This is a generic helper that works for both tables and views.
+/// It checks warehouse and namespace ID and version consistency, refetching if necessary.
+/// Warehouse and namespace refetches are performed in parallel when both are required.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn refresh_warehouse_and_namespace_if_needed<C, A, T, E>(
+    authorizer: &A,
+    warehouse: &ResolvedWarehouse,
+    tabular_info: &T,
+    namespace: NamespaceHierarchy,
+    catalog_state: C::State,
+    cannot_see_error: E,
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), ErrorModel>
+where
+    C: CatalogStore,
+    A: AuthzNamespaceOps + AuthzWarehouseOps,
+    T: BasicTabularInfo,
+    E: Into<ErrorModel>,
+{
+    let warehouse_id = warehouse.warehouse_id;
+    let required_warehouse_version = tabular_info.warehouse_version();
+    let required_namespace_version = tabular_info.namespace_version();
+
+    let namespace_id_matches = tabular_info.namespace_id() == namespace.namespace.namespace_id();
+    let namespace_version_sufficient = namespace.namespace.version() >= required_namespace_version;
+    let warehouse_version_sufficient = warehouse.version >= required_warehouse_version;
+
+    // If all checks pass, return warehouse and namespace as-is
+    if namespace_id_matches && namespace_version_sufficient && warehouse_version_sufficient {
+        return Ok((Arc::new(warehouse.clone()), namespace));
+    }
+
+    // Log the reasons for refetch
+    if !namespace_id_matches {
+        tracing::debug!(
+            warehouse_id = %warehouse_id,
+            tabular_id = %tabular_info.tabular_id(),
+            tabular_namespace_id = %tabular_info.namespace_id(),
+            fetched_namespace_id = %namespace.namespace.namespace_id(),
+            "Namespace ID mismatch after fetching namespace for table, refetching namespace"
+        );
+    }
+    if !namespace_version_sufficient {
+        tracing::debug!(
+            warehouse_id = %warehouse_id,
+            tabular_id = %tabular_info.tabular_id(),
+            namespace_id = %tabular_info.namespace_id(),
+            fetched_version = %namespace.namespace.version(),
+            required_version = %required_namespace_version,
+            "Namespace version too old for table requirement, refetching namespace"
+        );
+    }
+    if !warehouse_version_sufficient {
+        tracing::debug!(
+            warehouse_id = %warehouse_id,
+            fetched_version = %warehouse.version,
+            required_version = %required_warehouse_version,
+            "Warehouse version too old for table requirement, refetching warehouse"
+        );
+    }
+
+    // Refetch warehouse and/or namespace in parallel when both are needed
+    let warehouse_needs_refetch = !warehouse_version_sufficient;
+    let namespace_needs_refetch = !namespace_id_matches || !namespace_version_sufficient;
+
+    let (refetched_warehouse, refetched_namespace) =
+        match (warehouse_needs_refetch, namespace_needs_refetch) {
+            (true, true) => {
+                let (warehouse_result, namespace_result) = tokio::join!(
+                    C::get_warehouse_by_id_cache_aware(
+                        warehouse_id,
+                        WarehouseStatus::active(),
+                        CachePolicy::RequireMinimumVersion(*required_warehouse_version),
+                        catalog_state.clone()
+                    ),
+                    C::get_namespace_cache_aware(
+                        warehouse_id,
+                        tabular_info.tabular_ident().namespace.clone(),
+                        CachePolicy::RequireMinimumVersion(*required_namespace_version),
+                        catalog_state.clone()
+                    )
+                );
+
+                let warehouse =
+                    authorizer.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                let namespace = authorizer.require_namespace_presence(
+                    warehouse_id,
+                    tabular_info.namespace_id(),
+                    namespace_result,
+                )?;
+
+                (warehouse, namespace)
+            }
+            (true, false) => {
+                let warehouse_result = C::get_warehouse_by_id_cache_aware(
+                    warehouse_id,
+                    WarehouseStatus::active(),
+                    CachePolicy::RequireMinimumVersion(*required_warehouse_version),
+                    catalog_state,
+                )
+                .await;
+
+                let warehouse =
+                    authorizer.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                (warehouse, namespace)
+            }
+            (false, true) => {
+                let namespace_result = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    tabular_info.tabular_ident().namespace.clone(),
+                    CachePolicy::RequireMinimumVersion(*required_namespace_version),
+                    catalog_state,
+                )
+                .await;
+
+                let namespace = authorizer.require_namespace_presence(
+                    warehouse_id,
+                    tabular_info.namespace_id(),
+                    namespace_result,
+                )?;
+
+                (Arc::new(warehouse.clone()), namespace)
+            }
+            (false, false) => {
+                // This shouldn't happen as we already returned early if all checks passed
+                return Ok((Arc::new(warehouse.clone()), namespace));
+            }
+        };
+
+    // Validate again after refetch
+    let refetched_namespace_id_matches =
+        tabular_info.namespace_id() == refetched_namespace.namespace.namespace_id();
+    let refetched_namespace_version_sufficient =
+        refetched_namespace.namespace.version() >= required_namespace_version;
+    let refetched_warehouse_version_sufficient =
+        refetched_warehouse.version >= required_warehouse_version;
+
+    if !refetched_namespace_id_matches {
+        // Namespace ID still doesn't match - serious consistency issue
+        tracing::warn!(
+            warehouse_id = %warehouse_id,
+            tabular_id = %tabular_info.tabular_id(),
+            tabular_namespace_id = %tabular_info.namespace_id(),
+            refetched_namespace_id = %refetched_namespace.namespace.namespace_id(),
+            "Namespace ID mismatch persists after refetch - TOCTOU race condition or data corruption"
+        );
+
+        return Err(cannot_see_error.into());
+    }
+
+    if !refetched_namespace_version_sufficient {
+        // Namespace version still insufficient after refetch
+        tracing::warn!(
+            warehouse_id = %warehouse_id,
+            tabular_id = %tabular_info.tabular_id(),
+            namespace_id = %tabular_info.namespace_id(),
+            refetched_version = %refetched_namespace.namespace.version(),
+            required_version = %required_namespace_version,
+            "Namespace version still insufficient after refetch - High Replication Lag, TOCTOU race condition or data corruption"
+        );
+
+        return Err(cannot_see_error.into());
+    }
+
+    if !refetched_warehouse_version_sufficient {
+        // Warehouse version still insufficient after refetch
+        tracing::warn!(
+            warehouse_id = %warehouse_id,
+            refetched_version = %refetched_warehouse.version,
+            required_version = %required_warehouse_version,
+            "Warehouse version still insufficient after refetch - High Replication Lag, TOCTOU race condition or data corruption"
+        );
+
+        return Err(cannot_see_error.into());
+    }
+
+    Ok((refetched_warehouse, refetched_namespace))
+}
 
 /// Validates that the full namespace hierarchy is provided for all namespaces.
 /// This is a debug assertion to ensure data consistency.
@@ -343,6 +531,136 @@ pub trait AuthZTableOps: Authorizer {
         }
     }
 
+    /// Fetches and authorizes a table operation in one call.
+    ///
+    /// This is a convenience method that combines:
+    /// 1. Parallel fetching of warehouse, namespace, and table
+    /// 2. Validation of warehouse and namespace presence
+    /// 3. Namespace ID consistency check
+    /// 4. Authorization of the specified action
+    ///
+    /// # Arguments
+    /// * `request_metadata` - The request metadata containing actor information
+    /// * `warehouse_id` - The warehouse ID
+    /// * `table_ident` - Either a `TableIdent` (name-based) or `TableId` (UUID-based)
+    /// * `table_flags` - Flags to control which tables to include (active, staged, deleted)
+    /// * `action` - The action to authorize (e.g., `CanDrop`, `CanReadData`, etc.)
+    /// * `catalog_state` - The catalog state for database operations
+    ///
+    /// # Returns
+    /// A tuple of `(warehouse, namespace, table)` if all checks pass
+    ///
+    /// # Errors
+    /// Returns `RequireTableActionError` if:
+    /// - Warehouse, namespace, or table not found
+    /// - Namespace ID mismatch
+    /// - User not authorized for the action
+    /// - Database or authorization backend errors
+    async fn load_and_authorize_table_operation<C>(
+        &self,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        user_provided_table: impl Into<TableIdentOrId> + Send,
+        table_flags: TabularListFlags,
+        action: impl Into<Self::TableAction> + Send,
+        catalog_state: C::State,
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), ErrorModel>
+    where
+        C: CatalogStore,
+    {
+        let user_provided_table = user_provided_table.into();
+
+        // Determine the fetch strategy based on whether we have a TableId or TableIdent
+        let (warehouse, namespace, table_info) = match &user_provided_table {
+            TableIdentOrId::Id(table_id) => {
+                // For TableId: fetch warehouse and table in parallel first
+                let (warehouse_result, table_result) = tokio::join!(
+                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+                    C::get_table_info(warehouse_id, *table_id, table_flags, catalog_state.clone())
+                );
+
+                // Validate warehouse and table presence
+                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                let table_info = self.require_table_presence(
+                    warehouse_id,
+                    user_provided_table.clone(),
+                    table_result,
+                )?;
+
+                // Fetch namespace with cache policy to ensure it's at least as fresh as the table
+                let namespace_result = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    table_info.table_ident().namespace.clone(), // Must fetch via name to ensure consistency. Id is checked later
+                    CachePolicy::RequireMinimumVersion(*table_info.namespace_version),
+                    catalog_state.clone(),
+                )
+                .await;
+
+                let namespace = self.require_namespace_presence(
+                    warehouse_id,
+                    table_info.namespace_id,
+                    namespace_result,
+                )?;
+
+                (warehouse, namespace, table_info)
+            }
+            TableIdentOrId::Ident(table_ident) => {
+                // For TableIdent: fetch all three in parallel
+                let (warehouse_result, namespace_result, table_result) = tokio::join!(
+                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+                    C::get_namespace(
+                        warehouse_id,
+                        table_ident.namespace.clone(),
+                        catalog_state.clone()
+                    ),
+                    C::get_table_info(
+                        warehouse_id,
+                        table_ident.clone(),
+                        table_flags,
+                        catalog_state.clone()
+                    )
+                );
+
+                // Validate presence
+                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                let namespace = self.require_namespace_presence(
+                    warehouse_id,
+                    table_ident.namespace.clone(),
+                    namespace_result,
+                )?;
+                let table =
+                    self.require_table_presence(warehouse_id, table_ident.clone(), table_result)?;
+
+                (warehouse, namespace, table)
+            }
+        };
+
+        // Validate warehouse and namespace ID and version consistency (with TOCTOU protection)
+        let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
+            self,
+            &warehouse,
+            &table_info,
+            namespace,
+            catalog_state,
+            AuthZCannotSeeTable::new(warehouse_id, user_provided_table.clone()),
+        )
+        .await?;
+
+        // Perform authorization check
+        let table_info = self
+            .require_table_action(
+                request_metadata,
+                &warehouse,
+                &namespace,
+                user_provided_table,
+                Ok::<_, RequireTableActionError>(Some(table_info)),
+                action,
+            )
+            .await?;
+
+        Ok((warehouse, namespace, table_info))
+    }
+
     async fn require_table_actions<T: AuthZTableInfo>(
         &self,
         metadata: &RequestMetadata,
@@ -659,7 +977,7 @@ mod tests {
         service::{
             authz::{tests::HidingAuthorizer, CatalogTableAction, CatalogViewAction},
             catalog_store::TabularListFlags,
-            CatalogNamespaceOps as _, CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
+            CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
         },
         tests::{create_ns, create_table, create_view, memory_io_profile, SetupTestCatalog},
     };

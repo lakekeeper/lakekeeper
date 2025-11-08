@@ -53,8 +53,9 @@ use crate::{
     },
     service::{
         authz::{
-            AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
+            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeTable, AuthZTableOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogTableAction, RequireTableActionError,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         require_namespace_for_tabular,
@@ -66,10 +67,9 @@ use crate::{
             EntityId, TaskMetadata,
         },
         AuthZTableInfo as _, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
-        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, NamespaceHierarchy, NamespaceVersion,
-        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
-        WarehouseVersion, CONCURRENT_UPDATE_ERROR_TYPE,
+        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
+        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularListFlags,
+        TabularNotFound, Transaction, WarehouseStatus, CONCURRENT_UPDATE_ERROR_TYPE,
     },
     WarehouseId,
 };
@@ -794,77 +794,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-/// Refreshes warehouse and namespace if their versions are outdated
-async fn refresh_warehouse_and_namespace<C: CatalogStore, A: Authorizer + Clone>(
-    warehouse_id: WarehouseId,
-    warehouse: Arc<ResolvedWarehouse>,
-    namespace: NamespaceHierarchy,
-    required_warehouse_version: WarehouseVersion,
-    required_namespace_version: NamespaceVersion,
-    authorizer: A,
-    state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy)> {
-    let warehouse_requires_refresh = warehouse.version < required_warehouse_version;
-    let namespace_requires_refresh = namespace.version() < required_namespace_version;
-
-    let (warehouse, namespace) = match (warehouse_requires_refresh, namespace_requires_refresh) {
-        (true, true) => {
-            let (refreshed_warehouse, refreshed_namespace) = tokio::join!(
-                C::get_warehouse_by_id_cache_aware(
-                    warehouse_id,
-                    WarehouseStatus::active(),
-                    CachePolicy::RequireMinimumVersion(*required_warehouse_version),
-                    state.clone()
-                ),
-                C::get_namespace_cache_aware(
-                    warehouse_id,
-                    namespace.namespace_ident().clone(),
-                    CachePolicy::RequireMinimumVersion(*required_namespace_version),
-                    state.clone()
-                )
-            );
-            let refreshed_warehouse =
-                authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
-            let refreshed_namespace = authorizer.require_namespace_presence(
-                warehouse_id,
-                namespace.namespace_ident().clone(),
-                refreshed_namespace,
-            )?;
-            (refreshed_warehouse, refreshed_namespace)
-        }
-        (true, false) => {
-            let refreshed_warehouse = C::get_warehouse_by_id_cache_aware(
-                warehouse_id,
-                WarehouseStatus::active(),
-                CachePolicy::RequireMinimumVersion(*required_warehouse_version),
-                state.clone(),
-            )
-            .await;
-            let refreshed_warehouse =
-                authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
-            (refreshed_warehouse, namespace)
-        }
-        (false, true) => {
-            let refreshed_namespace = C::get_namespace_cache_aware(
-                warehouse_id,
-                namespace.namespace_ident().clone(),
-                CachePolicy::RequireMinimumVersion(*required_namespace_version),
-                state.clone(),
-            )
-            .await;
-            let refreshed_namespace = authorizer.require_namespace_presence(
-                warehouse_id,
-                namespace.namespace_ident().clone(),
-                refreshed_namespace,
-            )?;
-            (warehouse, refreshed_namespace)
-        }
-        (false, false) => (warehouse, namespace),
-    };
-
-    Ok((warehouse, namespace))
-}
-
 async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: TableIdent,
@@ -883,22 +812,19 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         C::get_table_info(warehouse_id, table.clone(), list_flags, state.clone())
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
-    let table_info = table_info
-        .map_err(RequireTableActionError::from)?
-        .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, table.clone()))?;
     let namespace =
         authorizer.require_namespace_presence(warehouse_id, table.namespace.clone(), namespace)?;
+    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
 
     // Refresh warehouse and namespace if required
-    let (warehouse, namespace) = refresh_warehouse_and_namespace::<C, _>(
-        warehouse_id,
-        warehouse,
+
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
+        &authorizer,
+        &warehouse,
+        &table_info,
         namespace,
-        table_info.warehouse_version,
-        table_info.namespace_version,
-        authorizer.clone(),
         state,
+        AuthZCannotSeeTable::new(warehouse_id, table.clone()),
     )
     .await?;
 
@@ -1094,7 +1020,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     let authorizer = state.v1_state.authz.clone();
     let warehouse =
         C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let mut warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let identifiers = request
         .table_changes
@@ -1130,13 +1056,16 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     let namespaces = namespaces?;
 
     // Refresh warehouse if required
-    let mut warehouse = warehouse;
-    if let Some(table_info) = table_ident_to_info.values().next() {
-        if warehouse.version < table_info.warehouse_version {
+    if let Some(required_version) = table_ident_to_info
+        .values()
+        .map(|ti| ti.warehouse_version)
+        .max()
+    {
+        if warehouse.version < required_version {
             let refreshed_warehouse = C::get_warehouse_by_id_cache_aware(
                 warehouse_id,
                 WarehouseStatus::active(),
-                CachePolicy::RequireMinimumVersion(*table_info.warehouse_version),
+                CachePolicy::RequireMinimumVersion(*required_version),
                 state.v1_state.catalog.clone(),
             )
             .await;

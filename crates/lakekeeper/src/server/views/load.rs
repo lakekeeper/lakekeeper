@@ -12,11 +12,11 @@ use crate::{
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogViewAction, RequireViewActionError,
+            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeView, AuthZViewOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
         },
         storage::{StorageCredential, StoragePermissions},
-        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
+        AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
         CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State,
         TabularListFlags, Transaction,
     },
@@ -43,32 +43,32 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
+    let catalog_state = state.v1_state.catalog;
 
-    let (warehouse, view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
+    let (warehouse, namespace, view_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+        C::get_namespace(warehouse_id, view.namespace.clone(), catalog_state.clone()),
         C::get_view_info(
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            state.v1_state.catalog.clone(),
+            catalog_state.clone()
         )
     );
-
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
-    let view_info = view_info
-        .map_err(RequireViewActionError::from)?
-        .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, view.clone()))?;
-    let view_id = view_info.view_id();
-
-    let namespace = C::get_namespace(
-        warehouse_id,
-        view_info.namespace_id(),
-        state.v1_state.catalog.clone(),
-    )
-    .await;
     let namespace =
-        authorizer.require_namespace_presence(warehouse_id, view_info.namespace_id(), namespace)?;
+        authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
+    let view_info = authorizer.require_view_presence(warehouse_id, view.clone(), view_info)?;
+
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
+        &authorizer,
+        &warehouse,
+        &view_info,
+        namespace,
+        catalog_state.clone(),
+        AuthZCannotSeeView::new(warehouse_id, view.clone()),
+    )
+    .await?;
 
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
@@ -87,8 +87,10 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     if !can_load {
         return Err(AuthZCannotSeeView::new(warehouse_id, view.clone()).into());
     }
+
+    let view_id = view_info.view_id();
     // ------------------- BUSINESS LOGIC -------------------
-    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
+    let mut t = C::Transaction::begin_read(catalog_state).await?;
     let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
     t.commit().await?;
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use http::StatusCode;
-use iceberg::TableIdent;
+use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{Location, LocationParseError};
 
@@ -86,6 +86,12 @@ pub struct TabularInfo<T: std::fmt::Debug + PartialEq + Copy> {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 impl BasicTabularInfo for TableInfo {
+    fn namespace_version(&self) -> NamespaceVersion {
+        self.namespace_version
+    }
+    fn warehouse_version(&self) -> WarehouseVersion {
+        self.warehouse_version
+    }
     fn warehouse_id(&self) -> WarehouseId {
         self.warehouse_id
     }
@@ -103,6 +109,12 @@ impl BasicTabularInfo for TableInfo {
     }
 }
 impl BasicTabularInfo for ViewInfo {
+    fn namespace_version(&self) -> NamespaceVersion {
+        self.namespace_version
+    }
+    fn warehouse_version(&self) -> WarehouseVersion {
+        self.warehouse_version
+    }
     fn warehouse_id(&self) -> WarehouseId {
         self.warehouse_id
     }
@@ -114,7 +126,6 @@ impl BasicTabularInfo for ViewInfo {
     fn tabular_id(&self) -> TabularId {
         self.tabular_id.into()
     }
-
     fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
@@ -340,12 +351,18 @@ pub trait AuthZTableInfo: Send + Sync {
     fn table_ident(&self) -> &TableIdent;
     fn table_id(&self) -> TableId;
     fn namespace_id(&self) -> NamespaceId;
+    fn namespace_ident(&self) -> &NamespaceIdent {
+        self.table_ident().namespace()
+    }
 }
 pub trait AuthZViewInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
     fn view_ident(&self) -> &TableIdent;
     fn view_id(&self) -> ViewId;
     fn namespace_id(&self) -> NamespaceId;
+    fn namespace_ident(&self) -> &NamespaceIdent {
+        self.view_ident().namespace()
+    }
 }
 
 impl AuthZTableInfo for TableInfo {
@@ -410,16 +427,33 @@ impl AuthZViewInfo for ViewDeletionInfo {
 
 pub trait BasicTabularInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
+    fn warehouse_version(&self) -> WarehouseVersion;
     fn tabular_ident(&self) -> &TableIdent;
     fn tabular_id(&self) -> TabularId;
     fn namespace_id(&self) -> NamespaceId;
+    fn namespace_ident(&self) -> &NamespaceIdent {
+        self.tabular_ident().namespace()
+    }
+    fn namespace_version(&self) -> NamespaceVersion;
 }
 
 impl BasicTabularInfo for ViewOrTableInfo {
+    fn namespace_version(&self) -> NamespaceVersion {
+        match self {
+            Self::Table(info) => info.namespace_version,
+            Self::View(info) => info.namespace_version,
+        }
+    }
     fn namespace_id(&self) -> NamespaceId {
         match self {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
+        }
+    }
+    fn warehouse_version(&self) -> WarehouseVersion {
+        match self {
+            Self::Table(info) => info.warehouse_version,
+            Self::View(info) => info.warehouse_version,
         }
     }
     fn warehouse_id(&self) -> WarehouseId {
@@ -442,6 +476,18 @@ impl BasicTabularInfo for ViewOrTableInfo {
     }
 }
 impl BasicTabularInfo for ViewOrTableDeletionInfo {
+    fn namespace_version(&self) -> NamespaceVersion {
+        match self {
+            Self::Table(info) => info.tabular.namespace_version,
+            Self::View(info) => info.tabular.namespace_version,
+        }
+    }
+    fn warehouse_version(&self) -> WarehouseVersion {
+        match self {
+            Self::Table(info) => info.tabular.warehouse_version,
+            Self::View(info) => info.tabular.warehouse_version,
+        }
+    }
     fn warehouse_id(&self) -> WarehouseId {
         match self {
             Self::Table(info) => info.tabular.warehouse_id,
@@ -593,6 +639,9 @@ pub struct CatalogSearchTabularInfo {
 }
 
 impl BasicTabularInfo for CatalogSearchTabularInfo {
+    fn warehouse_version(&self) -> WarehouseVersion {
+        self.tabular.warehouse_version()
+    }
     fn warehouse_id(&self) -> WarehouseId {
         self.tabular.warehouse_id()
     }
@@ -604,6 +653,9 @@ impl BasicTabularInfo for CatalogSearchTabularInfo {
     }
     fn namespace_id(&self) -> NamespaceId {
         self.tabular.namespace_id()
+    }
+    fn namespace_version(&self) -> NamespaceVersion {
+        self.tabular.namespace_version()
     }
 }
 

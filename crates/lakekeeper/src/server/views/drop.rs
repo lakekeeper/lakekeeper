@@ -9,18 +9,15 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
-        },
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         tasks::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskMetadata,
         },
-        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamedEntity, Result, SecretStore, State, TabularId, TabularListFlags,
-        Transaction,
+        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
+        State, TabularId, TabularListFlags, Transaction,
     },
 };
 
@@ -42,32 +39,14 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let (warehouse, namespace, view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-        C::get_namespace(
-            warehouse_id,
-            view.namespace.clone(),
-            state.v1_state.catalog.clone(),
-        ),
-        C::get_view_info(
+    let (warehouse, _namespace, view_info) = authorizer
+        .load_and_authorize_view_operation::<C>(
+            &request_metadata,
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            state.v1_state.catalog.clone(),
-        )
-    );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let namespace =
-        authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
-
-    let view_info = authorizer
-        .require_view_action(
-            &request_metadata,
-            &warehouse,
-            &namespace,
-            view.clone(),
-            view_info,
             CatalogViewAction::CanDrop,
+            state.v1_state.catalog.clone(),
         )
         .await?;
     let view_id = view_info.view_id();

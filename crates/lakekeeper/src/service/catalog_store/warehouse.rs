@@ -454,7 +454,7 @@ define_transparent_error! {
     ]
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Copy)]
 pub enum CachePolicy {
     /// Use cached data if available
     #[default]

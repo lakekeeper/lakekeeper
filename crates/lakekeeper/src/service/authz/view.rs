@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
@@ -6,13 +6,18 @@ use crate::{
     api::RequestMetadata,
     service::{
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            refresh_warehouse_and_namespace_if_needed, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             BackendUnavailableOrCountMismatch, CatalogViewAction, MustUse,
+        },
+        catalog_store::{
+            CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+            TabularListFlags,
         },
         Actor, AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
         InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
         ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
-        ViewIdentOrId,
+        ViewIdentOrId, ViewInfo,
     },
     WarehouseId,
 };
@@ -244,6 +249,136 @@ pub trait AuthZViewOps: Authorizer {
                 return Err(cant_see_err);
             }
         }
+    }
+
+    /// Fetches and authorizes a view operation in one call.
+    ///
+    /// This is a convenience method that combines:
+    /// 1. Parallel fetching of warehouse, namespace, and view
+    /// 2. Validation of warehouse and namespace presence
+    /// 3. Namespace ID consistency check (with TOCTOU protection)
+    /// 4. Authorization of the specified action
+    ///
+    /// # Arguments
+    /// * `request_metadata` - The request metadata containing actor information
+    /// * `warehouse_id` - The warehouse ID
+    /// * `view` - Either a `TableIdent` (name-based) or `ViewId` (UUID-based)
+    /// * `view_flags` - Flags to control which views to include (active, staged, deleted)
+    /// * `action` - The action to authorize (e.g., `CanDrop`, `CanReadData`, etc.)
+    /// * `catalog_state` - The catalog state for database operations
+    ///
+    /// # Returns
+    /// A tuple of `(warehouse, namespace, view)` if all checks pass
+    ///
+    /// # Errors
+    /// Returns `ErrorModel` if:
+    /// - Warehouse, namespace, or view not found
+    /// - Namespace ID mismatch (TOCTOU race condition)
+    /// - User not authorized for the action
+    /// - Database or authorization backend errors
+    async fn load_and_authorize_view_operation<C>(
+        &self,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        user_provided_view: impl Into<ViewIdentOrId> + Send,
+        view_flags: TabularListFlags,
+        action: impl Into<Self::ViewAction> + Send,
+        catalog_state: C::State,
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), ErrorModel>
+    where
+        C: CatalogStore,
+    {
+        let user_provided_view = user_provided_view.into();
+
+        // Determine the fetch strategy based on whether we have a ViewId or ViewIdent
+        let (warehouse, namespace, view_info) = match &user_provided_view {
+            ViewIdentOrId::Id(view_id) => {
+                // For ViewId: fetch warehouse and view in parallel first
+                let (warehouse_result, view_result) = tokio::join!(
+                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+                    C::get_view_info(warehouse_id, *view_id, view_flags, catalog_state.clone())
+                );
+
+                // Validate warehouse and view presence
+                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                let view_info = self.require_view_presence(
+                    warehouse_id,
+                    user_provided_view.clone(),
+                    view_result,
+                )?;
+
+                // Fetch namespace with cache policy to ensure it's at least as fresh as the view
+                let namespace_result = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    view_info.view_ident().namespace.clone(), // Must fetch via name to ensure consistency. Id is checked later
+                    CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
+                    catalog_state.clone(),
+                )
+                .await;
+
+                let namespace = self.require_namespace_presence(
+                    warehouse_id,
+                    view_info.namespace_id(),
+                    namespace_result,
+                )?;
+
+                (warehouse, namespace, view_info)
+            }
+            ViewIdentOrId::Ident(view_ident) => {
+                // For ViewIdent: fetch all three in parallel
+                let (warehouse_result, namespace_result, view_result) = tokio::join!(
+                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+                    C::get_namespace(
+                        warehouse_id,
+                        view_ident.namespace.clone(),
+                        catalog_state.clone()
+                    ),
+                    C::get_view_info(
+                        warehouse_id,
+                        view_ident.clone(),
+                        view_flags,
+                        catalog_state.clone()
+                    )
+                );
+
+                // Validate presence
+                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                let namespace = self.require_namespace_presence(
+                    warehouse_id,
+                    view_ident.namespace.clone(),
+                    namespace_result,
+                )?;
+                let view_info =
+                    self.require_view_presence(warehouse_id, view_ident.clone(), view_result)?;
+
+                (warehouse, namespace, view_info)
+            }
+        };
+
+        // Validate namespace ID consistency and version (with TOCTOU protection)
+        let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
+            self,
+            &warehouse,
+            &view_info,
+            namespace,
+            catalog_state,
+            AuthZCannotSeeView::new(warehouse_id, user_provided_view.clone()),
+        )
+        .await?;
+
+        // Perform authorization check
+        let view_info = self
+            .require_view_action(
+                request_metadata,
+                &warehouse,
+                &namespace,
+                user_provided_view,
+                Ok::<_, RequireViewActionError>(Some(view_info)),
+                action,
+            )
+            .await?;
+
+        Ok((warehouse, namespace, view_info))
     }
 
     async fn is_allowed_view_action(

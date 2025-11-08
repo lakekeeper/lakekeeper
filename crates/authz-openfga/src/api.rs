@@ -1685,7 +1685,7 @@ mod tests {
     }
 
     fn random_namespace(namespace_id: NamespaceId) -> NamespaceHierarchy {
-        NamespaceHierarchy::new_wih_id(Uuid::nil().into(), namespace_id)
+        NamespaceHierarchy::new_with_id(Uuid::nil().into(), namespace_id)
     }
 
     mod openfga_integration_tests {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
@@ -5,11 +7,12 @@ use crate::{
     service::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CatalogNamespaceAction, MustUse,
+            AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch, CatalogNamespaceAction,
+            MustUse,
         },
-        Actor, CatalogBackendError, CatalogGetNamespaceError, InvalidNamespaceIdentifier,
-        NamespaceHierarchy, NamespaceIdentOrId, NamespaceNotFound, ResolvedWarehouse,
-        SerializationError,
+        Actor, CachePolicy, CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps,
+        CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier, NamespaceHierarchy,
+        NamespaceIdentOrId, NamespaceNotFound, ResolvedWarehouse, SerializationError,
     },
     WarehouseId,
 };
@@ -175,6 +178,40 @@ pub trait AuthzNamespaceOps: Authorizer {
             return Err(cant_see_err);
         };
         Ok(namespace)
+    }
+
+    async fn load_and_authorize_namespace_action<C: CatalogStore>(
+        &self,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        namespace: impl Into<NamespaceIdentOrId> + Send,
+        action: impl Into<Self::NamespaceAction> + Send,
+        cache_policy: CachePolicy,
+        catalog_state: C::State,
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), ErrorModel> {
+        let provided_namespace = namespace.into();
+        let (warehouse, namespace) = tokio::join!(
+            C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+            C::get_namespace_cache_aware(
+                warehouse_id,
+                provided_namespace.clone(),
+                cache_policy,
+                catalog_state.clone()
+            )
+        );
+        let warehouse = self.require_warehouse_presence(warehouse_id, warehouse)?;
+
+        let namespace = self
+            .require_namespace_action(
+                request_metadata,
+                &warehouse,
+                provided_namespace,
+                namespace,
+                action.into(),
+            )
+            .await?;
+
+        Ok((warehouse, namespace))
     }
 
     async fn require_namespace_action(

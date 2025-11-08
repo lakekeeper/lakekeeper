@@ -3,11 +3,8 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
-        },
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, Result,
-        SecretStore, State,
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        CatalogStore, Result, SecretStore, State, TabularListFlags,
     },
 };
 
@@ -24,32 +21,14 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
 
-    let (warehouse, namespace, view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-        C::get_namespace(
-            warehouse_id,
-            view.namespace.clone(),
-            state.v1_state.catalog.clone(),
-        ),
-        C::get_view_info(
+    let (_warehouse, _namespace, _view_info) = authorizer
+        .load_and_authorize_view_operation::<C>(
+            &request_metadata,
             warehouse_id,
             view.clone(),
-            crate::service::TabularListFlags::active(),
-            state.v1_state.catalog.clone(),
-        )
-    );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let namespace =
-        authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
-
-    let _view_info = authorizer
-        .require_view_action(
-            &request_metadata,
-            &warehouse,
-            &namespace,
-            view,
-            view_info,
+            TabularListFlags::active(),
             CatalogViewAction::CanGetMetadata,
+            state.v1_state.catalog.clone(),
         )
         .await?;
 

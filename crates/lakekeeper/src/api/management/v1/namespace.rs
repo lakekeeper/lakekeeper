@@ -4,8 +4,8 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction},
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceId, SecretStore, State,
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,
     },
     WarehouseId,
@@ -31,19 +31,14 @@ where
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
 
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace =
-            C::get_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
-
-        authorizer
-            .require_namespace_action(
+        let (_warehouse, _namespace) = authorizer
+            .load_and_authorize_namespace_action::<C>(
                 &request_metadata,
-                &warehouse,
+                warehouse_id,
                 namespace_id,
-                namespace,
                 CatalogNamespaceAction::CanDelete,
+                CachePolicy::Skip,
+                state.v1_state.catalog.clone(),
             )
             .await?;
 
@@ -83,22 +78,16 @@ where
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
-        //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
 
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace =
-            C::get_namespace(warehouse_id, namespace_id, state.v1_state.catalog.clone()).await;
-
-        let namespace = authorizer
-            .require_namespace_action(
+        let (_warehouse, namespace) = authorizer
+            .load_and_authorize_namespace_action::<C>(
                 &request_metadata,
-                &warehouse,
+                warehouse_id,
                 namespace_id,
-                namespace,
                 CatalogNamespaceAction::CanGetMetadata,
+                CachePolicy::Skip,
+                state.v1_state.catalog,
             )
             .await?;
 

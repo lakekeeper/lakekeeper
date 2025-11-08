@@ -2,12 +2,9 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
-            RequireViewActionError,
-        },
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
-        State, TabularId, TabularListFlags, Transaction, ViewId,
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        CatalogStore, CatalogTabularOps, SecretStore, State, TabularId, TabularListFlags,
+        Transaction, ViewId,
     },
     WarehouseId,
 };
@@ -33,37 +30,14 @@ where
         let authorizer = state.v1_state.authz;
         let state_catalog = state.v1_state.catalog;
 
-        let (warehouse, view) = tokio::join!(
-            C::get_active_warehouse_by_id(warehouse_id, state_catalog.clone()),
-            C::get_view_info(
+        let (_warehouse, _namespace, _view) = authorizer
+            .load_and_authorize_view_operation::<C>(
+                &request_metadata,
                 warehouse_id,
                 view_id,
                 TabularListFlags::all(),
-                state_catalog.clone(),
-            )
-        );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let view = authorizer.require_view_presence(warehouse_id, view_id, view)?;
-        let namespace = C::get_namespace(
-            warehouse_id,
-            view.tabular_ident.namespace.clone(),
-            state_catalog.clone(),
-        )
-        .await;
-        let namespace = authorizer.require_namespace_presence(
-            warehouse_id,
-            view.tabular_ident.namespace.clone(),
-            namespace,
-        )?;
-
-        authorizer
-            .require_view_action(
-                &request_metadata,
-                &warehouse,
-                &namespace,
-                view_id,
-                Ok::<_, RequireViewActionError>(Some(view)),
                 CatalogViewAction::CanDrop,
+                state_catalog.clone(),
             )
             .await?;
 
@@ -93,37 +67,14 @@ where
 
         let state_catalog = state.v1_state.catalog;
 
-        let (warehouse, view) = tokio::join!(
-            C::get_active_warehouse_by_id(warehouse_id, state_catalog.clone()),
-            C::get_view_info(
+        let (_warehouse, _namespace, view) = authorizer
+            .load_and_authorize_view_operation::<C>(
+                &request_metadata,
                 warehouse_id,
                 view_id,
                 TabularListFlags::all(),
-                state_catalog.clone(),
-            )
-        );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let view = authorizer.require_view_presence(warehouse_id, view_id, view)?;
-        let namespace = C::get_namespace(
-            warehouse_id,
-            view.tabular_ident.namespace.clone(),
-            state_catalog.clone(),
-        )
-        .await;
-        let namespace = authorizer.require_namespace_presence(
-            warehouse_id,
-            view.tabular_ident.namespace.clone(),
-            namespace,
-        )?;
-
-        let view = authorizer
-            .require_view_action(
-                &request_metadata,
-                &warehouse,
-                &namespace,
-                view_id,
-                Ok::<_, RequireViewActionError>(Some(view)),
                 CatalogViewAction::CanGetMetadata,
+                state_catalog.clone(),
             )
             .await?;
 

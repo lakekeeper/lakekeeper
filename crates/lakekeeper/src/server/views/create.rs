@@ -18,10 +18,10 @@ use crate::{
         views::validate_view_properties,
     },
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         storage::{StorageLocations as _, StoragePermissions},
-        CatalogNamespaceOps, CatalogStore, CatalogViewOps, CatalogWarehouseOps, Result,
-        SecretStore, State, TabularId, Transaction, ViewId,
+        CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
+        Transaction, ViewId,
     },
 };
 
@@ -58,20 +58,14 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- AUTHZ -------------------
     let authorizer = &state.v1_state.authz;
-
-    let (warehouse, namespace) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-        C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
-    );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
-    let ns_hierarchy = authorizer
-        .require_namespace_action(
+    let (warehouse, ns_hierarchy) = authorizer
+        .load_and_authorize_namespace_action::<C>(
             &request_metadata,
-            &warehouse,
+            warehouse_id,
             provided_ns,
-            namespace,
             CatalogNamespaceAction::CanCreateView,
+            CachePolicy::Use,
+            state.v1_state.catalog.clone(),
         )
         .await?;
 
