@@ -111,7 +111,6 @@ pub enum CatalogWarehouseAction {
     CanControlAllTasks,
     CanSetWarehouseProtection,
     CanGetEndpointStatistics,
-    
 }
 
 #[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
