@@ -1,0 +1,8 @@
+module lakekeeper-model-version
+
+type auth_model_id
+
+type model_version
+  relations
+    define openfga_id: [auth_model_id]
+    define exists: [auth_model_id:*]

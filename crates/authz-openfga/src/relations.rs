@@ -434,6 +434,7 @@ pub enum ProjectRelation {
     CanGrantProjectAdmin,
     CanGrantSecurityAdmin,
     CanGrantDataAdmin,
+    CanGetEndpointStatistics,
 }
 
 impl ProjectAction for ProjectRelation {}
@@ -635,6 +636,9 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::CanCreateRole => ProjectRelation::CanCreateRole,
             CatalogProjectAction::CanListRoles => ProjectRelation::CanListRoles,
             CatalogProjectAction::CanSearchRoles => ProjectRelation::CanSearchRoles,
+            CatalogProjectAction::CanGetEndpointStatistics => {
+                ProjectRelation::CanGetEndpointStatistics
+            }
         }
     }
 }
@@ -684,6 +688,8 @@ pub enum WarehouseRelation {
     CanModifyTaskQueueConfig,
     CanGetAllTasks,
     CanControlAllTasks,
+    CanSetWarehouseProtection,
+    CanGetEndpointStatistics,
 }
 impl WarehouseAction for WarehouseRelation {}
 
@@ -912,6 +918,12 @@ impl ReducedRelation for CatalogWarehouseAction {
             }
             CatalogWarehouseAction::CanGetAllTasks => WarehouseRelation::CanGetAllTasks,
             CatalogWarehouseAction::CanControlAllTasks => WarehouseRelation::CanControlAllTasks,
+            CatalogWarehouseAction::CanSetWarehouseProtection => {
+                WarehouseRelation::CanSetWarehouseProtection
+            }
+            CatalogWarehouseAction::CanGetEndpointStatistics => {
+                WarehouseRelation::CanGetEndpointStatistics
+            }
         }
     }
 }

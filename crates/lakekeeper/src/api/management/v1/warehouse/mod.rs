@@ -585,7 +585,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanDelete,
+                CatalogWarehouseAction::CanSetWarehouseProtection,
             )
             .await?;
 

@@ -282,7 +282,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         if search.chars().count() > 64 {
             search = search.chars().take(64).collect();
         }
-        C::search_role(&search, context.v1_state.catalog).await
+        C::search_role(&project_id, &search, context.v1_state.catalog).await
     }
 
     async fn delete_role(

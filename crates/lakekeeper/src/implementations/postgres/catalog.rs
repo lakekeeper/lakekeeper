@@ -347,10 +347,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn search_role(
+        project_id: &ProjectId,
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse> {
-        search_role(search_term, &catalog_state.read_pool()).await
+        search_role(project_id, search_term, &catalog_state.read_pool()).await
     }
 
     // ---------------- User Management API ----------------

@@ -286,7 +286,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         &request_metadata,
                         id.into(),
                         warehouse,
-                        CatalogWarehouseAction::CanGetMetadata,
+                        CatalogWarehouseAction::CanGetEndpointStatistics,
                     )
                     .await?;
             }
@@ -295,7 +295,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_project_action(
                         &request_metadata,
                         &project_id,
-                        CatalogProjectAction::CanGetMetadata,
+                        CatalogProjectAction::CanGetEndpointStatistics,
                     )
                     .await?;
             }

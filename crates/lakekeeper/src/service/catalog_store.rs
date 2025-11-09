@@ -507,6 +507,7 @@ where
     ) -> Result<Option<()>>;
 
     async fn search_role(
+        project_id: &ProjectId,
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse>;

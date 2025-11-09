@@ -76,6 +76,7 @@ pub enum CatalogProjectAction {
     CanCreateRole,
     CanListRoles,
     CanSearchRoles,
+    CanGetEndpointStatistics,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
@@ -108,6 +109,9 @@ pub enum CatalogWarehouseAction {
     CanModifyTaskQueueConfig,
     CanGetAllTasks,
     CanControlAllTasks,
+    CanSetWarehouseProtection,
+    CanGetEndpointStatistics,
+    
 }
 
 #[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]

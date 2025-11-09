@@ -125,6 +125,7 @@ pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 }
 
 pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    project_id: &ProjectId,
     search_term: &str,
     connection: E,
 ) -> Result<SearchRoleResponse> {
@@ -133,10 +134,12 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         r#"
         SELECT id, name, description, project_id, created_at, updated_at
         FROM role
+        WHERE project_id = $2
         ORDER BY name <-> $1 ASC
         LIMIT 10
         "#,
         search_term,
+        project_id
     )
     .fetch_all(connection)
     .await
@@ -714,7 +717,9 @@ mod test {
         .await
         .unwrap();
 
-        let search_result = search_role("ro 1", &state.read_pool()).await.unwrap();
+        let search_result = search_role(&project_id, "ro 1", &state.read_pool())
+            .await
+            .unwrap();
         assert_eq!(search_result.roles.len(), 1);
         assert_eq!(search_result.roles[0].name, role_name);
     }

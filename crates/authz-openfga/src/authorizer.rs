@@ -205,6 +205,13 @@ impl Authorizer for OpenFGAAuthorizer {
         role_id: RoleId,
         action: CatalogRoleAction,
     ) -> AuthorizerResult<bool> {
+        if CatalogRoleAction::CanRead == action {
+            // Everyone with access to the catalog can read role metadata.
+            // This does not include assignments to the role.
+            // Used for cross-project role get.
+            return Ok(true);
+        }
+
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -241,8 +248,6 @@ impl Authorizer for OpenFGAAuthorizer {
 
         let server_id = self.openfga_server().clone();
         match action {
-            // Currently, given a user-id, all information about a user can be retrieved.
-            // For multi-tenant setups, we need to restrict this to a tenant.
             CatalogUserAction::CanRead => Ok(true),
             CatalogUserAction::CanUpdate => {
                 self.check(CheckRequestTupleKey {
