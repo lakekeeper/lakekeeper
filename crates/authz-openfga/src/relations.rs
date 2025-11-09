@@ -578,6 +578,7 @@ pub(super) enum APIProjectAction {
     GrantProjectAdmin,
     GrantSecurityAdmin,
     GrantDataAdmin,
+    GetEndpointStatistics,
 }
 
 impl ReducedRelation for APIProjectRelation {
@@ -618,6 +619,7 @@ impl ReducedRelation for APIProjectAction {
             APIProjectAction::GrantProjectAdmin => ProjectRelation::CanGrantProjectAdmin,
             APIProjectAction::GrantSecurityAdmin => ProjectRelation::CanGrantSecurityAdmin,
             APIProjectAction::GrantDataAdmin => ProjectRelation::CanGrantDataAdmin,
+            APIProjectAction::GetEndpointStatistics => ProjectRelation::CanGetEndpointStatistics,
         }
     }
 }
@@ -833,6 +835,8 @@ pub(super) enum APIWarehouseAction {
     ChangeOwnership,
     GetAllTasks,
     ControlAllTasks,
+    SetWarehouseProtection,
+    GetEndpointStatistics,
 }
 
 impl ReducedRelation for APIWarehouseRelation {
@@ -880,6 +884,12 @@ impl ReducedRelation for APIWarehouseAction {
             APIWarehouseAction::ChangeOwnership => WarehouseRelation::CanChangeOwnership,
             APIWarehouseAction::GetAllTasks => WarehouseRelation::CanGetAllTasks,
             APIWarehouseAction::ControlAllTasks => WarehouseRelation::CanControlAllTasks,
+            APIWarehouseAction::SetWarehouseProtection => {
+                WarehouseRelation::CanSetWarehouseProtection
+            }
+            APIWarehouseAction::GetEndpointStatistics => {
+                WarehouseRelation::CanGetEndpointStatistics
+            }
         }
     }
 }
