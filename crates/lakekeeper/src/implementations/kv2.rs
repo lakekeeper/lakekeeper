@@ -40,7 +40,7 @@ impl SecretStore for SecretsState {
         let metadata = match metadata {
             Ok(meta) => meta,
             Err(err) => {
-                if matches!(&err, ClientError::FileNotFoundError { .. }) {
+                if matches!(&err, ClientError::APIError { code: 404, .. }) {
                     return Ok(None);
                 }
 
