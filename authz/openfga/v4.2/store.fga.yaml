@@ -573,6 +573,8 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_change_ownership: true
+          can_get_endpoint_statistics: true
+          can_set_protection: true
       - user: user:warehouse_1_owner
         object: namespace:namespace_1
         assertions:
@@ -623,6 +625,7 @@ tests:
           can_grant_describe: true
           can_grant_modify: true
           can_change_ownership: true
+          can_set_protection: true
   - name: Namespace Owner can do everyting in their Namespace but not above
     check:
       - user: user:namespace_1_1_owner
@@ -731,6 +734,7 @@ tests:
           can_grant_project_admin: false
           can_grant_security_admin: false
           can_grant_data_admin: false
+          can_get_endpoint_statistics: false
       - user: user:select_table_3
         object: warehouse:warehouse_1
         assertions:
@@ -755,6 +759,8 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
+          can_get_endpoint_statistics: false
+          can_set_protection: false
       - user: user:select_table_3
         object: namespace:namespace_1
         assertions:
