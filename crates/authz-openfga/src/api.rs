@@ -1571,7 +1571,13 @@ async fn checked_write<RA: Assignment>(
             assumed_role: _
         }
     ) {
-        return Err(OpenFGAError::GrantRoleWithAssumedRole);
+        if object.starts_with("namespace:")
+            || object.starts_with("lakekeeper_table")
+            || object.starts_with("lakekeeper_view")
+        {
+            // Currently not supported as we are missing public usersets for managed access
+            return Err(OpenFGAError::GrantRoleWithAssumedRole);
+        }
     }
 
     futures::future::try_join_all(grant_relations.iter().map(|relation| async {
