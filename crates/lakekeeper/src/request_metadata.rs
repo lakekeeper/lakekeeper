@@ -144,7 +144,7 @@ impl RequestMetadata {
 
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
-    pub fn random_human(user_id: crate::service::UserId) -> Self {
+    pub fn test_user(user_id: crate::service::UserId) -> Self {
         Self {
             request_id: Uuid::now_v7(),
             authentication: Some(
@@ -159,6 +159,36 @@ impl RequestMetadata {
             ),
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Principal(user_id).into(),
+            matched_path: None,
+            request_method: Method::default(),
+            project_id: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_user_assumed_role(
+        user_id: crate::service::UserId,
+        role_id: crate::service::RoleId,
+    ) -> Self {
+        Self {
+            request_id: Uuid::now_v7(),
+            authentication: Some(
+                Authentication::builder()
+                    .token_header(None)
+                    .claims(serde_json::json!({}))
+                    .subject(user_id.clone().into())
+                    .name(Some("Test User".to_string()))
+                    .email(None)
+                    .principal_type(None)
+                    .build(),
+            ),
+            base_url: "http://localhost:8181".to_string(),
+            actor: Actor::Role {
+                principal: user_id,
+                assumed_role: role_id,
+            }
+            .into(),
             matched_path: None,
             request_method: Method::default(),
             project_id: None,

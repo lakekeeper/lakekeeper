@@ -113,6 +113,8 @@ pub enum OpenFGAError {
     SelfAssignment(String),
     #[error("Invalid OpenFGA query: {0}")]
     InvalidQuery(String),
+    #[error("Cannot grant permissions while role is assumed in OpenFGA Authorizer")]
+    GrantRoleWithAssumedRole,
 }
 
 impl OpenFGAError {

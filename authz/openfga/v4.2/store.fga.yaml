@@ -965,27 +965,6 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: role:namespace_2_1_owner#assignee
-        object: namespace:namespace_2_1
-        assertions:
-          can_create_table: true
-          can_create_view: true
-          can_create_namespace: true
-          can_delete: true
-          can_update_properties: true
-          can_get_metadata: true
-          can_list_tables: true
-          can_list_views: true
-          can_list_namespaces: true
-          can_list_everything: true
-          can_include_in_list: true
-          can_grant_create: false
-          can_grant_describe: false
-          can_grant_modify: false
-          can_grant_select: false
-          can_grant_pass_grants: false
-          can_grant_manage_grants: false
-          can_change_ownership: false
       - user: user:warehouse_2/table_2_2_owner
         object: lakekeeper_table:warehouse_2/table_2_2
         assertions:

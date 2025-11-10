@@ -1564,6 +1564,16 @@ async fn checked_write<RA: Assignment>(
         .map(|action| action.relation().grant_relation())
         .collect::<HashSet<_>>();
 
+    if matches!(
+        actor,
+        Actor::Role {
+            principal: _,
+            assumed_role: _
+        }
+    ) {
+        return Err(OpenFGAError::GrantRoleWithAssumedRole);
+    }
+
     futures::future::try_join_all(grant_relations.iter().map(|relation| async {
         let key = CheckRequestTupleKey {
             user: openfga_actor.clone(),
@@ -1690,7 +1700,11 @@ mod tests {
 
     mod openfga_integration_tests {
         use lakekeeper::{
-            service::{authn::UserId, authz::Authorizer, ResolvedWarehouse},
+            service::{
+                authn::UserId,
+                authz::{Authorizer, NamespaceParent},
+                ResolvedWarehouse,
+            },
             tokio,
         };
         use openfga_client::client::TupleKey;
@@ -1807,7 +1821,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
-                    &RequestMetadata::random_human(user_id_assignee.clone()),
+                    &RequestMetadata::test_user(user_id_assignee.clone()),
                     &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
@@ -1829,7 +1843,7 @@ mod tests {
             // Note: `are_allowed_namespace_actions` calls `batch_check` internally.
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
-                    &RequestMetadata::random_human(user_id_assignee.clone()),
+                    &RequestMetadata::test_user(user_id_assignee.clone()),
                     &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
@@ -2218,7 +2232,7 @@ mod tests {
                     .unwrap();
             }
 
-            let metadata = RequestMetadata::random_human(user_id);
+            let metadata = RequestMetadata::test_user(user_id);
             let warehouses: Vec<ResolvedWarehouse> = warehouse_ids
                 .iter()
                 .map(|&id| ResolvedWarehouse::new_with_id(id))
@@ -2271,7 +2285,7 @@ mod tests {
                 }
             }
 
-            let metadata = RequestMetadata::random_human(user_id);
+            let metadata = RequestMetadata::test_user(user_id);
             let warehouse = ResolvedWarehouse::new_random();
 
             let namespaces: Vec<_> = namespace_ids
@@ -2325,7 +2339,7 @@ mod tests {
                     .unwrap();
             }
 
-            let metadata = RequestMetadata::random_human(user_id);
+            let metadata = RequestMetadata::test_user(user_id);
 
             let actions: Vec<_> = project_ids
                 .iter()
@@ -2354,7 +2368,7 @@ mod tests {
             let namespace_ids: Vec<NamespaceId> =
                 (0..10).map(|_| NamespaceId::new_random()).collect();
 
-            let metadata = RequestMetadata::random_human(user_id);
+            let metadata = RequestMetadata::test_user(user_id);
             let warehouse = ResolvedWarehouse::new_random();
 
             let namespaces: Vec<_> = namespace_ids
@@ -2405,7 +2419,7 @@ mod tests {
                     .unwrap();
             }
 
-            let metadata = RequestMetadata::random_human(user_id);
+            let metadata = RequestMetadata::test_user(user_id);
             let warehouse = ResolvedWarehouse::new_random();
 
             let namespaces: Vec<_> = namespace_ids
@@ -2425,6 +2439,149 @@ mod tests {
 
             // All should be allowed
             assert_eq!(results, vec![true; 8]);
+        }
+
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_managed_access_warehouse_inheritance_user() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            // Create two users: user A will be namespace owner, user B will receive grants
+            let user_a = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let user_b = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let user_c = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // Create warehouse and namespace
+            let warehouse_id = WarehouseId::from(Uuid::now_v7());
+            let namespace_id = NamespaceId::new_random();
+
+            // Setup hierarchy: warehouse -> namespace
+            authorizer
+                .create_namespace(
+                    &RequestMetadata::test_user(user_a.clone()),
+                    namespace_id,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+
+            // User A grants select on namespace to user B - should succeed (no managed access yet)
+            let result = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_a.clone()),
+                vec![NamespaceAssignment::Select(user_b.clone().into())],
+                vec![],
+                &namespace_id.to_openfga(),
+            )
+            .await;
+
+            assert!(
+                result.is_ok(),
+                "User A should be able to grant select before managed access is enabled"
+            );
+
+            // Set warehouse to managed access
+            set_managed_access(authorizer.clone(), &warehouse_id, true)
+                .await
+                .unwrap();
+
+            // Verify managed access is enabled
+            let managed = get_managed_access(&authorizer, &warehouse_id)
+                .await
+                .unwrap();
+            assert!(managed, "Warehouse should have managed access enabled");
+
+            // User A tries to grant select on namespace to user B again - should FAIL
+            let result = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_a.clone()),
+                vec![NamespaceAssignment::Select(user_c.clone().into())],
+                vec![],
+                &namespace_id.to_openfga(),
+            )
+            .await;
+
+            assert!(result.is_err(), "User A should NOT be able to grant select when warehouse has managed access enabled");
+        }
+
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_managed_access_warehouse_inheritance_role() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            // Create two users: user A will be namespace owner, user B will receive grants
+            let user_a = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role_a = RoleId::new(Uuid::now_v7());
+
+            let actor = Actor::Role {
+                principal: user_a.clone(),
+                assumed_role: role_a,
+            };
+
+            // Create warehouse and namespace
+            let warehouse_id = WarehouseId::from(Uuid::now_v7());
+            let namespace_id = NamespaceId::new_random();
+
+            // Setup hierarchy: warehouse -> namespace
+            authorizer
+                .create_namespace(
+                    &RequestMetadata::test_user_assumed_role(user_a.clone(), role_a),
+                    namespace_id,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+
+            // // User A grants select on namespace- should succeed (no managed access yet)
+            // Currently unsupported as the userset check for ownership does not support the public tuple
+            // role:*
+            // This worked with OpenFGA < 1.8.13
+            // checked_write(
+            //     authorizer.clone(),
+            //     &actor,
+            //     vec![NamespaceAssignment::Select(
+            //         UserId::new_unchecked("oidc", &Uuid::now_v7().to_string()).into(),
+            //     )],
+            //     vec![],
+            //     &namespace_id.to_openfga(),
+            // )
+            // .await
+            // .unwrap();
+
+            // Set warehouse to managed access
+            set_managed_access(authorizer.clone(), &warehouse_id, true)
+                .await
+                .unwrap();
+
+            // Verify managed access is enabled
+            let managed = get_managed_access(&authorizer, &warehouse_id)
+                .await
+                .unwrap();
+            assert!(managed, "Warehouse should have managed access enabled");
+
+            // User A tries to grant select on namespace to user B again - should FAIL
+            let result = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_a.clone()),
+                vec![NamespaceAssignment::Select(
+                    UserId::new_unchecked("oidc", &Uuid::now_v7().to_string()).into(),
+                )],
+                vec![],
+                &namespace_id.to_openfga(),
+            )
+            .await;
+            assert!(result.is_err(), "User A should NOT be able to grant select when warehouse has managed access enabled");
+            let result = checked_write(
+                authorizer.clone(),
+                &actor,
+                vec![NamespaceAssignment::Select(
+                    UserId::new_unchecked("oidc", &Uuid::now_v7().to_string()).into(),
+                )],
+                vec![],
+                &namespace_id.to_openfga(),
+            )
+            .await;
+            assert!(result.is_err(), "User A with assumed role should NOT be able to grant select when warehouse has managed access enabled");
         }
     }
 }

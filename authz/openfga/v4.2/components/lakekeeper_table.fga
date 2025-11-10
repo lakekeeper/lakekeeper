@@ -25,7 +25,7 @@ type lakekeeper_table
     define can_rename: modify
     define can_include_in_list: can_get_metadata
     define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_change_ownership
-    define can_set_protection: can_drop
+    define can_set_protection: modify
     # Task permissions
     define can_get_tasks: describe
     define can_control_tasks: modify

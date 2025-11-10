@@ -1448,7 +1448,7 @@ mod openfga_integration_tests {
 
         let (client, store_name, server_id) = v3_client_for_empty_store().await?;
         let authorizer = OpenFGAAuthorizer::new(client.clone(), server_id);
-        let req_meta_human = RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
+        let req_meta_human = RequestMetadata::test_user(UserId::new_unchecked("oidc", "user"));
 
         tracing::info!("Populating OpenFGA store");
         let start_populating = Instant::now();

@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: read  # Needed to checkout code
+  contents: read # Needed to checkout code
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -24,8 +24,8 @@ jobs:
 
       - name: Install FGA CLI
         run: |
-          wget https://github.com/openfga/cli/releases/download/v0.6.1/fga_0.6.1_linux_amd64.deb
-          sudo apt-get install -yqq ./fga_0.6.1_linux_amd64.deb
+          wget https://github.com/openfga/cli/releases/download/v0.7.8/fga_0.7.8_linux_amd64.deb
+          sudo apt-get install -yqq ./fga_0.7.8_linux_amd64.deb
 
       - name: Validate Collaboration Model
         run: |

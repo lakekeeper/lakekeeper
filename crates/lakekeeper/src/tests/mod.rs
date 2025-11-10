@@ -139,7 +139,7 @@ pub(crate) async fn setup<T: Authorizer>(
     let api_context = get_api_context(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {
-        RequestMetadata::random_human(user_id)
+        RequestMetadata::test_user(user_id)
     } else {
         random_request_metadata()
     };

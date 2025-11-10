@@ -663,7 +663,7 @@ mod tests {
                     properties: None,
                 },
                 ctx.clone(),
-                RequestMetadata::random_human(operator_id.clone()),
+                RequestMetadata::test_user(operator_id.clone()),
             )
             .await
             .unwrap();
@@ -676,8 +676,8 @@ mod tests {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, _warehouse, _namespace) = setup(operator_id.clone(), pool).await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let user_metadata = RequestMetadata::random_human(user_id.clone());
-            let operator_metadata = RequestMetadata::random_human(operator_id.clone());
+            let user_metadata = RequestMetadata::test_user(user_id.clone());
+            let operator_metadata = RequestMetadata::test_user(operator_id.clone());
 
             let role_id = ApiServer::create_role(
                 CreateRoleRequest {
@@ -730,9 +730,9 @@ mod tests {
             .unwrap();
 
             let nobody_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let nobody_metadata = RequestMetadata::random_human(nobody_id.clone());
+            let nobody_metadata = RequestMetadata::test_user(nobody_id.clone());
             let user_1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let user_1_metadata = RequestMetadata::random_human(user_1_id.clone());
+            let user_1_metadata = RequestMetadata::test_user(user_1_id.clone());
 
             ctx.v1_state
                 .authz
@@ -852,7 +852,7 @@ mod tests {
                 };
                 let allowed = check_internal(
                     ctx.clone(),
-                    &RequestMetadata::random_human(operator_id.clone()),
+                    &RequestMetadata::test_user(operator_id.clone()),
                     request,
                 )
                 .await
@@ -865,7 +865,7 @@ mod tests {
                 };
                 check_internal(
                     ctx.clone(),
-                    &RequestMetadata::random_human(operator_id.clone()),
+                    &RequestMetadata::test_user(operator_id.clone()),
                     request,
                 )
                 .await
