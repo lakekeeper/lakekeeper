@@ -27,7 +27,7 @@ type warehouse
     define can_update_storage_credential: modify
     define can_get_metadata: describe or can_get_metadata from namespace
     define can_get_config: can_get_metadata
-    define can_set_warehouse_protection: can_delete
+    define can_set_protection: can_delete
     # Can list elements in this warehouse - will be filtered subsequently
     define can_list_namespaces: can_get_metadata
     define can_list_everything: describe

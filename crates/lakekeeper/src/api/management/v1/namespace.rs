@@ -36,7 +36,7 @@ where
                 &request_metadata,
                 warehouse_id,
                 namespace_id,
-                CatalogNamespaceAction::CanDelete,
+                CatalogNamespaceAction::CanSetProtection,
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )

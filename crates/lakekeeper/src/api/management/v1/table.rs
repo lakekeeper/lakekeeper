@@ -36,7 +36,7 @@ where
                 warehouse_id,
                 table_id,
                 TabularListFlags::all(),
-                CatalogTableAction::CanDrop,
+                CatalogTableAction::CanSetProtection,
                 state_catalog.clone(),
             )
             .await?;
