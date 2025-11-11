@@ -98,7 +98,7 @@ impl StdError for ErrorModel {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.source
             .as_ref()
-            .map(|s| &**s as &(dyn StdError + 'static))
+            .map(|e| e.as_ref() as &(dyn StdError + 'static))
     }
 }
 
@@ -253,6 +253,54 @@ impl ErrorModel {
     pub fn append_detail(mut self, detail: impl Into<String>) -> Self {
         self.stack.push(detail.into());
         self
+    }
+
+    #[must_use]
+    pub fn from_io_error_with_code(
+        io_error: lakekeeper_io::IOError,
+        code: impl Into<u16>,
+        detail: &str,
+    ) -> Self {
+        let message = match &io_error.location() {
+            Some(location) => format!("IO error at `{location}`: {}", io_error.reason()),
+            None => format!("IO error: {}", io_error.reason()),
+        };
+
+        Self {
+            message,
+            r#type: io_error.kind().to_string(),
+            code: code.into(),
+            stack: io_error
+                .context()
+                .iter()
+                .map(ToString::to_string)
+                .chain(std::iter::once(detail.to_string()))
+                .collect(),
+            source: io_error.into_source().map(Into::into),
+        }
+    }
+
+    #[must_use]
+    pub fn from_io_error(io_error: lakekeeper_io::IOError, detail: &str) -> Self {
+        // Map external IO errors (e.g., from S3) to appropriate HTTP status codes.
+        // We use PRECONDITION_FAILED (412) for most delegation/dependency errors
+        // to avoid leaking internal architecture details or confusing clients about
+        // where auth/permission issues occurred.
+        let code = match io_error.kind() {
+            lakekeeper_io::ErrorKind::Unexpected => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            lakekeeper_io::ErrorKind::NotFound => StatusCode::BAD_REQUEST.as_u16(),
+            lakekeeper_io::ErrorKind::RequestTimeout
+            | lakekeeper_io::ErrorKind::ServiceUnavailable
+            | lakekeeper_io::ErrorKind::ConfigInvalid
+            | lakekeeper_io::ErrorKind::PermissionDenied
+            | lakekeeper_io::ErrorKind::RateLimited
+            | lakekeeper_io::ErrorKind::ConditionNotMatch
+            | lakekeeper_io::ErrorKind::CredentialsExpired => {
+                StatusCode::PRECONDITION_FAILED.as_u16()
+            }
+        };
+
+        Self::from_io_error_with_code(io_error, code, detail)
     }
 }
 

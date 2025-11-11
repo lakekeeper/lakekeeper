@@ -140,28 +140,22 @@ impl IOErrorExt {
 impl From<IOErrorExt> for ErrorModel {
     fn from(value: IOErrorExt) -> Self {
         let typ = value.to_type();
-        let boxed = Box::new(value);
-        let message = boxed.to_string();
+        let message = value.to_string();
 
-        tracing::info!(?boxed, "IO Error: {message}");
-
-        match boxed.as_ref() {
-            IOErrorExt::FileDecompression(_) => {
-                ErrorModel::failed_dependency(message, typ, Some(boxed))
+        match value {
+            IOErrorExt::FileDecompression(e) => {
+                ErrorModel::failed_dependency(message, typ, Some(e))
             }
-            IOErrorExt::FileCompression(_) | IOErrorExt::Serialization(_) => {
-                ErrorModel::internal(message, typ, Some(boxed))
+            IOErrorExt::FileCompression(e) => ErrorModel::internal(message, typ, Some(e)),
+            IOErrorExt::Serialization(e) => ErrorModel::internal(message, typ, Some(Box::new(e))),
+            IOErrorExt::Deserialization(e) => {
+                ErrorModel::bad_request(message, typ, Some(Box::new(e)))
             }
-            IOErrorExt::Deserialization(_) | IOErrorExt::InvalidLocation(_) => {
-                ErrorModel::bad_request(message, typ, Some(boxed))
+            IOErrorExt::InvalidLocation(e) => {
+                ErrorModel::bad_request(message, typ, Some(Box::new(e)))
             }
             IOErrorExt::IOError(e) => {
-                let context = e
-                    .context()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                ErrorModel::bad_request(message, typ, Some(boxed)).append_details(context)
+                ErrorModel::from_io_error(e, "Lakekeeper IO operation failed.")
             }
         }
     }

@@ -277,6 +277,11 @@ impl IOError {
     pub fn context(&self) -> &[String] {
         &self.context
     }
+
+    #[must_use]
+    pub fn into_source(self) -> Option<anyhow::Error> {
+        self.source
+    }
 }
 
 impl RetryableError for IOError {
@@ -287,7 +292,6 @@ impl RetryableError for IOError {
 
 /// `ErrorKind` is all kinds of Error of opendal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum_macros::Display)]
-#[non_exhaustive]
 pub enum ErrorKind {
     Unexpected,
     RequestTimeout,
