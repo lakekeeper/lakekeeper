@@ -590,10 +590,7 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         let this_role_id = Uuid::now_v7();
-        headers.insert(
-            "X-Assume-Role",
-            this_role_id.clone().to_string().parse().unwrap(),
-        );
+        headers.insert("X-Assume-Role", this_role_id.to_string().parse().unwrap());
         let role_id = extract_role_id(&headers).unwrap().unwrap();
         assert_eq!(role_id, RoleId::new(this_role_id));
 
