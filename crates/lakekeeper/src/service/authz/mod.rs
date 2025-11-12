@@ -6,8 +6,8 @@ use strum::EnumIter;
 use strum_macros::EnumString;
 
 use super::{
-    health::HealthExt, Actor, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State,
-    TableId, ViewId, WarehouseId,
+    health::HealthExt, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
+    ViewId, WarehouseId,
 };
 use crate::{
     api::iceberg::v1::Result,
@@ -22,7 +22,6 @@ mod error;
 pub mod implementations;
 pub use error::*;
 mod warehouse;
-use iceberg_ext::catalog::rest::ErrorModel;
 pub use implementations::allow_all::AllowAllAuthorizer;
 pub use warehouse::*;
 mod namespace;
@@ -35,6 +34,10 @@ mod project;
 pub use project::*;
 mod server;
 pub use server::*;
+mod user;
+pub use user::*;
+mod role;
+pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
@@ -225,6 +228,8 @@ where
     type NamespaceAction: NamespaceAction;
     type TableAction: TableAction;
     type ViewAction: ViewAction;
+    type UserAction: UserAction;
+    type RoleAction: RoleAction;
 
     fn implementation_name() -> &'static str;
 
@@ -241,7 +246,11 @@ where
 
     /// Check if the requested actor combination is allowed - especially if the user
     /// is allowed to assume the specified role.
-    async fn check_actor(&self, actor: &Actor) -> Result<()>;
+    async fn check_assume_role_impl(
+        &self,
+        principal: &UserId,
+        assumed_role: RoleId,
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Check if this server can be bootstrapped by the provided user.
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
@@ -255,21 +264,15 @@ where
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
         Ok(ListProjectsResponse::Unsupported)
     }
 
     /// Search users
-    async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool>;
-
-    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<MustUse<bool>> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.can_search_users_impl(metadata).await
-        }
-        .map(MustUse::from)
-    }
+    async fn can_search_users_impl(
+        &self,
+        metadata: &RequestMetadata,
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -277,23 +280,8 @@ where
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
-        action: CatalogUserAction,
-    ) -> Result<bool>;
-
-    async fn is_allowed_user_action(
-        &self,
-        metadata: &RequestMetadata,
-        user_id: &UserId,
-        action: CatalogUserAction,
-    ) -> Result<MustUse<bool>> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.is_allowed_user_action_impl(metadata, user_id, action)
-                .await
-        }
-        .map(MustUse::from)
-    }
+        action: Self::UserAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -301,23 +289,8 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        action: CatalogRoleAction,
-    ) -> Result<bool>;
-
-    async fn is_allowed_role_action(
-        &self,
-        metadata: &RequestMetadata,
-        role_id: RoleId,
-        action: CatalogRoleAction,
-    ) -> Result<MustUse<bool>> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            self.is_allowed_role_action_impl(metadata, role_id, action)
-                .await
-        }
-        .map(MustUse::from)
-    }
+        action: Self::RoleAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -325,7 +298,7 @@ where
         &self,
         metadata: &RequestMetadata,
         action: Self::ServerAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -334,13 +307,13 @@ where
         metadata: &RequestMetadata,
         project_id: &ProjectId,
         action: Self::ProjectAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     async fn are_allowed_project_actions_impl(
         &self,
         metadata: &RequestMetadata,
         projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let n_inputs = projects_with_actions.len();
         let futures: Vec<_> = projects_with_actions
             .iter()
@@ -366,7 +339,7 @@ where
         metadata: &RequestMetadata,
         warehouse: &ResolvedWarehouse,
         action: Self::WarehouseAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -376,13 +349,13 @@ where
         warehouse: &ResolvedWarehouse,
         namespace: &NamespaceHierarchy,
         action: Self::NamespaceAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let n_inputs = warehouses_with_actions.len();
         let futures: Vec<_> = warehouses_with_actions
             .iter()
@@ -406,7 +379,7 @@ where
         metadata: &RequestMetadata,
         warehouse: &ResolvedWarehouse,
         actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         let futures: Vec<_> = actions
             .iter()
             .map(|(ns, a)| async move {
@@ -429,7 +402,7 @@ where
         namespace: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         action: Self::TableAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
@@ -449,7 +422,7 @@ where
             &impl AuthZTableInfo,
             Self::TableAction,
         )],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         // Build lookup map once for efficiency
         let futures: Vec<_> = actions
             .iter()
@@ -473,7 +446,7 @@ where
         namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: Self::ViewAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Checks if actions are allowed on views. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
@@ -489,7 +462,7 @@ where
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
         // Build lookup map once for efficiency
         let futures: Vec<_> = views_with_actions
             .iter()
@@ -594,63 +567,6 @@ where
     /// Hook that is called when a view is deleted.
     /// This is used to clean up permissions for the view.
     async fn delete_view(&self, warehouse_id: WarehouseId, view_id: ViewId) -> Result<()>;
-
-    async fn require_search_users(&self, metadata: &RequestMetadata) -> Result<()> {
-        if self.can_search_users(metadata).await?.into_inner() {
-            Ok(())
-        } else {
-            Err(ErrorModel::forbidden(
-                "Forbidden action search_users",
-                "SearchUsersForbidden",
-                None,
-            )
-            .into())
-        }
-    }
-
-    async fn require_user_action(
-        &self,
-        metadata: &RequestMetadata,
-        user_id: &UserId,
-        action: CatalogUserAction,
-    ) -> Result<()> {
-        if self
-            .is_allowed_user_action(metadata, user_id, action)
-            .await?
-            .into_inner()
-        {
-            Ok(())
-        } else {
-            Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on user {user_id}"),
-                "UserActionForbidden",
-                None,
-            )
-            .into())
-        }
-    }
-
-    async fn require_role_action(
-        &self,
-        metadata: &RequestMetadata,
-        role_id: RoleId,
-        action: CatalogRoleAction,
-    ) -> Result<()> {
-        if self
-            .is_allowed_role_action(metadata, role_id, action)
-            .await?
-            .into_inner()
-        {
-            Ok(())
-        } else {
-            Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on role {role_id}"),
-                "RoleActionForbidden",
-                None,
-            )
-            .into())
-        }
-    }
 }
 
 #[cfg(test)]
@@ -810,6 +726,7 @@ pub(crate) mod tests {
             // Do nothing
         }
     }
+
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
         type ServerAction = CatalogServerAction;
@@ -818,6 +735,8 @@ pub(crate) mod tests {
         type NamespaceAction = CatalogNamespaceAction;
         type TableAction = CatalogTableAction;
         type ViewAction = CatalogViewAction;
+        type UserAction = CatalogUserAction;
+        type RoleAction = CatalogRoleAction;
 
         fn implementation_name() -> &'static str {
             "test-hiding-authorizer"
@@ -838,8 +757,12 @@ pub(crate) mod tests {
             Router::new()
         }
 
-        async fn check_actor(&self, _actor: &Actor) -> Result<()> {
-            Ok(())
+        async fn check_assume_role_impl(
+            &self,
+            _principal: &UserId,
+            _assumed_role: RoleId,
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
+            Ok(true)
         }
 
         async fn can_bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {
@@ -853,11 +776,14 @@ pub(crate) mod tests {
         async fn list_projects_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+        ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
             Ok(ListProjectsResponse::All)
         }
 
-        async fn can_search_users_impl(&self, _metadata: &RequestMetadata) -> Result<bool> {
+        async fn can_search_users_impl(
+            &self,
+            _metadata: &RequestMetadata,
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             Ok(true)
         }
 
@@ -866,7 +792,7 @@ pub(crate) mod tests {
             _metadata: &RequestMetadata,
             _user_id: &UserId,
             _action: CatalogUserAction,
-        ) -> Result<bool> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             Ok(true)
         }
 
@@ -875,7 +801,7 @@ pub(crate) mod tests {
             _metadata: &RequestMetadata,
             role_id: RoleId,
             action: CatalogRoleAction,
-        ) -> Result<bool> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("role:{action}").as_str()) {
                 return Ok(false);
             }
@@ -886,7 +812,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _action: CatalogServerAction,
-        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             Ok(true)
         }
 
@@ -895,7 +821,7 @@ pub(crate) mod tests {
             _metadata: &RequestMetadata,
             project_id: &ProjectId,
             action: CatalogProjectAction,
-        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("project:{action}").as_str()) {
                 return Ok(false);
             }
@@ -907,7 +833,7 @@ pub(crate) mod tests {
             _metadata: &RequestMetadata,
             warehouse: &ResolvedWarehouse,
             action: Self::WarehouseAction,
-        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("warehouse:{action}").as_str()) {
                 return Ok(false);
             }
@@ -921,7 +847,7 @@ pub(crate) mod tests {
             _warehouse: &ResolvedWarehouse,
             namespace: &NamespaceHierarchy,
             action: Self::NamespaceAction,
-        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("namespace:{action}").as_str()) {
                 return Ok(false);
             }
@@ -936,7 +862,7 @@ pub(crate) mod tests {
             _namespace: &NamespaceHierarchy,
             table: &impl AuthZTableInfo,
             action: Self::TableAction,
-        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("table:{action}").as_str()) {
                 return Ok(false);
             }
@@ -952,7 +878,7 @@ pub(crate) mod tests {
             _namespace: &NamespaceHierarchy,
             view: &impl AuthZViewInfo,
             action: Self::ViewAction,
-        ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthorizationBackendUnavailable> {
             if self.action_is_blocked(format!("view:{action}").as_str()) {
                 return Ok(false);
             }

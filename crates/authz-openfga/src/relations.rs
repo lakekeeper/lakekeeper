@@ -255,7 +255,7 @@ impl ReducedRelation for CatalogRoleAction {
 /// Server Relations in the `OpenFGA` schema
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub enum ServerRelation {
+pub(super) enum ServerRelation {
     // -- Hierarchical relations --
     Project,
     // -- Direct relations --

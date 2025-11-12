@@ -110,6 +110,61 @@ pub trait AuthZServerOps: Authorizer {
             )
         }
     }
+
+    async fn check_actor(&self, actor: &Actor) -> Result<(), ErrorModel> {
+        match actor {
+            Actor::Principal(_user_id) => Ok(()),
+            Actor::Anonymous => Ok(()),
+            Actor::Role {
+                principal,
+                assumed_role,
+            } => {
+                let assume_role_allowed = self
+                    .check_assume_role_impl(principal, *assumed_role)
+                    .await?;
+
+                if assume_role_allowed {
+                    Ok(())
+                } else {
+                    Err(ErrorModel::forbidden(
+                        format!("Principal is not allowed to assume role with id {assumed_role}"),
+                        "RoleAssumptionNotAllowed",
+                        None,
+                    ))
+                }
+            }
+        }
+    }
+
+    async fn can_search_users(
+        &self,
+        metadata: &RequestMetadata,
+    ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.can_search_users_impl(metadata).await
+        }
+        .map(MustUse::from)
+    }
+
+    async fn require_search_users(
+        &self,
+        metadata: &RequestMetadata,
+    ) -> Result<(), RequireServerActionError> {
+        let can_search = self.can_search_users(metadata).await?;
+
+        if can_search.into_inner() {
+            Ok(())
+        } else {
+            Err(AuthZServerActionForbidden {
+                server_id: self.server_id(),
+                action: "search_users".to_string(),
+                actor: metadata.actor().clone(),
+            }
+            .into())
+        }
+    }
 }
 
 impl<T> AuthZServerOps for T where T: Authorizer {}
