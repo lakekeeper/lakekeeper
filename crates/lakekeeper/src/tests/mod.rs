@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::{
     api::{
         management::v1::{
@@ -50,7 +48,6 @@ mod internal_helper;
 #[cfg(test)]
 pub(crate) use internal_helper::*;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 #[cfg(feature = "test-utils")]
 #[must_use]
@@ -156,7 +153,7 @@ pub(crate) async fn setup<T: Authorizer>(
     )
     .await
     .unwrap();
-    let warehouse_name = format!("test-warehouse-{}", Uuid::now_v7());
+    let warehouse_name = format!("test-warehouse-{}", uuid::Uuid::now_v7());
     let warehouse = ApiServer::create_warehouse(
         CreateWarehouseRequest {
             warehouse_name: warehouse_name.clone(),
@@ -172,7 +169,7 @@ pub(crate) async fn setup<T: Authorizer>(
     .unwrap();
     let mut additional_warehouses = vec![];
     for i in 1..number_of_warehouses {
-        let warehouse_name = format!("test-warehouse-{}-{}", i, Uuid::now_v7());
+        let warehouse_name = format!("test-warehouse-{}-{}", i, uuid::Uuid::now_v7());
         let create_wh_response = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
@@ -222,8 +219,8 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             secrets: secret_store,
             contract_verifiers: ContractVerifiers::new(vec![]),
             hooks: EndpointHookCollection::new(vec![
-                Arc::new(WarehouseCacheEndpointHook {}),
-                Arc::new(NamespaceCacheEndpointHook {}),
+                std::sync::Arc::new(WarehouseCacheEndpointHook {}),
+                std::sync::Arc::new(NamespaceCacheEndpointHook {}),
             ]),
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
