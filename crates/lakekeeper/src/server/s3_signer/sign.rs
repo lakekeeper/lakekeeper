@@ -1074,7 +1074,7 @@ mod test {
             let result = parsed
                 .locations
                 .iter()
-                .map(|location| location.to_string())
+                .map(ToString::to_string)
                 .collect_vec();
             assert_eq!(result, expected);
             assert_eq!(operation, Operation::Delete);
