@@ -127,7 +127,9 @@ pub trait AuthZServerOps: Authorizer {
                     Ok(())
                 } else {
                     Err(ErrorModel::forbidden(
-                        format!("Principal is not allowed to assume role with id {assumed_role}"),
+                        format!(
+                            "Actor `{principal}` is not allowed to assume role `{assumed_role}`"
+                        ),
                         "RoleAssumptionNotAllowed",
                         None,
                     ))
