@@ -962,7 +962,7 @@ pub enum NamespaceRelation {
     CanListViews,
     CanListNamespaces,
     CanListEverything,
-    _CanIncludeInList,
+    CanIncludeInList,
     CanReadAssignments,
     CanGrantCreate,
     CanGrantDescribe,
@@ -1172,6 +1172,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanListEverything => NamespaceRelation::CanListEverything,
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
             CatalogNamespaceAction::CanSetProtection => NamespaceRelation::CanSetProtection,
+            CatalogNamespaceAction::CanIncludeInList => NamespaceRelation::CanIncludeInList,
         }
     }
 }

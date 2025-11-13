@@ -130,6 +130,7 @@ pub enum CatalogNamespaceAction {
     CanListNamespaces,
     CanListEverything,
     CanSetProtection,
+    CanIncludeInList,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
