@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.11.0](https://github.com/lakekeeper/lakekeeper/compare/v0.10.3...v0.11.0) (2025-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* Deprecate `id` in favor of `warehouse_id` in `GetWarehouseResponse`
+* Require warehouse-id in the permissions/check API also for namespace-ids
+
+### Features
+
+* Add properties & protection to AuthZ Info ([#1492](https://github.com/lakekeeper/lakekeeper/issues/1492)) ([e47a018](https://github.com/lakekeeper/lakekeeper/commit/e47a018c3c147e89108a0747a9f55d05f1e61aeb))
+* Add separate permission to get Endpoint Statistics ([0b6ea38](https://github.com/lakekeeper/lakekeeper/commit/0b6ea38cc731203d7170b7eced99ffd15d8aa1ef))
+* Add separate permission to set Warehouse Protection ([0b6ea38](https://github.com/lakekeeper/lakekeeper/commit/0b6ea38cc731203d7170b7eced99ffd15d8aa1ef))
+* Add Warehouse Cache to reduce DB requests ([443548a](https://github.com/lakekeeper/lakekeeper/commit/443548a518165c6d175a5f929531e4fe49e9ed5b))
+* Allow x-user-agent header ([#1453](https://github.com/lakekeeper/lakekeeper/issues/1453)) ([727f5b5](https://github.com/lakekeeper/lakekeeper/commit/727f5b554005fdf51ccb3e611bc2539cdcfef483))
+* AuthZ Server and Project Ops ([#1471](https://github.com/lakekeeper/lakekeeper/issues/1471)) ([9ef02d1](https://github.com/lakekeeper/lakekeeper/commit/9ef02d168c6c9937a34a60e2f91dbf6a19d97c54))
+* Cache for Storage Secrets ([#1485](https://github.com/lakekeeper/lakekeeper/issues/1485)) ([505f8c4](https://github.com/lakekeeper/lakekeeper/commit/505f8c4ae7b81e3ac4de0623ae34a435b1b0bb10))
+* Caching Short-Term-Credentials (STC) ([#1459](https://github.com/lakekeeper/lakekeeper/issues/1459)) ([c338372](https://github.com/lakekeeper/lakekeeper/commit/c3383720c5c3138c36d4f0391333ebc1fe4b5905))
+* Catalog returns full Namespace Hierarchy for nested Namespaces ([#1472](https://github.com/lakekeeper/lakekeeper/issues/1472)) ([2fe38bf](https://github.com/lakekeeper/lakekeeper/commit/2fe38bf1cb6fc18da1efa3de29bf63625fff012c))
+* Deprecate `id` in favor of `warehouse_id` in `GetWarehouseResponse` ([443548a](https://github.com/lakekeeper/lakekeeper/commit/443548a518165c6d175a5f929531e4fe49e9ed5b))
+* Enrich Authorizer for Namespaces and Warehouses ([#1480](https://github.com/lakekeeper/lakekeeper/issues/1480)) ([f8fa500](https://github.com/lakekeeper/lakekeeper/commit/f8fa5007dfea19c5bf231c27e681ca81f2e88f85))
+* Extend Authorizer information for Tabulars ([#1484](https://github.com/lakekeeper/lakekeeper/issues/1484)) ([d5db102](https://github.com/lakekeeper/lakekeeper/commit/d5db10212b422b1dab41ec8b3c5e76fc258f2ddc))
+* Introduce AuthzWarehouseOps and AuthzNamespaceOps abstractions ([e2da40f](https://github.com/lakekeeper/lakekeeper/commit/e2da40f0251bd161c69a35effb3decc8f67b8aaa))
+* Introduce CatalogWarehouseOps & CatalogNamespaceOps abstractions ([e2da40f](https://github.com/lakekeeper/lakekeeper/commit/e2da40f0251bd161c69a35effb3decc8f67b8aaa))
+* Make Warehouse Cache case-insensitive ([#1473](https://github.com/lakekeeper/lakekeeper/issues/1473)) ([7d4c7d7](https://github.com/lakekeeper/lakekeeper/commit/7d4c7d7af44457b132937492fe7ecbec64dde228))
+* Management endpoints now return full warehouse details after updates ([443548a](https://github.com/lakekeeper/lakekeeper/commit/443548a518165c6d175a5f929531e4fe49e9ed5b))
+* Namespace Cache ([#1478](https://github.com/lakekeeper/lakekeeper/issues/1478)) ([61b03a8](https://github.com/lakekeeper/lakekeeper/commit/61b03a8fdf792126e5fd9a05b426ec4175e1293f))
+* Require warehouse-id in the permissions/check API also for namespace-ids ([e2da40f](https://github.com/lakekeeper/lakekeeper/commit/e2da40f0251bd161c69a35effb3decc8f67b8aaa))
+* Separate Namespace IncludeInList permission from CanGetMetadata ([#1491](https://github.com/lakekeeper/lakekeeper/issues/1491)) ([173ae32](https://github.com/lakekeeper/lakekeeper/commit/173ae32f5014f66fb1d93655cf88fb5889ddd669))
+* Support Authorizers which cannot list projects ([#1481](https://github.com/lakekeeper/lakekeeper/issues/1481)) ([57663a2](https://github.com/lakekeeper/lakekeeper/commit/57663a276b4c3dd0b8f6b1367b4b0e0191c4e995))
+* Table & View Ops Abstractions, Improved Error Handling ([#1454](https://github.com/lakekeeper/lakekeeper/issues/1454)) ([94996e4](https://github.com/lakekeeper/lakekeeper/commit/94996e4b17e87d510f18ae6c7e2f84b807079504))
+* User & Role AuthZ Ops ([#1490](https://github.com/lakekeeper/lakekeeper/issues/1490)) ([1759290](https://github.com/lakekeeper/lakekeeper/commit/1759290e034ae9d997d56dc482f671e32edd34e6))
+* Version based Warehouse Cache ([#1465](https://github.com/lakekeeper/lakekeeper/issues/1465)) ([c9c4b5e](https://github.com/lakekeeper/lakekeeper/commit/c9c4b5eec13d0c92167a372c57088b0cac501f91))
+
+
+### Bug Fixes
+
+* **ci:** Revert 0.10.3 release ([dfdbdcf](https://github.com/lakekeeper/lakekeeper/commit/dfdbdcf77923f36b1d2ea1a84cd494dad9f4bc9d))
+* CORS allow access delegation & etag headers ([#1455](https://github.com/lakekeeper/lakekeeper/issues/1455)) ([5f8c665](https://github.com/lakekeeper/lakekeeper/commit/5f8c66598cd59061c682b70b3e81c9c888fec1ba))
+* Debug assertion table identifier mismatch for signer ([#1460](https://github.com/lakekeeper/lakekeeper/issues/1460)) ([684c690](https://github.com/lakekeeper/lakekeeper/commit/684c690244ce63a609d12a46d98b2e85d5df0ee1))
+* Headers should be lowercase ([#1457](https://github.com/lakekeeper/lakekeeper/issues/1457)) ([06ad77e](https://github.com/lakekeeper/lakekeeper/commit/06ad77eb74c6b48520dcd5fafbbd99191d0b67ad))
+* **linter:** fix linter errors for implicit cloning ([#1477](https://github.com/lakekeeper/lakekeeper/issues/1477)) ([4865d53](https://github.com/lakekeeper/lakekeeper/commit/4865d53da00e384e6cae587adbdacb37ffee2c8f))
+* remove redundant clone() before to_string() ([#1489](https://github.com/lakekeeper/lakekeeper/issues/1489)) ([fe9cf81](https://github.com/lakekeeper/lakekeeper/commit/fe9cf8165cab634d0a5e720f30e207af088744bd))
+* Restrict cross-project Role Search, but allow cross-project Role Metadata get ([0b6ea38](https://github.com/lakekeeper/lakekeeper/commit/0b6ea38cc731203d7170b7eced99ffd15d8aa1ef))
+
+
+### Miscellaneous Chores
+
+* Improve IO Errors ([#1487](https://github.com/lakekeeper/lakekeeper/issues/1487)) ([510c551](https://github.com/lakekeeper/lakekeeper/commit/510c551e89fe81b25c7c3ea59a77a7c3785ab899))
+* Introduce open-api feature to gate utoipa and swagger ([#1458](https://github.com/lakekeeper/lakekeeper/issues/1458)) ([c39d96e](https://github.com/lakekeeper/lakekeeper/commit/c39d96e9c39ed86f8c4357afe525c2794e2748ae))
+* **main:** release 0.10.3 ([#1446](https://github.com/lakekeeper/lakekeeper/issues/1446)) ([b8fcf54](https://github.com/lakekeeper/lakekeeper/commit/b8fcf54c627d48a547ef0baf6863949b68579388))
+* **permissions:** Restrict Endpoint Statistics access to Warehouse Assignee and above ([0b6ea38](https://github.com/lakekeeper/lakekeeper/commit/0b6ea38cc731203d7170b7eced99ffd15d8aa1ef))
+* Rename `SecretIdent` to `SecretId` for consistency ([443548a](https://github.com/lakekeeper/lakekeeper/commit/443548a518165c6d175a5f929531e4fe49e9ed5b))
+* **tests:** Add trino information_schema.tables test ([#1456](https://github.com/lakekeeper/lakekeeper/issues/1456)) ([665d8c9](https://github.com/lakekeeper/lakekeeper/commit/665d8c9e3b75c7140374b95e47b1d35e684c9b84))
+* Update README.md ([cebc453](https://github.com/lakekeeper/lakekeeper/commit/cebc453b2fd5431a71d24dca95d4cfb5769d6728))
+
 ## [0.10.3](https://github.com/lakekeeper/lakekeeper/compare/v0.10.2...v0.10.3) (2025-10-15)
 
 
