@@ -96,7 +96,7 @@ pub struct S3Profile {
     /// Optional session tags for STS assume role operations.
     #[serde(default)]
     #[builder(default)]
-    pub sts_session_tags: BTreeMap<String, String>,
+    pub sts_session_tags: BTreeMap<String, String>, // BTreeMap keeps the order
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]

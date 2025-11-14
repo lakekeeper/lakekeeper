@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     sync::{Arc, LazyLock},
 };
 
@@ -103,7 +103,7 @@ pub struct S3Settings {
     /// STS Session Tags to pass when assuming a role.
     /// Each tag is a key-value pair.
     /// Only has effect if `assume_role_arn` is set.
-    pub sts_session_tags: HashMap<String, String>,
+    pub sts_session_tags: BTreeMap<String, String>,
     #[builder(default)]
     pub endpoint: Option<url::Url>,
     pub region: String,
