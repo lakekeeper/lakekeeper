@@ -198,7 +198,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         C::delete_project(&project_id, transaction.transaction()).await?;
         authorizer
-            .delete_project(&request_metadata, project_id)
+            .delete_project(&request_metadata, &project_id)
             .await?;
         transaction.commit().await?;
 

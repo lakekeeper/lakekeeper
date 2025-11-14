@@ -504,8 +504,11 @@ where
 
     /// Hook that is called when a project is deleted.
     /// This is used to clean up permissions for the project.
-    async fn delete_project(&self, metadata: &RequestMetadata, project_id: ProjectId)
-        -> Result<()>;
+    async fn delete_project(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: &ProjectId,
+    ) -> Result<()>;
 
     /// Hook that is called when a new warehouse is created.
     /// This is used to set up the initial permissions for the warehouse.
@@ -916,7 +919,7 @@ pub(crate) mod tests {
         async fn delete_project(
             &self,
             _metadata: &RequestMetadata,
-            _project_id: ProjectId,
+            _project_id: &ProjectId,
         ) -> Result<()> {
             Ok(())
         }

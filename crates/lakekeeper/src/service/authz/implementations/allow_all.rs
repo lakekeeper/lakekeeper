@@ -213,7 +213,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn delete_project(
         &self,
         _metadata: &RequestMetadata,
-        _project_id: ProjectId,
+        _project_id: &ProjectId,
     ) -> Result<()> {
         Ok(())
     }

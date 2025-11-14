@@ -527,9 +527,9 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn delete_project(
         &self,
         _metadata: &RequestMetadata,
-        project_id: ProjectId,
+        project_id: &ProjectId,
     ) -> AuthorizerResult<()> {
-        self.delete_all_relations(&project_id).await
+        self.delete_all_relations(project_id).await
     }
 
     async fn create_warehouse(
