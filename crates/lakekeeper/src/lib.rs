@@ -60,5 +60,5 @@ pub mod metrics;
 pub mod request_tracing;
 
 pub use tracing;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, all(feature = "test-utils", feature = "sqlx-postgres")))]
 pub mod tests;

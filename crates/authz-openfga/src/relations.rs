@@ -255,7 +255,7 @@ impl ReducedRelation for CatalogRoleAction {
 /// Server Relations in the `OpenFGA` schema
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub enum ServerRelation {
+pub(super) enum ServerRelation {
     // -- Hierarchical relations --
     Project,
     // -- Direct relations --
@@ -962,7 +962,7 @@ pub enum NamespaceRelation {
     CanListViews,
     CanListNamespaces,
     CanListEverything,
-    _CanIncludeInList,
+    CanIncludeInList,
     CanReadAssignments,
     CanGrantCreate,
     CanGrantDescribe,
@@ -1172,6 +1172,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanListEverything => NamespaceRelation::CanListEverything,
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
             CatalogNamespaceAction::CanSetProtection => NamespaceRelation::CanSetProtection,
+            CatalogNamespaceAction::CanIncludeInList => NamespaceRelation::CanIncludeInList,
         }
     }
 }

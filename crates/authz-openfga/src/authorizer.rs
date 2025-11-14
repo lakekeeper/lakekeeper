@@ -73,12 +73,14 @@ impl OpenFGAAuthorizer {
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
-    type ServerAction = ServerRelation;
+    type ServerAction = CatalogServerAction;
     type ProjectAction = ProjectRelation;
     type WarehouseAction = WarehouseRelation;
     type NamespaceAction = NamespaceRelation;
     type TableAction = TableRelation;
     type ViewAction = ViewRelation;
+    type UserAction = CatalogUserAction;
+    type RoleAction = CatalogRoleAction;
 
     fn implementation_name() -> &'static str {
         "openfga"
@@ -97,38 +99,18 @@ impl Authorizer for OpenFGAAuthorizer {
         crate::api::new_v1_router()
     }
 
-    /// Check if the requested actor combination is allowed - especially if the user
-    /// is allowed to assume the specified role.
-    async fn check_actor(&self, actor: &Actor) -> AuthorizerResult<()> {
-        match actor {
-            Actor::Principal(_user_id) => Ok(()),
-            Actor::Anonymous => Ok(()),
-            Actor::Role {
-                principal,
-                assumed_role,
-            } => {
-                let assume_role_allowed = self
-                    .check(CheckRequestTupleKey {
-                        user: Actor::Principal(principal.clone()).to_openfga(),
-                        relation: relations::RoleRelation::CanAssume.to_string(),
-                        object: assumed_role.to_openfga(),
-                    })
-                    .await?;
-
-                if assume_role_allowed {
-                    Ok(())
-                } else {
-                    Err(ErrorModel::forbidden(
-                        format!(
-                            "Principal is not allowed to assume the role with id {assumed_role}"
-                        ),
-                        "RoleAssumptionNotAllowed",
-                        None,
-                    )
-                    .into())
-                }
-            }
-        }
+    async fn check_assume_role_impl(
+        &self,
+        principal: &UserId,
+        assumed_role: RoleId,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
+        self.check(CheckRequestTupleKey {
+            user: Actor::Principal(principal.clone()).to_openfga(),
+            relation: relations::RoleRelation::CanAssume.to_string(),
+            object: assumed_role.to_openfga(),
+        })
+        .await
+        .map_err(Into::into)
     }
 
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> AuthorizerResult<()> {
@@ -194,7 +176,10 @@ impl Authorizer for OpenFGAAuthorizer {
         self.list_projects_internal(actor).await.map_err(Into::into)
     }
 
-    async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> AuthorizerResult<bool> {
+    async fn can_search_users_impl(
+        &self,
+        metadata: &RequestMetadata,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         // Currently all authenticated principals can search users
         Ok(metadata.actor().is_authenticated())
     }
@@ -203,8 +188,8 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        action: CatalogRoleAction,
-    ) -> AuthorizerResult<bool> {
+        action: Self::RoleAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         if CatalogRoleAction::CanRead == action {
             // Everyone with access to the catalog can read role metadata.
             // This does not include assignments to the role.
@@ -225,8 +210,8 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
-        action: CatalogUserAction,
-    ) -> AuthorizerResult<bool> {
+        action: Self::UserAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         let actor = metadata.actor();
 
         let is_same_user = match actor {

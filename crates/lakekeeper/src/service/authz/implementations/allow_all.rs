@@ -17,9 +17,8 @@ use crate::{
             NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId,
-        ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, ViewId,
-        WarehouseId,
+        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId, ProjectId,
+        ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, ViewId, WarehouseId,
     },
 };
 
@@ -60,6 +59,8 @@ impl Authorizer for AllowAllAuthorizer {
     type NamespaceAction = CatalogNamespaceAction;
     type TableAction = CatalogTableAction;
     type ViewAction = CatalogViewAction;
+    type UserAction = CatalogUserAction;
+    type RoleAction = CatalogRoleAction;
 
     fn implementation_name() -> &'static str {
         "allow-all"
@@ -78,8 +79,12 @@ impl Authorizer for AllowAllAuthorizer {
         Router::new()
     }
 
-    async fn check_actor(&self, _actor: &Actor) -> Result<()> {
-        Ok(())
+    async fn check_assume_role_impl(
+        &self,
+        _principal: &UserId,
+        _assumed_role: RoleId,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
+        Ok(true)
     }
 
     async fn can_bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {
@@ -93,11 +98,14 @@ impl Authorizer for AllowAllAuthorizer {
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> std::result::Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
         Ok(ListProjectsResponse::All)
     }
 
-    async fn can_search_users_impl(&self, _metadata: &RequestMetadata) -> Result<bool> {
+    async fn can_search_users_impl(
+        &self,
+        _metadata: &RequestMetadata,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -105,8 +113,8 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _user_id: &UserId,
-        _action: CatalogUserAction,
-    ) -> Result<bool> {
+        _action: Self::UserAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -114,8 +122,8 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
-        _action: CatalogRoleAction,
-    ) -> Result<bool> {
+        _action: Self::RoleAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -123,7 +131,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _action: CatalogServerAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -132,7 +140,7 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _project_id: &ProjectId,
         _action: CatalogProjectAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -141,7 +149,7 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _warehouse: &ResolvedWarehouse,
         _action: Self::WarehouseAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -151,7 +159,7 @@ impl Authorizer for AllowAllAuthorizer {
         _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         _action: Self::NamespaceAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -162,7 +170,7 @@ impl Authorizer for AllowAllAuthorizer {
         _namespace: &NamespaceHierarchy,
         _table: &impl AuthZTableInfo,
         _action: Self::TableAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -173,7 +181,7 @@ impl Authorizer for AllowAllAuthorizer {
         _namespace: &NamespaceHierarchy,
         _view: &impl AuthZViewInfo,
         _action: Self::ViewAction,
-    ) -> std::result::Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 

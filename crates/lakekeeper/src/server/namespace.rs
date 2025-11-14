@@ -159,7 +159,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                                 &warehouse,
                                 &responses
                                     .iter()
-                                    .map(|id| (id, CatalogNamespaceAction::CanGetMetadata))
+                                    .map(|id| (id, CatalogNamespaceAction::CanIncludeInList))
                                     .collect::<Vec<_>>(),
                             )
                             .await?

@@ -2345,10 +2345,10 @@ mod tests {
 
             let metadata = RequestMetadata::test_user(user_id);
 
-            let actions: Vec<_> = project_ids
+            let actions = project_ids
                 .iter()
                 .map(|p| (p, AllProjectRelations::CanGetMetadata))
-                .collect();
+                .collect::<Vec<_>>();
 
             let results = authorizer
                 .are_allowed_project_actions_impl(&metadata, &actions)

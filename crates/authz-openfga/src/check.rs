@@ -5,7 +5,7 @@ use lakekeeper::{
     iceberg::{NamespaceIdent, TableIdent},
     service::{
         authz::{
-            AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps as _, AuthzWarehouseOps,
+            AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
             RequireTableActionError, RequireViewActionError,
         },
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -57,7 +57,7 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz.clone();
     let CheckRequest {
         // If for_principal is specified, the user needs to have the
-        // CanReadAssignments relation
+        // CanReadAssignments permission
         identity: mut for_principal,
         operation: action_request,
     } = request;
@@ -193,8 +193,6 @@ async fn check_server(
                 &openfga_server,
             )
             .await?;
-    } else {
-        authorizer.check_actor(metadata.actor()).await?;
     }
     Ok((action.to_openfga().to_string(), openfga_server))
 }
