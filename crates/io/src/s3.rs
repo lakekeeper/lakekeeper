@@ -191,9 +191,7 @@ impl S3Settings {
             }
             if !sts_session_tags.is_empty() {
                 let tags = sts_session_tags.iter();
-                if !sts_session_tags.is_empty() {
-                    assume_role_provider = assume_role_provider.tags(tags);
-                }
+                assume_role_provider = assume_role_provider.tags(tags);
             }
             let assume_role_provider = assume_role_provider.build().await;
 
