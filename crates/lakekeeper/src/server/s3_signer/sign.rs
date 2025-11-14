@@ -1024,7 +1024,7 @@ mod test {
                 None,
             )
             .unwrap_or_else(|_| panic!("Failed to parse {uri}"));
-            let result = parsed.locations[0].clone().to_string();
+            let result = parsed.locations[0].to_string();
             assert_eq!(result, expected);
         }
     }
@@ -1074,7 +1074,7 @@ mod test {
             let result = parsed
                 .locations
                 .iter()
-                .map(|location| location.clone().to_string())
+                .map(ToString::to_string)
                 .collect_vec();
             assert_eq!(result, expected);
             assert_eq!(operation, Operation::Delete);
