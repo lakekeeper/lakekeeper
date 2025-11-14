@@ -49,16 +49,16 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
         .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_SECRET_KEY not set"))?;
     let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").ok();
 
-    let s3_settings = lakekeeper_io::s3::S3Settings {
-        assume_role_arn: None,
-        endpoint: endpoint
-            .map(|e| e.parse())
-            .transpose()
-            .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {e}"))?,
-        region,
-        path_style_access: Some(true),
-        aws_kms_key_arn: None,
-    };
+    let s3_settings = lakekeeper_io::s3::S3Settings::builder()
+        .endpoint(
+            endpoint
+                .map(|e| e.parse())
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {e}"))?,
+        )
+        .region(region)
+        .path_style_access(Some(true))
+        .build();
     let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(lakekeeper_io::s3::S3AccessKeyAuth {
         aws_access_key_id: access_key,
         aws_secret_access_key: secret_key,

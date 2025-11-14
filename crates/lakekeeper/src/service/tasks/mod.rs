@@ -501,6 +501,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Cancel scheduled tasks matching the filter.
     ///
     /// If `cancel_running_and_should_stop` is true, also cancel tasks in the `running` and `should-stop` states.
+    ///
+    /// # Errors
+    /// Returns an error on DB errors
     #[tracing::instrument(level = "info", skip(transaction), fields(queue_name = %Self::queue_name(), filter = ?filter, cancel_running_and_should_stop))]
     pub async fn cancel_scheduled_tasks<C: CatalogStore>(
         filter: TaskFilter,

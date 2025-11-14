@@ -96,7 +96,7 @@ pub struct S3Profile {
     /// Optional session tags for STS assume role operations.
     #[serde(default)]
     #[builder(default)]
-    pub sts_session_tags: BTreeMap<String, String>,
+    pub sts_session_tags: BTreeMap<String, String>, // HashMap is not Hash
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -306,6 +306,7 @@ impl S3Profile {
             entity: "bucket".to_string(),
         })?;
         validate_region(&self.region)?;
+        self.validate_session_tags()?;
         self.normalize_key_prefix()?;
         self.normalize_endpoint()?;
         self.normalize_assume_role_arn();
@@ -918,6 +919,26 @@ impl S3Profile {
         .replace(' ', ""))
     }
 
+    fn validate_session_tags(&self) -> Result<(), ValidationError> {
+        self.sts_session_tags
+            .iter()
+            .map(|(key, value)| {
+                Tag::builder().key(key).value(value).build().map_err(|e| {
+                    let msg = e.to_string();
+                    ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+                        source: Some(Box::new(e)),
+                        reason: format!(
+                            "Invalid STS session tag `{key}` with value {value}. {msg}"
+                        ),
+                        entity: "sts_session_tags".to_string(),
+                    }))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(())
+    }
+
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {
         if let Some(key_prefix) = self.key_prefix.as_mut() {
             *key_prefix = key_prefix.trim().trim_matches('/').to_string();
@@ -1048,6 +1069,7 @@ fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
         path_style_access: profile.path_style_access,
         assume_role_arn: profile.assume_role_arn.clone(),
         aws_kms_key_arn: profile.aws_kms_key_arn.clone(),
+        sts_session_tags: profile.sts_session_tags.clone(),
     }
 }
 

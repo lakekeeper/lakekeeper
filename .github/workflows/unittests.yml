@@ -10,7 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.87
+  RUST_TOOLCHAIN: 1.88
 
 permissions:
   contents: read  # Needed to checkout code
