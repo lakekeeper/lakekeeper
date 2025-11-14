@@ -11,7 +11,6 @@ use aws_sdk_s3::config::{
     IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
     SharedIdentityCache,
 };
-use aws_sdk_sts::types::Tag;
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
     time::SharedTimeSource,
@@ -191,8 +190,8 @@ impl S3Settings {
                 assume_role_provider = assume_role_provider.external_id(external_id);
             }
             if !sts_session_tags.is_empty() {
-                let tags = parse_sts_tags(sts_session_tags.iter());
-                if !tags.is_empty() {
+                let tags = sts_session_tags.iter();
+                if !sts_session_tags.is_empty() {
                     assume_role_provider = assume_role_provider.tags(tags);
                 }
             }
@@ -206,23 +205,6 @@ impl S3Settings {
             sdk_config
         }
     }
-}
-
-fn parse_sts_tags<'a>(
-    sts_session_tags: impl Iterator<Item = (&'a String, &'a String)>,
-) -> Vec<Tag> {
-    sts_session_tags
-        .filter_map(|(key, value)| {
-            Tag::builder()
-                .key(key)
-                .value(value)
-                .build()
-                .inspect_err(|e| {
-                    tracing::error!("Failed to build STS tag `{key}`:`{value}`. {e}");
-                })
-                .ok()
-        })
-        .collect()
 }
 
 /// Validate the S3 region.

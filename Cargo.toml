@@ -22,22 +22,15 @@ async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 async-nats = "0.43.0"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
-# Until https://github.com/awslabs/aws-sdk-rust/issues/1366 is resolved
-# aws-config = { version = "1.8.5", features = ["behavior-version-latest"] }
-# aws-sdk-sts = "1.82.0"
-# aws-smithy-async = { version = "1.2.5" }
-# aws-smithy-http = "0.62.3"
-# aws-smithy-http-client = { version = "1.0.6" }
-# aws-smithy-runtime-api = { version = "1.8.7" }
-aws-config = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-sdk-sts = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-smithy-async = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-smithy-http = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-smithy-http-client = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-smithy-runtime-api = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-sigv4 = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-credential-types = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
-aws-sdk-s3 = { git = "https://github.com/c-thiel/aws-sdk-rust-no-history.git", rev = "693d365" }
+aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
+aws-sdk-sts = "1.82.0"
+aws-smithy-async = { version = "1.2.5" }
+aws-smithy-http = "0.62.3"
+aws-smithy-http-client = { version = "1.0.6" }
+aws-smithy-runtime-api = { version = "1.8.7" }
+aws-credential-types = { version = "1.2" }
+aws-sdk-s3 = { version = "1.65" }
+aws-sigv4 = { version = "1.2" }
 axum = { version = "0.8.1" }
 axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.5.0" }
