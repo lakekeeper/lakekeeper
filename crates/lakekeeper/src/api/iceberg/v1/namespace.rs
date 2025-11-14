@@ -307,12 +307,13 @@ pub struct GetNamespacePropertiesQuery {
     pub return_uuid: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct PaginationQuery {
     /// Next page token
     #[serde(skip_serializing_if = "PageToken::skip_serialize")]
-    #[param(value_type=String)]
+    #[cfg_attr(feature = "open-api", param(value_type=String))]
     pub page_token: PageToken,
     /// Signals an upper bound of the number of results that a client will receive.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -351,7 +352,6 @@ impl PaginationQuery {
 }
 
 // Deliberately not ser / de so that it can't be used in the router directly
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceParameters {
     /// The prefix of the namespace

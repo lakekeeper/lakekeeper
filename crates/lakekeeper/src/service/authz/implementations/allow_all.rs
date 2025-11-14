@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use axum::Router;
+#[cfg(feature = "open-api")]
 use utoipa::OpenApi;
 
 use crate::{
@@ -10,13 +11,14 @@ use crate::{
     service::{
         authn::UserId,
         authz::{
-            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-            CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+            AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, ListProjectsResponse,
+            NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, ServerId, State, TableId,
-        ViewId, WarehouseId,
+        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId, ProjectId,
+        ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, ViewId, WarehouseId,
     },
 };
 
@@ -44,26 +46,45 @@ impl HealthExt for AllowAllAuthorizer {
     }
 }
 
+#[cfg(feature = "open-api")]
 #[derive(Debug, OpenApi)]
 #[openapi()]
 pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
+    type ServerAction = CatalogServerAction;
+    type ProjectAction = CatalogProjectAction;
+    type WarehouseAction = CatalogWarehouseAction;
+    type NamespaceAction = CatalogNamespaceAction;
+    type TableAction = CatalogTableAction;
+    type ViewAction = CatalogViewAction;
+    type UserAction = CatalogUserAction;
+    type RoleAction = CatalogRoleAction;
+
+    fn implementation_name() -> &'static str {
+        "allow-all"
+    }
+
     fn server_id(&self) -> ServerId {
         self.server_id
     }
 
+    #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi {
         ApiDoc::openapi()
     }
 
-    fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
+    fn new_router<C: CatalogStore, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
         Router::new()
     }
 
-    async fn check_actor(&self, _actor: &Actor) -> Result<()> {
-        Ok(())
+    async fn check_assume_role_impl(
+        &self,
+        _principal: &UserId,
+        _assumed_role: RoleId,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
+        Ok(true)
     }
 
     async fn can_bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {
@@ -77,11 +98,14 @@ impl Authorizer for AllowAllAuthorizer {
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse> {
+    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
         Ok(ListProjectsResponse::All)
     }
 
-    async fn can_search_users_impl(&self, _metadata: &RequestMetadata) -> Result<bool> {
+    async fn can_search_users_impl(
+        &self,
+        _metadata: &RequestMetadata,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -89,8 +113,8 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _user_id: &UserId,
-        _action: CatalogUserAction,
-    ) -> Result<bool> {
+        _action: Self::UserAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -98,8 +122,8 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
-        _action: CatalogRoleAction,
-    ) -> Result<bool> {
+        _action: Self::RoleAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -107,7 +131,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _action: CatalogServerAction,
-    ) -> Result<bool> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
@@ -116,54 +140,48 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _project_id: &ProjectId,
         _action: CatalogProjectAction,
-    ) -> Result<bool> {
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
     async fn is_allowed_warehouse_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
-        _action: CatalogWarehouseAction,
-    ) -> Result<bool> {
+        _warehouse: &ResolvedWarehouse,
+        _action: Self::WarehouseAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
-    async fn is_allowed_namespace_action_impl<A>(
+    async fn is_allowed_namespace_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _namespace_id: NamespaceId,
-        _action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    {
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
+        _action: Self::NamespaceAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
-    async fn is_allowed_table_action_impl<A>(
+    async fn is_allowed_table_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
-        _table_id: TableId,
-        _action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogTableAction> + std::fmt::Display + Send,
-    {
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
+        _table: &impl AuthZTableInfo,
+        _action: Self::TableAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 
-    async fn is_allowed_view_action_impl<A>(
+    async fn is_allowed_view_action_impl(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
-        _view_id: ViewId,
-        _action: A,
-    ) -> Result<bool>
-    where
-        A: From<CatalogViewAction> + std::fmt::Display + Send,
-    {
+        _warehouse: &ResolvedWarehouse,
+        _namespace: &NamespaceHierarchy,
+        _view: &impl AuthZViewInfo,
+        _action: Self::ViewAction,
+    ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }
 

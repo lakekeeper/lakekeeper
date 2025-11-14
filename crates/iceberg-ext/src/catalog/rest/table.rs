@@ -5,7 +5,7 @@ use typed_builder::TypedBuilder;
 use super::impl_into_response;
 use crate::{
     catalog::{TableIdent, TableRequirement, TableUpdate},
-    spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec},
+    spec::{Schema, SortOrder, UnboundPartitionSpec},
 };
 
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
@@ -25,7 +25,7 @@ pub struct LoadCredentialsResponse {
 pub struct LoadTableResult {
     /// May be null if the table is staged as part of a transaction
     pub metadata_location: Option<String>,
-    pub metadata: TableMetadata,
+    pub metadata: TableMetadataRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

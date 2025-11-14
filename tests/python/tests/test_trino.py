@@ -20,6 +20,29 @@ def test_list_namespaces(trino, warehouse: conftest.Warehouse):
     assert ["test_list_namespaces_trino_2"] in r
 
 
+def test_information_schema_tables(trino, warehouse: conftest.Warehouse):
+    cur = trino.cursor()
+    cur.execute("CREATE SCHEMA test_information_schema_tables_trino")
+    cur.execute(
+        "CREATE TABLE test_information_schema_tables_trino.my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(
+        "CREATE OR REPLACE VIEW test_information_schema_tables_trino.my_view AS SELECT strings FROM test_information_schema_tables_trino.my_table"
+    )
+    r = cur.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='test_information_schema_tables_trino'"
+    ).fetchall()
+    # Trino returns tables and views in arbitrary order
+    assert len(r) == 2
+    assert ["my_table"] in r
+    assert ["my_view"] in r
+    r = cur.execute(
+        "SELECT table_name FROM information_schema.views WHERE table_schema='test_information_schema_tables_trino'"
+    ).fetchall()
+    assert r == [["my_view"]]
+    cur.execute("SELECT table_name FROM information_schema.tables").fetchall()
+
+
 def test_namespace_create_if_not_exists(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA IF NOT EXISTS test_namespace_create_if_not_exists_trino")

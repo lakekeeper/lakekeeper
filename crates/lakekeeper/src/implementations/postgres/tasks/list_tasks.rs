@@ -15,7 +15,7 @@ use crate::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
     },
-    service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
+    service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId, CONFIG,
 };
 
@@ -46,11 +46,9 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
         queue_name: row.queue_name.into(),
         entity: match row.entity_type {
             EntityType::Table => TaskEntity::Table {
-                warehouse_id: row.warehouse_id.into(),
                 table_id: row.entity_id.into(),
             },
             EntityType::View => TaskEntity::View {
-                warehouse_id: row.warehouse_id.into(),
                 view_id: row.entity_id.into(),
             },
         },
@@ -128,7 +126,7 @@ pub(crate) async fn list_tasks(
     let queue_names = queue_names
         .unwrap_or_default()
         .into_iter()
-        .map(crate::service::task_queue::TaskQueueName::into_string)
+        .map(crate::service::tasks::TaskQueueName::into_string)
         .collect_vec();
 
     let status_filter_is_none = status.is_none();
@@ -139,15 +137,9 @@ pub(crate) async fn list_tasks(
     let (entity_ids, entity_types) = entities
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|e| match e {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => (entity_warehouse_id == warehouse_id).then_some((*table_id, EntityType::Table)),
-            TaskEntity::View {
-                view_id,
-                warehouse_id: entity_warehouse_id,
-            } => (entity_warehouse_id == warehouse_id).then_some((*view_id, EntityType::View)),
+        .map(|e| match e {
+            TaskEntity::Table { table_id } => (*table_id, EntityType::Table),
+            TaskEntity::View { view_id } => (*view_id, EntityType::View),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -294,7 +286,7 @@ mod tests {
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success, test::setup_warehouse,
         },
-        service::task_queue::{
+        service::tasks::{
             EntityId, TaskEntity, TaskInput, TaskMetadata, TaskOutcome, TaskQueueName, TaskStatus,
             DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
         },
@@ -338,7 +330,7 @@ mod tests {
         entity_id: EntityId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
-    ) -> Result<crate::service::task_queue::TaskId, IcebergErrorResponse> {
+    ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
         queue_task_helper_with_entity_name(
             conn,
             queue_name,
@@ -357,7 +349,7 @@ mod tests {
         entity_name: Vec<String>,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
-    ) -> Result<crate::service::task_queue::TaskId, IcebergErrorResponse> {
+    ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
         let result = super::super::queue_task_batch(
             conn,
             queue_name,
@@ -428,12 +420,8 @@ mod tests {
         assert!(result.next_page_token.is_some());
 
         match task.entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
@@ -559,7 +547,6 @@ mod tests {
         // Filter by first entity only
         let request = ListTasksRequest {
             entities: Some(vec![TaskEntity::Table {
-                warehouse_id,
                 table_id: entity_id1.as_uuid().into(),
             }]),
             ..Default::default()
@@ -570,12 +557,8 @@ mod tests {
         assert_eq!(result.tasks[0].task_id, task_id1);
 
         match result.tasks[0].entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id1.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
@@ -770,7 +753,7 @@ mod tests {
         // Cancel some tasks (next 2)
         super::super::cancel_scheduled_tasks(
             &mut conn,
-            crate::service::task_queue::TaskFilter::TaskIds(task_ids[6..8].to_vec()),
+            crate::service::tasks::TaskFilter::TaskIds(task_ids[6..8].to_vec()),
             Some(&tq_name),
             false,
         )
@@ -980,7 +963,7 @@ mod tests {
         // Task 3: Cancel while scheduled
         super::super::cancel_scheduled_tasks(
             &mut conn,
-            crate::service::task_queue::TaskFilter::TaskIds(vec![task_ids[3]]),
+            crate::service::tasks::TaskFilter::TaskIds(vec![task_ids[3]]),
             Some(&tq_name),
             false,
         )
@@ -1340,7 +1323,6 @@ mod tests {
         let request = ListTasksRequest {
             queue_name: Some(vec![tq_name1.clone()]),
             entities: Some(vec![TaskEntity::Table {
-                warehouse_id,
                 table_id: entity_id1.as_uuid().into(),
             }]),
             ..Default::default()
@@ -1352,12 +1334,8 @@ mod tests {
         assert_eq!(result.tasks[0].queue_name.as_str(), tq_name1.as_str());
 
         match result.tasks[0].entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id1.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }

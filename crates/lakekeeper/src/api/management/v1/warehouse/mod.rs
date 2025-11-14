@@ -7,7 +7,6 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
-use utoipa::ToSchema;
 
 use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
@@ -26,23 +25,32 @@ use crate::{
         },
         ApiContext, Result,
     },
-    catalog::UnfilteredPage,
     request_metadata::RequestMetadata,
+    server::UnfilteredPage,
     service::{
-        authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
+        authz::{
+            AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
+            AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction,
+        },
+        require_namespace_for_tabular,
         secrets::SecretStore,
-        task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        Catalog, ListFlags, NamespaceId, State, TabularId, Transaction,
+        tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
+        ViewOrTableDeletionInfo,
     },
     ProjectId, WarehouseId,
 };
 
-#[derive(Debug, Deserialize, utoipa::IntoParams, Default)]
+#[derive(Debug, Deserialize, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListDeletedTabularsQuery {
     /// Filter by Namespace ID
     #[serde(default)]
-    #[param(value_type=uuid::Uuid)]
+    #[cfg_attr(feature = "open-api", param(value_type=uuid::Uuid))]
     pub namespace_id: Option<NamespaceId>,
     /// Next page token
     #[serde(default)]
@@ -66,7 +74,8 @@ impl ListDeletedTabularsQuery {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema, TypedBuilder)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateWarehouseRequest {
     /// Name of the warehouse to create. Must be unique
@@ -74,7 +83,7 @@ pub struct CreateWarehouseRequest {
     pub warehouse_name: String,
     /// Project ID in which to create the warehouse.
     /// Deprecated: Please use the `x-project-id` header instead.
-    #[schema(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     #[builder(default, setter(strip_option))]
     pub project_id: Option<ProjectId>,
     /// Storage profile to use for the warehouse.
@@ -88,12 +97,13 @@ pub struct CreateWarehouseRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TabularDeleteProfile {
-    #[schema(title = "TabularDeleteProfileHard")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularDeleteProfileHard"))]
     Hard {},
-    #[schema(title = "TabularDeleteProfileSoft")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularDeleteProfileSoft"))]
     #[serde(rename_all = "kebab-case")]
     Soft {
         #[serde(
@@ -101,7 +111,7 @@ pub enum TabularDeleteProfile {
             serialize_with = "duration_to_seconds",
             alias = "expiration_seconds"
         )]
-        #[schema(value_type=i32)]
+        #[cfg_attr(feature = "open-api", schema(value_type=i64))]
         expiration_seconds: chrono::Duration,
     },
 }
@@ -138,15 +148,19 @@ impl Default for TabularDeleteProfile {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
-#[serde(rename_all = "kebab-case")]
-pub struct CreateWarehouseResponse {
-    /// ID of the created warehouse.
-    #[schema(value_type=uuid::Uuid)]
-    pub warehouse_id: WarehouseId,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(transparent)]
+pub struct CreateWarehouseResponse(GetWarehouseResponse);
+impl CreateWarehouseResponse {
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        self.0.warehouse_id
+    }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateWarehouseStorageRequest {
     /// Storage profile to use for the warehouse.
@@ -161,51 +175,61 @@ pub struct UpdateWarehouseStorageRequest {
     pub storage_credential: Option<StorageCredential>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListWarehousesRequest {
     /// Optional filter to return only warehouses
     /// with the specified status.
     /// If not provided, only active warehouses are returned.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
     pub warehouse_status: Option<Vec<WarehouseStatus>>,
     /// The project ID to list warehouses for.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[param(value_type=Option::<String>)]
+    #[cfg_attr(feature = "open-api", param(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameWarehouseRequest {
     /// New name for the warehouse.
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateWarehouseDeleteProfileRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetWarehouseResponse {
     /// ID of the warehouse.
-    pub id: uuid::Uuid,
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    #[deprecated(since = "0.11.0", note = "Please use 'warehouse_id' field instead.")]
+    pub id: WarehouseId,
+    /// ID of the warehouse.
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    pub warehouse_id: WarehouseId,
     /// Name of the warehouse.
     pub name: String,
     /// Project ID in which the warehouse was created.
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
@@ -215,16 +239,20 @@ pub struct GetWarehouseResponse {
     pub status: WarehouseStatus,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Last updated timestamp.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListWarehousesResponse {
     /// List of warehouses in the project.
     pub warehouses: Vec<GetWarehouseResponse>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateWarehouseCredentialRequest {
     /// New storage credential to use for the warehouse.
@@ -238,7 +266,8 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct WarehouseStatistics {
     /// Timestamp of when these statistics are valid until
@@ -255,7 +284,8 @@ pub struct WarehouseStatistics {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct WarehouseStatisticsResponse {
     /// ID of the warehouse for which the stats were collected.
@@ -266,17 +296,21 @@ pub struct WarehouseStatisticsResponse {
     pub next_page_token: Option<String>,
 }
 
-#[derive(Deserialize, Debug, ToSchema)]
+#[derive(Deserialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
     /// Tabulars to undrop
     pub targets: Vec<TabularId>,
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
 
 #[async_trait::async_trait]
-pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_warehouse(
         request: CreateWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
@@ -289,13 +323,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id = project_id
-            .or(request_metadata.preferred_project_id())
-            .ok_or(ErrorModel::bad_request(
-                "project_id must be specified",
-                "CreateWarehouseProjectIdMissing",
-                None,
-            ))?;
+        let project_id = request_metadata.require_project_id(project_id)?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -315,11 +343,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let validation_future =
             storage_profile.validate_access(storage_credential.as_ref(), None, &request_metadata);
         let overlap_check_future = async {
-            let mut transaction =
-                C::Transaction::begin_read(context.v1_state.catalog.clone()).await?;
             let warehouses =
-                C::list_warehouses(&project_id, None, transaction.transaction()).await?;
-            transaction.commit().await?;
+                C::list_warehouses(&project_id, None, context.v1_state.catalog.clone()).await?;
 
             for w in &warehouses {
                 if storage_profile.is_overlapping_location(&w.storage_profile) {
@@ -353,14 +378,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 context
                     .v1_state
                     .secrets
-                    .create_secret(storage_credential)
+                    .create_storage_secret(storage_credential)
                     .await?,
             )
         } else {
             None
         };
 
-        let warehouse_id = C::create_warehouse(
+        let resolved_warehouse = C::create_warehouse(
             warehouse_name,
             &project_id,
             storage_profile,
@@ -370,12 +395,24 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         )
         .await?;
         authorizer
-            .create_warehouse(&request_metadata, warehouse_id, &project_id)
+            .create_warehouse(
+                &request_metadata,
+                resolved_warehouse.warehouse_id,
+                &project_id,
+            )
             .await?;
 
         transaction.commit().await?;
 
-        Ok(CreateWarehouseResponse { warehouse_id })
+        context
+            .v1_state
+            .hooks
+            .create_warehouse(resolved_warehouse.clone(), Arc::new(request_metadata))
+            .await;
+
+        Ok(CreateWarehouseResponse(
+            (*resolved_warehouse).clone().into(),
+        ))
     }
 
     async fn list_warehouses(
@@ -396,30 +433,33 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
+        let warehouses = C::list_warehouses(
+            &project_id,
+            request.warehouse_status,
+            context.v1_state.catalog,
+        )
+        .await?;
 
-        let warehouses =
-            C::list_warehouses(&project_id, request.warehouse_status, trx.transaction()).await?;
-        trx.commit().await?;
-
-        let warehouses = futures::future::try_join_all(warehouses.iter().map(|w| {
-            authorizer.is_allowed_warehouse_action(
+        let warehouses = authorizer
+            .are_allowed_warehouse_actions_vec(
                 &request_metadata,
-                w.id,
-                CatalogWarehouseAction::CanIncludeInList,
+                &warehouses
+                    .iter()
+                    .map(|w| (&**w, CatalogWarehouseAction::CanIncludeInList))
+                    .collect::<Vec<_>>(),
             )
-        }))
-        .await?
-        .into_iter()
-        .zip(warehouses)
-        .filter_map(|(allowed, warehouse)| {
-            if allowed.into_inner() {
-                Some(warehouse.into())
-            } else {
-                None
-            }
-        })
-        .collect();
+            .await?
+            .into_inner()
+            .into_iter()
+            .zip(warehouses)
+            .filter_map(|(allowed, warehouse)| {
+                if allowed {
+                    Some((*warehouse).clone().into())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         Ok(ListWarehousesResponse { warehouses })
     }
@@ -429,21 +469,24 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetWarehouseResponse> {
-        // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog,
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
-
-        // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let warehouses = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
-        transaction.commit().await?;
-        Ok(warehouses.into())
+        Ok((*warehouse).clone().into())
     }
 
     async fn get_warehouse_statistics(
@@ -454,10 +497,18 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<WarehouseStatisticsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Use,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
@@ -466,7 +517,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         C::get_warehouse_stats(
             warehouse_id,
             query.to_pagination_query(),
-            context.v1_state.catalog.clone(),
+            context.v1_state.catalog,
         )
         .await
     }
@@ -479,10 +530,19 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanDelete,
             )
             .await?;
@@ -495,6 +555,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
         transaction.commit().await?;
 
+        context
+            .v1_state
+            .hooks
+            .delete_warehouse(warehouse_id, Arc::new(request_metadata))
+            .await;
+
         Ok(())
     }
 
@@ -506,22 +572,44 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<ProtectionResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Use,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                CatalogWarehouseAction::CanDelete,
+                warehouse,
+                CatalogWarehouseAction::CanSetProtection,
             )
             .await?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         tracing::debug!("Setting protection for warehouse {warehouse_id} to {protection}");
-        let status =
+        let resolved_warehouse =
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
 
-        Ok(status)
+        context
+            .v1_state
+            .hooks
+            .set_warehouse_protection(
+                protection,
+                resolved_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
+        Ok(ProtectionResponse {
+            protected: resolved_warehouse.protected,
+            updated_at: resolved_warehouse.updated_at,
+        })
     }
 
     async fn rename_warehouse(
@@ -529,13 +617,22 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request: RenameWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Use,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanRename,
             )
             .await?;
@@ -544,11 +641,22 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         validate_warehouse_name(&request.new_name)?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
-        C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
+        let updated_warehouse =
+            C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
 
         transaction.commit().await?;
 
-        Ok(())
+        context
+            .v1_state
+            .hooks
+            .rename_warehouse(
+                Arc::new(request),
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn update_warehouse_delete_profile(
@@ -556,20 +664,24 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request: UpdateWarehouseDeleteProfileRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanModifySoftDeletion,
             )
             .await?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        C::set_warehouse_deletion_profile(
+        let updated_warehouse = C::set_warehouse_deletion_profile(
             warehouse_id,
             &request.delete_profile,
             transaction.transaction(),
@@ -577,7 +689,17 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         .await?;
         transaction.commit().await?;
 
-        Ok(())
+        context
+            .v1_state
+            .hooks
+            .update_warehouse_delete_profile(
+                Arc::new(request),
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn deactivate_warehouse(
@@ -587,10 +709,19 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanDeactivate,
             )
             .await?;
@@ -617,10 +748,19 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanActivate,
             )
             .await?;
@@ -645,18 +785,28 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request: UpdateWarehouseStorageRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanUpdateStorage,
             )
             .await?;
 
         // ------------------- Business Logic -------------------
+        let request_for_hook = Arc::new(request.clone());
         let UpdateWarehouseStorageRequest {
             mut storage_profile,
             storage_credential,
@@ -671,8 +821,10 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         .await?;
 
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
-        let storage_profile = warehouse.storage_profile.update_with(storage_profile)?;
+        let storage_profile = warehouse
+            .storage_profile
+            .clone()
+            .update_with(storage_profile)?;
         let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(storage_credential) = storage_credential {
@@ -680,14 +832,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 context
                     .v1_state
                     .secrets
-                    .create_secret(storage_credential)
+                    .create_storage_secret(storage_credential)
                     .await?,
             )
         } else {
             None
         };
 
-        C::update_storage_profile(
+        let updated_warehouse = C::update_storage_profile(
             warehouse_id,
             storage_profile,
             secret_id,
@@ -697,6 +849,16 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
+        context
+            .v1_state
+            .hooks
+            .update_warehouse_storage(
+                request_for_hook,
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
+
         // Delete the old secret if it exists - never fail the request if the deletion fails
         if let Some(old_secret_id) = old_secret_id {
             context
@@ -705,12 +867,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 .delete_secret(&old_secret_id)
                 .await
                 .map_err(|e| {
-                    tracing::warn!("Failed to delete old secret: {:?}", e.error);
+                    tracing::warn!(error=?e.error, "Failed to delete old storage secret");
                 })
                 .ok();
         }
 
-        Ok(())
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn update_storage_credential(
@@ -718,28 +880,35 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request: UpdateWarehouseCredentialRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<GetWarehouseResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                CatalogWarehouseAction::CanUpdateStorageCredential,
+                warehouse,
+                CatalogWarehouseAction::CanUpdateStorage,
             )
             .await?;
 
         // ------------------- Business Logic -------------------
+        let request_for_hook = Arc::new(request.clone());
         let UpdateWarehouseCredentialRequest {
             new_storage_credential,
         } = request;
-
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
         let old_secret_id = warehouse.storage_secret_id;
-        let storage_profile = warehouse.storage_profile;
 
-        Box::pin(storage_profile.validate_access(
+        Box::pin(warehouse.storage_profile.validate_access(
             new_storage_credential.as_ref(),
             None,
             &request_metadata,
@@ -751,22 +920,33 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 context
                     .v1_state
                     .secrets
-                    .create_secret(new_storage_credential)
+                    .create_storage_secret(new_storage_credential)
                     .await?,
             )
         } else {
             None
         };
 
-        C::update_storage_profile(
+        let updated_warehouse = C::update_storage_profile(
             warehouse_id,
-            storage_profile,
+            warehouse.storage_profile.clone(),
             secret_id,
             transaction.transaction(),
         )
         .await?;
 
         transaction.commit().await?;
+
+        context
+            .v1_state
+            .hooks
+            .update_warehouse_storage_credential(
+                request_for_hook,
+                old_secret_id,
+                updated_warehouse.clone(),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         // Delete the old secret if it exists - never fail the request if the deletion fails
         if let Some(old_secret_id) = old_secret_id {
@@ -776,12 +956,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 .delete_secret(&old_secret_id)
                 .await
                 .map_err(|e| {
-                    tracing::warn!("Failed to delete old secret: {:?}", e.error);
+                    tracing::warn!(error=?e.error, "Failed to delete old storage secret");
                 })
                 .ok();
         }
 
-        Ok(())
+        Ok((*updated_warehouse).clone().into())
     }
 
     async fn undrop_tabulars(
@@ -790,21 +970,33 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
     ) -> Result<()> {
+        if request.targets.is_empty() {
+            return Ok(());
+        }
         // ------------------- AuthZ -------------------
-        context
-            .v1_state
-            .authz
+        let authorizer = context.v1_state.authz;
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let warehouse = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanUse,
             )
             .await?;
 
-        undrop::require_undrop_permissions(
-            &warehouse_id,
+        undrop::require_undrop_permissions::<A, C>(
+            &warehouse,
             &request,
-            &context.v1_state.authz,
+            &authorizer,
+            context.v1_state.catalog.clone(),
             &request_metadata,
         )
         .await?;
@@ -821,13 +1013,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 undrop_tabular_responses
                     .iter()
                     .filter_map(|r| {
-                        if r.expiration_task_id.is_none() {
+                        if r.expiration_task().is_none() {
                             tracing::warn!(
-                                "No expiration task found for tabular with soft deletion marker set {:?}",
-                                r.table_id
+                                "No expiration task found for tabular '{}' with soft deletion marker set.",
+                                r.tabular_ident()
                             );
                         }
-                        r.expiration_task_id})
+                        r.expiration_task().map(|t| t.task_id)})
                     .collect(),
             ),
             transaction.transaction(),
@@ -842,7 +1034,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .undrop_tabular(
                 warehouse_id,
                 Arc::new(request),
-                Arc::new(undrop_tabular_responses),
+                Arc::new(
+                    undrop_tabular_responses
+                        .into_iter()
+                        .map(ViewOrTableDeletionInfo::into_table_or_view_info)
+                        .collect(),
+                ),
                 Arc::new(request_metadata),
             )
             .await;
@@ -860,108 +1057,172 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let catalog = context.v1_state.catalog;
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
+
+        let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+        let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer
+            .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                &[
+                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CatalogWarehouseAction::CanListDeletedTabulars),
+                    (&warehouse, CatalogWarehouseAction::CanListEverything),
+                ],
+            )
+            .await?
+            .into_inner();
+
+        if !can_use {
+            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        }
+        if !can_list_deleted_tabulars {
+            return Err(AuthZWarehouseActionForbidden::new(
                 warehouse_id,
                 CatalogWarehouseAction::CanListDeletedTabulars,
+                request_metadata.actor().clone(),
             )
-            .await?;
+            .into());
+        }
+
+        let can_list_everything = if can_list_everything {
+            can_list_everything
+        } else if let Some(namespace_id) = query.namespace_id {
+            let namespace = C::get_namespace(warehouse_id, namespace_id, catalog.clone()).await;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            authorizer
+                .is_allowed_namespace_action(
+                    &request_metadata,
+                    &warehouse,
+                    &namespace,
+                    CatalogNamespaceAction::CanListEverything,
+                )
+                .await?
+                .into_inner()
+        } else {
+            can_list_everything
+        };
 
         // ------------------- Business Logic -------------------
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
-        let (tabulars, idents, next_page_token) =
-            crate::catalog::fetch_until_full_page::<_, _, _, C>(
-                pagination_query.page_size,
-                pagination_query.page_token,
-                |page_size, page_token, t| {
-                    let authorizer = authorizer.clone();
-                    let request_metadata = request_metadata.clone();
-                    async move {
-                        let query = PaginationQuery {
-                            page_size: Some(page_size),
-                            page_token: page_token.into(),
-                        };
+        let (tabulars, ids, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
+            pagination_query.page_size,
+            pagination_query.page_token,
+            |page_size, page_token, t| {
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
+                let warehouse = warehouse.clone();
+                async move {
+                    let query = PaginationQuery {
+                        page_size: Some(page_size),
+                        page_token: page_token.into(),
+                    };
 
-                        let page = C::list_tabulars(
+                    let page = C::list_tabulars(
+                        warehouse_id,
+                        namespace_id,
+                        TabularListFlags::only_deleted(),
+                        t.transaction(),
+                        None,
+                        query,
+                    )
+                    .await?;
+                    let (ids, items, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        page.into_iter_with_page_tokens().multiunzip();
+
+                    let authz_decisions = if can_list_everything {
+                        vec![true; ids.len()]
+                    } else {
+                        let namespaces = C::get_namespaces_by_id(
                             warehouse_id,
-                            namespace_id,
-                            ListFlags::only_deleted(),
+                            &items
+                                .iter()
+                                .map(ViewOrTableDeletionInfo::namespace_id)
+                                .collect_vec(),
                             t.transaction(),
-                            query,
                         )
                         .await?;
-                        let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                            page.into_iter_with_page_tokens().multiunzip();
+                        let actions = items
+                            .iter()
+                            .map(|t| {
+                                Ok::<_, ErrorModel>((
+                                    require_namespace_for_tabular(&namespaces, t)?,
+                                    t.as_action_request(
+                                        CatalogViewAction::CanIncludeInList,
+                                        CatalogTableAction::CanIncludeInList,
+                                    ),
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
 
-                        let (next_idents, next_uuids, next_page_tokens, mask): (
-                            Vec<_>,
-                            Vec<_>,
-                            Vec<_>,
-                            Vec<bool>,
-                        ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
-                            TabularId::View(id) => authorizer.is_allowed_view_action(
+                        authorizer
+                            .are_allowed_tabular_actions_vec(
                                 &request_metadata,
-                                warehouse_id,
-                                *id,
-                                crate::service::authz::CatalogViewAction::CanIncludeInList,
-                            ),
-                            TabularId::Table(id) => authorizer.is_allowed_table_action(
-                                &request_metadata,
-                                warehouse_id,
-                                *id,
-                                crate::service::authz::CatalogTableAction::CanIncludeInList,
-                            ),
-                        }))
-                        .await?
+                                &warehouse,
+                                &namespaces,
+                                &actions,
+                            )
+                            .await?
+                            .into_inner()
+                    };
+
+                    let (next_idents, next_uuids, next_page_tokens, mask): (
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<bool>,
+                    ) = authz_decisions
                         .into_iter()
-                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(items.into_iter().zip(ids.into_iter()))
                         .zip(tokens.into_iter())
                         .map(|((allowed, namespace), token)| {
-                            (namespace.0, namespace.1, token, allowed.into_inner())
+                            (namespace.0, namespace.1, token, allowed)
                         })
                         .multiunzip();
-                        Ok(UnfilteredPage::new(
-                            next_idents,
-                            next_uuids,
-                            next_page_tokens,
-                            mask,
-                            page_size
-                                .clamp(0, i64::MAX)
-                                .try_into()
-                                .expect("We clamped."),
-                        ))
-                    }
-                    .boxed()
-                },
-                &mut t,
-            )
-            .await?;
+                    Ok(UnfilteredPage::new(
+                        next_idents,
+                        next_uuids,
+                        next_page_tokens,
+                        mask,
+                        page_size
+                            .clamp(0, i64::MAX)
+                            .try_into()
+                            .expect("We clamped."),
+                    ))
+                }
+                .boxed()
+            },
+            &mut t,
+        )
+        .await?;
 
-        let tabulars = idents
+        let tabulars = ids
             .into_iter()
-            .zip(tabulars.into_iter())
-            .map(|(k, info)| {
-                let i = info.table_ident.into_inner();
-                let deleted = info.deletion_details.ok_or(ErrorModel::internal(
-                    "Expected delete options to be Some, but found None",
-                    "InternalDatabaseError",
-                    None,
-                ))?;
-                Ok(DeletedTabularResponse {
+            .zip(tabulars)
+            .filter_map(|(k, info)| {
+                let deleted_at = info.deleted_at()?;
+                let Some(expiration_task) = info.expiration_task() else {
+                    tracing::error!(
+                        "Did not find expiration task for soft-deleted tabular with id '{k}'"
+                    );
+                    return None;
+                };
+                let tabular_ident = info.tabular_ident().clone();
+                Some(DeletedTabularResponse {
                     id: *k,
-                    name: i.name,
-                    namespace: i.namespace.inner(),
+                    name: tabular_ident.name,
+                    namespace: tabular_ident.namespace.inner(),
                     typ: k.into(),
                     warehouse_id,
-                    created_at: deleted.created_at,
-                    deleted_at: deleted.deleted_at,
-                    expiration_date: deleted.expiration_date,
+                    created_at: info.created_at(),
+                    deleted_at,
+                    expiration_date: expiration_task.expiration_date,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
         t.commit().await?;
 
@@ -980,10 +1241,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanModifyTaskQueueConfig,
             )
             .await?;
@@ -1031,10 +1296,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<GetTaskQueueConfigResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
+                warehouse,
                 CatalogWarehouseAction::CanGetTaskQueueConfig,
             )
             .await?;
@@ -1053,30 +1322,34 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct SetTaskQueueConfigRequest {
     pub queue_config: QueueConfig,
     pub max_seconds_since_last_heartbeat: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct QueueConfig(pub(crate) serde_json::Value);
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetTaskQueueConfigResponse {
     pub queue_config: QueueConfigResponse,
     pub max_seconds_since_last_heartbeat: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct QueueConfigResponse {
     #[serde(flatten)]
     pub(crate) config: serde_json::Value,
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub(crate) queue_name: TaskQueueName,
 }
 
@@ -1098,16 +1371,18 @@ impl axum::response::IntoResponse for GetWarehouseResponse {
     }
 }
 
-impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
-    fn from(warehouse: crate::service::GetWarehouseResponse) -> Self {
+impl From<crate::service::ResolvedWarehouse> for GetWarehouseResponse {
+    fn from(warehouse: crate::service::ResolvedWarehouse) -> Self {
         Self {
-            id: warehouse.id.to_uuid(),
+            warehouse_id: warehouse.warehouse_id,
+            id: warehouse.warehouse_id,
             name: warehouse.name,
             project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
+            updated_at: warehouse.updated_at,
         }
     }
 }
@@ -1190,10 +1465,11 @@ mod test {
             },
             ApiContext,
         },
-        catalog::{test::impl_pagination_tests, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
+        server::{test::impl_pagination_tests, CatalogServer},
         service::{authz::tests::HidingAuthorizer, State, UserId},
+        tests::create_view_request,
         WarehouseId,
     };
 
@@ -1202,14 +1478,15 @@ mod test {
         n_tabulars: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
         WarehouseId,
     ) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
+        authz.block_can_list_everything();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -1220,7 +1497,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -1234,10 +1511,7 @@ mod test {
         for i in 0..n_tabulars {
             let v = CatalogServer::create_view(
                 ns_params.clone(),
-                crate::catalog::views::create::test::create_view_request(
-                    Some(&format!("{i}")),
-                    None,
-                ),
+                create_view_request(Some(&format!("{i}")), None),
                 ctx.clone(),
                 DataAccess {
                     vended_credentials: true,
@@ -1291,11 +1565,12 @@ mod test {
 
     #[sqlx::test]
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::memory_io_profile();
+        let prof = crate::server::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
+        authz.block_can_list_everything();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::server::test::setup(
             pool.clone(),
             prof,
             None,
@@ -1306,7 +1581,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::server::test::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -1316,14 +1591,10 @@ mod test {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: ns.namespace.clone(),
         };
-        // create 10 staged tables
         for i in 0..10 {
             let _ = CatalogServer::create_view(
                 ns_params.clone(),
-                crate::catalog::views::create::test::create_view_request(
-                    Some(&format!("view-{i}")),
-                    None,
-                ),
+                create_view_request(Some(&format!("view-{i}")), None),
                 ctx.clone(),
                 DataAccess {
                     vended_credentials: true,

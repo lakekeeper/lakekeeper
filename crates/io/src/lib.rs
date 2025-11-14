@@ -16,7 +16,8 @@ pub use error::{
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
 use futures::{stream::BoxStream, StreamExt as _};
-pub use location::Location;
+pub use location::{Location, LocationParseError};
+pub use tokio;
 use tokio::task::JoinSet;
 pub use tryhard;
 use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
@@ -186,7 +187,7 @@ where
         bytes: Bytes,
     ) -> impl Future<Output = Result<(), WriteError>> + Send;
 
-    /// Read a file from the specified path.
+    /// Read a file from the specified path, possibly in chunks
     ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
@@ -195,7 +196,7 @@ where
         path: impl AsRef<str> + Send,
     ) -> impl Future<Output = Result<Bytes, ReadError>> + Send;
 
-    /// Read a file from the specified path.
+    /// Read a file from the specified path with a single request.
     ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.

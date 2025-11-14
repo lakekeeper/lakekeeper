@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.10.2](https://github.com/lakekeeper/lakekeeper/compare/v0.10.1...v0.10.2) (2025-10-06)
+
+
+### Miscellaneous Chores
+
+* release 0.10.2 ([8d5171e](https://github.com/lakekeeper/lakekeeper/commit/8d5171ec9ba7fa5bac2b062af9eb8fffb28bbd42))
+
+## [0.10.1](https://github.com/lakekeeper/lakekeeper/compare/v0.10.0...v0.10.1) (2025-10-05)
+
+
+### Features
+
+* **debug:** Add LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES configuration ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+
+
+### Bug Fixes
+
+* Dynamic OpenAPI generation for registered Task Queues ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Return default initial Task Queue Config ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Use FnOnce for queue & service registration ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Use FnOnce for queue & service registration ([47b03a0](https://github.com/lakekeeper/lakekeeper/commit/47b03a089215950d2d9df3a4c1fa07769c8979dd))
+
+
+### Miscellaneous Chores
+
+* release 0.10.1 ([d58faec](https://github.com/lakekeeper/lakekeeper/commit/d58faec18a78f3f518dd9a7af53796008bee6d77))
+
 ## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-29)
 
 

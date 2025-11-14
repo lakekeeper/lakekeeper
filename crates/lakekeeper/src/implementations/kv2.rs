@@ -6,7 +6,10 @@ use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{sync::RwLock, time::Sleep};
 use uuid::Uuid;
-use vaultrs::client::{Client, VaultClient};
+use vaultrs::{
+    client::{Client, VaultClient},
+    error::ClientError,
+};
 use vaultrs_login::{engines::userpass::UserpassLogin, LoginMethod};
 
 use crate::{
@@ -14,17 +17,17 @@ use crate::{
     config::KV2Config,
     service::{
         health::{Health, HealthExt, HealthStatus},
-        secrets::{Secret, SecretIdent, SecretStore},
+        secrets::{Secret, SecretId, SecretStore},
     },
 };
 
 #[async_trait::async_trait]
 impl SecretStore for SecretsState {
     /// Get the secret for a given warehouse.
-    async fn get_secret_by_id<S: DeserializeOwned>(
+    async fn get_secret_by_id_impl<S: DeserializeOwned>(
         &self,
-        secret_id: SecretIdent,
-    ) -> Result<Secret<S>> {
+        secret_id: SecretId,
+    ) -> Result<Option<Secret<S>>> {
         // it seems there is no atomic get for metadata and secret so we read_metadata, and then
         // read the secret with the current version defined in the previously read metadata
         let metadata = vaultrs::kv2::read_metadata(
@@ -32,16 +35,24 @@ impl SecretStore for SecretsState {
             self.secret_mount.as_str(),
             &secret_ident_to_key(secret_id),
         )
-        .await
-        .map_err(|err| {
-            IcebergErrorResponse::from(ErrorModel::internal(
-                "secret metadata read failure",
-                "SecretReadFailed",
-                Some(Box::new(err)),
-            ))
-        })?;
+        .await;
 
-        Ok(Secret {
+        let metadata = match metadata {
+            Ok(meta) => meta,
+            Err(err) => {
+                if matches!(&err, ClientError::APIError { code: 404, .. }) {
+                    return Ok(None);
+                }
+
+                return Err(IcebergErrorResponse::from(ErrorModel::internal(
+                    "secret metadata read failure",
+                    "SecretReadFailed",
+                    Some(Box::new(err)),
+                )));
+            }
+        };
+
+        Ok(Some(Secret {
             secret_id,
             secret: vaultrs::kv2::read_version::<S>(
                 &*self.vault_client.read().await,
@@ -71,15 +82,15 @@ impl SecretStore for SecretsState {
                     Some(Box::new(err)),
                 ))
             })?),
-        })
+        }))
     }
 
     /// Create a new secret
-    async fn create_secret<S: Send + Sync + Serialize + std::fmt::Debug>(
+    async fn create_secret_impl<S: Send + Sync + Serialize + std::fmt::Debug>(
         &self,
         secret: S,
-    ) -> Result<SecretIdent> {
-        let secret_id = SecretIdent::from(Uuid::now_v7());
+    ) -> Result<SecretId> {
+        let secret_id = SecretId::from(Uuid::now_v7());
         vaultrs::kv2::set(
             &*self.vault_client.read().await,
             self.secret_mount.as_str(),
@@ -98,7 +109,7 @@ impl SecretStore for SecretsState {
     }
 
     /// Delete a secret
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> Result<()> {
+    async fn delete_secret_impl(&self, secret_id: &SecretId) -> Result<()> {
         Ok(vaultrs::kv2::delete_metadata(
             &*self.vault_client.read().await,
             self.secret_mount.as_str(),
@@ -248,7 +259,7 @@ impl std::fmt::Debug for SecretsState {
     }
 }
 
-fn secret_ident_to_key(secret_id: SecretIdent) -> String {
+fn secret_ident_to_key(secret_id: SecretId) -> String {
     format!("secret/{secret_id}", secret_id = secret_id.as_uuid())
 }
 
@@ -274,14 +285,26 @@ mod tests {
             })
             .into();
 
-            let secret_id = state.create_secret(secret.clone()).await.unwrap();
+            let secret_id = state.create_storage_secret(secret.clone()).await.unwrap();
 
-            let read_secret = state
-                .get_secret_by_id::<StorageCredential>(secret_id)
+            let read_secret = state.require_storage_secret_by_id(secret_id).await.unwrap();
+
+            assert_eq!(&*read_secret.secret, &secret);
+        }
+
+        #[tokio::test]
+        async fn test_read_missing_secret() {
+            let state = SecretsState::from_config(CONFIG.kv2.as_ref().unwrap())
                 .await
                 .unwrap();
 
-            assert_eq!(read_secret.secret, secret);
+            let secret_id = SecretId::from(Uuid::new_v4());
+
+            let read_secret = state
+                .get_secret_by_id_impl::<StorageCredential>(secret_id)
+                .await;
+
+            assert!(read_secret.unwrap().is_none());
         }
 
         #[tokio::test]
@@ -298,13 +321,13 @@ mod tests {
             .into();
 
             let secret_id = state
-                .create_secret(secret.clone())
+                .create_storage_secret(secret.clone())
                 .await
                 .expect("create secret failed");
 
             state.delete_secret(&secret_id).await.unwrap();
 
-            let read_secret = state.get_secret_by_id::<StorageCredential>(secret_id).await;
+            let read_secret = state.require_storage_secret_by_id(secret_id).await;
 
             assert!(read_secret.is_err());
         }

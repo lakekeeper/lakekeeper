@@ -1,7 +1,6 @@
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 pub use crate::service::{
@@ -16,55 +15,61 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{
-            Authorizer, CatalogProjectAction, CatalogServerAction, CatalogWarehouseAction,
+            AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
+            CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
-        Catalog, State, Transaction,
+        CatalogStore, CatalogWarehouseOps, State, Transaction,
     },
-    ProjectId,
+    ProjectId, WarehouseId,
 };
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetProjectResponse {
     /// ID of the project.
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub project_id: ProjectId,
     /// Name of the project
     pub project_name: String,
 }
 
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListProjectsResponse {
     /// List of projects
     pub projects: Vec<GetProjectResponse>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectRequest {
     /// Name of the project to create.
     pub project_name: String,
     /// Request a specific project ID - optional.
     /// If not provided, a new project ID will be generated (recommended).
-    #[schema(value_type = Option::<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option::<String>))]
     pub project_id: Option<ProjectId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectResponse {
     /// ID of the created project.
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub project_id: ProjectId,
 }
 
@@ -80,10 +85,10 @@ impl axum::response::IntoResponse for GetProjectResponse {
     }
 }
 
-impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_project(
         request: CreateProjectRequest,
         context: ApiContext<State<A, C, S>>,
@@ -206,17 +211,48 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<ListProjectsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        let projects = authorizer.list_projects(&request_metadata).await?;
+        let authz_projects_response = authorizer.list_projects(&request_metadata).await?;
 
         // ------------------- Business Logic -------------------
-        let project_id_filter = match projects {
-            AuthZListProjectsResponse::All => None,
+        let authz_list_unsupported =
+            authz_projects_response == AuthZListProjectsResponse::Unsupported;
+        let project_id_filter = match authz_projects_response {
+            AuthZListProjectsResponse::All | AuthZListProjectsResponse::Unsupported => None,
             AuthZListProjectsResponse::Projects(projects) => Some(projects),
         };
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
-
         let projects = C::list_projects(project_id_filter, trx.transaction()).await?;
         trx.commit().await?;
+
+        let projects = if authz_list_unsupported {
+            tracing::debug!(
+                "Authorization backend does not support listing projects, filtering per project."
+            );
+            let decisions = authorizer
+                .are_allowed_project_actions_vec(
+                    &request_metadata,
+                    &projects
+                        .iter()
+                        .map(|p| (&p.project_id, CatalogProjectAction::CanGetMetadata))
+                        .collect::<Vec<_>>(),
+                )
+                .await?;
+            projects
+                .into_iter()
+                .zip(decisions.into_inner())
+                .filter_map(
+                    |(project, is_allowed)| {
+                        if is_allowed {
+                            Some(project)
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .collect()
+        } else {
+            projects
+        };
 
         Ok(ListProjectsResponse {
             projects: projects
@@ -239,11 +275,18 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         match request.warehouse {
             WarehouseFilter::WarehouseId { id } => {
+                let warehouse = C::get_active_warehouse_by_id(
+                    WarehouseId::from(id),
+                    context.v1_state.catalog.clone(),
+                )
+                .await;
+
                 authorizer
                     .require_warehouse_action(
                         &request_metadata,
                         id.into(),
-                        CatalogWarehouseAction::CanGetMetadata,
+                        warehouse,
+                        CatalogWarehouseAction::CanGetEndpointStatistics,
                     )
                     .await?;
             }
@@ -252,7 +295,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     .require_project_action(
                         &request_metadata,
                         &project_id,
-                        CatalogProjectAction::CanGetMetadata,
+                        CatalogProjectAction::CanGetEndpointStatistics,
                     )
                     .await?;
             }
@@ -274,7 +317,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, ToSchema)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct EndpointStatistic {
     /// Number of requests to this endpoint for the current time-slice.
@@ -308,7 +352,8 @@ pub struct EndpointStatistic {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Deserialize, Serialize, Debug, ToSchema)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct EndpointStatisticsResponse {
     /// Array of timestamps indicating the time at which each entry in the `called_endpoints` array
@@ -336,31 +381,32 @@ pub struct EndpointStatisticsResponse {
     pub next_page_token: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TimeWindowSelector {
-    #[schema(example = json!({
+    #[cfg_attr(feature = "open-api", schema(example = json!({
         "type": "window",
         "end": "2023-12-31T23:59:59Z",
         "interval": "P1D"
-    }))]
+    })))]
     Window {
         /// End timestamp of the time window
         /// Specify
-        #[schema(example = "2023-12-31T23:59:59Z")]
+        #[cfg_attr(feature = "open-api", schema(example = "2023-12-31T23:59:59Z"))]
         end: chrono::DateTime<chrono::Utc>,
         /// Duration/span of the time window
         ///
         /// The returned statistics will be for the time window from `end` - `interval` to `end`.
         /// Specify a ISO8601 duration string, e.g. `PT1H` for 1 hour, `P1D` for 1 day.
-        #[schema(example = "P1D")]
+        #[cfg_attr(feature = "open-api", schema(example = "P1D"))]
         #[serde(with = "crate::utils::time_conversion::iso8601_duration_serde")]
         interval: chrono::Duration,
     },
-    #[schema(example = json!({
+    #[cfg_attr(feature = "open-api", schema(example = json!({
         "type": "page-token",
         "token": "xyz"
-    }))]
+    })))]
     PageToken {
         /// Opaque Token from previous response for paginating through time windows
         ///
@@ -369,7 +415,8 @@ pub enum TimeWindowSelector {
     },
 }
 
-#[derive(Deserialize, ToSchema, Debug)]
+#[derive(Deserialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetEndpointStatisticsRequest {
     /// Warehouse filter
@@ -388,7 +435,8 @@ pub struct GetEndpointStatisticsRequest {
     pub range_specifier: Option<TimeWindowSelector>,
 }
 
-#[derive(Deserialize, Serialize, ToSchema, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum WarehouseFilter {
     /// Filter for a specific warehouse

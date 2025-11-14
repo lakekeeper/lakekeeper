@@ -24,10 +24,10 @@ use crate::{
             ApiServer,
         },
     },
-    catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
+    server::{CatalogServer, NAMESPACE_ID_PROPERTY},
     service::{
         authz::AllowAllAuthorizer,
-        task_queue::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,
+        tasks::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,
         TabularId,
     },
     tests::random_request_metadata,
@@ -86,7 +86,7 @@ async fn test_soft_deletion(pool: PgPool) {
             (
                 table_name.clone(),
                 crate::tests::create_table(
-                    api_context,
+                    api_context.clone(),
                     &warehouse_id,
                     &ns_name,
                     &table_name,

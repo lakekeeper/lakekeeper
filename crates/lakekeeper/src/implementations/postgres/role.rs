@@ -125,6 +125,7 @@ pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 }
 
 pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    project_id: &ProjectId,
     search_term: &str,
     connection: E,
 ) -> Result<SearchRoleResponse> {
@@ -133,10 +134,12 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         r#"
         SELECT id, name, description, project_id, created_at, updated_at
         FROM role
+        WHERE project_id = $2
         ORDER BY name <-> $1 ASC
         LIMIT 10
         "#,
         search_term,
+        project_id
     )
     .fetch_all(connection)
     .await
@@ -203,7 +206,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             .map(|id| Uuid::from(id))
             .collect::<Vec<uuid::Uuid>>() as Vec<Uuid>,
         filter_name.is_empty(),
-        filter_name.to_string(),
+        filter_name.clone(),
         token_ts,
         token_id,
         page_size,
@@ -253,8 +256,8 @@ mod test {
     use super::*;
     use crate::{
         api::iceberg::v1::PageToken,
-        implementations::postgres::{CatalogState, PostgresCatalog, PostgresTransaction},
-        service::{Catalog, Transaction},
+        implementations::postgres::{CatalogState, PostgresBackend, PostgresTransaction},
+        service::{CatalogStore, Transaction},
     };
 
     #[sqlx::test]
@@ -279,7 +282,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -327,7 +330,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -373,7 +376,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -431,7 +434,7 @@ mod test {
             .await
             .unwrap();
 
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project1_id,
             format!("Project {project1_id}"),
             t.transaction(),
@@ -439,7 +442,7 @@ mod test {
         .await
         .unwrap();
 
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project2_id,
             format!("Project {project2_id}"),
             t.transaction(),
@@ -544,7 +547,7 @@ mod test {
             .await
             .unwrap();
 
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project1_id,
             format!("Project {project1_id}"),
             t.transaction(),
@@ -643,7 +646,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -694,7 +697,7 @@ mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(
+        PostgresBackend::create_project(
             &project_id,
             format!("Project {project_id}"),
             t.transaction(),
@@ -714,7 +717,9 @@ mod test {
         .await
         .unwrap();
 
-        let search_result = search_role("ro 1", &state.read_pool()).await.unwrap();
+        let search_result = search_role(&project_id, "ro 1", &state.read_pool())
+            .await
+            .unwrap();
         assert_eq!(search_result.roles.len(), 1);
         assert_eq!(search_result.roles[0].name, role_name);
     }

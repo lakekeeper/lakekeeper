@@ -29,7 +29,10 @@ use self::dbutils::DBErrorHandler;
 use crate::{
     api::Result,
     config::{DynAppConfig, PgSslMode},
-    service::health::{Health, HealthExt, HealthStatus},
+    service::{
+        health::{Health, HealthExt, HealthStatus},
+        StateOrTransaction, StateOrTransactionEnum,
+    },
     CONFIG,
 };
 
@@ -54,7 +57,7 @@ pub async fn get_writer_pool(pool_opts: PgPoolOptions) -> anyhow::Result<sqlx::P
 }
 
 #[derive(Debug, Clone)]
-pub struct PostgresCatalog {}
+pub struct PostgresBackend {}
 
 #[derive(Debug)]
 
@@ -62,9 +65,11 @@ pub struct PostgresTransaction {
     transaction: sqlx::Transaction<'static, sqlx::Postgres>,
 }
 
+type PostgresTransactionType<'a> = &'a mut sqlx::Transaction<'static, sqlx::Postgres>;
+
 #[async_trait::async_trait]
 impl crate::service::Transaction<CatalogState> for PostgresTransaction {
-    type Transaction<'a> = &'a mut sqlx::Transaction<'static, sqlx::Postgres>;
+    type Transaction<'a> = PostgresTransactionType<'a>;
 
     async fn begin_write(db_state: CatalogState) -> Result<Self> {
         let transaction = db_state
@@ -206,6 +211,28 @@ impl CatalogState {
     #[must_use]
     pub fn write_pool(&self) -> PgPool {
         self.read_write.write_pool.clone()
+    }
+}
+
+// Implement StateOrTransaction for CatalogState
+// State can be cloned, so we clone it in into_enum to allow multiple uses
+impl<'txn> StateOrTransaction<CatalogState, PostgresTransactionType<'txn>> for CatalogState {
+    fn as_enum_mut<'b>(
+        &'b mut self,
+    ) -> StateOrTransactionEnum<'b, CatalogState, PostgresTransactionType<'txn>> {
+        StateOrTransactionEnum::State(self.clone())
+    }
+}
+
+// Implement StateOrTransaction for the transaction type
+// Transaction is borrowed mutably, so we return a reference
+impl<'txn> StateOrTransaction<CatalogState, PostgresTransactionType<'txn>>
+    for PostgresTransactionType<'txn>
+{
+    fn as_enum_mut<'b>(
+        &'b mut self,
+    ) -> StateOrTransactionEnum<'b, CatalogState, PostgresTransactionType<'txn>> {
+        StateOrTransactionEnum::Transaction(self)
     }
 }
 

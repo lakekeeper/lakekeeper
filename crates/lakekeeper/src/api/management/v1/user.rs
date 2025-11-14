@@ -10,13 +10,14 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, CatalogServerAction, CatalogUserAction},
-        Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
+        authz::{AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction},
+        CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
     },
 };
 
 /// How the user was last updated
-#[derive(Debug, Serialize, utoipa::ToSchema, Clone)]
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum UserLastUpdatedWith {
     /// The user was updated or created by the `/management/v1/user/update-from-token` - typically via the UI
@@ -28,7 +29,8 @@ pub enum UserLastUpdatedWith {
 }
 
 /// Type of a User
-#[derive(Copy, Debug, PartialEq, Deserialize, Serialize, utoipa::ToSchema, Clone)]
+#[derive(Copy, Debug, PartialEq, Deserialize, Serialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum UserType {
     /// Human User
@@ -47,7 +49,8 @@ impl From<limes::PrincipalType> for UserType {
 }
 
 /// User of the catalog
-#[derive(Debug, Serialize, utoipa::ToSchema, Clone)]
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct User {
     /// Name of the user
@@ -56,7 +59,7 @@ pub struct User {
     #[serde(default)]
     pub email: Option<String>,
     /// The user's ID
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub id: UserId,
     /// Type of the user
     pub user_type: UserType,
@@ -68,13 +71,14 @@ pub struct User {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema, Clone)]
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct SearchUser {
     /// Name of the user
     pub name: String,
     /// ID of the user
-    #[schema(value_type=String)]
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub id: UserId,
     /// Type of the user
     pub user_type: UserType,
@@ -84,7 +88,8 @@ pub struct SearchUser {
     pub email: Option<String>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateUserRequest {
     /// Update the user if it already exists
@@ -109,18 +114,20 @@ pub struct CreateUserRequest {
     /// To create users in self-service manner, do not set the id.
     /// The id is then extracted from the passed JWT token.
     #[serde(default)]
-    #[schema(value_type=Option<String>)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option<String>))]
     pub id: Option<UserId>,
 }
 
 /// Search result for users
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchUserResponse {
     /// List of users matching the search criteria
     pub users: Vec<SearchUser>,
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListUsersQuery {
     /// Search for a specific username
@@ -148,7 +155,8 @@ impl ListUsersQuery {
     }
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListUsersResponse {
     pub users: Vec<User>,
@@ -168,14 +176,16 @@ impl IntoResponse for SearchUserResponse {
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchUserRequest {
     /// Search string for fuzzy search.
     /// Length is truncated to 64 characters.
     pub search: String,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateUserRequest {
     pub name: String,
@@ -185,7 +195,10 @@ pub struct UpdateUserRequest {
     pub user_type: UserType,
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
 
 /// Parse a create user request and extend with information
 /// from the request metadata if this is a self-provisioning request.
@@ -260,7 +273,7 @@ pub(crate) fn parse_create_user_request(
 }
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_user(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,

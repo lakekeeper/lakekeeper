@@ -212,12 +212,6 @@ pub struct DynAppConfig {
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
     pub authz_backend: AuthZBackend,
-    #[serde(
-        deserialize_with = "deserialize_openfga_config",
-        serialize_with = "serialize_openfga_config"
-    )]
-    pub openfga: Option<OpenFGAConfig>,
-
     // ------------- Health -------------
     pub health_check_frequency_seconds: u64,
 
@@ -258,6 +252,10 @@ pub struct DynAppConfig {
         serialize_with = "serialize_std_duration_as_ms"
     )]
     pub endpoint_stat_flush_interval: Duration,
+
+    // ------------- Caching -------------
+    #[serde(default)]
+    pub(crate) cache: Cache,
 
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
@@ -371,71 +369,38 @@ where
         .serialize(serializer)
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, veil::Redact)]
-#[serde(rename_all = "snake_case")]
-pub enum OpenFGAAuth {
-    Anonymous,
-    ClientCredentials {
-        client_id: String,
-        #[redact]
-        client_secret: String,
-        token_endpoint: Url,
-        scope: Option<String>,
-    },
-    #[redact(all)]
-    ApiKey(String),
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum AuthZBackend {
+    #[default]
+    AllowAll,
+    External(String),
 }
 
-impl Default for OpenFGAAuth {
-    fn default() -> Self {
-        Self::Anonymous
+// Add a custom deserializer to handle the special cases
+impl<'de> Deserialize<'de> for AuthZBackend {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let normalized = raw.trim().to_lowercase();
+        if normalized == "allowall" || normalized == "allow-all" {
+            Ok(Self::AllowAll)
+        } else {
+            Ok(Self::External(normalized))
+        }
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
-pub struct OpenFGAConfig {
-    /// GRPC Endpoint Url
-    pub endpoint: Url,
-    /// Store Name - if not specified, `lakekeeper` is used.
-    #[serde(default = "default_openfga_store_name")]
-    pub store_name: String,
-    /// Authentication configuration
-    #[serde(default)]
-    pub auth: OpenFGAAuth,
-    /// Explicitly set the Authorization model prefix.
-    /// Defaults to `collaboration` if not set.
-    /// We recommend to use this setting only in combination with
-    /// `authorization_model_version`
-    #[serde(default = "default_openfga_model_prefix")]
-    pub authorization_model_prefix: String,
-    /// Version of the model to use. If specified, the specified
-    /// model version must already exist.
-    /// This can be used to roll-back to previously applied model versions
-    /// or to connect to externally managed models.
-    /// Migration is disabled if the model version is set.
-    /// Version should have the format <major>.<minor>.
-    pub authorization_model_version: Option<String>,
-    /// The maximum number of checks than can be handled by a batch check
-    /// request. This is a [configuration option] of the `OpenFGA` server
-    /// with default value 50.
-    ///
-    /// [configuration option]: https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK
-    #[serde(default = "default_openfga_max_batch_check_size")]
-    pub max_batch_check_size: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum AuthZBackend {
-    #[serde(alias = "allowall", alias = "AllowAll", alias = "ALLOWALL")]
-    AllowAll,
-    #[cfg(feature = "authz-openfga")]
-    #[serde(alias = "openfga", alias = "OpenFGA", alias = "OPENFGA")]
-    OpenFGA,
-}
-
-impl Default for AuthZBackend {
-    fn default() -> Self {
-        Self::AllowAll
+impl Serialize for AuthZBackend {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AuthZBackend::AllowAll => "allowall".serialize(serializer),
+            AuthZBackend::External(s) => s.to_lowercase().serialize(serializer),
+        }
     }
 }
 
@@ -461,6 +426,91 @@ pub struct KV2Config {
     #[redact]
     pub password: String,
     pub secret_mount: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct Cache {
+    /// Short‑Term Credentials cache configuration.
+    pub(crate) stc: STCCache,
+    /// Warehouse cache configuration.
+    pub(crate) warehouse: WarehouseCache,
+    /// Namespace cache configuration.
+    pub(crate) namespace: NamespaceCache,
+    /// Secrets cache configuration.
+    pub(crate) secrets: SecretsCache,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct STCCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+}
+
+impl std::default::Default for STCCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct WarehouseCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 60 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for WarehouseCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 1000,
+            time_to_live_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct NamespaceCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 60 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for NamespaceCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 1000,
+            time_to_live_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct SecretsCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 60 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for SecretsCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 500,
+            time_to_live_secs: 600,
+        }
+    }
 }
 
 impl Default for DynAppConfig {
@@ -508,6 +558,7 @@ impl Default for DynAppConfig {
             kafka_config: None,
             kafka_topic: None,
             log_cloudevents: None,
+            authz_backend: AuthZBackend::default(),
             openid_provider_uri: None,
             openid_audience: None,
             openid_additional_issuers: None,
@@ -520,8 +571,6 @@ impl Default for DynAppConfig {
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
             kv2: None,
-            authz_backend: AuthZBackend::AllowAll,
-            openfga: None,
             secret_backend: SecretBackend::Postgres,
             task_poll_interval: Duration::from_secs(10),
             task_tabular_expiration_workers: 2,
@@ -533,6 +582,7 @@ impl Default for DynAppConfig {
             serve_swagger_ui: true,
             skip_storage_validation: false,
             debug: DebugConfig::default(),
+            cache: Cache::default(),
         }
     }
 }
@@ -660,138 +710,6 @@ where
     value.0.iter().join(",").serialize(serializer)
 }
 
-#[derive(Serialize, Deserialize, PartialEq, veil::Redact)]
-struct OpenFGAConfigSerde {
-    /// GRPC Endpoint Url
-    endpoint: Url,
-    /// Store Name - if not specified, `lakekeeper` is used.
-    #[serde(default = "default_openfga_store_name")]
-    store_name: String,
-    #[serde(default = "default_openfga_model_prefix")]
-    authorization_model_prefix: String,
-    authorization_model_version: Option<String>,
-    /// API-Key. If client-id is specified, this is ignored.
-    api_key: Option<String>,
-    /// Client id
-    client_id: Option<String>,
-    #[redact]
-    /// Client secret
-    client_secret: Option<String>,
-    /// Scope for the client credentials
-    scope: Option<String>,
-    /// Token Endpoint to use when exchanging client credentials for an access token.
-    token_endpoint: Option<Url>,
-    #[serde(default = "default_openfga_max_batch_check_size")]
-    max_batch_check_size: usize,
-}
-
-fn default_openfga_store_name() -> String {
-    "lakekeeper".to_string()
-}
-
-fn default_openfga_model_prefix() -> String {
-    "collaboration".to_string()
-}
-
-fn default_openfga_max_batch_check_size() -> usize {
-    50
-}
-
-fn deserialize_openfga_config<'de, D>(deserializer: D) -> Result<Option<OpenFGAConfig>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Some(OpenFGAConfigSerde {
-        client_id,
-        client_secret,
-        scope,
-        token_endpoint,
-        api_key,
-        endpoint,
-        store_name,
-        authorization_model_prefix,
-        authorization_model_version,
-        max_batch_check_size,
-    }) = Option::<OpenFGAConfigSerde>::deserialize(deserializer)?
-    else {
-        return Ok(None);
-    };
-
-    let auth = if let Some(client_id) = client_id {
-        let client_secret = client_secret.ok_or_else(|| {
-            serde::de::Error::custom(
-                "openfga client_secret is required when client_id is specified",
-            )
-        })?;
-        let token_endpoint = token_endpoint.ok_or_else(|| {
-            serde::de::Error::custom(
-                "openfga token_endpoint is required when client_id is specified",
-            )
-        })?;
-        OpenFGAAuth::ClientCredentials {
-            client_id,
-            client_secret,
-            token_endpoint,
-            scope,
-        }
-    } else {
-        api_key.map_or(OpenFGAAuth::Anonymous, OpenFGAAuth::ApiKey)
-    };
-
-    Ok(Some(OpenFGAConfig {
-        endpoint,
-        store_name,
-        auth,
-        authorization_model_prefix,
-        authorization_model_version,
-        max_batch_check_size,
-    }))
-}
-
-#[allow(clippy::ref_option)]
-fn serialize_openfga_config<S>(
-    value: &Option<OpenFGAConfig>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let Some(value) = value else {
-        return None::<OpenFGAConfigSerde>.serialize(serializer);
-    };
-
-    let (client_id, client_secret, token_endpoint, scope, api_key) = match &value.auth {
-        OpenFGAAuth::ClientCredentials {
-            client_id,
-            client_secret,
-            token_endpoint,
-            scope,
-        } => (
-            Some(client_id),
-            Some(client_secret),
-            Some(token_endpoint),
-            scope.clone(),
-            None,
-        ),
-        OpenFGAAuth::ApiKey(api_key) => (None, None, None, None, Some(api_key.clone())),
-        OpenFGAAuth::Anonymous => (None, None, None, None, None),
-    };
-
-    OpenFGAConfigSerde {
-        client_id: client_id.cloned(),
-        client_secret: client_secret.cloned(),
-        token_endpoint: token_endpoint.cloned(),
-        scope,
-        api_key,
-        endpoint: value.endpoint.clone(),
-        store_name: value.store_name.clone(),
-        authorization_model_prefix: value.authorization_model_prefix.clone(),
-        authorization_model_version: value.authorization_model_version.clone(),
-        max_batch_check_size: value.max_batch_check_size,
-    }
-    .serialize(serializer)
-}
-
 #[cfg(test)]
 mod test {
     use std::net::Ipv6Addr;
@@ -800,6 +718,53 @@ mod test {
     use super::*;
     #[cfg(feature = "kafka")]
     use crate::service::event_publisher::kafka::KafkaConfig;
+
+    #[test]
+    fn test_authz_backend_default() {
+        let config = get_config();
+        assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+    }
+
+    #[test]
+    fn test_external_authz_backend() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "my-authz");
+            let config = get_config();
+            assert_eq!(
+                config.authz_backend,
+                AuthZBackend::External("my-authz".to_string())
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_allow_all_authz_backend() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allowall");
+            let config = get_config();
+            assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "AllowAll");
+            let config = get_config();
+            assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "ALLOWALL");
+            let config = get_config();
+            assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allow-all");
+            let config = get_config();
+            assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+    }
 
     #[test]
     fn test_pg_ssl_mode_case_insensitive() {
@@ -971,115 +936,6 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__TASK_POLL_INTERVAL", "\"5\"");
             let config = get_config();
             assert_eq!(config.task_poll_interval, std::time::Duration::from_secs(5));
-            Ok(())
-        });
-    }
-
-    #[cfg(feature = "authz-openfga")]
-    #[test]
-    fn test_openfga_config_no_auth() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__STORE_NAME", "store_name");
-            let config = get_config();
-            let authz_config = config.openfga.unwrap();
-            assert_eq!(config.authz_backend, AuthZBackend::OpenFGA);
-            assert_eq!(authz_config.store_name, "store_name");
-
-            assert_eq!(authz_config.auth, OpenFGAAuth::Anonymous);
-
-            Ok(())
-        });
-    }
-
-    #[cfg(feature = "authz-openfga")]
-    #[test]
-    fn test_openfga_config_api_key() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__API_KEY", "api_key");
-            let config = get_config();
-            let authz_config = config.openfga.unwrap();
-            assert_eq!(config.authz_backend, AuthZBackend::OpenFGA);
-            assert_eq!(authz_config.store_name, "lakekeeper");
-
-            assert_eq!(
-                authz_config.auth,
-                OpenFGAAuth::ApiKey("api_key".to_string())
-            );
-            Ok(())
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "openfga client_secret is required when client_id is specified")]
-    fn test_openfga_client_config_fails_without_token() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__STORE_NAME", "store_name");
-            get_config();
-            Ok(())
-        });
-    }
-
-    #[cfg(feature = "authz-openfga")]
-    #[test]
-    fn test_openfga_client_credentials() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
-            jail.set_env(
-                "LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT",
-                "https://example.com/token",
-            );
-            let config = get_config();
-            let authz_config = config.openfga.unwrap();
-            assert_eq!(config.authz_backend, AuthZBackend::OpenFGA);
-            assert_eq!(authz_config.store_name, "lakekeeper");
-
-            assert_eq!(
-                authz_config.auth,
-                OpenFGAAuth::ClientCredentials {
-                    client_id: "client_id".to_string(),
-                    client_secret: "client_secret".to_string(),
-                    token_endpoint: "https://example.com/token".parse().unwrap(),
-                    scope: None
-                }
-            );
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_openfga_client_credentials_with_scope() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__SCOPE", "openfga");
-            jail.set_env(
-                "LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT",
-                "https://example.com/token",
-            );
-            let config = get_config();
-            let authz_config = config.openfga.unwrap();
-
-            assert_eq!(
-                authz_config.auth,
-                OpenFGAAuth::ClientCredentials {
-                    client_id: "client_id".to_string(),
-                    client_secret: "client_secret".to_string(),
-                    token_endpoint: "https://example.com/token".parse().unwrap(),
-                    scope: Some("openfga".to_string())
-                }
-            );
             Ok(())
         });
     }
@@ -1276,6 +1132,84 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_REQUEST_BODIES", "false");
             let config = get_config();
             assert!(!config.debug.log_request_bodies);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_stc_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.stc.enabled);
+            assert_eq!(config.cache.stc.capacity, 10_000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__STC__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.stc.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__STC__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__STC__CAPACITY", "5000");
+            let config = get_config();
+            assert!(config.cache.stc.enabled);
+            assert_eq!(config.cache.stc.capacity, 5000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_warehouse_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.warehouse.enabled);
+            assert_eq!(config.cache.warehouse.capacity, 1000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__WAREHOUSE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.warehouse.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__WAREHOUSE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__WAREHOUSE__CAPACITY", "2000");
+            let config = get_config();
+            assert!(config.cache.warehouse.enabled);
+            assert_eq!(config.cache.warehouse.capacity, 2000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_namespace_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.namespace.enabled);
+            assert_eq!(config.cache.namespace.capacity, 1000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__NAMESPACE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.namespace.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__NAMESPACE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__NAMESPACE__CAPACITY", "2000");
+            let config = get_config();
+            assert!(config.cache.namespace.enabled);
+            assert_eq!(config.cache.namespace.capacity, 2000);
             Ok(())
         });
     }

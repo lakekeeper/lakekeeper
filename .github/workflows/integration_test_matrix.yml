@@ -25,7 +25,8 @@ jobs:
     uses: ./.github/workflows/docker_build.yml
     with:
       platform: "amd64"
-      dockerfile: "docker/full.Dockerfile"
+      # Run debug binary for debug_assertions
+      dockerfile: "docker/full-debug.Dockerfile"
       image_name: "lakekeeper-local"
   tests:
     needs: docker

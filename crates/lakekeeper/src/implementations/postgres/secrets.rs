@@ -8,7 +8,7 @@ use crate::{
     api::{ErrorModel, Result},
     service::{
         health::{Health, HealthExt},
-        secrets::{Secret, SecretIdent, SecretStore},
+        secrets::{Secret, SecretId, SecretStore},
     },
     CONFIG,
 };
@@ -51,17 +51,17 @@ impl SecretsState {
 #[async_trait::async_trait]
 impl SecretStore for SecretsState {
     /// Get the secret for a given warehouse.
-    async fn get_secret_by_id<S: for<'de> Deserialize<'de>>(
+    async fn get_secret_by_id_impl<S: for<'de> Deserialize<'de>>(
         &self,
-        secret_id: SecretIdent,
-    ) -> Result<Secret<S>> {
+        secret_id: SecretId,
+    ) -> Result<Option<Secret<S>>> {
         struct SecretRow {
             secret: Option<String>,
             created_at: chrono::DateTime<chrono::Utc>,
             updated_at: Option<chrono::DateTime<chrono::Utc>>,
         }
 
-        let secret: SecretRow = sqlx::query_as!(
+        let secret = sqlx::query_as!(
             SecretRow,
             r#"
             SELECT 
@@ -74,25 +74,24 @@ impl SecretStore for SecretsState {
             secret_id.as_uuid(),
             CONFIG.pg_encryption_key
         )
-        .fetch_one(&self.read_write.read_pool)
+        .fetch_optional(&self.read_write.read_pool)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => ErrorModel::builder()
-                .code(StatusCode::NOT_FOUND.into())
-                .message("Secret not found".to_string())
-                .r#type("SecretNotFound".to_string())
-                .stack(vec![format!("secret_id: {}", secret_id), e.to_string()])
-                .build(),
-            _ => ErrorModel::builder()
+        .map_err(|e| {
+            ErrorModel::builder()
                 .code(StatusCode::INTERNAL_SERVER_ERROR.into())
                 .message("Error fetching secret".to_string())
                 .r#type("SecretFetchError".to_string())
                 .stack(vec![format!("secret_id: {}", secret_id), e.to_string()])
-                .build(),
+                .build()
         })?;
 
+        let Some(secret) = secret else {
+            return Ok(None);
+        };
+
         let inner =
-            serde_json::from_str(&secret.secret.unwrap_or("{}".to_string())).map_err(|_e| {
+            serde_json::from_str(&secret.secret.unwrap_or("{}".to_string())).map_err(|e| {
+                tracing::error!("Error parsing secret id {}: {}", secret_id, e);
                 ErrorModel::builder()
                     .code(StatusCode::INTERNAL_SERVER_ERROR.into())
                     .message("Error parsing secret".to_string())
@@ -102,19 +101,19 @@ impl SecretStore for SecretsState {
                     .build()
             })?;
 
-        Ok(Secret {
+        Ok(Some(Secret {
             secret_id,
             secret: inner,
             created_at: secret.created_at,
             updated_at: secret.updated_at,
-        })
+        }))
     }
 
     /// Create a new secret
-    async fn create_secret<S: Send + Sync + Serialize + std::fmt::Debug>(
+    async fn create_secret_impl<S: Send + Sync + Serialize + std::fmt::Debug>(
         &self,
         secret: S,
-    ) -> Result<SecretIdent> {
+    ) -> Result<SecretId> {
         let secret_str = serde_json::to_string(&secret).map_err(|_e| {
             ErrorModel::builder()
                 .code(StatusCode::INTERNAL_SERVER_ERROR.into())
@@ -149,7 +148,7 @@ impl SecretStore for SecretsState {
     }
 
     /// Delete a secret
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> Result<()> {
+    async fn delete_secret_impl(&self, secret_id: &SecretId) -> Result<()> {
         sqlx::query!(
             r#"
             DELETE FROM secret
@@ -189,14 +188,21 @@ mod tests {
         })
         .into();
 
-        let secret_id = state.create_secret(secret.clone()).await.unwrap();
+        let secret_id = state.create_storage_secret(secret.clone()).await.unwrap();
 
+        let read_secret = state.require_storage_secret_by_id(secret_id).await.unwrap();
+
+        assert_eq!(&*read_secret.secret, &secret);
+    }
+
+    #[sqlx::test]
+    async fn test_read_missing_secret(pool: sqlx::PgPool) {
+        let state = SecretsState::from_pools(pool.clone(), pool);
+        let missing_secret_id = SecretId::from(uuid::Uuid::new_v4());
         let read_secret = state
-            .get_secret_by_id::<StorageCredential>(secret_id)
-            .await
-            .unwrap();
-
-        assert_eq!(read_secret.secret, secret);
+            .get_secret_by_id_impl::<StorageCredential>(missing_secret_id)
+            .await;
+        assert!(read_secret.unwrap().is_none());
     }
 
     #[sqlx::test]
@@ -210,11 +216,11 @@ mod tests {
         })
         .into();
 
-        let secret_id = state.create_secret(secret.clone()).await.unwrap();
+        let secret_id = state.create_storage_secret(secret.clone()).await.unwrap();
 
         state.delete_secret(&secret_id).await.unwrap();
 
-        let read_secret = state.get_secret_by_id::<StorageCredential>(secret_id).await;
+        let read_secret = state.require_storage_secret_by_id(secret_id).await;
 
         assert!(read_secret.is_err());
     }

@@ -8,8 +8,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use http::{HeaderMap, Method};
-use iceberg_ext::catalog::rest::ErrorModel;
+use http::{HeaderMap, HeaderName, Method, StatusCode};
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
@@ -31,6 +31,9 @@ pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
 pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
+pub const X_PROJECT_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_PROJECT_ID_HEADER);
+pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUEST_ID_HEADER);
+
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
 /// A struct to hold metadata about a request.
@@ -43,6 +46,28 @@ pub struct RequestMetadata {
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("This endpoint requires a project ID to be specified, but none was provided.")]
+pub struct ProjectIdMissing;
+
+impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {
+    fn from(e: ProjectIdMissing) -> Self {
+        ErrorModel {
+            message: e.to_string(),
+            r#type: "ProjectIdMissing".to_string(),
+            code: StatusCode::BAD_REQUEST.as_u16(),
+            source: None,
+            stack: Vec::new(),
+        }
+    }
+}
+
+impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::IcebergErrorResponse {
+    fn from(e: ProjectIdMissing) -> Self {
+        IcebergErrorResponse::from(ErrorModel::from(e))
+    }
 }
 
 impl RequestMetadata {
@@ -119,7 +144,7 @@ impl RequestMetadata {
 
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
-    pub fn random_human(user_id: crate::service::UserId) -> Self {
+    pub fn test_user(user_id: crate::service::UserId) -> Self {
         Self {
             request_id: Uuid::now_v7(),
             authentication: Some(
@@ -134,6 +159,36 @@ impl RequestMetadata {
             ),
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Principal(user_id).into(),
+            matched_path: None,
+            request_method: Method::default(),
+            project_id: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_user_assumed_role(
+        user_id: crate::service::UserId,
+        role_id: crate::service::RoleId,
+    ) -> Self {
+        Self {
+            request_id: Uuid::now_v7(),
+            authentication: Some(
+                Authentication::builder()
+                    .token_header(None)
+                    .claims(serde_json::json!({}))
+                    .subject(user_id.clone().into())
+                    .name(Some("Test User".to_string()))
+                    .email(None)
+                    .principal_type(None)
+                    .build(),
+            ),
+            base_url: "http://localhost:8181".to_string(),
+            actor: Actor::Role {
+                principal: user_id,
+                assumed_role: role_id,
+            }
+            .into(),
             matched_path: None,
             request_method: Method::default(),
             project_id: None,
@@ -195,16 +250,11 @@ impl RequestMetadata {
     /// Fails if none of the above methods provide a project ID.
     pub fn require_project_id(
         &self,
-        user_project: Option<ProjectId>, // Explicitly requested via an API parameter
-    ) -> crate::api::Result<ProjectId> {
-        user_project.or(self.preferred_project_id()).ok_or_else(|| {
-            ErrorModel::bad_request(
-                format!("No project provided. Please provide the `{X_PROJECT_ID_HEADER}` header"),
-                "NoProjectIdProvided",
-                None,
-            )
-            .into()
-        })
+        user_project: Option<ProjectId>,
+    ) -> Result<ProjectId, ProjectIdMissing> {
+        user_project
+            .or(self.preferred_project_id())
+            .ok_or(ProjectIdMissing)
     }
 
     /// Get the host that the request was made to.
@@ -254,14 +304,13 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
 ) -> Response {
     let request_id: Uuid = headers
         .get(X_REQUEST_ID_HEADER)
-        .and_then(|hv| {
-            hv.to_str()
-                .map(Uuid::from_str)
-                .ok()
-                .transpose()
-                .ok()
-                .flatten()
-        })
+        .and_then(|hv| hv.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(Uuid::from_str)
+        .transpose()
+        .ok()
+        .flatten()
         .unwrap_or(Uuid::now_v7());
 
     let Some(base_uri) = determine_base_uri(&headers) else {
@@ -277,11 +326,16 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .get(X_PROJECT_ID_HEADER)
         .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
         .and_then(|hv| hv.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(ProjectId::from_str)
-        .transpose();
+        .transpose()
+        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")));
     let project_id = match project_id {
         Ok(ident) => ident,
-        Err(err) => return err.into_response(),
+        Err(err) => {
+            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response()
+        }
     };
 
     let matched_path = request

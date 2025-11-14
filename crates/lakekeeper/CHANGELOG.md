@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.10.2](https://github.com/lakekeeper/lakekeeper/compare/v0.10.1...v0.10.2) (2025-10-06)
+
+
+### Bug Fixes
+
+* Parse empty ProjectID headers as None ([#1424](https://github.com/lakekeeper/lakekeeper/issues/1424)) ([8f067e7](https://github.com/lakekeeper/lakekeeper/commit/8f067e725b372b3e09ca3d04409d10a854bf9b8e))
+
+
+### Miscellaneous Chores
+
+* release 0.10.2 ([8d5171e](https://github.com/lakekeeper/lakekeeper/commit/8d5171ec9ba7fa5bac2b062af9eb8fffb28bbd42))
+
+## [0.10.1](https://github.com/lakekeeper/lakekeeper/compare/v0.10.0...v0.10.1) (2025-10-05)
+
+
+### Features
+
+* Add create table guard to cleanup location on Failure ([#1418](https://github.com/lakekeeper/lakekeeper/issues/1418)) ([9fc98d8](https://github.com/lakekeeper/lakekeeper/commit/9fc98d8cdb710de3d6845969a3ae3356e0728aef))
+* **debug:** Add LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES configuration ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Expose client-managed X-Iceberg-Access-Delegation ([#1407](https://github.com/lakekeeper/lakekeeper/issues/1407)) ([aa72949](https://github.com/lakekeeper/lakekeeper/commit/aa72949409f02ff99e3859778e9bf8a44e583460))
+* implement `OpenFgaEntity` for `ServerId` ([#1394](https://github.com/lakekeeper/lakekeeper/issues/1394)) ([9c2ae42](https://github.com/lakekeeper/lakekeeper/commit/9c2ae429687184ff7dfc3dfd570b9461079490f4))
+
+
+### Bug Fixes
+
+* Add support for `write.metadata.metrics.` Table Properties ([#1422](https://github.com/lakekeeper/lakekeeper/issues/1422)) ([d45f473](https://github.com/lakekeeper/lakekeeper/commit/d45f4735242718b1fed54eb6e00e9119d2372942))
+* Dynamic OpenAPI generation for registered Task Queues ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Endpoint stats for Project Endpoints ([#1412](https://github.com/lakekeeper/lakekeeper/issues/1412)) ([5f6e9c9](https://github.com/lakekeeper/lakekeeper/commit/5f6e9c9d4269b399620512c968ee293e27cde45d))
+* Return default initial Task Queue Config ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Use FnOnce for queue & service registration ([192e211](https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955))
+* Use FnOnce for queue & service registration ([47b03a0](https://github.com/lakekeeper/lakekeeper/commit/47b03a089215950d2d9df3a4c1fa07769c8979dd))
+* Use higher consistency for some OpenFGA queries ([#1408](https://github.com/lakekeeper/lakekeeper/issues/1408)) ([2a9ce24](https://github.com/lakekeeper/lakekeeper/commit/2a9ce244f6c279c203d5ff8ba2e4c4b6bc907e43))
+
+
+### Miscellaneous Chores
+
+* Generate ID types with Macro ([#1419](https://github.com/lakekeeper/lakekeeper/issues/1419)) ([47cef6a](https://github.com/lakekeeper/lakekeeper/commit/47cef6a516d6e2aadc7a726fa0a6a39f87da7442))
+* release 0.10.1 ([d58faec](https://github.com/lakekeeper/lakekeeper/commit/d58faec18a78f3f518dd9a7af53796008bee6d77))
+* remove unneded `#[allow(dead_code)]` ([#1399](https://github.com/lakekeeper/lakekeeper/issues/1399)) ([dc821f4](https://github.com/lakekeeper/lakekeeper/commit/dc821f41b9334ea7ef1f1479c7b9fc88ee1eb425))
+
 ## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-29)
 
 

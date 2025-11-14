@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-kafka-catalog
+  namespace: trino
+data:
+  config.properties: |
+    http-server.process-forwarded=true
+    discovery.uri=http://localhost:8080
+
+  iceberg_lakehouse.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://lakekeeper.catalog.svc.cluster.local:8181/catalog
+    iceberg.rest-catalog.warehouse=demo
+    iceberg.compression-codec=SNAPPY
+    s3.region=local-01
+    s3.path-style-access=true
+    s3.endpoint=http://minio.storage.svc.cluster.local:9000
+    fs.native-s3.enabled=true
+    s3.aws-access-key=minioadmin
+    s3.aws-secret-key=minioadmin

@@ -4,7 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
-    implementations::postgres::{PostgresCatalog, SecretsState},
+    implementations::postgres::{PostgresBackend, SecretsState},
     service::{authz::AllowAllAuthorizer, State, UserId},
     tests::TestWarehouseResponse,
 };
@@ -31,7 +31,7 @@ mod test {
             },
             RequestMetadata,
         },
-        catalog::CatalogServer,
+        server::CatalogServer,
         service::{ListNamespacesQuery, NamespaceId, TableId},
         tests::{
             create_ns, create_table, drop_namespace, drop_recursive::setup_drop_test,
@@ -574,7 +574,7 @@ mod test {
 }
 
 struct DropSetup {
-    ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+    ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
     warehouse: TestWarehouseResponse,
     namespace_names: Vec<String>,
 }
@@ -613,7 +613,7 @@ async fn setup_drop_test(
         let _ = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
-            ns_name.to_string(),
+            ns_name.clone(),
         )
         .await;
         for i in 0..n_tabs {

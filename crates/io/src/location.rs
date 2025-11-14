@@ -8,7 +8,13 @@ pub struct Location {
     authority_and_path: String, // Everything after ://
 }
 
-#[derive(thiserror::Error, Debug)]
+impl std::hash::Hash for Location {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.full_location.hash(state);
+    }
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
 #[error("Failed to parse '{value}' as Location: {reason}")]
 pub struct LocationParseError {
     pub value: String,
@@ -42,6 +48,11 @@ impl Location {
             Some(slash_pos) => Some(&host_part[..slash_pos]),
             None => Some(host_part), // No slash found, return the whole host part
         }
+    }
+
+    #[must_use]
+    pub fn authority_and_path(&self) -> &str {
+        &self.authority_and_path
     }
 
     #[must_use]

@@ -1,63 +1,72 @@
 {
     "packages": {
-        "crates/lakekeeper": {
-            "release-type": "rust",
-            "component": "catalog"
-        },
-        "crates/lakekeeper-bin": {
-            "release-type": "rust",
-            "component": "catalog-bin"
-        },
-        "crates/iceberg-ext": {
-            "release-type": "rust",
-            "component": "iceberg-ext"
-        }
-    },
-    "plugins": [
-        {
-            "type": "cargo-workspace",
-            "merge": false
-        },
-        {
-            "type": "linked-versions",
-            "groupName": "lakekeeper",
-            "components": [
-                "lakekeeper",
-                "lakekeeper-bin",
-                "iceberg-ext"
+        ".": {
+            "release-type": "simple",
+            "exclude-paths": [
+                ".github",
+                ".cargo",
+                "release-please",
+                ".gitignore",
+                "renovate.json"
             ]
         }
-    ],
+    },
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
     "include-component-in-tag": false,
+    "release-as": "0.11.0",
     "extra-files": [
         {
-            "type": "yaml",
-            "path": "docs/docs/api/management-open-api.yaml",
-            "jsonpath": "$.info.version"
+            "type": "toml",
+            "path": "Cargo.toml",
+            "jsonpath": "$.workspace.package.version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"iceberg-ext\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-authz-openfga\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-bin\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-io\")].version"
         }
     ],
     "changelog-sections": [
         {
-          "type": "feat",
-          "hidden": false,
-          "section": "Features"
+            "type": "feat",
+            "hidden": false,
+            "section": "Features"
         },
         {
-          "type": "fix",
-          "hidden": false,
-          "section": "Bug Fixes"
+            "type": "fix",
+            "hidden": false,
+            "section": "Bug Fixes"
         },
         {
-          "type": "docs",
-          "hidden": false,
-          "section": "Documentation"
+            "type": "docs",
+            "hidden": false,
+            "section": "Documentation"
         },
         {
-          "type": "chore",
-          "hidden": false,
-          "section": "Miscellaneous Chores"
+            "type": "chore",
+            "hidden": false,
+            "section": "Miscellaneous Chores"
         }
     ],
     "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"

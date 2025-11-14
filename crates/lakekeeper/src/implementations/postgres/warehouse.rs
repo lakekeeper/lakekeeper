@@ -2,44 +2,32 @@ use std::{collections::HashSet, ops::Deref};
 
 use sqlx::{types::Json, PgPool};
 
-use super::{dbutils::DBErrorHandler as _, CatalogState};
+use super::CatalogState;
 use crate::{
     api::{
         iceberg::v1::PaginationQuery,
         management::v1::{
             warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
-            DeleteWarehouseQuery, ProtectionResponse,
+            DeleteWarehouseQuery,
         },
-        CatalogConfig, ErrorModel, Result,
+        ErrorModel,
     },
-    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
-    request_metadata::RequestMetadata,
-    service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
-    ProjectId, SecretIdent, WarehouseId, CONFIG,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        pagination::{PaginateToken, V1PaginateToken},
+    },
+    service::{
+        storage::StorageProfile, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
+        CatalogRenameWarehouseError, DatabaseIntegrityError, GetProjectResponse,
+        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
+        UpdateWarehouseStorageProfileError, WarehouseAlreadyExists, WarehouseHasUnfinishedTasks,
+        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
+        WarehouseVersion,
+    },
+    ProjectId, SecretId, WarehouseId, CONFIG,
 };
-
-pub(super) async fn get_warehouse_by_name(
-    warehouse_name: &str,
-    project_id: &ProjectId,
-    catalog_state: CatalogState,
-) -> Result<Option<WarehouseId>> {
-    let warehouse_id = sqlx::query_scalar!(
-        r#"
-            SELECT
-                warehouse_id
-            FROM warehouse
-            WHERE warehouse_name = $1 AND project_id = $2
-            AND status = 'active'
-            "#,
-        warehouse_name.to_string(),
-        project_id
-    )
-    .fetch_optional(&catalog_state.read_pool())
-    .await
-    .map_err(map_select_warehouse_err)?;
-
-    Ok(warehouse_id.map(Into::into))
-}
 
 pub(super) async fn set_warehouse_deletion_profile<
     'c,
@@ -49,69 +37,45 @@ pub(super) async fn set_warehouse_deletion_profile<
     warehouse_id: WarehouseId,
     deletion_profile: &TabularDeleteProfile,
     connection: E,
-) -> Result<()> {
+) -> Result<ResolvedWarehouse, SetWarehouseDeletionProfileError> {
     let num_secs = deletion_profile
         .expiration_seconds()
         .map(|dur| dur.num_seconds());
     let prof = DbTabularDeleteProfile::from(*deletion_profile);
 
-    let row_count = sqlx::query!(
+    let row_count = sqlx::query_as!(
+        WarehouseRecord,
         r#"
             UPDATE warehouse
             SET tabular_expiration_seconds = $1, tabular_delete_mode = $2
             WHERE warehouse_id = $3
             AND status = 'active'
+            RETURNING 
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                updated_at,
+                version
             "#,
         num_secs,
         prof as _,
         *warehouse_id
     )
-    .execute(connection)
+    .fetch_optional(connection)
     .await
-    .map_err(|e| e.into_error_model("Error setting warehouse deletion profile"))?
-    .rows_affected();
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
-    }
+    let Some(warehouse) = row_count else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
 
-    Ok(())
-}
-
-pub(super) async fn get_config_for_warehouse(
-    warehouse_id: WarehouseId,
-    catalog_state: CatalogState,
-    request_metadata: &RequestMetadata,
-) -> Result<Option<CatalogConfig>> {
-    let row = sqlx::query!(
-        r#"
-            SELECT
-                storage_profile as "storage_profile: Json<StorageProfile>",
-                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
-                tabular_expiration_seconds
-            FROM warehouse
-            WHERE warehouse_id = $1
-            AND status = 'active'
-            "#,
-        *warehouse_id
-    )
-    .fetch_optional(&catalog_state.read_pool())
-    .await
-    .map_err(map_select_warehouse_err)?;
-
-    if let Some(row) = row {
-        let delete_profile = db_to_api_tabular_delete_profile(
-            row.tabular_delete_mode,
-            row.tabular_expiration_seconds,
-        )?;
-        Ok(Some(row.storage_profile.generate_catalog_config(
-            warehouse_id,
-            request_metadata,
-            delete_profile,
-        )))
-    } else {
-        Ok(None)
-    }
+    Ok(warehouse.try_into()?)
 }
 
 pub(crate) async fn create_warehouse(
@@ -119,23 +83,19 @@ pub(crate) async fn create_warehouse(
     project_id: &ProjectId,
     storage_profile: StorageProfile,
     tabular_delete_profile: TabularDeleteProfile,
-    storage_secret_id: Option<SecretIdent>,
+    storage_secret_id: Option<SecretId>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<WarehouseId> {
-    let storage_profile_ser = serde_json::to_value(storage_profile).map_err(|e| {
-        ErrorModel::internal(
-            "Error serializing storage profile",
-            "StorageProfileSerializationError",
-            Some(Box::new(e)),
-        )
-    })?;
+) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
+    let storage_profile_ser =
+        serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
 
     let num_secs = tabular_delete_profile
         .expiration_seconds()
         .map(|dur| dur.num_seconds());
     let prof = DbTabularDeleteProfile::from(tabular_delete_profile);
 
-    let warehouse_id = sqlx::query_scalar!(
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
         r#"WITH
             whi AS (INSERT INTO warehouse (
                                    warehouse_name,
@@ -146,12 +106,25 @@ pub(crate) async fn create_warehouse(
                                    tabular_expiration_seconds,
                                    tabular_delete_mode)
                                 VALUES ($1, $2, $3, $4, 'active', $5, $6)
-                                RETURNING warehouse_id),
+                                RETURNING
+                                    project_id,
+                                    warehouse_id,
+                                    warehouse_name,
+                                    storage_profile as "storage_profile: Json<StorageProfile>",
+                                    storage_secret_id,
+                                    status AS "status: WarehouseStatus",
+                                    tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                                    tabular_expiration_seconds,
+                                    protected,
+                                    updated_at,
+                                    version),
             whs AS (INSERT INTO warehouse_statistics (number_of_views,
                                                       number_of_tables,
                                                       warehouse_id)
                      VALUES (0, 0, (SELECT warehouse_id FROM whi)))
-            SELECT warehouse_id FROM whi"#,
+            SELECT
+                *
+            FROM whi"#,
         warehouse_name,
         project_id,
         storage_profile_ser,
@@ -164,27 +137,25 @@ pub(crate) async fn create_warehouse(
     .map_err(|e| match &e {
         sqlx::Error::Database(db_err) => match db_err.constraint() {
             // ToDo: Get constraint name from const
-            Some("unique_warehouse_name_in_project") => ErrorModel::conflict(
-                "Warehouse with this name already exists in the project.",
-                "WarehouseNameAlreadyExists",
-                Some(Box::new(e)),
+            Some("unique_warehouse_name_in_project") => CatalogCreateWarehouseError::from(
+                WarehouseAlreadyExists::new(warehouse_name, project_id.clone()),
             ),
             Some("warehouse_project_id_fk") => {
-                ErrorModel::not_found("Project not found", "ProjectNotFound", Some(Box::new(e)))
+                ProjectIdNotFoundError::new(project_id.clone()).into()
             }
-            _ => e.into_error_model("Error creating Warehouse"),
+            _ => e.into_catalog_backend_error().into(),
         },
-        _ => e.into_error_model("Error creating Warehouse"),
+        _ => e.into_catalog_backend_error().into(),
     })?;
 
-    Ok(warehouse_id.into())
+    Ok(warehouse.try_into()?)
 }
 
 pub(crate) async fn rename_project(
     project_id: &ProjectId,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+) -> crate::service::Result<()> {
     let row_count = sqlx::query!(
         "UPDATE project
             SET project_name = $1
@@ -208,7 +179,7 @@ pub(crate) async fn create_project(
     project_id: &ProjectId,
     project_name: String,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+) -> crate::service::Result<()> {
     let Some(_project_id) = sqlx::query_scalar!(
         r#"
         INSERT INTO project (project_name, project_id)
@@ -237,7 +208,7 @@ pub(crate) async fn create_project(
 pub(crate) async fn get_project(
     project_id: &ProjectId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Option<GetProjectResponse>> {
+) -> crate::service::Result<Option<GetProjectResponse>> {
     let project = sqlx::query!(
         r#"
         SELECT
@@ -271,7 +242,7 @@ pub(crate) async fn get_project(
 pub(crate) async fn delete_project(
     project_id: &ProjectId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+) -> crate::service::Result<()> {
     let row_count = sqlx::query_scalar!(r#"DELETE FROM project WHERE project_id = $1"#, project_id)
         .execute(&mut **transaction)
         .await
@@ -298,6 +269,45 @@ pub(crate) async fn delete_project(
     Ok(())
 }
 
+#[derive(sqlx::FromRow, Debug, PartialEq)]
+struct WarehouseRecord {
+    project_id: String,
+    warehouse_id: uuid::Uuid,
+    warehouse_name: String,
+    storage_profile: Json<StorageProfile>,
+    storage_secret_id: Option<uuid::Uuid>,
+    status: WarehouseStatus,
+    tabular_delete_mode: DbTabularDeleteProfile,
+    tabular_expiration_seconds: Option<i64>,
+    protected: bool,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    version: i64,
+}
+
+impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
+    type Error = DatabaseIntegrityError;
+
+    fn try_from(value: WarehouseRecord) -> Result<Self, Self::Error> {
+        let tabular_delete_profile = db_to_api_tabular_delete_profile(
+            value.tabular_delete_mode,
+            value.tabular_expiration_seconds,
+        )?;
+
+        Ok(ResolvedWarehouse {
+            warehouse_id: value.warehouse_id.into(),
+            name: value.warehouse_name,
+            project_id: ProjectId::from_db_unchecked(value.project_id),
+            storage_profile: value.storage_profile.deref().clone(),
+            storage_secret_id: value.storage_secret_id.map(Into::into),
+            status: value.status,
+            tabular_delete_profile,
+            protected: value.protected,
+            updated_at: value.updated_at,
+            version: WarehouseVersion::from(value.version),
+        })
+    }
+}
+
 pub(crate) async fn list_warehouses<
     'e,
     'c: 'e,
@@ -306,24 +316,13 @@ pub(crate) async fn list_warehouses<
     project_id: &ProjectId,
     include_status: Option<Vec<WarehouseStatus>>,
     catalog_state: E,
-) -> Result<Vec<GetWarehouseResponse>> {
-    #[derive(sqlx::FromRow, Debug, PartialEq)]
-    struct WarehouseRecord {
-        warehouse_id: uuid::Uuid,
-        warehouse_name: String,
-        storage_profile: Json<StorageProfile>,
-        storage_secret_id: Option<uuid::Uuid>,
-        status: WarehouseStatus,
-        tabular_delete_mode: DbTabularDeleteProfile,
-        tabular_expiration_seconds: Option<i64>,
-        protected: bool,
-    }
-
+) -> Result<Vec<ResolvedWarehouse>, CatalogListWarehousesError> {
     let include_status = include_status.unwrap_or_else(|| vec![WarehouseStatus::Active]);
     let warehouses = sqlx::query_as!(
         WarehouseRecord,
         r#"
             SELECT 
+                project_id,
                 warehouse_id,
                 warehouse_name,
                 storage_profile as "storage_profile: Json<StorageProfile>",
@@ -331,7 +330,9 @@ pub(crate) async fn list_warehouses<
                 status AS "status: WarehouseStatus",
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
-                protected
+                protected,
+                updated_at,
+                version
             FROM warehouse
             WHERE project_id = $1
             AND status = ANY($2)
@@ -341,70 +342,85 @@ pub(crate) async fn list_warehouses<
     )
     .fetch_all(catalog_state)
     .await
-    .map_err(|e| e.into_error_model("Error fetching warehouses"))?;
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
     warehouses
         .into_iter()
-        .map(|warehouse| {
-            let tabular_delete_profile = db_to_api_tabular_delete_profile(
-                warehouse.tabular_delete_mode,
-                warehouse.tabular_expiration_seconds,
-            )?;
-
-            Ok(GetWarehouseResponse {
-                id: warehouse.warehouse_id.into(),
-                name: warehouse.warehouse_name,
-                project_id: project_id.clone(),
-                storage_profile: warehouse.storage_profile.deref().clone(),
-                storage_secret_id: warehouse.storage_secret_id.map(std::convert::Into::into),
-                status: warehouse.status,
-                tabular_delete_profile,
-                protected: warehouse.protected,
-            })
-        })
-        .collect::<Result<Vec<_>>>()
+        .map(|warehouse| warehouse.try_into().map_err(Into::into))
+        .collect()
 }
 
-pub(crate) async fn get_warehouse(
-    warehouse_id: WarehouseId,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Option<GetWarehouseResponse>> {
-    let warehouse = sqlx::query!(
+pub(super) async fn get_warehouse_by_name(
+    warehouse_name: &str,
+    project_id: &ProjectId,
+    catalog_state: CatalogState,
+) -> Result<Option<ResolvedWarehouse>, CatalogGetWarehouseByNameError> {
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
         r#"
-        SELECT 
-            warehouse_name,
+        SELECT
             project_id,
+            warehouse_id,
+            warehouse_name,
             storage_profile as "storage_profile: Json<StorageProfile>",
             storage_secret_id,
             status AS "status: WarehouseStatus",
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
-            protected
+            protected,
+            updated_at,
+            version
+        FROM warehouse
+        WHERE warehouse_name = $1 AND project_id = $2
+        "#,
+        warehouse_name.to_string(),
+        project_id
+    )
+    .fetch_optional(&catalog_state.read_pool())
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    if let Some(warehouse) = warehouse {
+        Ok(Some(warehouse.try_into()?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) async fn get_warehouse_by_id<
+    'e,
+    'c: 'e,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    warehouse_id: WarehouseId,
+    catalog_state: E,
+) -> Result<Option<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"
+        SELECT 
+            project_id,
+            warehouse_id,
+            warehouse_name,
+            storage_profile as "storage_profile: Json<StorageProfile>",
+            storage_secret_id,
+            status AS "status: WarehouseStatus",
+            tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+            tabular_expiration_seconds,
+            protected,
+            updated_at,
+            version
         FROM warehouse
         WHERE warehouse_id = $1
         "#,
         *warehouse_id
     )
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(catalog_state)
     .await
-    .map_err(map_select_warehouse_err)?;
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
     if let Some(warehouse) = warehouse {
-        let tabular_delete_profile = db_to_api_tabular_delete_profile(
-            warehouse.tabular_delete_mode,
-            warehouse.tabular_expiration_seconds,
-        )?;
-
-        Ok(Some(GetWarehouseResponse {
-            id: warehouse_id,
-            name: warehouse.warehouse_name,
-            project_id: ProjectId::from_db_unchecked(warehouse.project_id),
-            storage_profile: warehouse.storage_profile.deref().clone(),
-            storage_secret_id: warehouse.storage_secret_id.map(std::convert::Into::into),
-            status: warehouse.status,
-            tabular_delete_profile,
-            protected: warehouse.protected,
-        }))
+        Ok(Some(warehouse.try_into()?))
     } else {
         Ok(None)
     }
@@ -413,7 +429,7 @@ pub(crate) async fn get_warehouse(
 pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     project_ids: Option<HashSet<ProjectId>>,
     connection: E,
-) -> Result<Vec<GetProjectResponse>> {
+) -> crate::service::Result<Vec<GetProjectResponse>> {
     let return_all = project_ids.is_none();
     let projects = sqlx::query!(
         r#"
@@ -441,26 +457,22 @@ pub(crate) async fn delete_warehouse(
     warehouse_id: WarehouseId,
     DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+) -> Result<(), CatalogDeleteWarehouseError> {
     let unfinished_task_counts_per_queue = sqlx::query!(
         r#"WITH active_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1)
             SELECT COUNT(task_id) as "task_count!", queue_name FROM active_tasks GROUP BY queue_name"#,
         *warehouse_id,
-    ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error fetching active tasks for warehouse"))?;
+    ).fetch_all(&mut **transaction).await.map_err(|e| e.into_catalog_backend_error().append_detail("Error fetching active tasks for warehouse"))?;
     if !unfinished_task_counts_per_queue.is_empty() {
         let task_descriptions = unfinished_task_counts_per_queue
             .iter()
-            .map(|row| format!("{} in queue '{}'", row.task_count, row.queue_name))
+            .map(|row| format!("{} Tasks in queue '{}'", row.task_count, row.queue_name))
             .collect::<Vec<_>>()
             .join(", ");
 
-        return Err(ErrorModel::conflict(
-            format!(
-                "Warehouse has unfinished tasks: {task_descriptions}. Retry once they are done."
-            ),
-            "WarehouseHasUnfinishedTasks",
-            None,
-        )
+        return Err(WarehouseHasUnfinishedTasks {
+            stack: vec![format!("Unfinished tasks: {task_descriptions}")],
+        }
         .into());
     }
 
@@ -476,29 +488,21 @@ pub(crate) async fn delete_warehouse(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::RowNotFound => ErrorModel::not_found(
-            format!("Warehouse '{warehouse_id}' not found"),
-            "WarehouseNotFound",
-            Some(Box::new(e)),
-        ),
+        sqlx::Error::RowNotFound => {
+            CatalogDeleteWarehouseError::from(WarehouseIdNotFound::new(warehouse_id))
+        }
         sqlx::Error::Database(db_error) => {
             if db_error.is_foreign_key_violation() {
-                ErrorModel::conflict(
-                    "Warehouse is not empty",
-                    "WarehouseNotEmpty",
-                    Some(Box::new(e)),
-                )
+                WarehouseNotEmpty::new().into()
             } else {
-                e.into_error_model("Error deleting warehouse")
+                e.into_catalog_backend_error().into()
             }
         }
-        _ => e.into_error_model("Error deleting warehouse"),
+        _ => e.into_catalog_backend_error().into(),
     })?;
 
     if protected && !force {
-        return Err(
-            ErrorModel::conflict("Warehouse is protected", "WarehouseProtected", None).into(),
-        );
+        return Err(WarehouseProtected::new().into());
     }
 
     Ok(())
@@ -508,126 +512,156 @@ pub(crate) async fn rename_warehouse(
     warehouse_id: WarehouseId,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let row_count = sqlx::query!(
-        "UPDATE warehouse
+) -> Result<ResolvedWarehouse, CatalogRenameWarehouseError> {
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
             SET warehouse_name = $1
             WHERE warehouse_id = $2
-            AND status = 'active'",
+            AND status = 'active'
+        RETURNING
+            project_id,
+            warehouse_id,
+            warehouse_name,
+            storage_profile as "storage_profile: Json<StorageProfile>",
+            storage_secret_id,
+            status AS "status: WarehouseStatus",
+            tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+            tabular_expiration_seconds,
+            protected,
+            updated_at,
+            version
+        "#,
         new_name,
         *warehouse_id
     )
-    .execute(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error renaming warehouse"))?
-    .rows_affected();
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
-    }
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
 
-    Ok(())
+    Ok(warehouse.try_into()?)
 }
 
 pub(crate) async fn set_warehouse_status(
     warehouse_id: WarehouseId,
     status: WarehouseStatus,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let row_count = sqlx::query!(
-        "UPDATE warehouse
+) -> Result<ResolvedWarehouse, SetWarehouseStatusError> {
+    let row_count = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
             SET status = $1
-            WHERE warehouse_id = $2",
+            WHERE warehouse_id = $2
+            RETURNING                 
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                updated_at,
+                version
+        "#,
         status as _,
         *warehouse_id
     )
-    .execute(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error setting warehouse status"))?
-    .rows_affected();
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
-    }
+    let Some(warehouse) = row_count else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
 
-    Ok(())
+    Ok(warehouse.try_into()?)
 }
 
 pub(crate) async fn set_warehouse_protection(
     warehouse_id: WarehouseId,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<ProtectionResponse> {
-    let row = sqlx::query!(
-        "UPDATE warehouse
+) -> Result<ResolvedWarehouse, SetWarehouseProtectedError> {
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
             SET protected = $1
             WHERE warehouse_id = $2
-            returning protected, updated_at",
+            RETURNING 
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                updated_at,
+                version
+            "#,
         protected,
         *warehouse_id
     )
-    .fetch_one(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            return ErrorModel::not_found(
-                format!("Warehouse '{warehouse_id}' not found"),
-                "WarehouseNotFound",
-                Some(Box::new(e)),
-            );
-        }
-        e.into_error_model("Error setting warehouse protection")
-    })?;
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    Ok(ProtectionResponse {
-        protected: row.protected,
-        updated_at: row.updated_at,
-    })
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
+
+    Ok(warehouse.try_into()?)
 }
 
 pub(crate) async fn update_storage_profile(
     warehouse_id: WarehouseId,
     storage_profile: StorageProfile,
-    storage_secret_id: Option<SecretIdent>,
+    storage_secret_id: Option<SecretId>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let storage_profile_ser = serde_json::to_value(storage_profile).map_err(|e| {
-        ErrorModel::internal(
-            "Error serializing storage profile",
-            "StorageProfileSerializationError",
-            Some(Box::new(e)),
-        )
-    })?;
+) -> Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
+    let storage_profile_ser =
+        serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
 
-    let row_count = sqlx::query!(
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
         r#"
             UPDATE warehouse
             SET storage_profile = $1, storage_secret_id = $2
             WHERE warehouse_id = $3
             AND status = 'active'
+            RETURNING
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                updated_at,
+                version
         "#,
         storage_profile_ser,
         storage_secret_id.map(|id| id.into_uuid()),
         *warehouse_id
     )
-    .execute(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error updating storage profile"))?
-    .rows_affected();
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
-    }
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
 
-    Ok(())
-}
-
-fn map_select_warehouse_err(e: sqlx::Error) -> ErrorModel {
-    ErrorModel::internal(
-        "Error fetching warehouse",
-        "WarehouseFetchError",
-        Some(Box::new(e)),
-    )
+    Ok(warehouse.try_into()?)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
@@ -650,13 +684,11 @@ impl From<TabularDeleteProfile> for DbTabularDeleteProfile {
 fn db_to_api_tabular_delete_profile(
     mode: DbTabularDeleteProfile,
     expiration_seconds: Option<i64>,
-) -> Result<TabularDeleteProfile> {
+) -> Result<TabularDeleteProfile, DatabaseIntegrityError> {
     match mode {
         DbTabularDeleteProfile::Soft => {
-            let seconds = expiration_seconds.ok_or(ErrorModel::internal(
-                "Tabular expiration seconds not found",
-                "TabularExpirationSecondsNotFound",
-                None,
+            let seconds = expiration_seconds.ok_or(DatabaseIntegrityError::new(
+                "Did not find `expiration_seconds` for warehouse with soft deletion enabled.",
             ))?;
             Ok(TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(seconds),
@@ -668,7 +700,7 @@ fn db_to_api_tabular_delete_profile(
 
 pub(crate) async fn get_warehouse_stats(
     conn: PgPool,
-    warehouse_ident: WarehouseId,
+    warehouse_id: WarehouseId,
     PaginationQuery {
         page_size,
         page_token,
@@ -709,7 +741,7 @@ pub(crate) async fn get_warehouse_stats(
         ORDER BY timestamp DESC
         LIMIT $3
         "#,
-        warehouse_ident.0,
+        *warehouse_id,
         token_ts,
         page_size
     )
@@ -738,7 +770,7 @@ pub(crate) async fn get_warehouse_stats(
         })
         .collect();
     Ok(WarehouseStatisticsResponse {
-        warehouse_ident: *warehouse_ident,
+        warehouse_ident: *warehouse_id,
         stats,
         next_page_token,
     })
@@ -751,10 +783,10 @@ pub(crate) mod test {
     use super::*;
     use crate::{
         api::iceberg::types::PageToken,
-        implementations::postgres::{PostgresCatalog, PostgresTransaction},
+        implementations::postgres::{PostgresBackend, PostgresTransaction},
         service::{
             storage::{S3Flavor, S3Profile},
-            Catalog as _, Transaction,
+            CatalogStore as _, CatalogWarehouseOps as _, Transaction,
         },
     };
 
@@ -762,7 +794,7 @@ pub(crate) mod test {
         state: CatalogState,
         storage_profile: Option<StorageProfile>,
         project_id: Option<&ProjectId>,
-        secret_id: Option<SecretIdent>,
+        secret_id: Option<SecretId>,
         create_project: bool,
     ) -> crate::WarehouseId {
         let project_id = project_id.map_or(
@@ -774,7 +806,7 @@ pub(crate) mod test {
             .unwrap();
 
         if create_project {
-            PostgresCatalog::create_project(
+            PostgresBackend::create_project(
                 &project_id,
                 format!("Project {project_id}"),
                 t.transaction(),
@@ -792,7 +824,7 @@ pub(crate) mod test {
                 .build(),
         ));
 
-        let warehouse_id = PostgresCatalog::create_warehouse(
+        let warehouse = PostgresBackend::create_warehouse(
             "test_warehouse".to_string(),
             &project_id,
             storage_profile,
@@ -806,7 +838,7 @@ pub(crate) mod test {
         .unwrap();
 
         t.commit().await.unwrap();
-        warehouse_id
+        warehouse.warehouse_id
     }
 
     #[sqlx::test]
@@ -814,15 +846,19 @@ pub(crate) mod test {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
 
-        let fetched_warehouse_id = PostgresCatalog::get_warehouse_by_name(
+        let fetched_warehouse = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
             &ProjectId::from(uuid::Uuid::nil()),
+            WarehouseStatus::active(),
             state.clone(),
         )
         .await
         .unwrap();
 
-        assert_eq!(Some(warehouse_id), fetched_warehouse_id);
+        assert_eq!(
+            Some(warehouse_id),
+            fetched_warehouse.map(|w| w.warehouse_id)
+        );
     }
 
     #[sqlx::test]
@@ -836,7 +872,7 @@ pub(crate) mod test {
             .await
             .unwrap();
 
-        let projects = PostgresCatalog::list_projects(None, trx.transaction())
+        let projects = PostgresBackend::list_projects(None, trx.transaction())
             .await
             .unwrap()
             .into_iter()
@@ -853,7 +889,7 @@ pub(crate) mod test {
             .await
             .unwrap();
 
-        let projects = PostgresCatalog::list_projects(None, trx.transaction())
+        let projects = PostgresBackend::list_projects(None, trx.transaction())
             .await
             .unwrap()
             .into_iter()
@@ -865,7 +901,7 @@ pub(crate) mod test {
         assert!(projects.contains(&project_id_2));
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let projects = PostgresCatalog::list_projects(
+        let projects = PostgresBackend::list_projects(
             Some(HashSet::from_iter(vec![project_id_1.clone()])),
             trx.transaction(),
         )
@@ -886,15 +922,12 @@ pub(crate) mod test {
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
         let warehouse_id_1 =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
-        let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
-
-        let warehouses = PostgresCatalog::list_warehouses(&project_id, None, trx.transaction())
+        let warehouses = PostgresBackend::list_warehouses(&project_id, None, state)
             .await
             .unwrap();
-        trx.commit().await.unwrap();
         assert_eq!(warehouses.len(), 1);
         // Check ids
-        assert!(warehouses.iter().any(|w| w.id == warehouse_id_1));
+        assert!(warehouses.iter().any(|w| w.warehouse_id == warehouse_id_1));
     }
 
     #[sqlx::test]
@@ -908,10 +941,10 @@ pub(crate) mod test {
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::rename_warehouse(warehouse_id_1, "new_name", transaction.transaction())
+        PostgresBackend::rename_warehouse(warehouse_id_1, "new_name", transaction.transaction())
             .await
             .unwrap();
-        PostgresCatalog::set_warehouse_status(
+        PostgresBackend::set_warehouse_status(
             warehouse_id_1,
             WarehouseStatus::Inactive,
             transaction.transaction(),
@@ -923,32 +956,26 @@ pub(crate) mod test {
         // Create warehouse 2
         let warehouse_id_2 =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, false).await;
-        let mut trx = PostgresTransaction::begin_read(state.clone())
-            .await
-            .unwrap();
 
         // Assert active whs
-        let warehouses = PostgresCatalog::list_warehouses(
+        let warehouses = PostgresBackend::list_warehouses(
             &project_id,
             Some(vec![WarehouseStatus::Active, WarehouseStatus::Inactive]),
-            trx.transaction(),
+            state.clone(),
         )
         .await
         .unwrap();
-        trx.commit().await.unwrap();
         assert_eq!(warehouses.len(), 2);
-        assert!(warehouses.iter().any(|w| w.id == warehouse_id_1));
-        assert!(warehouses.iter().any(|w| w.id == warehouse_id_2));
+        assert!(warehouses.iter().any(|w| w.warehouse_id == warehouse_id_1));
+        assert!(warehouses.iter().any(|w| w.warehouse_id == warehouse_id_2));
 
         // Assert only active whs
-        let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let warehouses = PostgresCatalog::list_warehouses(&project_id, None, trx.transaction())
+        let warehouses = PostgresBackend::list_warehouses(&project_id, None, state)
             .await
             .unwrap();
-        trx.commit().await.unwrap();
         assert_eq!(warehouses.len(), 1);
-        assert!(warehouses.iter().any(|w| w.id == warehouse_id_2));
+        assert!(warehouses.iter().any(|w| w.warehouse_id == warehouse_id_2));
     }
 
     #[sqlx::test]
@@ -961,16 +988,13 @@ pub(crate) mod test {
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::rename_warehouse(warehouse_id, "new_name", transaction.transaction())
+        PostgresBackend::rename_warehouse(warehouse_id, "new_name", transaction.transaction())
             .await
             .unwrap();
         transaction.commit().await.unwrap();
 
-        let mut read_transaction = PostgresTransaction::begin_read(state.clone())
-            .await
-            .unwrap();
         let warehouse =
-            PostgresCatalog::get_warehouse(warehouse_id, read_transaction.transaction())
+            PostgresBackend::get_warehouse_by_id(warehouse_id, WarehouseStatus::active(), state)
                 .await
                 .unwrap();
         assert_eq!(warehouse.unwrap().name, "new_name");
@@ -984,7 +1008,7 @@ pub(crate) mod test {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            PostgresCatalog::create_project(&project_id, "old_name".to_string(), t.transaction())
+            PostgresBackend::create_project(&project_id, "old_name".to_string(), t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -994,7 +1018,7 @@ pub(crate) mod test {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            PostgresCatalog::rename_project(&project_id, "new_name", t.transaction())
+            PostgresBackend::rename_project(&project_id, "new_name", t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -1003,7 +1027,7 @@ pub(crate) mod test {
         let mut read_transaction = PostgresTransaction::begin_read(state.clone())
             .await
             .unwrap();
-        let project = PostgresCatalog::get_project(&project_id, read_transaction.transaction())
+        let project = PostgresBackend::get_project(&project_id, read_transaction.transaction())
             .await
             .unwrap();
         assert_eq!(project.unwrap().name, "new_name");
@@ -1016,11 +1040,11 @@ pub(crate) mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(&project_id, "old_name".to_string(), t.transaction())
+        PostgresBackend::create_project(&project_id, "old_name".to_string(), t.transaction())
             .await
             .unwrap();
         let err =
-            PostgresCatalog::create_project(&project_id, "other_name".to_string(), t.transaction())
+            PostgresBackend::create_project(&project_id, "other_name".to_string(), t.transaction())
                 .await
                 .unwrap_err();
         assert_eq!(err.error.code, StatusCode::CONFLICT);
@@ -1046,7 +1070,10 @@ pub(crate) mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(e.error.code, StatusCode::CONFLICT);
+        assert!(matches!(
+            e,
+            CatalogDeleteWarehouseError::WarehouseProtected(_)
+        ));
         set_warehouse_protection(warehouse_id, false, trx.transaction())
             .await
             .unwrap();
@@ -1103,7 +1130,7 @@ pub(crate) mod test {
                 "#,
                 i,
                 i,
-                warehouse_id.0,
+                *warehouse_id,
                 chrono::Utc::now() - chrono::Duration::hours(i)
             )
             .execute(&mut **t.transaction())
@@ -1112,7 +1139,7 @@ pub(crate) mod test {
         }
         t.commit().await.unwrap();
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: None,
@@ -1125,7 +1152,7 @@ pub(crate) mod test {
 
         assert_eq!(stats.stats.len(), 11);
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(3),
@@ -1139,7 +1166,7 @@ pub(crate) mod test {
         assert_eq!(stats.stats.len(), 3);
         assert!(stats.next_page_token.is_some());
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(5),
@@ -1153,7 +1180,7 @@ pub(crate) mod test {
         assert_eq!(stats.stats.len(), 5);
         assert!(stats.next_page_token.is_some());
 
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(5),
@@ -1168,7 +1195,7 @@ pub(crate) mod test {
         assert!(stats.next_page_token.is_some());
 
         // last page is empty
-        let stats = PostgresCatalog::get_warehouse_stats(
+        let stats = PostgresBackend::get_warehouse_stats(
             warehouse_id,
             PaginationQuery {
                 page_size: Some(5),
@@ -1206,6 +1233,9 @@ pub(crate) mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(e.error.code, StatusCode::NOT_FOUND);
+        assert!(matches!(
+            e,
+            CatalogDeleteWarehouseError::WarehouseIdNotFound(_)
+        ));
     }
 }

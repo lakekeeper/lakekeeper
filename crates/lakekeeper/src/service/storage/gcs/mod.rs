@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{Arc, LazyLock},
+    time::{Duration, Instant},
 };
 
 use google_cloud_auth::{
@@ -16,6 +17,7 @@ use lakekeeper_io::{
     InvalidLocationError, Location,
 };
 use serde::{Deserialize, Serialize};
+pub(super) use sts::STSResponse;
 use url::Url;
 use veil::Redact;
 
@@ -25,11 +27,15 @@ use crate::{
         CatalogConfig,
     },
     service::storage::{
+        cache::{
+            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
+            ShortTermCredential,
+        },
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
         },
-        StoragePermissions, TableConfig,
+        ShortTermCredentialsRequest, TableConfig,
     },
     WarehouseId, CONFIG,
 };
@@ -45,7 +51,8 @@ static STS_URL: LazyLock<Url> = LazyLock::new(|| {
 });
 const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GcsProfile {
     /// Name of the GCS bucket
@@ -54,7 +61,8 @@ pub struct GcsProfile {
     pub key_prefix: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 /// GCS Credentials
 ///
@@ -79,18 +87,19 @@ pub enum GcsCredential {
     /// Service Account Key
     ///
     /// The key is the JSON object obtained when creating a service account key in the GCP console.
-    #[schema(title = "GcsCredentialServiceAccountKey")]
+    #[cfg_attr(feature = "open-api", schema(title = "GcsCredentialServiceAccountKey"))]
     ServiceAccountKey { key: GcsServiceKey },
 
     /// GCP System Identity
     ///
     /// Use the service account that the application is running as.
     /// This can be a Compute Engine default service account or a user-assigned service account.
-    #[schema(title = "GcsCredentialSystemIdentity")]
+    #[cfg_attr(feature = "open-api", schema(title = "GcsCredentialSystemIdentity"))]
     GcpSystemIdentity {},
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct GcsServiceKey {
     pub r#type: String,
     pub project_id: String,
@@ -164,6 +173,13 @@ impl TokenSource {
         }
         .map(|t| t.trim_start_matches("Bearer ").to_string())
     }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CachedSTSResponse {
+    pub(super) token: STSResponse,
+    pub(super) project_id: Option<String>,
+    pub(super) expires_at_system_time: Option<std::time::SystemTime>,
 }
 
 impl GcsProfile {
@@ -315,9 +331,8 @@ impl GcsProfile {
     pub(crate) async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
-        cred: &GcsCredential,
-        table_location: &Location,
-        storage_permissions: StoragePermissions,
+        credential: &GcsCredential,
+        stc_request: &ShortTermCredentialsRequest,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
@@ -328,29 +343,61 @@ impl GcsProfile {
             });
         }
 
-        let (source, project_id) = self.get_token_source(cred).await?;
-        let token = sts::downscope(
-            source,
-            &self.bucket,
-            table_location.clone(),
-            storage_permissions,
-        )
-        .await?;
+        let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
+        let cached_sts_token = self.load_sts_response_token_from_cache(&cache_key).await;
 
-        table_properties.insert(&gcs::Token(token.access_token));
-        if let Some(ref project_id) = project_id {
-            table_properties.insert(&gcs::ProjectId(project_id.clone()));
+        let response = if let Some(token) = cached_sts_token {
+            token
+        } else {
+            let (source, project_id) = self.get_token_source(credential).await?;
+            let token = sts::downscope(source, &self.bucket, stc_request).await?;
+
+            let sts_validity_duration =
+                Duration::from_secs(token.expires_in.unwrap_or(3600) as u64);
+
+            let expires_at_system_time =
+                std::time::SystemTime::now().checked_add(sts_validity_duration);
+            if expires_at_system_time.is_none() {
+                tracing::warn!(
+                    "Calculated expiry time for STS token overflowed. Valid duration: {sts_validity_duration:?}",
+                );
+            }
+
+            let token = CachedSTSResponse {
+                token,
+                project_id,
+                expires_at_system_time,
+            };
+
+            if CONFIG.cache.stc.enabled {
+                let cache_value = STCCacheValue::new(
+                    ShortTermCredential::Gcs(token.clone()),
+                    Instant::now().checked_add(sts_validity_duration),
+                );
+                insert_stc_into_cache(cache_key, cache_value).await;
+            }
+
+            token
+        };
+
+        table_properties.insert(&gcs::Token(response.token.access_token));
+        if let Some(project_id) = response.project_id {
+            table_properties.insert(&gcs::ProjectId(project_id));
         }
 
-        if let Some(expiry) = token.expires_in {
-            table_properties.insert(&gcs::TokenExpiresAt(
-                (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
-                    + (expiry * 1000) as u128)
-                    .to_string(),
-            ));
+        if let Some(expiry) = response.expires_at_system_time {
+            match expiry.duration_since(std::time::UNIX_EPOCH) {
+                Ok(expiry_since_epoch) => {
+                    table_properties.insert(&gcs::TokenExpiresAt(
+                        expiry_since_epoch.as_millis().to_string(),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Calculated expiry time for STS token is before UNIX_EPOCH: {e:?}. SystemTime: {expiry:?}",
+                    );
+                }
+            }
         }
 
         Ok(TableConfig {
@@ -358,6 +405,32 @@ impl GcsProfile {
             config: table_properties.clone(),
             creds: table_properties,
         })
+    }
+
+    async fn load_sts_response_token_from_cache(
+        &self,
+        cache_key: &STCCacheKey,
+    ) -> Option<CachedSTSResponse> {
+        let stc_request = &cache_key.request;
+        if CONFIG.cache.stc.enabled {
+            if let Some(STCCacheValue {
+                credentials: ShortTermCredential::Gcs(sts_response),
+                ..
+            }) = get_stc_from_cache(cache_key).await
+            {
+                tracing::debug!("Using cached short term credentials for request: {stc_request}");
+                return Some(sts_response);
+            }
+            tracing::debug!(
+                "No cached STS token found for request: {stc_request}, fetching new credentials"
+            );
+        } else {
+            tracing::debug!(
+                "STC caching disabled, fetching new STS token for request: {stc_request}"
+            );
+        }
+
+        None
     }
 
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {

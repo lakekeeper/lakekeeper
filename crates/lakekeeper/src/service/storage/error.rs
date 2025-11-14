@@ -1,5 +1,3 @@
-use std::error::Error;
-
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{
     adls::{InvalidADLSAccountName, InvalidADLSFilesystemName, InvalidADLSHost},
@@ -8,7 +6,7 @@ use lakekeeper_io::{
     RetryableErrorKind,
 };
 
-use crate::catalog::{compression_codec::UnsupportedCompressionCodec, io::IOErrorExt};
+use crate::server::{compression_codec::UnsupportedCompressionCodec, io::IOErrorExt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
@@ -168,18 +166,11 @@ impl From<ValidationError> for ErrorModel {
     fn from(value: ValidationError) -> Self {
         let msg = value.to_string();
         match value {
-            ValidationError::IoOperationFailed(e) => {
-                tracing::debug!(
-                    "Validation failed with IO error: {e}. Source: {:?}",
-                    e.source()
-                );
-                ErrorModel::bad_request(
-                    format!("IO Operation failed during Validation: {e}"),
-                    "IoOperationFailed",
-                    None,
-                )
-                .append_details(e.context().iter().map(ToString::to_string))
-            }
+            ValidationError::IoOperationFailed(e) => ErrorModel::from_io_error_with_code(
+                *e,
+                http::StatusCode::BAD_REQUEST,
+                "IO Operation Failed during validation.",
+            ),
             ValidationError::Credentials(e) => {
                 if matches!(e.as_ref(), CredentialsError::UnexpectedStorageType(_)) {
                     ErrorModel::bad_request(e.to_string(), "UnexpectedStorageProfileType", Some(e))

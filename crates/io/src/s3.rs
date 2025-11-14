@@ -59,7 +59,7 @@ macro_rules! apply_aws_config {
     };
 }
 
-#[derive(Debug, Clone, PartialEq, derive_more::From)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, derive_more::From)]
 pub enum S3Auth {
     AccessKey(S3AccessKeyAuth),
     AwsSystemIdentity(S3AwsSystemIdentityAuth),
@@ -78,13 +78,13 @@ impl S3Auth {
     }
 }
 
-#[derive(Redact, Clone, PartialEq)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq)]
 pub struct S3AwsSystemIdentityAuth {
     #[redact(partial)]
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct S3AccessKeyAuth {
     pub aws_access_key_id: String,
     #[redact(partial)]

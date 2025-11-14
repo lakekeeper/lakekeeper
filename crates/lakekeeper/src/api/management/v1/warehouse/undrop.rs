@@ -4,67 +4,78 @@ use crate::{
     api::{self, management::v1::warehouse::UndropTabularsRequest},
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, MustUse},
-        TabularId,
+        authz::{
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZTableOps, Authorizer, CatalogTableAction,
+            CatalogViewAction, RequireTableActionError,
+        },
+        require_namespace_for_tabular, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo,
     },
-    WarehouseId,
 };
 
-pub(crate) async fn require_undrop_permissions<A: Authorizer>(
-    warehouse_id: &WarehouseId,
+pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
+    warehouse: &ResolvedWarehouse,
     request: &UndropTabularsRequest,
     authorizer: &A,
+    catalog_state: C::State,
     request_metadata: &RequestMetadata,
 ) -> api::Result<()> {
-    let all_allowed = can_undrop_all_specified_tabulars(
-        request_metadata,
-        authorizer,
+    let warehouse_id = warehouse.warehouse_id;
+    let tabulars = C::get_tabular_infos_by_id(
         warehouse_id,
-        request.targets.as_slice(),
+        &request.targets,
+        TabularListFlags {
+            include_active: true,
+            include_deleted: true,
+            include_staged: false,
+        },
+        catalog_state.clone(),
     )
-    .await?;
-    if !all_allowed {
-        return Err(ErrorModel::forbidden(
-            "Not allowed to undrop at least one specified tabular.",
-            "NotAuthorized",
-            None,
-        )
-        .into());
-    }
-    Ok(())
-}
+    .await
+    .map_err(RequireTableActionError::from)?;
 
-async fn can_undrop_all_specified_tabulars<A: Authorizer>(
-    request_metadata: &RequestMetadata,
-    authorizer: &A,
-    warehouse_id: &WarehouseId,
-    tabs: &[TabularId],
-) -> api::Result<bool> {
-    let mut futs = Vec::with_capacity(tabs.len());
+    let found_tabulars = tabulars
+        .iter()
+        .map(|t| (t.tabular_id(), t))
+        .collect::<std::collections::HashMap<_, _>>();
 
-    for t in tabs {
-        match t {
-            TabularId::View(id) => {
-                futs.push(authorizer.is_allowed_view_action(
-                    request_metadata,
-                    *warehouse_id,
-                    *id,
-                    crate::service::authz::CatalogViewAction::CanUndrop,
-                ));
-            }
+    let missing = request
+        .targets
+        .iter()
+        .filter(|id| !found_tabulars.contains_key(id))
+        .collect::<Vec<_>>();
+    if let Some(id) = missing.first() {
+        match **id {
             TabularId::Table(id) => {
-                futs.push(authorizer.is_allowed_table_action(
-                    request_metadata,
-                    *warehouse_id,
-                    *id,
-                    crate::service::authz::CatalogTableAction::CanUndrop,
-                ));
+                return Err(AuthZCannotSeeTable::new(warehouse_id, id).into());
+            }
+            TabularId::View(id) => {
+                return Err(AuthZCannotSeeView::new(warehouse_id, id).into());
             }
         }
     }
-    let all_allowed = futures::future::try_join_all(futs)
-        .await?
-        .into_iter()
-        .all(MustUse::into_inner);
-    Ok(all_allowed)
+
+    let namespaces = C::get_namespaces_by_id(
+        warehouse_id,
+        &tabulars
+            .iter()
+            .map(ViewOrTableInfo::namespace_id)
+            .collect::<Vec<_>>(),
+        catalog_state,
+    )
+    .await?;
+
+    let actions = tabulars
+        .iter()
+        .map(|t| {
+            Ok::<_, ErrorModel>((
+                require_namespace_for_tabular(&namespaces, t)?,
+                t.as_action_request(CatalogViewAction::CanUndrop, CatalogTableAction::CanUndrop),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    authorizer
+        .require_tabular_actions(request_metadata, warehouse, &namespaces, &actions)
+        .await?;
+    Ok(())
 }

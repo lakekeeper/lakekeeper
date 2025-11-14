@@ -1,7 +1,7 @@
 [package]
 name = "lakekeeper"
 resolver = "2"
-version = "0.10.0"
+version = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
@@ -13,13 +13,13 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 
 [features]
 all = [
-    "authz-openfga",
     "sqlx-postgres",
     "s3-signer",
     "router",
     "nats",
     "vendored-protoc",
     "kafka",
+    "open-api",
 ]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
@@ -29,8 +29,8 @@ nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
-authz-openfga = ["dep:openfga-client"]
-test-utils = []
+test-utils = ["lakekeeper-io/storage-in-memory"]
+open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -71,7 +71,7 @@ iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
-jsonwebtoken = "9.3.0"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 jwks_client_rs = { workspace = true }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
@@ -83,7 +83,6 @@ lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
 moka = { workspace = true }
-openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
@@ -91,7 +90,7 @@ rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
-serde_norway = { workspace = true }
+serde_norway = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -109,10 +108,11 @@ tower-http = { workspace = true, optional = true, features = [
 tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
+unicase = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
-utoipa = { workspace = true, features = ["uuid"] }
-utoipa-swagger-ui = { workspace = true }
+utoipa = { workspace = true, features = ["uuid"], optional = true }
+utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
 vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
@@ -127,14 +127,16 @@ openssl-src = { version = "300.4.2", features = [
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
+lakekeeper = { path = ".", features = ["test-utils"] }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
+serde_norway = { workspace = true }
 serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tempfile = { version = "3.20" }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-test = "0.2.5"
+tracing-test = { workspace = true }

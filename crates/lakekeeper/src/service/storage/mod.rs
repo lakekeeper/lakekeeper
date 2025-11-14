@@ -1,12 +1,12 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
 pub(crate) mod az;
+mod cache;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
 
-#[cfg(test)]
-use std::{collections::HashMap, str::FromStr};
+use std::str::FromStr as _;
 
 pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
@@ -16,7 +16,8 @@ pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::io::FileIO;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
 use lakekeeper_io::{
-    s3::S3Location, InvalidLocationError, LakekeeperStorage, Location, StorageBackend,
+    s3::S3Location, InvalidLocationError, LakekeeperStorage, Location, LocationParseError,
+    StorageBackend,
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
@@ -28,19 +29,18 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
         CatalogConfig,
     },
-    catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
+    server::{compression_codec::CompressionCodec, io::list_location},
     service::{
         storage::error::{IcebergFileIoError, UnexpectedStorageType},
-        tabular_idents::TabularId,
+        TabularId,
     },
     WarehouseId, CONFIG,
 };
 
 /// Storage profile for a warehouse.
-#[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema,
-)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[allow(clippy::unsafe_derive_deserialize)]
 // tokio::join! uses unsafe code internally.
@@ -48,37 +48,41 @@ use crate::{
 pub enum StorageProfile {
     /// Azure storage profile
     #[serde(rename = "adls", alias = "azdls")]
-    #[schema(title = "StorageProfileAdls")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileAdls"))]
     Adls(AdlsProfile),
     /// S3 storage profile
     #[serde(rename = "s3")]
-    #[schema(title = "StorageProfileS3")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileS3"))]
     S3(S3Profile),
     #[serde(rename = "gcs")]
-    #[schema(title = "StorageProfileGcs")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileGcs"))]
     Gcs(GcsProfile),
-    #[cfg(test)]
+    #[cfg(feature = "test-utils")]
     Memory(MemoryProfile),
 }
 
-#[cfg(test)]
+/// Storage profile for a warehouse.
+#[derive(Debug, Hash, Copy, Clone, Eq, PartialEq, derive_more::From)]
+enum StorageProfileBorrowed<'a> {
+    Adls(&'a AdlsProfile),
+    S3(&'a S3Profile),
+    Gcs(&'a GcsProfile),
+    #[cfg(feature = "test-utils")]
+    Memory(&'a MemoryProfile),
+}
+
+#[cfg(feature = "test-utils")]
 #[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-    typed_builder::TypedBuilder,
+    Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, typed_builder::TypedBuilder,
 )]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct MemoryProfile {
     /// Base location for the local profile
     base_location: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Copy, strum_macros::Display)]
 pub enum StoragePermissions {
     Read,
     ReadWrite,
@@ -89,6 +93,24 @@ pub enum StoragePermissions {
 pub struct TableConfig {
     pub(crate) creds: TableProperties,
     pub(crate) config: TableProperties,
+}
+
+#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+pub struct ShortTermCredentialsRequest {
+    pub table_location: Location,
+    pub storage_permissions: StoragePermissions,
+    pub warehouse_id: WarehouseId,
+    pub tabular_id: TabularId,
+}
+
+impl std::fmt::Display for ShortTermCredentialsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Short Term Credentials Request for table {} at location `{}` with permissions {} in warehouse {}",
+            self.tabular_id, self.table_location, self.storage_permissions, self.warehouse_id,
+        )
+    }
 }
 
 impl StorageProfile {
@@ -105,10 +127,10 @@ impl StorageProfile {
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => CatalogConfig {
-                overrides: HashMap::new(),
-                defaults: HashMap::new(),
+                overrides: std::collections::HashMap::new(),
+                defaults: std::collections::HashMap::new(),
                 endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
             },
         }
@@ -130,9 +152,9 @@ impl StorageProfile {
             (StorageProfile::Gcs(this_profile), StorageProfile::Gcs(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
-            #[cfg(test)]
-            (StorageProfile::Memory(_this_profile), StorageProfile::Memory(_other_profile)) => {
-                unimplemented!("Local profile update not implemented")
+            #[cfg(feature = "test-utils")]
+            (StorageProfile::Memory(_this_profile), StorageProfile::Memory(other_profile)) => {
+                Ok(other_profile.into())
             }
             (this_profile, other_profile) => Err(UpdateError::IncompatibleProfiles(
                 this_profile.storage_type().to_string(),
@@ -166,6 +188,7 @@ impl StorageProfile {
                         .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
                         .map_err(CredentialsError::from)?,
                 )
+                .await
                 .map(Into::into),
             StorageProfile::Gcs(prof) => prof
                 .lakekeeper_io(
@@ -176,7 +199,7 @@ impl StorageProfile {
                 )
                 .await
                 .map(Into::into),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(StorageBackend::Memory(
                 lakekeeper_io::memory::MemoryStorage::new(),
             )),
@@ -192,7 +215,7 @@ impl StorageProfile {
             StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
                 .map_err(|_| {
                     InvalidLocationError::new(
@@ -224,7 +247,7 @@ impl StorageProfile {
             StorageProfile::S3(_) => "s3",
             StorageProfile::Adls(_) => "adls",
             StorageProfile::Gcs(_) => "gcs",
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => "memory",
         }
     }
@@ -244,6 +267,13 @@ impl StorageProfile {
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: table_location.clone(),
+            storage_permissions,
+            warehouse_id,
+            tabular_id,
+        };
+
         match self {
             StorageProfile::S3(profile) => {
                 profile
@@ -253,11 +283,8 @@ impl StorageProfile {
                             .map(|s| s.try_to_s3())
                             .transpose()
                             .map_err(CredentialsError::from)?,
-                        table_location,
-                        storage_permissions,
+                        stc_request,
                         request_metadata,
-                        warehouse_id,
-                        tabular_id,
                     )
                     .await
             }
@@ -265,12 +292,11 @@ impl StorageProfile {
                 profile
                     .generate_table_config(
                         data_access,
-                        table_location,
                         secret
                             .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
                             .try_to_az()
                             .map_err(CredentialsError::from)?,
-                        storage_permissions,
+                        stc_request,
                     )
                     .await
             }
@@ -285,12 +311,11 @@ impl StorageProfile {
                             .ok_or_else(|| {
                                 CredentialsError::MissingCredential("gcs".to_string())
                             })?,
-                        table_location,
-                        storage_permissions,
+                        &stc_request,
                     )
                     .await
             }
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
@@ -322,7 +347,7 @@ impl StorageProfile {
             ),
             StorageProfile::Adls(prof) => prof.normalize(),
             StorageProfile::Gcs(profile) => profile.normalize(),
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
         }
     }
@@ -361,7 +386,7 @@ impl StorageProfile {
             StorageProfile::S3(profile) => profile.sts_enabled,
             StorageProfile::Adls(_) => true,
             StorageProfile::Gcs(_) => true,
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
         };
 
@@ -380,20 +405,23 @@ impl StorageProfile {
         };
 
         let (direct_result, vended_result) = tokio::join!(direct_validation, vended_validation);
-
-        direct_result?;
-        vended_result?;
-
+        let validation_err = match (direct_result, vended_result) {
+            (Ok(()), Ok(())) => None,
+            (Err(e), Ok(()) | Err(_)) | (Ok(()), Err(e)) => Some(e),
+        };
         tracing::debug!("Cleanup started");
-        io.remove_all(&test_location).await?;
-        tracing::debug!("Cleanup finished");
+        if let Err(e) = io.remove_all(&test_location).await {
+            tracing::warn!("Cleanup failed after validation: {e}");
+        } else {
+            tracing::debug!("Cleanup finished");
+        }
+        if let Some(e) = validation_err {
+            return Err(e);
+        }
 
         match is_empty(&io, &test_location).await {
             Err(ValidationError::IoOperationFailed(io_error)) => {
-                tracing::info!(
-                    ?io_error,
-                    "Error while checking location is empty: {io_error}"
-                );
+                tracing::info!("Error while checking location is empty: {io_error}");
                 Err(ValidationError::IoOperationFailed(io_error))
             }
             Ok(false) => Err(InvalidLocationError::new(
@@ -426,6 +454,10 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         tracing::debug!("Validating vended credentials access to: {test_location}");
 
+        // Create a sub-location for testing vended credentials access
+        let mut sub_location = test_location.clone();
+        sub_location.without_trailing_slash().push("vended-test");
+
         let tbl_config = self
             .generate_table_config(
                 DataAccess {
@@ -434,7 +466,7 @@ impl StorageProfile {
                 }
                 .into(),
                 credential,
-                test_location,
+                &sub_location,
                 StoragePermissions::ReadWriteDelete,
                 // The following arguments are used only for generating the remote signing configuration
                 // and are not used in the vended credentials case.
@@ -449,25 +481,56 @@ impl StorageProfile {
                 tracing::debug!("Getting s3 file io from table config for vended credentials.");
                 let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
                 tracing::debug!(
-                    "Validating read/write access to: {test_location} using vended credentials"
+                    "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
                 );
-                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
-                    .await?;
+
+                // Run both validations in parallel
+                let read_write_validation =
+                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
+                let no_write_validation =
+                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
+
+                let (read_write_result, no_write_result) =
+                    tokio::join!(read_write_validation, no_write_validation);
+                read_write_result?;
+                no_write_result?;
             }
             StorageProfile::Adls(_) => {
-                tracing::debug!("Validating adls vended credentials access to: {test_location}");
+                tracing::debug!(
+                    "Validating adls vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
+                );
                 let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config)?;
-                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
-                    .await?;
+
+                // Run both validations in parallel
+                let read_write_validation =
+                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
+                let no_write_validation =
+                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
+
+                let (read_write_result, no_write_result) =
+                    tokio::join!(read_write_validation, no_write_validation);
+                read_write_result?;
+                no_write_result?;
             }
             StorageProfile::Gcs(_) => {
                 tracing::debug!("Getting gcs file io from table config for vended credentials.");
                 let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
-                tracing::debug!("Validating gcs vended credentials access to: {test_location}");
-                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
-                    .await?;
+                tracing::debug!(
+                    "Validating gcs vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
+                );
+
+                // Run both validations in parallel
+                let read_write_validation =
+                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
+                let no_write_validation =
+                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
+
+                let (read_write_result, no_write_result) =
+                    tokio::join!(read_write_validation, no_write_validation);
+                read_write_result?;
+                no_write_result?;
             }
-            #[cfg(test)]
+            #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => {
                 unreachable!("Local profile does not support vended credentials access validation")
             }
@@ -496,7 +559,7 @@ impl StorageProfile {
         tracing::debug!("Validating access to: {}", test_file_write);
 
         // Test write
-        crate::catalog::io::write_file(io, &test_file_write, "test", compression_codec)
+        crate::server::io::write_file(io, &test_file_write, "test", compression_codec)
             .await
             .map_err(|e| {
                 tracing::info!("Error while writing file: {e:?}");
@@ -504,7 +567,7 @@ impl StorageProfile {
             })?;
 
         // Test read
-        let _ = crate::catalog::io::read_file(io, &test_file_write, compression_codec)
+        let _ = crate::server::io::read_file(io, &test_file_write, compression_codec)
             .await
             .map_err(|e| {
                 tracing::info!("Error while reading file: {e:?}");
@@ -512,7 +575,7 @@ impl StorageProfile {
             })?;
 
         // Test delete
-        crate::catalog::io::delete_file(io, &test_file_write)
+        crate::server::io::delete_file(io, &test_file_write)
             .await
             .map_err(|e| {
                 tracing::info!("Error while deleting file: {e:?}");
@@ -581,6 +644,73 @@ impl StorageProfile {
 
         tracing::debug!(
             "Successfully wrote, read and deleted file at `{test_file_write}` with Iceberg FileIO and vended credentials."
+        );
+
+        Ok(())
+    }
+
+    /// Validate that we cannot write to a location with vended credentials
+    ///
+    /// # Errors
+    /// Fails if we can write to the location (which should not be allowed).
+    async fn validate_no_write_access_iceberg(
+        &self,
+        file_io: &FileIO,
+        test_location: &Location,
+    ) -> Result<(), ValidationError> {
+        let compression_codec = CompressionCodec::Gzip;
+
+        let mut test_file_write = self.default_metadata_location(
+            test_location,
+            &compression_codec,
+            uuid::Uuid::now_v7(),
+            0,
+        );
+        test_file_write.pop().push("forbidden-write-test");
+
+        tracing::debug!(
+            "Validating that write access is denied to: {}",
+            test_file_write
+        );
+
+        // Test that write should fail
+        match file_io
+            .new_output(&test_file_write)
+            .map_err(IcebergFileIoError::IcebergError)
+        {
+            Ok(output) => {
+                // If we got an output, try to write - this should fail
+                match output.write("forbidden-content".into()).await {
+                    Ok(()) => {
+                        // If write succeeded, this is an error - we should not be able to write here
+                        // Try to clean up the file we shouldn't have been able to create
+                        let _ = file_io.delete(&test_file_write).await;
+                        return Err(CredentialsError::ShortTermCredential {
+                            reason: "Downscoped credentials allow write access to parent location."
+                                .to_string(),
+                            source: None,
+                        }
+                        .into());
+                    }
+                    Err(_) => {
+                        // Expected - write should fail
+                        tracing::debug!(
+                            "Write correctly failed for forbidden location: {test_file_write}"
+                        );
+                    }
+                }
+            }
+            Err(_) => {
+                // Expected - creating output should fail
+                tracing::debug!(
+                    "Output creation correctly failed for forbidden location: {test_file_write}"
+                );
+            }
+        }
+
+        tracing::debug!(
+            "Successfully validated that write access is denied to: {}",
+            test_file_write
         );
 
         Ok(())
@@ -730,7 +860,7 @@ impl StorageLocations for StorageProfile {}
 impl StorageLocations for S3Profile {}
 impl StorageLocations for AdlsProfile {}
 
-#[cfg(test)]
+#[cfg(feature = "test-utils")]
 impl Default for MemoryProfile {
     fn default() -> Self {
         Self {
@@ -744,7 +874,8 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum StorageCredential {
     /// Credentials for S3 storage
@@ -761,7 +892,7 @@ pub enum StorageCredential {
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "s3")]
-    #[schema(title = "StorageCredentialS3")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialS3"))]
     S3(S3Credential),
     /// Credentials for Az storage
     ///
@@ -778,7 +909,7 @@ pub enum StorageCredential {
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "az")]
-    #[schema(title = "StorageCredentialAz")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialAz"))]
     Az(AzCredential),
     /// Credentials for GCS storage
     ///
@@ -806,8 +937,15 @@ pub enum StorageCredential {
     /// ```
     ///
     #[serde(rename = "gcs")]
-    #[schema(title = "StorageCredentialGcs")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialGcs"))]
     Gcs(GcsCredential),
+}
+
+#[derive(Debug, Hash, Copy, Clone, PartialEq, derive_more::From)]
+enum StorageCredentialBorrowed<'a> {
+    S3(&'a S3Credential),
+    Az(&'a AzCredential),
+    Gcs(&'a GcsCredential),
 }
 
 impl SecretInStorage for StorageCredential {}
@@ -865,33 +1003,11 @@ impl StorageCredential {
     }
 }
 
-/// Split a location into a filesystem prefix and the path.
-/// Splits at "://"
-///
-/// # Errors
-/// Fails if the location does not contain "://"
-pub fn split_location(location: &str) -> Result<(&str, &str), ErrorModel> {
-    let mut split = location.splitn(2, "://");
-    let prefix = split.next().ok_or_else(|| {
-        ErrorModel::internal(
-            format!("Unexpected location: {location}"),
-            "UnexpectedLocationFormat",
-            None,
-        )
-    })?;
-    let path = split.next().ok_or_else(|| {
-        ErrorModel::internal(
-            format!("Unexpected location. Expected at least one `://`. Got: {location}"),
-            "UnexpectedLocationFormat",
-            None,
-        )
-    })?;
-    Ok((prefix, path))
-}
-
-#[must_use]
-pub fn join_location(prefix: &str, path: &str) -> String {
-    format!("{prefix}://{path}")
+pub fn join_location(
+    prefix: &str,
+    path: &str,
+) -> std::result::Result<Location, LocationParseError> {
+    Location::from_str(&format!("{prefix}://{path}"))
 }
 
 pub(crate) async fn is_empty(
@@ -929,23 +1045,25 @@ mod tests {
         *,
     };
     use crate::{
-        catalog::io::{delete_file, read_metadata_file, write_file},
+        server::io::{delete_file, read_metadata_file, write_file},
         service::storage::s3::S3AccessKeyCredential,
     };
 
     #[test]
     fn test_split_location() {
-        let location = "abfss://";
-        let (prefix, path) = split_location(location).unwrap();
+        let location = Location::from_str("abfss://").unwrap();
+        let prefix = location.scheme();
+        let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(path, "");
-        assert_eq!(join_location(prefix, path), location);
+        assert_eq!(full_path, "");
+        assert_eq!(join_location(prefix, full_path).unwrap(), location);
 
-        let location = "abfss://foo/bar";
-        let (prefix, path) = split_location(location).unwrap();
+        let location = Location::from_str("abfss://foo/bar").unwrap();
+        let prefix = location.scheme();
+        let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(path, "foo/bar");
-        assert_eq!(join_location(prefix, path), location);
+        assert_eq!(full_path, "foo/bar");
+        assert_eq!(join_location(prefix, full_path).unwrap(), location);
     }
 
     #[test]
@@ -1189,7 +1307,7 @@ mod tests {
 
         #[test]
         fn test_vended_aws() {
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
@@ -1244,7 +1362,7 @@ mod tests {
         fn test_vended_s3_compat() {
             use super::super::s3::test::minio_integration_tests::storage_profile;
 
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);

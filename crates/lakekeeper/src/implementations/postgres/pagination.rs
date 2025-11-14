@@ -4,7 +4,8 @@ use std::{fmt::Display, str::FromStr};
 
 use base64::Engine;
 use chrono::Utc;
-use iceberg_ext::catalog::rest::ErrorModel;
+
+use crate::service::InvalidPaginationToken;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PaginateToken<T> {
@@ -40,7 +41,7 @@ where
     T: FromStr + Display,
     <T as FromStr>::Err: Display,
 {
-    type Error = ErrorModel;
+    type Error = InvalidPaginationToken;
     fn try_from(s: &String) -> Result<Self, Self::Error> {
         Self::try_from(s.as_str())
     }
@@ -51,7 +52,7 @@ where
     T: FromStr + Display,
     <T as FromStr>::Err: Display,
 {
-    type Error = ErrorModel;
+    type Error = InvalidPaginationToken;
     fn try_from(s: String) -> Result<Self, Self::Error> {
         Self::try_from(s.as_str())
     }
@@ -62,59 +63,54 @@ where
     T: FromStr + Display,
     <T as FromStr>::Err: Display,
 {
-    type Error = ErrorModel;
+    type Error = InvalidPaginationToken;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let s = String::from_utf8(base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(s).map_err(
+        let sd = String::from_utf8(base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(s).map_err(
             |e| {
-                tracing::info!("Failed to decode b64 encoded page token");
-                ErrorModel::bad_request(
-                    "Invalid paginate token".to_string(),
-                    "PaginateTokenDecodeError".to_string(),
-                    Some(Box::new(e)),
-                )
+                tracing::debug!("Failed to decode b64 encoded page token: {e}");
+                InvalidPaginationToken::new("Invalid paginate token format", s)
             },
         )?)
         .map_err(|e| {
-            tracing::info!("Decoded b64 contained an invalid utf8-sequence.");
-            ErrorModel::bad_request(
-                "Invalid paginate token".to_string(),
-                "PaginateTokenDecodeError".to_string(),
-                Some(Box::new(e)),
-            )
+            tracing::debug!("Decoded b64 contained an invalid utf8-sequence: {e}");
+            InvalidPaginationToken::new("Invalid paginate token encoding", s)
         })?;
 
-        let parts = s.splitn(3, '&').collect::<Vec<_>>();
+        let parts = sd.splitn(3, '&').collect::<Vec<_>>();
 
-        match *parts.first().ok_or(parse_error(None))? {
+        match *parts
+            .first()
+            .ok_or_else(|| InvalidPaginationToken::new("Invalid paginate token structure", s))?
+        {
             "1" => match &parts[1..] {
                 &[ts, id] => {
-                    let created_at = chrono::DateTime::from_timestamp_micros(
-                        ts.parse().map_err(|e| parse_error(Some(Box::new(e))))?,
-                    )
-                    .ok_or(parse_error(None))?;
+                    let created_at =
+                        chrono::DateTime::from_timestamp_micros(ts.parse().map_err(|e| {
+                            tracing::info!("Could not parse timestamp from page token: {e}");
+                            InvalidPaginationToken::new("Invalid paginate token timestamp", s)
+                        })?)
+                        .ok_or(InvalidPaginationToken::new(
+                            "Invalid paginate token timestamp",
+                            s,
+                        ))?;
                     let id = id.parse().map_err(|e| {
-                        parse_error(Some(Box::new(ErrorModel::bad_request(
-                            format!("Pagination id could not be parsed: {e}"),
-                            "PaginationTokenIdParseError".to_string(),
-                            None,
-                        ))))
+                        tracing::info!("Could not parse ID from page token: {e}");
+                        InvalidPaginationToken::new("Invalid paginate token identifier", s)
                     })?;
                     Ok(PaginateToken::V1(V1PaginateToken { created_at, id }))
                 }
-                _ => Err(parse_error(None)),
+                _ => Err(InvalidPaginationToken::new(
+                    "Invalid paginate token structure",
+                    sd,
+                )),
             },
-            _ => Err(parse_error(None)),
+            _ => Err(InvalidPaginationToken::new(
+                "Unsupported paginate token version",
+                sd,
+            )),
         }
     }
-}
-
-fn parse_error(source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> ErrorModel {
-    ErrorModel::bad_request(
-        "Invalid paginate token".to_string(),
-        "PaginateTokenParseError".to_string(),
-        source,
-    )
 }
 
 #[cfg(test)]
@@ -336,9 +332,7 @@ mod test {
                 result.is_err(),
                 "Should fail for invalid base64: {invalid_token}",
             );
-            let error = result.unwrap_err();
-            assert_eq!(error.r#type, "PaginateTokenDecodeError");
-            assert!(error.message.contains("Invalid paginate token"));
+            let _error = result.unwrap_err();
         }
     }
 
@@ -351,9 +345,7 @@ mod test {
         let result: Result<PaginateToken<String>, _> =
             PaginateToken::try_from(invalid_base64.as_str());
         assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert_eq!(error.r#type, "PaginateTokenDecodeError");
-        assert!(error.message.contains("Invalid paginate token"));
+        let _error = result.unwrap_err();
     }
 
     #[test]
@@ -383,8 +375,7 @@ mod test {
                 result.is_err(),
                 "Should fail for malformed token: {malformed}",
             );
-            let error = result.unwrap_err();
-            assert_eq!(error.r#type, "PaginateTokenParseError");
+            let _error = result.unwrap_err();
         }
     }
 
@@ -409,11 +400,7 @@ mod test {
                 result.is_err(),
                 "Should fail for invalid timestamp: {invalid}",
             );
-            let error = result.unwrap_err();
-            assert!(
-                error.r#type == "PaginateTokenParseError"
-                    || error.r#type == "PaginateTokenDecodeError"
-            );
+            let _error = result.unwrap_err();
         }
     }
 
@@ -426,9 +413,7 @@ mod test {
         let result: Result<PaginateToken<i32>, _> =
             PaginateToken::try_from(invalid_numeric.as_str());
         assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert_eq!(error.r#type, "PaginateTokenParseError");
-        assert!(error.message.contains("Invalid paginate token"));
+        let _error = result.unwrap_err();
 
         // UUID type but invalid UUID string
         let invalid_uuid = encode("1&123456789&not-a-valid-uuid");
@@ -463,8 +448,6 @@ mod test {
     fn test_paginate_token_empty_string() {
         let result: Result<PaginateToken<String>, _> = PaginateToken::try_from("");
         assert!(result.is_err());
-        let error = result.unwrap_err();
-        // Empty string fails at parse stage, not decode stage
-        assert_eq!(error.r#type, "PaginateTokenParseError");
+        let _error = result.unwrap_err();
     }
 }

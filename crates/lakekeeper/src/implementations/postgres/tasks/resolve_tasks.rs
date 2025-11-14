@@ -1,12 +1,14 @@
-use std::collections::HashMap;
-
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{TaskEntity, TaskId, TaskQueueName},
+    service::{
+        build_tabular_ident_from_vec,
+        tasks::{TaskId, TaskQueueName},
+        InvalidTabularIdentifier, ResolvedTask, TableNamed, ViewNamed,
+    },
     WarehouseId,
 };
 
@@ -17,12 +19,12 @@ pub(crate) async fn resolve_tasks<'e, 'c: 'e, E>(
     warehouse_id: Option<WarehouseId>,
     task_ids: &[TaskId],
     state: E,
-) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>, IcebergErrorResponse>
+) -> Result<Vec<ResolvedTask>, IcebergErrorResponse>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
     if task_ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(Vec::new());
     }
 
     let warehouse_id_is_none = warehouse_id.is_none();
@@ -35,6 +37,7 @@ where
             SELECT 
                 task_id,
                 warehouse_id,
+                entity_name,
                 entity_id,
                 entity_type,
                 queue_name
@@ -50,6 +53,7 @@ where
             SELECT DISTINCT ON (task_id)
                 task_id,
                 warehouse_id,
+                entity_name,
                 entity_id,
                 entity_type,
                 queue_name
@@ -61,6 +65,7 @@ where
         SELECT 
             task_id as "task_id!",
             warehouse_id as "warehouse_id!",
+            entity_name as "entity_name!",
             entity_id as "entity_id!",
             entity_type as "entity_type!: EntityType",
             queue_name as "queue_name!"
@@ -69,6 +74,7 @@ where
         SELECT 
             task_id as "task_id!",
             warehouse_id as "warehouse_id!",
+            entity_name as "entity_name!",
             entity_id as "entity_id!",
             entity_type as "entity_type!: EntityType",
             queue_name as "queue_name!"
@@ -87,19 +93,27 @@ where
         .map(|record| {
             let task_id = TaskId::from(record.task_id);
             let entity = match record.entity_type {
-                EntityType::Table => TaskEntity::Table {
+                EntityType::Table => TableNamed {
                     table_id: record.entity_id.into(),
                     warehouse_id: record.warehouse_id.into(),
-                },
-                EntityType::View => TaskEntity::View {
+                    table_ident: build_tabular_ident_from_vec(&record.entity_name)?,
+                }
+                .into(),
+                EntityType::View => ViewNamed {
                     view_id: record.entity_id.into(),
                     warehouse_id: record.warehouse_id.into(),
-                },
+                    view_ident: build_tabular_ident_from_vec(&record.entity_name)?,
+                }
+                .into(),
             };
             let queue_name = TaskQueueName::from(record.queue_name);
-            (task_id, (entity, queue_name))
+            Ok(ResolvedTask {
+                task_id,
+                entity,
+                queue_name,
+            })
         })
-        .collect::<HashMap<_, _>>();
+        .collect::<Result<_, InvalidTabularIdentifier>>()?;
 
     Ok(result)
 }
@@ -116,8 +130,8 @@ mod tests {
             test::{setup_two_warehouses, setup_warehouse},
         },
         service::{
-            task_queue::{
-                EntityId, TaskInput, TaskMetadata, TaskQueueName,
+            tasks::{
+                EntityId, TaskEntityNamed, TaskInput, TaskMetadata, TaskQueueName,
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },
             TableId,
@@ -235,6 +249,10 @@ mod tests {
         let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
 
         // Verify both tasks are resolved
         assert_eq!(result.len(), 2);
@@ -245,28 +263,20 @@ mod tests {
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
-            TaskEntity::Table {
-                table_id: table_id1,
-                warehouse_id: wh_id1,
-            } => {
-                assert_eq!(*table_id1, TableId::from(entity1.as_uuid()));
-                assert_eq!(*wh_id1, warehouse_id);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
 
         match entity_result2 {
-            TaskEntity::Table {
-                table_id: table_id2,
-                warehouse_id: wh_id2,
-            } => {
-                assert_eq!(*table_id2, TableId::from(entity2.as_uuid()));
-                assert_eq!(*wh_id2, warehouse_id);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity2.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -331,6 +341,10 @@ mod tests {
 
         // Verify both tasks are resolved from task_log
         assert_eq!(result.len(), 2);
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
 
         let (entity_result1, queue_name_result1) = &result[&task_id1];
         let (entity_result2, queue_name_result2) = &result[&task_id2];
@@ -338,27 +352,19 @@ mod tests {
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
-            TaskEntity::Table {
-                table_id: table_id1,
-                warehouse_id: wh_id1,
-            } => {
-                assert_eq!(*table_id1, TableId::from(entity1.as_uuid()));
-                assert_eq!(*wh_id1, warehouse_id);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
         match entity_result2 {
-            TaskEntity::Table {
-                table_id: table_id2,
-                warehouse_id: wh_id2,
-            } => {
-                assert_eq!(*table_id2, TableId::from(entity2.as_uuid()));
-                assert_eq!(*wh_id2, warehouse_id);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity2.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -433,6 +439,10 @@ mod tests {
 
         // All tasks should be resolved
         assert_eq!(result.len(), 3);
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
         assert!(result.contains_key(&task_id1)); // Active task
         assert!(result.contains_key(&task_id2)); // Completed task (from task_log)
         assert!(result.contains_key(&task_id3)); // Scheduled task
@@ -490,20 +500,20 @@ mod tests {
 
         // Only task from warehouse_id1 should be found
         assert_eq!(result.len(), 1);
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
         assert!(result.contains_key(&task_id1)); // Found in warehouse_id1
         assert!(!result.contains_key(&task_id2)); // Not found (wrong warehouse)
 
         // Verify the found task has correct warehouse_id
         let (entity_result, _) = &result[&task_id1];
         match entity_result {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: wh_id,
-            } => {
-                assert_eq!(*table_id, TableId::from(entity1.as_uuid()));
-                assert_eq!(*wh_id, warehouse_id1);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -548,6 +558,10 @@ mod tests {
 
         // Both tasks should be found regardless of warehouse
         assert_eq!(result.len(), 2);
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
         assert!(result.contains_key(&task_id1));
         assert!(result.contains_key(&task_id2));
 
@@ -556,25 +570,17 @@ mod tests {
         let (entity_result2, _) = &result[&task_id2];
 
         match entity_result1 {
-            TaskEntity::Table {
-                table_id: table_id1,
-                warehouse_id: wh_id1,
-            } => {
-                assert_eq!(*table_id1, TableId::from(entity1.as_uuid()));
-                assert_eq!(*wh_id1, warehouse_id1);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
 
         match entity_result2 {
-            TaskEntity::Table {
-                table_id: table_id2,
-                warehouse_id: wh_id2,
-            } => {
-                assert_eq!(*table_id2, TableId::from(entity2.as_uuid()));
-                assert_eq!(*wh_id2, warehouse_id2);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity2.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -610,6 +616,10 @@ mod tests {
 
         // Should only have the existing task
         assert_eq!(result.len(), 1);
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
         assert!(result.contains_key(&existing_task_id));
         assert!(!result.contains_key(&nonexistent_task_id));
 
@@ -617,14 +627,10 @@ mod tests {
         let (entity_result, queue_name_result) = &result[&existing_task_id];
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: wh_id,
-            } => {
-                assert_eq!(*table_id, TableId::from(entity.as_uuid()));
-                assert_eq!(*wh_id, warehouse_id);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -669,6 +675,10 @@ mod tests {
         let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
 
         // Task should be resolved (from active tasks table)
         assert_eq!(result.len(), 1);
@@ -677,14 +687,10 @@ mod tests {
         let (entity_result, queue_name_result) = &result[&task_id];
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: wh_id,
-            } => {
-                assert_eq!(*table_id, TableId::from(entity.as_uuid()));
-                assert_eq!(*wh_id, warehouse_id);
+            TaskEntityNamed::Table(table) => {
+                assert_eq!(table.table_id, TableId::from(entity.as_uuid()));
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -739,6 +745,10 @@ mod tests {
 
         // Should have results for the 20 existing tasks only
         assert_eq!(result.len(), 20);
+        let result = result
+            .into_iter()
+            .map(|t| (t.task_id, (t.entity, t.queue_name)))
+            .collect::<std::collections::HashMap<_, _>>();
 
         // Verify all found tasks have correct queue name
         for (task_id, (_, queue_name)) in &result {

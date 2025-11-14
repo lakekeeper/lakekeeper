@@ -6,12 +6,11 @@ on:
       - main
   pull_request:
 
-
 env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: read  # Needed to checkout code
+  contents: read # Needed to checkout code
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -21,9 +20,9 @@ jobs:
   docker:
     uses: ./.github/workflows/docker_build.yml
     with:
-      platform: 'amd64'
-      dockerfile: 'docker/full.Dockerfile'
-      image_name: 'lakekeeper-local'
+      platform: "amd64"
+      dockerfile: "docker/full.Dockerfile"
+      image_name: "lakekeeper-local"
 
   # Depends on all actions that are required for a "successful" CI run.
   tests-pass:
@@ -34,6 +33,7 @@ jobs:
       - test-example-minimal
       - test-example-access-control-advanced
       - test-docker-compose-with-keycloak
+      - test-example-kafka-connect-iceberg-sink
     steps:
       - run: exit 0
 
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Restore binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -62,7 +62,7 @@ jobs:
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\" && jupyter execute DuckDB.ipynb"
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Restore binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -92,7 +92,7 @@ jobs:
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb && jupyter execute 03-05-DuckDB.ipynb"
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
@@ -103,8 +103,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Test Make all
+        run: |
+          cd examples/kafka-connect-iceberg-sink
+          make all
+
+      - name: Test Make all
+        run: |
+          cd examples/kafka-connect-iceberg-sink
+          make run-producer
+
+  test-example-kafka-connect-iceberg-sink:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
       - name: Restore binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -122,7 +138,7 @@ jobs:
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
@@ -134,7 +150,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Restore binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -152,7 +168,7 @@ jobs:
           sed -i '/pull_policy: /d' docker-compose.yaml
           docker compose -f docker-compose.yaml -f keycloak-overlay.yaml up -d --wait
         env:
-            LAKEKEEPER__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+          LAKEKEEPER__SERVER_IMAGE: localhost/lakekeeper-local:amd64
 
       - name: Test Docker Compose with Keycloak
         run: |
@@ -200,4 +216,3 @@ jobs:
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
-  

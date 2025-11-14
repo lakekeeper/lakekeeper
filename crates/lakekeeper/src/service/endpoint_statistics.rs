@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
-    str::FromStr,
     sync::{atomic::AtomicI64, Arc},
     time::Duration,
 };
@@ -298,19 +297,28 @@ impl EndpointStatisticsTracker {
     fn maybe_get_warehouse_ident(path_params: &HashMap<String, String>) -> Option<WarehouseId> {
         path_params
             .get("warehouse_id")
-            .map(|s| WarehouseId::from_str(s.as_str()))
+            .map(|s| {
+                WarehouseId::from_str_or_internal(s.as_str()).map_err(|e| {
+                    e.append_detail(format!(
+                        "Could not parse warehouse_id from Endpoint path parameter `warehouse_id`: '{s}'"
+                    ))
+                })
+            })
             .transpose()
-            .inspect_err(|e| tracing::debug!("Could not parse warehouse: {}", e.error))
+            .inspect_err(|e| tracing::debug!("{e}"))
             .ok()
             .flatten()
             .or(path_params
                 .get("prefix")
-                .map(|s| Uuid::from_str(s.as_str()))
+                .map(|s| WarehouseId::from_str_or_internal(s.as_str()).map_err(|e| {
+                    e.append_detail(format!(
+                        "Could not parse warehouse_id from Endpoint path parameter `prefix`: '{s}'"
+                    ))
+                }))
                 .transpose()
-                .inspect_err(|e| tracing::debug!("Could not parse prefix: {}", e))
+                .inspect_err(|e| tracing::debug!("{e}"))
                 .ok()
-                .flatten()
-                .map(WarehouseId::from))
+                .flatten())
     }
 }
 

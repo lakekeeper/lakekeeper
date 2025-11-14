@@ -1,0 +1,144 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH selected_tabulars AS (\n            SELECT t.tabular_id,\n                in_ns.name as namespace_name,\n                in_t.name as tabular_name,\n                t.namespace_id,\n                t.typ,\n                t.metadata_location,\n                t.updated_at,\n                t.protected,\n                t.fs_location,\n                t.fs_protocol,\n                w.version as warehouse_version,\n                n.version as namespace_version\n            FROM LATERAL (\n                SELECT (\n                    SELECT array_agg(val ORDER BY ord)\n                    FROM jsonb_array_elements_text(x.name) WITH ORDINALITY AS e(val, ord)\n                ) AS name, x.idx\n                FROM jsonb_array_elements($2) WITH ORDINALITY AS x(name, idx)\n            ) in_ns\n            INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])\n                WITH ORDINALITY AS in_t(name, typ, idx)\n                ON in_ns.idx = in_t.idx\n            INNER JOIN tabular t ON t.warehouse_id = $1 AND\n                t.name = in_t.name AND t.typ = in_t.typ\n            INNER JOIN namespace n ON n.warehouse_id = $1\n                AND t.namespace_id = n.namespace_id AND n.namespace_name = in_ns.name\n            INNER JOIN warehouse w ON w.warehouse_id = $1\n            WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL\n                AND w.status = 'active'\n                AND (t.deleted_at is NULL OR $5)\n                AND (t.metadata_location is not NULL OR $6)\n        ),\n        selected_views AS (\n            SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'\n        ),\n        selected_tables AS (\n            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'\n        )\n        SELECT st.tabular_id,\n               st.warehouse_version,\n               st.namespace_name as \"namespace_name!\",\n               st.namespace_version,\n               st.namespace_id,\n               st.tabular_name as \"tabular_name!\",\n               st.updated_at,\n               st.metadata_location,\n               st.protected as \"protected!\",\n               st.typ as \"typ: TabularType\",\n               st.fs_location,\n               st.fs_protocol,\n               vp.view_properties_keys,\n               vp.view_properties_values,\n               tp.keys as table_properties_keys,\n               tp.values as table_properties_values\n        FROM selected_tabulars st\n        LEFT JOIN (SELECT view_id,\n                    ARRAY_AGG(key)   AS view_properties_keys,\n                    ARRAY_AGG(value) AS view_properties_values\n            FROM view_properties\n            WHERE warehouse_id = $1 and view_id in (SELECT tabular_id FROM selected_views)\n            GROUP BY view_id) vp ON st.tabular_id = vp.view_id\n        LEFT JOIN (SELECT table_id,\n                    ARRAY_AGG(key) as keys,\n                    ARRAY_AGG(value) as values\n                FROM table_properties\n                WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)\n                GROUP BY table_id) tp ON st.tabular_id = tp.table_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_name!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "tabular_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "metadata_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "typ: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "view_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 13,
+        "name": "view_properties_values",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 14,
+        "name": "table_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 15,
+        "name": "table_properties_values",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "tabular_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tabular_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      null,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b18be0a4a957c1b6c14cffc5ecdbd949c1f6dd29ff8d8e5a76c7442f4afbef2f"
+}

@@ -45,28 +45,28 @@ static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
 
 pub(crate) const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
 
-static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
+static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<DefaultAzureCredential>>> =
     LazyLock::new(|| {
-        moka::sync::Cache::builder()
+        moka::future::Cache::builder()
             .max_capacity(1000)
             .time_to_live(Duration::from_secs(30 * 60))
             .build()
     });
 
-#[derive(Debug, Clone, PartialEq, derive_more::From)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum AzureAuth {
     ClientCredentials(AzureClientCredentialsAuth),
     SharedAccessKey(AzureSharedAccessKeyAuth),
     AzureSystemIdentity,
 }
 
-#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
+#[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct AzureSharedAccessKeyAuth {
     #[redact(partial)]
     pub key: String,
 }
 
-#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
+#[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct AzureClientCredentialsAuth {
     pub client_id: String,
     pub tenant_id: String,
@@ -89,11 +89,11 @@ impl AzureSettings {
     ///
     /// # Errors
     /// - If system identity cannot be retrieved or initialized.
-    pub fn get_storage_client(
+    pub async fn get_storage_client(
         &self,
         cred: &AzureAuth,
     ) -> Result<AdlsStorage, InitializeClientError> {
-        let client = self.get_datalake_client(cred)?;
+        let client = self.get_datalake_client(cred).await?;
         Ok(AdlsStorage::new(client, self.cloud_location.clone()))
     }
 
@@ -101,7 +101,7 @@ impl AzureSettings {
     ///
     /// # Errors
     /// - If system identity cannot be retrieved or initialized.
-    pub fn get_azure_storage_credentials(
+    pub async fn get_azure_storage_credentials(
         &self,
         cred: &AzureAuth,
     ) -> Result<StorageCredentials, InitializeClientError> {
@@ -129,7 +129,7 @@ impl AzureSettings {
                 StorageCredentials::access_key(account_name, key.clone())
             }
             AzureAuth::AzureSystemIdentity => {
-                let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
+                let identity: Arc<DefaultAzureCredential> = self.get_system_identity().await?;
                 StorageCredentials::token_credential(identity)
             }
         })
@@ -139,11 +139,11 @@ impl AzureSettings {
     ///
     /// # Errors
     /// - If system identity cannot be retrieved or initialized.
-    pub fn get_datalake_client(
+    pub async fn get_datalake_client(
         &self,
         cred: &AzureAuth,
     ) -> Result<DataLakeClient, InitializeClientError> {
-        let azure_storage_cred = self.get_azure_storage_credentials(cred)?;
+        let azure_storage_cred = self.get_azure_storage_credentials(cred).await?;
 
         Ok(
             DataLakeClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
@@ -157,11 +157,11 @@ impl AzureSettings {
     ///
     /// # Errors
     /// - If system identity cannot be retrieved or initialized.
-    pub fn get_blob_service_client(
+    pub async fn get_blob_service_client(
         &self,
         cred: &AzureAuth,
     ) -> Result<BlobServiceClient, InitializeClientError> {
-        let azure_storage_cred = self.get_azure_storage_credentials(cred)?;
+        let azure_storage_cred = self.get_azure_storage_credentials(cred).await?;
 
         Ok(
             ClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
@@ -171,7 +171,9 @@ impl AzureSettings {
         )
     }
 
-    fn get_system_identity(&self) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
+    async fn get_system_identity(
+        &self,
+    ) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
         let authority_host_str = self.authority_host.as_ref().map_or(
             DEFAULT_AUTHORITY_HOST.as_str().to_string(),
             ToString::to_string,
@@ -179,7 +181,7 @@ impl AzureSettings {
         let cache_key = format!("{}::{}", authority_host_str, self.cloud_location.account());
 
         SYSTEM_IDENTITY_CACHE
-            .try_get_with(cache_key.clone(), || {
+            .try_get_with(cache_key.clone(), async move {
                 let mut options = TokenCredentialOptions::default();
                 options.set_authority_host(authority_host_str);
                 DefaultAzureCredentialBuilder::new()
@@ -187,6 +189,7 @@ impl AzureSettings {
                     .build()
                     .map(Arc::new)
             })
+            .await
             .map_err(|e| {
                 tracing::error!("Failed to get Azure system identity: {e}");
                 InitializeClientError {

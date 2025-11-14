@@ -107,6 +107,7 @@ async fn create_adls_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
     let storage = StorageBackend::Adls(
         settings
             .get_storage_client(&auth)
+            .await
             .map_err(|e| anyhow::anyhow!(e))?,
     );
     let base_path = format!(
@@ -1324,7 +1325,7 @@ async fn test_list_prefix_boundaries_impl(
         }
 
         // Debug output
-        println!("Listed {} items in {}", listed_locations.len(), list_dir);
+        // println!("Listed {} items in {}", listed_locations.len(), list_dir);
         for loc in &listed_locations {
             println!("  Found: {loc}");
         }

@@ -8,22 +8,18 @@
 #![allow(clippy::module_name_repetitions, clippy::similar_names)]
 
 use clap::{Parser, Subcommand};
-use lakekeeper::{
-    api::management::v1::api_doc as v1_api_doc,
-    service::{
-        authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
-        task_queue::BUILT_IN_API_CONFIGS,
-    },
-    tokio, tracing, AuthZBackend, CONFIG,
-};
+use lakekeeper::{tokio, tracing, CONFIG};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
+mod authorizer;
+mod config;
 mod healthcheck;
 mod serve;
 #[cfg(feature = "ui")]
 mod ui;
 mod wait_for_db;
 
+pub(crate) use config::CONFIG_BIN;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
@@ -101,6 +97,7 @@ enum Commands {
     },
     /// Print the version of the server
     Version {},
+    #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
 }
@@ -135,37 +132,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Migrate {}) => {
             print_info();
-            println!("Migrating database...");
-            let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-                CONFIG
-                    .to_pool_opts()
-                    .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
-            )
-            .await?;
-
-            // This embeds database migrations in the application binary so we can ensure the database
-            // is migrated correctly on startup
-            let server_id =
-                lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
-            println!("Database migration complete.");
-
-            println!("Migrating authorizer...");
-            lakekeeper::service::authz::implementations::migrate_default_authorizer(server_id)
-                .await?;
-            println!("Authorizer migration complete.");
+            migrate().await?;
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
-            tracing::info!(
-                "Starting server on {}:{}...",
-                CONFIG.bind_ip,
-                CONFIG.listen_port
-            );
-            let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
-            if !force_start {
-                wait_for_db::wait_for_db(true, 0, 0, true).await?;
-            }
-            serve::serve_default(bind_addr).await?;
+            serve_and_maybe_migrate(force_start).await?;
         }
         Some(Commands::Healthcheck {
             check_all,
@@ -179,22 +150,79 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Version {}) => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
+        #[cfg(feature = "open-api")]
         Some(Commands::ManagementOpenapi {}) => {
-            let queue_configs_ref = &BUILT_IN_API_CONFIGS;
+            use lakekeeper::{
+                api::management::v1::api_doc, service::authz::AllowAllAuthorizer, AuthZBackend,
+            };
+            use lakekeeper_authz_openfga::OpenFGAAuthorizer;
+
+            let queue_configs_ref = &lakekeeper::service::tasks::BUILT_IN_API_CONFIGS;
             let queue_configs: Vec<&_> = queue_configs_ref.iter().collect();
-            let doc = match CONFIG.authz_backend {
-                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(queue_configs.clone()),
-                AuthZBackend::OpenFGA => {
-                    v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(queue_configs)
+            let doc = match &CONFIG.authz_backend {
+                AuthZBackend::AllowAll => api_doc::<AllowAllAuthorizer>(&queue_configs),
+                AuthZBackend::External(e) if e == "openfga" => {
+                    api_doc::<OpenFGAAuthorizer>(&queue_configs)
                 }
+                AuthZBackend::External(e) => anyhow::bail!("Unsupported authz backend `{e}`"),
             };
             println!("{}", doc.to_yaml()?);
         }
         None => {
-            // Error out if no subcommand is provided.
-            eprintln!("No subcommand provided. Use --help for more information.");
+            if CONFIG_BIN.debug.auto_serve {
+                print_info();
+                serve_and_maybe_migrate(true).await?;
+            } else {
+                // Error out if no subcommand is provided.
+                eprintln!("No subcommand provided. Use --help for more information.");
+                anyhow::bail!("No subcommand provided");
+            }
         }
     }
+
+    Ok(())
+}
+
+async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
+    if CONFIG_BIN.debug.migrate_before_serve {
+        wait_for_db::wait_for_db(false, 15, 2, true).await?;
+        migrate().await?;
+    }
+    serve(force_start).await
+}
+
+async fn migrate() -> anyhow::Result<()> {
+    println!("Migrating database...");
+    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
+        CONFIG
+            .to_pool_opts()
+            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
+    )
+    .await?;
+
+    // This embeds database migrations in the application binary so we can ensure the database
+    // is migrated correctly on startup
+    let server_id = lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
+    println!("Database migration complete.");
+
+    println!("Migrating authorizer...");
+    authorizer::migrate(server_id).await?;
+    println!("Authorizer migration complete.");
+
+    Ok(())
+}
+
+async fn serve(force_start: bool) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting server on {}:{}...",
+        CONFIG.bind_ip,
+        CONFIG.listen_port
+    );
+    let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
+    if !force_start {
+        wait_for_db::wait_for_db(true, 0, 0, true).await?;
+    }
+    serve::serve_default(bind_addr).await?;
 
     Ok(())
 }

@@ -63,25 +63,15 @@ If you are missing something, we would love to hear about it in a [Github Issue]
 
 # Status
 
-### Supported Operations - Iceberg-Rest
-
-| Operation | Status  | Description                                            |
-|-----------|:-------:|--------------------------------------------------------|
-| Namespace | ![done] | All operations implemented                             |
-| Table     | ![done] | All operations implemented - additional integration tests in development |
-| Views     | ![done] | Remove unused files and log entries                    |
-| Metrics   | ![open] | Endpoint is available but doesn't store the metrics    |
-
 ### Storage Profile Support
 
-| Storage              |    Status    | Comment                                |
-|----------------------|:------------:|----------------------------------------|
-| S3 - AWS             | ![semi-done] | vended-credentials & remote-signing, assume role missing |
-| S3 - Custom          |   ![done]    | vended-credentials & remote-signing, tested against Minio |
-| Azure ADLS Gen2      |   ![done]    |                                        |
-| Azure Blob           |   ![open]    |                                        |
-| Microsoft OneLake    |   ![open]    |                                        |
-| Google Cloud Storage |   ![done]    |                                        |
+| Storage              | Status  | Comment                                     |
+|----------------------|:-------:|---------------------------------------------|
+| S3 - AWS             | ![done] | vended-credentials & remote-signing with optional role assumption, support for session Tags |
+| S3 - Custom          | ![done] | vended-credentials & remote-signing         |
+| Azure ADLS Gen2      | ![done] |                                             |
+| Microsoft OneLake    | ![open] |                                             |
+| Google Cloud Storage | ![done] | Support for GCS with and without hierarchical namespace |
 
 Details on how to configure the storage profiles can be found in the [Docs](https://docs.lakekeeper.io).
 
@@ -90,29 +80,37 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 | Backend  | Status  | Comment |
 |----------|:-------:|---------|
 | Postgres | ![done] | \>=15   |
-| MongoDB  | ![open] |         |
 
 ### Supported Secret Stores
 
 | Backend         | Status  | Comment       |
-| --------------- | :-----: | ------------- |
+|-----------------|:-------:|---------------|
 | Postgres        | ![done] |               |
 | kv2 (hcp-vault) | ![done] | userpass auth |
 
 ### Supported Event Stores
 
 | Backend | Status  | Comment |
-| ------- | :-----: | ------- |
+|---------|:-------:|---------|
 | NATS    | ![done] |         |
 | Kafka   | ![done] |         |
 
-### Supported Operations - Management API
+### Supported Operations
 
-| Operation            | Status  | Description                                 |
-|----------------------|:-------:|---------------------------------------------|
-| Warehouse Management | ![done] | Create / Update / Delete a Warehouse        |
-| AuthZ                | ![open] | Manage access to warehouses, namespaces and tables |
-| More to come!        | ![open] |                                             |
+Operations outside of the Iceberg REST specification that are supported by Lakekeeper.
+
+| Operation             | Status  | Description                                |
+|-----------------------|:-------:|--------------------------------------------|
+| Project Management    | ![done] |                                            |
+| Warehouse Management  | ![done] |                                            |
+| Soft Deletion         | ![done] | Configurable on Warehouse level            |
+| Deletion Protection   | ![done] | Deletion Protection for Warehouses, Namespaces, Tables and Views |
+| Recursive Drop        | ![done] | Recursively drop all items inside Namespaces |
+| Search                | ![done] | Fuzzy search for Tables on Warehouse level |
+| Task Management       | ![done] |                                            |
+| User Management       | ![done] | User discovery and management for permission assignment. Includes fuzzy search functionality. Note: Lakekeeper does not serve as an identity provider |
+| Role Management       | ![done] |                                            |
+| Permission Management | ![done] | Table level, Requires OpenFGA              |
 
 ### Auth(N/Z) Handlers
 
@@ -120,7 +118,8 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 |-----------------|:-------:|--------------------------------------------------|
 | OIDC (AuthN)    | ![done] | Secure access to the catalog via OIDC            |
 | Custom (AuthZ)  | ![done] | If you are willing to implement a single rust Trait, the `AuthZHandler` can be implement to connect to your system |
-| OpenFGA (AuthZ) | ![open] | Internal Authorization management                |
+| OpenFGA (AuthZ) | ![done] | Internal Authorization management                |
+| Cedar           | ![done] | Available in Lakekeeper+                         |
 
 
 # Contributing

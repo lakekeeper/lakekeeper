@@ -7,6 +7,7 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::{
     api::{
+        management::v1::server::{LicenseStatus, APACHE_LICENSE_STATUS},
         router::{new_full_router, serve as service_serve, RouterArgs},
         shutdown_signal, ApiContext,
     },
@@ -22,8 +23,8 @@ use crate::{
             CloudEventsPublisherBackgroundTask,
         },
         health::ServiceHealthProvider,
-        task_queue::TaskQueueRegistry,
-        Catalog, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
+        tasks::TaskQueueRegistry,
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
     },
     CancellationToken, CONFIG,
 };
@@ -105,7 +106,7 @@ fn log_service_completion<H: ::std::hash::BuildHasher>(
 
 #[derive(derive_more::Debug, typed_builder::TypedBuilder)]
 pub struct ServeConfiguration<
-    C: Catalog,
+    C: CatalogStore,
     S: SecretStore,
     A: Authorizer = AllowAllAuthorizer,
     N: Authenticator + 'static = AuthenticatorEnum,
@@ -148,6 +149,9 @@ pub struct ServeConfiguration<
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
     pub register_additional_background_services_fn: Vec<RegisterBackgroundServiceFn<A, C, S>>,
+    /// License Status
+    #[builder(default)]
+    pub license_status: Option<&'static LicenseStatus>,
 }
 
 /// Starts the service with the provided configuration.
@@ -156,7 +160,7 @@ pub struct ServeConfiguration<
 /// - If the service cannot bind to the specified address.
 /// - If the terms of service have not been accepted during bootstrap.
 #[allow(clippy::too_many_lines)]
-pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
+pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
     let cancellation_token = CancellationToken::new();
@@ -276,7 +280,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn serve_inner<
-    C: Catalog,
+    C: CatalogStore,
     S: SecretStore,
     A: Authorizer,
     N: Authenticator + 'static,
@@ -306,7 +310,10 @@ async fn serve_inner<
         register_additional_task_queues_fn,
         additional_endpoint_hooks,
         register_additional_background_services_fn: additional_background_services,
+        license_status,
     } = config;
+
+    let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -355,6 +362,22 @@ async fn serve_inner<
     // Endpoint Hooks
     let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
     hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
+    if CONFIG.cache.warehouse.enabled {
+        tracing::info!("Warehouse cache is enabled, registering warehouse cache endpoint hook");
+        hooks.append(Arc::new(
+            crate::service::warehouse_cache::WarehouseCacheEndpointHook {},
+        ));
+    } else {
+        tracing::info!("Warehouse cache is disabled");
+    }
+    if CONFIG.cache.namespace.enabled {
+        tracing::info!("Namespace cache is enabled, registering namespace cache endpoint hook");
+        hooks.append(Arc::new(
+            crate::service::namespace_cache::NamespaceCacheEndpointHook {},
+        ));
+    } else {
+        tracing::info!("Namespace cache is disabled");
+    }
 
     // Task queues
     let task_queue_registry = TaskQueueRegistry::new();
@@ -381,6 +404,7 @@ async fn serve_inner<
             contract_verifiers: contract_verification,
             registered_task_queues,
             hooks,
+            license_status,
         },
     };
 

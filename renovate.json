@@ -3,5 +3,30 @@
   "extends": [
     "config:recommended"
   ],
-  "prHourlyLimit": 3
+  "prHourlyLimit": 3,
+  "ignoreDeps": [
+    "lakekeeper-console",
+    "iceberg",
+    "iceberg-ext",
+    "iceberg-catalog-rest",
+    "azure_core",
+    "azure_identity",
+    "azure_storage_blob",
+    "azure_storage_datalake",
+    "rust"
+  ],
+  "packageRules": [
+    {
+      "description": "Group minor and patch dependency updates",
+      "matchPackagePatterns": [
+        "*"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch"
+    }
+  ]
 }

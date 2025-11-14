@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tabular t \n           WHERE t.warehouse_id = $3 AND t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL\n           RETURNING t.tabular_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6404eaa43100990cc71c82fad60e2c5303aa7bfa218324e34a5fb1d8f902d0a2"
+}

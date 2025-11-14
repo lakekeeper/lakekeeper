@@ -1,69 +1,99 @@
+use std::sync::Arc;
+
 use super::{ApiServer, ProtectionResponse};
 use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{Authorizer, CatalogNamespaceAction},
-        Catalog, NamespaceId, SecretStore, State, Transaction,
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
+        Transaction,
     },
     WarehouseId,
 };
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> NamespaceManagementService<C, A, S>
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> NamespaceManagementService<C, A, S>
     for ApiServer<C, A, S>
 {
 }
 
 #[async_trait::async_trait]
-pub trait NamespaceManagementService<C: Catalog, A: Authorizer, S: SecretStore>
+pub trait NamespaceManagementService<C: CatalogStore, A: Authorizer, S: SecretStore>
 where
     Self: Send + Sync + 'static,
 {
     async fn set_namespace_protection(
         namespace_id: NamespaceId,
-        _warehouse_id: WarehouseId,
-        protected: bool,
+        warehouse_id: WarehouseId,
+        protected_request: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
-        authorizer
-            .require_namespace_action(
+        let (_warehouse, _namespace) = authorizer
+            .load_and_authorize_namespace_action::<C>(
                 &request_metadata,
-                Ok(Some(namespace_id)),
-                CatalogNamespaceAction::CanDelete,
+                warehouse_id,
+                namespace_id,
+                CatalogNamespaceAction::CanSetProtection,
+                CachePolicy::Skip,
+                state.v1_state.catalog.clone(),
             )
             .await?;
+
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         tracing::debug!(
-            "Setting protection status for namespace: {:?} to {protected}",
+            "Setting protection status for namespace: {:?} to {protected_request}",
             namespace_id
         );
-        let status = C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
+        let status = C::set_namespace_protected(
+            warehouse_id,
+            namespace_id,
+            protected_request,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
-        Ok(status)
+
+        let protected = status.namespace.protected;
+        let updated_at = status.namespace.updated_at;
+
+        state
+            .v1_state
+            .hooks
+            .set_namespace_protection(protected_request, status, Arc::new(request_metadata))
+            .await;
+
+        let protection_response = ProtectionResponse {
+            protected,
+            updated_at,
+        };
+        Ok(protection_response)
     }
 
     async fn get_namespace_protection(
         namespace_id: NamespaceId,
-        _warehouse_id: WarehouseId,
+        warehouse_id: WarehouseId,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
-        //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
 
-        authorizer
-            .require_namespace_action(
+        let (_warehouse, namespace) = authorizer
+            .load_and_authorize_namespace_action::<C>(
                 &request_metadata,
-                Ok(Some(namespace_id)),
+                warehouse_id,
+                namespace_id,
                 CatalogNamespaceAction::CanGetMetadata,
+                CachePolicy::Skip,
+                state.v1_state.catalog,
             )
             .await?;
-        let status = C::get_namespace_protected(namespace_id, t.transaction()).await?;
-        t.commit().await?;
-        Ok(status)
+
+        Ok(ProtectionResponse {
+            protected: namespace.is_protected(),
+            updated_at: namespace.updated_at(),
+        })
     }
 }

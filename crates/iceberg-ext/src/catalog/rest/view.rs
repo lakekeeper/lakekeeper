@@ -1,8 +1,10 @@
+use iceberg::spec::ViewMetadataRef;
+
 #[cfg(feature = "axum")]
 use crate::catalog::rest::impl_into_response;
 use crate::{
     catalog::{rest::ViewUpdate, TableIdent, ViewRequirement},
-    spec::{Schema, ViewMetadata, ViewVersion},
+    spec::{Schema, ViewVersion},
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,7 +31,7 @@ pub struct LoadViewResult {
     #[serde(rename = "metadata-location")]
     pub metadata_location: String,
     #[serde(rename = "metadata")]
-    pub metadata: ViewMetadata,
+    pub metadata: ViewMetadataRef,
     #[serde(rename = "config", skip_serializing_if = "Option::is_none")]
     pub config: Option<std::collections::HashMap<String, String>>,
 }

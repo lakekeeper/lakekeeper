@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use http::{HeaderMap, StatusCode};
+use http::{HeaderMap, HeaderName, StatusCode};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadCredentialsResponse;
 
@@ -380,16 +380,22 @@ pub struct TableParameters {
     pub table: TableIdent,
 }
 
-pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
+pub const DATA_ACCESS_HEADER: &str = "x-iceberg-access-delegation";
+pub const IF_NONE_MATCH_HEADER: &str = "if-none-match";
+pub const ETAG_HEADER: &str = "etag";
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+pub const DATA_ACCESS_HEADER_NAME: HeaderName = HeaderName::from_static(DATA_ACCESS_HEADER);
+pub const ETAG_HEADER_NAME: HeaderName = HeaderName::from_static(ETAG_HEADER);
+pub const IF_NONE_MATCH_HEADER_NAME: HeaderName = HeaderName::from_static(IF_NONE_MATCH_HEADER);
+
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Copy)]
 // Modeled as a string to enable multiple values to be specified.
 pub struct DataAccess {
     pub vended_credentials: bool,
     pub remote_signing: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, derive_more::From)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, derive_more::From)]
 pub enum DataAccessMode {
     // For internal use only - indicates that the client has credentials
     // and thus doesn't need any form of data access delegation.

@@ -151,7 +151,7 @@ paths:
         - 00:00:00-00:16:32: no activity
             - `timestamps: []`
         - 00:16:32: warehouse created:
-            `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
+            - `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
         - 00:30:00: table created:
             - `timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}, {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]`
         - 00:45:00: table created:
@@ -1744,6 +1744,10 @@ paths:
       responses:
         '200':
           description: Deletion Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -1991,6 +1995,10 @@ paths:
       responses:
         '200':
           description: Warehouse renamed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -2116,6 +2124,10 @@ paths:
       responses:
         '200':
           description: Storage profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -2147,6 +2159,10 @@ paths:
       responses:
         '200':
           description: Storage credential updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -2584,11 +2600,6 @@ components:
           format: int64
           description: 'The validity of the sas token in seconds. Default: 3600.'
           minimum: 0
-    AuthZBackend:
-      type: string
-      enum:
-        - allow-all
-        - openfga
     AzCredential:
       oneOf:
         - type: object
@@ -2776,18 +2787,18 @@ components:
         - type: object
           description: Stop the task gracefully. The task will be retried.
           required:
-            - action
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - stop
         - type: object
           description: Cancel the task permanently. The task is not retried.
           required:
-            - action
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - cancel
@@ -2796,9 +2807,9 @@ components:
             Run the task immediately, moving the `scheduled_for` time to now.
             Affects only tasks in `Scheduled` or `Stopping` state.
           required:
-            - action
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - run-now
@@ -2808,14 +2819,14 @@ components:
             Affects only tasks in `Scheduled` or `Stopping` state.
             Timestamps must be in RFC 3339 format.
           required:
-            - scheduled_for
-            - action
+            - scheduled-for
+            - action-type
           properties:
-            action:
+            action-type:
               type: string
               enum:
                 - run-at
-            scheduled_for:
+            scheduled-for:
               type: string
               format: date-time
               description: The time to run the task at
@@ -2946,14 +2957,7 @@ components:
             Name of the warehouse to create. Must be unique
             within a project and may not contain "/"
     CreateWarehouseResponse:
-      type: object
-      required:
-        - warehouse-id
-      properties:
-        warehouse-id:
-          type: string
-          format: uuid
-          description: ID of the created warehouse.
+      $ref: '#/components/schemas/GetWarehouseResponse'
     DeletedTabularResponse:
       type: object
       required:
@@ -3471,6 +3475,7 @@ components:
       type: object
       required:
         - id
+        - warehouse-id
         - name
         - project-id
         - storage-profile
@@ -3485,6 +3490,7 @@ components:
           type: string
           format: uuid
           description: ID of the warehouse.
+          deprecated: true
         name:
           type: string
           description: Name of the warehouse.
@@ -3500,6 +3506,16 @@ components:
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile used for the warehouse.
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last updated timestamp.
+        warehouse-id:
+          type: string
+          format: uuid
+          description: ID of the warehouse.
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)
@@ -3508,6 +3524,50 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorModel'
+    LicenseStatus:
+      type: object
+      description: Status of license validation
+      required:
+        - license-type
+        - valid
+      properties:
+        audience:
+          type:
+            - string
+            - 'null'
+          description: Audience or entity the license is issued to
+        customer:
+          type:
+            - string
+            - 'null'
+          description: Customer name the license is issued to (None for open source)
+        error:
+          type:
+            - string
+            - 'null'
+          description: Any validation error that occurred
+        expiration:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: License expiration date (None for perpetual licenses like Apache)
+        issuer:
+          type:
+            - string
+            - 'null'
+          description: Organization or entity that issued the license for Lakekeeper
+        license-id:
+          type:
+            - string
+            - 'null'
+          description: License ID or identifier
+        license-type:
+          type: string
+          description: License type (e.g., "Apache-2.0", "Vakamo-Enterprise", etc.)
+        valid:
+          type: boolean
+          description: If the license is valid and active
     ListDeletedTabularsResponse:
       type: object
       required:
@@ -3652,6 +3712,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - set_protection
     NamespaceAssignment:
       oneOf:
         - allOf:
@@ -3736,8 +3797,12 @@ components:
         - type: object
           required:
             - namespace-id
+            - warehouse-id
           properties:
             namespace-id:
+              type: string
+              format: uuid
+            warehouse-id:
               type: string
               format: uuid
         - type: object
@@ -3782,6 +3847,7 @@ components:
         - grant_project_admin
         - grant_security_admin
         - grant_data_admin
+        - get_endpoint_statistics
     ProjectAssignment:
       oneOf:
         - allOf:
@@ -4374,9 +4440,10 @@ components:
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
         - queues
+        - license-status
       properties:
         authz-backend:
-          $ref: '#/components/schemas/AuthZBackend'
+          type: string
           description: '`AuthZ` backend in use.'
         aws-system-identities-enabled:
           type: boolean
@@ -4395,6 +4462,9 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        license-status:
+          $ref: '#/components/schemas/LicenseStatus'
+          description: License status information
         queues:
           type: array
           items:
@@ -4655,6 +4725,7 @@ components:
         - change_ownership
         - get_tasks
         - control_tasks
+        - set_protection
     TableAssignment:
       oneOf:
         - allOf:
@@ -4722,7 +4793,7 @@ components:
                   type: string
                   enum:
                     - modify
-          title: TableAssignmentCreate
+          title: TableAssignmentModify
     TableRelation:
       type: string
       enum:
@@ -4751,7 +4822,7 @@ components:
           properties:
             expiration-seconds:
               type: integer
-              format: int32
+              format: int64
             type:
               type: string
               enum:
@@ -4952,7 +5023,6 @@ components:
         - type: object
           required:
             - table-id
-            - warehouse-id
             - type
           properties:
             table-id:
@@ -4962,13 +5032,9 @@ components:
               type: string
               enum:
                 - table
-            warehouse-id:
-              type: string
-              format: uuid
         - type: object
           required:
             - view-id
-            - warehouse-id
             - type
           properties:
             type:
@@ -4976,9 +5042,6 @@ components:
               enum:
                 - view
             view-id:
-              type: string
-              format: uuid
-            warehouse-id:
               type: string
               format: uuid
     TaskStatus:
@@ -5277,6 +5340,7 @@ components:
         - change_ownership
         - get_tasks
         - control_tasks
+        - set_protection
     ViewAssignment:
       oneOf:
         - allOf:
@@ -5367,6 +5431,8 @@ components:
         - change_ownership
         - get_all_tasks
         - control_all_tasks
+        - set_protection
+        - get_endpoint_statistics
     WarehouseAssignment:
       oneOf:
         - allOf:

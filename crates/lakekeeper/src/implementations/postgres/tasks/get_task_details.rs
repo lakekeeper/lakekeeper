@@ -8,7 +8,7 @@ use super::EntityType;
 use crate::{
     api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
+    service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId,
 };
 
@@ -90,11 +90,9 @@ fn parse_task_details(
         queue_name: most_recent.queue_name.into(),
         entity: match most_recent.entity_type {
             EntityType::Table => TaskEntity::Table {
-                warehouse_id,
                 table_id: most_recent.entity_id.into(),
             },
             EntityType::View => TaskEntity::View {
-                warehouse_id,
                 view_id: most_recent.entity_id.into(),
             },
         },
@@ -266,7 +264,7 @@ mod tests {
             check_and_heartbeat_task, pick_task, record_failure, record_success,
             test::setup_warehouse,
         },
-        service::task_queue::{
+        service::tasks::{
             EntityId, TaskCheckState, TaskEntity, TaskInput, TaskMetadata, TaskOutcome,
             TaskQueueName, TaskStatus, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
         },
@@ -359,12 +357,8 @@ mod tests {
         assert!(matches!(result.task.status, APITaskStatus::Running));
 
         match result.task.entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id);
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }
@@ -670,12 +664,8 @@ mod tests {
         assert!(result.task.created_at >= now - chrono::Duration::seconds(10));
 
         match result.task.entity {
-            TaskEntity::Table {
-                table_id,
-                warehouse_id: entity_warehouse_id,
-            } => {
+            TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id.as_uuid());
-                assert_eq!(entity_warehouse_id, warehouse_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
         }

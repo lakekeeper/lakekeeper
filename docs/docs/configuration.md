@@ -41,10 +41,10 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 
 | Variable                                                    | Example            | Description |
 |-------------------------------------------------------------|--------------------|-----|
-| `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | Lakekeeper supports using AWS system identities (i.e. through `AWS_*` environment variables or EC2 instance profiles) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable AWS system identities, set `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`. Default: `false` (AWS system credentials disabled) |
+| <nobr>`LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`<nobr>     | <nobr>`true`<nobr> | Lakekeeper supports using AWS system identities (i.e. through `AWS_*` environment variables or EC2 instance profiles) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable AWS system identities, set `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`. Default: `false` (AWS system credentials disabled) |
 | `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS`           | <nobr>`true`<nobr> | By default, when using AWS system credentials, users must specify an `assume-role-arn` for Lakekeeper to assume when accessing S3. Setting this option to `true` allows Lakekeeper to use system credentials directly without role assumption, meaning the system identity must have direct access to warehouse locations. Default: `false` (direct system credential access disabled) |
 | `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | <nobr>`true`<nobr> | Controls whether an `external-id` is required when assuming a role with AWS system credentials. External IDs provide additional security when cross-account role assumption is used. Default: true (external ID required) |
-| `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS`               | <nobr>`true`<nobr> | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. Default: `false` (Azure system credentials disabled) |
+| <nobr>`LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS`<nobr>   | <nobr>`true`<nobr> | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. Default: `false` (Azure system credentials disabled) |
 | `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | Lakekeeper supports using GCP system identities (i.e. through `GOOGLE_APPLICATION_CREDENTIALS` environment variables or the Compute Engine Metadata Server) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. Default: `false` (GCP system credentials disabled) |
 
 ### Persistence Store
@@ -90,11 +90,12 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                                      | Example    | Description     |
-|-----------------------------------------------|------------|-----------------|
-| <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`<nobr>  | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
-| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` | 2          | Number of workers spawned to expire soft-deleted tables and views. |
-| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`      | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| Variable                                                                          | Example    | Description |
+|-----------------------------------------------------------------------------------|------------|-----|
+| <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`</nobr>                                     | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS`                                     | 2          | Number of workers spawned to expire soft-deleted tables and views. |
+| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`                                          | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| <nobr>`LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`</nobr><span class="lkp"></span> | 2          | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 
 ### NATS
 
@@ -241,6 +242,78 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 | `LAKEKEEPER__UI__OPENID_TOKEN_TYPE`                | `access_token`                               | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
 
+### Caching
+Lakekeeper uses in-memory caches to speed up certain operations.
+
+**Short-Term Credentials (STC) Cache**
+
+When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
+
+| Variable                                        | Example | Description      |
+|-------------------------------------------------|---------|------------------|
+| <nobr>`LAKEKEEPER__CACHE__STC__ENABLED`</nobr>  | `true`  | Enable or disable the short-term credentials cache. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache. Default: `10000` |
+
+*Expiry Mechanism*: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
+
+*Metrics*: The STC cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_stc_cache_size{cache_type="stc"}`: Current number of entries in the cache
+- `lakekeeper_stc_cache_hits_total{cache_type="stc"}`: Total number of cache hits
+- `lakekeeper_stc_cache_misses_total{cache_type="stc"}`: Total number of cache misses
+
+**Warehouse Cache**
+
+Caches warehouse metadata to reduce database queries for warehouse lookups.
+
+| Configuration Key                                             | Type    | Default | Description |
+|---------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable warehouse caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
+| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__TIME_TO_LIVE_SECS`<nobr> | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
+
+If the cache is enabled, changes to Storage Profile may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
+
+*Metrics*: The Warehouse cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_warehouse_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
+- `lakekeeper_warehouse_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
+- `lakekeeper_warehouse_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
+
+**Namespace Cache**
+
+Caches namespace metadata and hierarchies to reduce database queries for namespace lookups. Namespace lookups are also required for table & view operations.
+
+| Configuration Key                                             | Type    | Default | Description |
+|---------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable namespace caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of namespaces to cache. Default: `1000` |
+| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__TIME_TO_LIVE_SECS`<nobr> | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
+
+If the cache is enabled, changes to namespace properties may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
+
+*Metrics*: The Namespace cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_namespace_cache_size{cache_type="namespace"}`: Current number of entries in the cache
+- `lakekeeper_namespace_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
+- `lakekeeper_namespace_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
+
+**Secrets Cache**
+
+Caches storage secrets to reduce load on the secret store. Since Lakekeeper never updates secrets, long TTLs can significantly increase resilience against secret store outages, especially when the secret store is external to the main database backend.
+
+| Configuration Key                                             | Type    | Default | Description |
+|---------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__ENABLED`<nobr>            | boolean | `true`  | Enable/disable secrets caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__CAPACITY`<nobr>           | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS`<nobr>  | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
+
+*Metrics*: The Secrets cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_secrets_cache_size{cache_type="secrets"}`: Current number of entries in the cache
+- `lakekeeper_secrets_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
+- `lakekeeper_secrets_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
@@ -257,9 +330,11 @@ You may be running Lakekeeper in your own environment which uses self-signed cer
 
 Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.
 
-| Variable                                             | Example | Description |
-|------------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr> | `true`  | If set to `true`, Lakekeeper will log all incoming request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
+| Variable                                               | Example | Description |
+|--------------------------------------------------------|---------|-----------|
+| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr>   | `true`  | If set to `true`, Lakekeeper will log all incoming request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE`</nobr> | `true`  | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__AUTO_SERVE`</nobr>           | `true`  | If set to `true`, Lakekeeper will automatically start the server when no subcommand is provided (i.e., when running the binary without arguments). This is useful for development environments to quickly start the server without explicitly specifying the `serve` command. Default: `false` |
 
 **Warning**: Debug options can expose sensitive information in logs and should only be used in secure development environments.
 

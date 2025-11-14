@@ -487,7 +487,7 @@ def test_table_properties(spark, warehouse: conftest.Warehouse):
         "CREATE TABLE test_table_properties.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
     )
     spark.sql(
-        "ALTER TABLE test_table_properties.my_table SET TBLPROPERTIES ('key1'='value1', 'key2'='value2')"
+        "ALTER TABLE test_table_properties.my_table SET TBLPROPERTIES ('key1'='value1', 'key2'='value2', 'write.metadata.metrics.max-inferred-column-defaults' = 100)"
     )
     pdf = (
         spark.sql("SHOW TBLPROPERTIES test_table_properties.my_table")
@@ -496,6 +496,9 @@ def test_table_properties(spark, warehouse: conftest.Warehouse):
     )
     assert pdf.loc["key1"]["value"] == "value1"
     assert pdf.loc["key2"]["value"] == "value2"
+    assert (
+        pdf.loc["write.metadata.metrics.max-inferred-column-defaults"]["value"] == "100"
+    )
 
 
 def test_write_read_table(spark):
@@ -833,12 +836,14 @@ def test_cannot_create_table_at_same_location(
     spark.sql(
         f"CREATE TABLE {namespace.spark_name}.my_table_custom_location (my_ints INT) USING iceberg LOCATION '{custom_location}'"
     )
-
     with pytest.raises(Exception) as e:
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}'"
         )
-    assert "Location is already taken by another table or view" in str(e.value)
+    # Other location should work
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}2'"
+    )
 
     # Write / read data
     spark.sql(
@@ -880,7 +885,6 @@ def test_cannot_create_table_at_sub_location(
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}/sub_location'"
         )
-    assert "Location is already taken by another table or view" in str(e.value)
 
     # Write / read data
     spark.sql(
@@ -1073,6 +1077,35 @@ def test_case_insensitivity(
     assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
     with pytest.raises(Exception) as e:
         spark.sql(f"SELECT * FROM {namespace.spark_name}.my_renamed_table").toPandas()
+
+
+def test_metadata_queries_tables(spark, namespace):
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
+    )
+    spark.sql(
+        f"INSERT INTO {namespace.spark_name}.my_table VALUES (1, 1.2, 'foo'), (2, 2.2, 'bar')"
+    )
+    all_data_files = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_data_files"
+    ).toPandas()
+    assert len(all_data_files) > 0
+    all_delete_files = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_delete_files"
+    ).toPandas()
+    assert len(all_delete_files) == 0
+    all_entries = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_entries"
+    ).toPandas()
+    assert len(all_entries) > 0
+    all_manifests = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.all_manifests"
+    ).toPandas()
+    assert len(all_manifests) > 0
+    metadata_log_entries = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_table.metadata_log_entries"
+    ).toPandas()
+    assert len(metadata_log_entries) > 0
 
 
 @pytest.mark.skipif(

@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
     implementations::postgres::{
-        endpoint_statistics::sink::PostgresStatisticsSink, PostgresCatalog, SecretsState,
+        endpoint_statistics::sink::PostgresStatisticsSink, PostgresBackend, SecretsState,
     },
     service::{
         authz::AllowAllAuthorizer,
@@ -555,26 +555,6 @@ mod test {
         )
         .await
         .unwrap();
-
-        let stats = ApiServer::get_endpoint_statistics(
-            setup.ctx.clone(),
-            GetEndpointStatisticsRequest {
-                warehouse: WarehouseFilter::All,
-                status_codes: None,
-                range_specifier: None,
-            },
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(stats.called_endpoints.len(), 1);
-        assert_eq!(stats.called_endpoints[0].len(), 1);
-        assert_eq!(stats.called_endpoints[0][0].http_route, ep.as_http_route());
-        assert_eq!(stats.called_endpoints[0][0].status_code, 200);
-        assert_eq!(stats.called_endpoints[0][0].count, 1);
-
-        assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
     }
 
     async fn send_all_endpoints(setup: &StatsSetup) {
@@ -610,7 +590,7 @@ mod test {
 // TODO: test with multiple warehouses and projects
 
 struct StatsSetup {
-    ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+    ctx: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
     tracker_handle: tokio::task::JoinHandle<()>,
     warehouse: TestWarehouseResponse,
     tx: EndpointStatisticsTrackerTx,

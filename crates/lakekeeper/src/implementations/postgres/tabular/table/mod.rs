@@ -2,17 +2,10 @@ mod commit;
 mod common;
 mod create;
 
-use std::{
-    collections::{HashMap, HashSet},
-    default::Default,
-    ops::Deref,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
 
 pub(crate) use commit::commit_table_transaction;
 pub(crate) use create::create_table;
-use http::StatusCode;
 use iceberg::{
     spec::{
         BlobMetadata, EncryptedKey, FormatVersion, PartitionSpec, Schema, SchemaId,
@@ -20,159 +13,75 @@ use iceberg::{
     },
     TableUpdate,
 };
-use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
-use lakekeeper_io::Location;
+use iceberg_ext::spec::TableMetadata;
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use super::get_partial_fs_locations;
 use crate::{
-    api::iceberg::v1::{
-        tables::{LoadTableFilters, SnapshotsQuery},
-        PaginatedMapping, PaginationQuery,
-    },
-    implementations::postgres::{
-        dbutils::DBErrorHandler as _,
-        tabular::{
-            drop_tabular, list_tabulars, try_parse_namespace_ident, TabularId,
-            TabularIdentBorrowed, TabularIdentOwned, TabularType,
-        },
-        CatalogState,
-    },
+    api::iceberg::v1::tables::{LoadTableFilters, SnapshotsQuery},
     service::{
-        storage::{join_location, split_location, StorageProfile},
-        ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result, TableId, TableIdent,
-        TableInfo, TabularDetails, TabularInfo,
+        storage::join_location, ConversionError, InternalParseLocationError,
+        InternalTableMetadataBuildFailed, LoadTableError, LoadTableResponse,
+        RequiredTableComponentMissing, TableId,
     },
-    SecretIdent, WarehouseId,
+    WarehouseId,
 };
 
 const MAX_PARAMETERS: usize = 30000;
 
 #[inline]
-pub(crate) fn next_row_id_as_i64(next_row_id: u64) -> std::result::Result<i64, ErrorModel> {
+pub(crate) fn next_row_id_as_i64(next_row_id: u64) -> Result<i64, ConversionError> {
     let next_row_id = i64::try_from(next_row_id).map_err(|e| {
-        ErrorModel::bad_request(
-            format!("Table next_row_id is {next_row_id} but must be between 0 and i64::MAX"),
-            "NextRowIdOverflow",
-            Some(Box::new(e)),
+        ConversionError::new(
+            format!("Next row id is {next_row_id} but must be between 0 and i64::MAX"),
+            e,
         )
     })?;
     Ok(next_row_id)
 }
 
 #[inline]
-pub(crate) fn first_row_id_as_i64(first_row_id: u64) -> std::result::Result<i64, ErrorModel> {
+pub(crate) fn first_row_id_as_i64(first_row_id: u64) -> Result<i64, ConversionError> {
     let first_row_id = i64::try_from(first_row_id).map_err(|e| {
-        ErrorModel::bad_request(
+        ConversionError::new(
             format!("Snapshot first_row_id is {first_row_id} but must be between 0 and i64::MAX"),
-            "FirstRowIdOverflow",
-            Some(Box::new(e)),
+            e,
         )
     })?;
     Ok(first_row_id)
 }
 
 #[inline]
-pub(crate) fn assigned_rows_as_i64(assigned_rows: u64) -> std::result::Result<i64, ErrorModel> {
+pub(crate) fn assigned_rows_as_i64(assigned_rows: u64) -> Result<i64, ConversionError> {
     let assigned_rows = i64::try_from(assigned_rows).map_err(|e| {
-        ErrorModel::bad_request(
+        ConversionError::new(
             format!("Snapshot assigned_rows (added_rows) is {assigned_rows} but must be between 0 and i64::MAX"),
-            "AssignedRowsOverflow",
-            Some(Box::new(e)),
+            e,
         )
     })?;
     Ok(assigned_rows)
 }
 
 #[inline]
-pub(crate) fn first_row_id_as_u64(first_row_id: i64) -> std::result::Result<u64, ErrorModel> {
+pub(crate) fn first_row_id_as_u64(first_row_id: i64) -> Result<u64, ConversionError> {
     let first_row_id = u64::try_from(first_row_id).map_err(|e| {
-        ErrorModel::bad_request(
+        ConversionError::new(
             format!("Snapshot first_row_id is {first_row_id} but must be between 0 and u64::MAX"),
-            "FirstRowIdOutOfRange",
-            Some(Box::new(e)),
+            e,
         )
     })?;
     Ok(first_row_id)
 }
 
 #[inline]
-pub(crate) fn assigned_rows_as_u64(assigned_rows: i64) -> std::result::Result<u64, ErrorModel> {
+pub(crate) fn assigned_rows_as_u64(assigned_rows: i64) -> Result<u64, ConversionError> {
     let assigned_rows = u64::try_from(assigned_rows).map_err(|e| {
-        ErrorModel::bad_request(
+        ConversionError::new(
             format!("Snapshot assigned_rows (added_rows) is {assigned_rows} but must be between 0 and u64::MAX"),
-            "AssignedRowsOutOfRange",
-            Some(Box::new(e)),
+            e,
         )
     })?;
     Ok(assigned_rows)
-}
-
-pub(crate) async fn resolve_table_ident<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
-    table: &TableIdent,
-    list_flags: crate::service::ListFlags,
-    catalog_state: E,
-) -> Result<Option<TabularDetails>>
-where
-    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
-    crate::implementations::postgres::tabular::tabular_ident_to_id(
-        warehouse_id,
-        &TabularIdentBorrowed::Table(table),
-        list_flags,
-        catalog_state,
-    )
-    .await?
-    .map(|(id, location)| match id {
-        TabularId::Table(tab) => Ok(TabularDetails {
-            warehouse_id,
-            table_id: tab,
-            location,
-        }),
-        TabularId::View(_) => Err(ErrorModel::builder()
-            .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-            .message("DB returned a view when filtering for tables.".to_string())
-            .r#type("InternalDatabaseError".to_string())
-            .build()
-            .into()),
-    })
-    .transpose()
-}
-
-pub(crate) async fn table_idents_to_ids<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
-    tables: HashSet<&TableIdent>,
-    list_flags: crate::service::ListFlags,
-    catalog_state: E,
-) -> Result<HashMap<TableIdent, Option<TableId>>>
-where
-    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
-    let table_map = crate::implementations::postgres::tabular::tabular_idents_to_ids(
-        warehouse_id,
-        tables
-            .into_iter()
-            .map(TabularIdentBorrowed::Table)
-            .collect(),
-        list_flags,
-        catalog_state,
-    )
-    .await?
-    .into_iter()
-    .map(|(k, v)| match k {
-        TabularIdentOwned::Table(t) => Ok((t, v.map(|v| TableId::from(*v)))),
-        TabularIdentOwned::View(_) => Err(ErrorModel::internal(
-            "DB returned a view when filtering for tables.",
-            "InternalDatabaseError",
-            None,
-        )
-        .into()),
-    })
-    .collect::<Result<HashMap<_, Option<TableId>>>>()?;
-
-    Ok(table_map)
 }
 
 #[derive(Debug, sqlx::Type)]
@@ -206,47 +115,10 @@ impl From<FormatVersion> for DbTableFormatVersion {
     }
 }
 
-pub(crate) async fn list_tables<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
-    namespace: &NamespaceIdent,
-    list_flags: crate::service::ListFlags,
-    transaction: E,
-    pagination_query: PaginationQuery,
-) -> Result<PaginatedMapping<TableId, TableInfo>>
-where
-    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
-    let tabulars = list_tabulars(
-        warehouse_id,
-        Some(namespace),
-        None,
-        list_flags,
-        transaction,
-        Some(TabularType::Table),
-        pagination_query,
-    )
-    .await?;
-
-    tabulars.map::<TableId, TableInfo>(
-        |k| match k {
-            TabularId::Table(t) => {
-                let r: Result<TableId> = Ok(t);
-                r
-            }
-            TabularId::View(_) => Err(ErrorModel::internal(
-                "DB returned a view when filtering for tables.",
-                "InternalDatabaseError",
-                None,
-            )
-            .into()),
-        },
-        TabularInfo::into_table_info,
-    )
-}
-
 #[expect(dead_code)]
 #[derive(sqlx::FromRow)]
 struct TableQueryStruct {
+    warehouse_id: Uuid,
     table_id: Uuid,
     table_name: String,
     namespace_name: Vec<String>,
@@ -274,8 +146,7 @@ struct TableQueryStruct {
     metadata_location: Option<String>,
     table_fs_location: String,
     table_fs_protocol: String,
-    storage_profile: Json<StorageProfile>,
-    storage_secret_id: Option<Uuid>,
+    warehouse_version: i64,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
@@ -307,42 +178,50 @@ struct TableQueryStruct {
 
 impl TableQueryStruct {
     #[expect(clippy::too_many_lines)]
-    fn into_table_metadata(self) -> Result<TableMetadata> {
-        fn expect<T>(field: Option<T>, field_name: &str) -> Result<T, ErrorModel> {
+    fn into_table_metadata(self) -> Result<TableMetadata, LoadTableError> {
+        fn expect<T>(
+            field: Option<T>,
+            field_name: &str,
+            info: &(WarehouseId, TableId),
+        ) -> Result<T, RequiredTableComponentMissing> {
             if let Some(v) = field {
                 Ok(v)
             } else {
-                Err(ErrorModel::internal(
-                    format!("Did not find any {field_name} for table"),
-                    "InternalMissingRequiredField",
-                    None,
-                ))
+                Err(RequiredTableComponentMissing::new(info.0, info.1)
+                    .append_detail(format!("Missing required component: {field_name}")))
             }
         }
 
-        let schemas = expect(self.schemas, "Schemas")?
+        let warehouse_id = self.warehouse_id.into();
+        let table_id = self.table_id.into();
+        let info = (warehouse_id, table_id);
+
+        let schemas = expect(self.schemas, "Schemas", &info)?
             .into_iter()
             .map(|s| (s.0.schema_id(), Arc::new(s.0)))
             .collect::<HashMap<SchemaId, _>>();
 
-        let partition_specs = expect(self.partition_spec_ids, "Partition Specs")?
+        let partition_specs = expect(self.partition_spec_ids, "Partition Spec IDs", &info)?
             .into_iter()
             .zip(
-                expect(self.partition_specs, "Partition Specs")?
+                expect(self.partition_specs, "Partition Specs", &info)?
                     .into_iter()
                     .map(|s| Arc::new(s.0)),
             )
             .collect::<HashMap<_, _>>();
 
-        let default_partition_spec_id =
-            expect(self.default_partition_spec_id, "Default Partition Spec ID")?;
+        let default_partition_spec_id = expect(
+            self.default_partition_spec_id,
+            "Default Partition Spec ID",
+            &info,
+        )?;
         let default_spec = partition_specs
             .get(&default_partition_spec_id)
-            .ok_or(ErrorModel::internal(
-                "Default partition spec not found",
-                "InternalDefaultPartitionSpecNotFound",
-                None,
-            ))?
+            .ok_or_else(|| {
+                RequiredTableComponentMissing::new(warehouse_id, table_id).append_detail(format!(
+                    "Default partition spec id {default_partition_spec_id} not found in loaded partition specs"
+                ))
+            })?
             .clone();
 
         let properties = self
@@ -411,7 +290,7 @@ impl TableQueryStruct {
                 ))
             },
         )
-        .collect::<Result<HashMap<_, _>>>()?;
+        .collect::<Result<HashMap<_, _>, LoadTableError>>()?;
 
         let snapshot_log = itertools::multizip((
             self.snapshot_log_ids.unwrap_or_default(),
@@ -434,8 +313,8 @@ impl TableQueryStruct {
         .collect::<Vec<_>>();
 
         let sort_orders = itertools::multizip((
-            expect(self.sort_order_ids, "Sort Order IDs")?,
-            expect(self.sort_orders, "Sort Orders")?,
+            expect(self.sort_order_ids, "Sort Order IDs", &info)?,
+            expect(self.sort_orders, "Sort Orders", &info)?,
         ))
         .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
         .collect::<HashMap<_, _>>();
@@ -508,40 +387,27 @@ impl TableQueryStruct {
         )
         .collect::<HashMap<_, _>>();
 
-        let current_schema_id = self.current_schema.ok_or_else(|| {
-            ErrorModel::internal(
-                "Current schema not set for table",
-                "InternalCurrentSchemaNotSet",
-                None,
-            )
-        })?;
+        let current_schema_id = expect(self.current_schema, "Current Schema ID", &info)?;
 
         let default_partition_type = default_spec
             .partition_type(schemas.get(&current_schema_id).ok_or_else(|| {
-                ErrorModel::internal(
-                    format!(
-                        "No schema exists with the current schema id {current_schema_id} in DB."
-                    ),
-                    "InternalCurrentSchemaNotFound",
-                    None,
-                )
+                RequiredTableComponentMissing::new(warehouse_id, table_id).append_detail(format!(
+                    "No schema exists with the current schema id {current_schema_id} in DB."
+                ))
             })?)
             .map_err(|e| {
-                ErrorModel::internal(
-                    "Error re-creating default partition type after DB load",
-                    "InternalDefaultPartitionTypeError",
-                    Some(Box::new(e)),
-                )
+                RequiredTableComponentMissing::new(warehouse_id, table_id).append_detail(format!(
+                    "Error re-creating default partition type after DB load: {e}"
+                ))
             })?;
 
         let next_row_id = u64::try_from(self.next_row_id).map_err(|e| {
-            ErrorModel::internal(
+            ConversionError::new(
                 format!(
                     "Error converting next_row_id to u64. Got: {}",
                     self.next_row_id
                 ),
-                "InternalNextRowIdConversionError",
-                Some(Box::new(e)),
+                e,
             )
         })?;
 
@@ -570,13 +436,13 @@ impl TableQueryStruct {
         )
         .collect::<HashMap<_, _>>();
 
+        let table_location = join_location(&self.table_fs_protocol, &self.table_fs_location)
+            .map_err(InternalParseLocationError::from)?
+            .to_string();
         let mut table_metadata = TableMetadata::builder()
             .format_version(FormatVersion::from(self.table_format_version))
             .table_uuid(self.table_id)
-            .location(join_location(
-                &self.table_fs_protocol,
-                &self.table_fs_location,
-            ))
+            .location(table_location)
             .last_sequence_number(self.last_sequence_number)
             .last_updated_ms(self.last_updated_ms)
             .last_column_id(self.last_column_id)
@@ -592,7 +458,11 @@ impl TableQueryStruct {
             .snapshot_log(snapshot_log)
             .metadata_log(metadata_log)
             .sort_orders(sort_orders)
-            .default_sort_order_id(expect(self.default_sort_order_id, "Default Sort Order ID")?)
+            .default_sort_order_id(expect(
+                self.default_sort_order_id,
+                "Default Sort Order ID",
+                &info,
+            )?)
             .refs(refs)
             .partition_statistics(partition_statistics)
             .statistics(statistics)
@@ -601,44 +471,13 @@ impl TableQueryStruct {
             .build_unchecked();
 
         table_metadata.try_normalize().map_err(|e| {
-            ErrorModel::internal(
-                "Error parsing table metadata from DB",
-                "InternalTableMetadataParseError",
-                Some(Box::new(e)),
-            )
+            InternalTableMetadataBuildFailed::new(warehouse_id, table_id).append_detail(format!(
+                "Failed to normalize table metadata after DB load: {e}"
+            ))
         })?;
 
         Ok(table_metadata)
     }
-}
-
-pub(crate) async fn load_storage_profile(
-    warehouse_id: WarehouseId,
-    table: TableId,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<(Option<SecretIdent>, StorageProfile)> {
-    let secret = sqlx::query!(
-        r#"
-        SELECT w.storage_secret_id,
-        w.storage_profile as "storage_profile: Json<StorageProfile>"
-        FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1
-            AND t."table_id" = $2
-            AND w.status = 'active'
-        "#,
-        *warehouse_id,
-        *table
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| e.into_error_model("Error fetching storage secret".to_string()))?;
-
-    Ok((
-        secret.storage_secret_id.map(SecretIdent::from),
-        secret.storage_profile.0,
-    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -648,7 +487,7 @@ pub(crate) async fn load_tables(
     include_deleted: bool,
     filters: &LoadTableFilters,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<HashMap<TableId, LoadTableResponse>> {
+) -> Result<Vec<LoadTableResponse>, LoadTableError> {
     let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
     let LoadTableFilters {
         snapshots: snapshots_filter,
@@ -663,7 +502,8 @@ pub(crate) async fn load_tables(
             WHERE warehouse_id = $1 AND table_id = ANY($2)
         )
         SELECT
-            t."table_id",
+            t.warehouse_id,
+            t.table_id,
             t.last_sequence_number,
             t.last_column_id,
             t.last_updated_ms,
@@ -676,8 +516,7 @@ pub(crate) async fn load_tables(
             ti.tabular_namespace_name as "namespace_name",
             ti.namespace_id,
             ti."metadata_location",
-            w.storage_profile as "storage_profile: Json<StorageProfile>",
-            w."storage_secret_id",
+            w.version as "warehouse_version",
             ts.schema_ids,
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
@@ -824,219 +663,31 @@ pub(crate) async fn load_tables(
     )
     .fetch_all(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error fetching tables".to_string()))?;
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
-    let mut tables = HashMap::new();
-    for table in table {
-        let table_id = table.table_id.into();
-        let metadata_location = match table
-            .metadata_location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-        {
-            Ok(location) => location,
-            Err(e) => {
-                return Err(ErrorModel::internal(
-                    "Error parsing metadata location",
-                    "InternalMetadataLocationParseError",
-                    Some(Box::new(e)),
-                )
-                .into());
-            }
-        };
-        let namespace_id = table.namespace_id.into();
-        let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
-        let storage_profile = table.storage_profile.deref().clone();
+    table
+        .into_iter()
+        .map(|table| {
+            let warehouse_version = table.warehouse_version;
+            let table_id = table.table_id.into();
+            let metadata_location = table
+                .metadata_location
+                .as_deref()
+                .map(FromStr::from_str)
+                .transpose()
+                .map_err(InternalParseLocationError::from)?;
+            let namespace_id = table.namespace_id.into();
+            let table_metadata = table.into_table_metadata()?;
 
-        let table_metadata = table.into_table_metadata()?;
-
-        tables.insert(
-            table_id,
-            LoadTableResponse {
+            Ok(LoadTableResponse {
                 table_id,
                 namespace_id,
                 table_metadata,
                 metadata_location,
-                storage_secret_ident,
-                storage_profile,
-            },
-        );
-    }
-    Ok(tables)
-}
-
-pub(crate) async fn get_table_metadata_by_id(
-    warehouse_id: WarehouseId,
-    table: TableId,
-    list_flags: crate::service::ListFlags,
-    catalog_state: CatalogState,
-) -> Result<Option<GetTableMetadataResponse>> {
-    let table = sqlx::query!(
-        r#"
-        SELECT
-            t."table_id",
-            ti.name as "table_name",
-            ti.fs_location as "table_fs_location",
-            ti.fs_protocol as "table_fs_protocol",
-            ti.tabular_namespace_name as namespace_name,
-            ti.namespace_id,
-            ti."metadata_location",
-            w.storage_profile as "storage_profile: Json<StorageProfile>",
-            w."storage_secret_id"
-        FROM "table" t
-        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
-        INNER JOIN warehouse w ON w.warehouse_id = $1
-        WHERE t.warehouse_id = $1 AND t."table_id" = $2
-            AND w.status = 'active'
-            AND (ti.deleted_at IS NULL OR $3)
-        "#,
-        *warehouse_id,
-        *table,
-        list_flags.include_deleted
-    )
-    .fetch_one(&catalog_state.read_pool())
-    .await;
-
-    let table = match table {
-        Ok(table) => table,
-        Err(sqlx::Error::RowNotFound) => return Ok(None),
-        Err(e) => {
-            return Err(e
-                .into_error_model("Error fetching table".to_string())
-                .into());
-        }
-    };
-
-    if !list_flags.include_staged && table.metadata_location.is_none() {
-        return Ok(None);
-    }
-
-    let namespace = try_parse_namespace_ident(table.namespace_name)?;
-
-    Ok(Some(GetTableMetadataResponse {
-        table: TableIdent {
-            namespace,
-            name: table.table_name,
-        },
-        namespace_id: table.namespace_id.into(),
-        table_id: table.table_id.into(),
-        warehouse_id,
-        location: join_location(&table.table_fs_protocol, &table.table_fs_location),
-        metadata_location: table.metadata_location,
-        storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
-        storage_profile: table.storage_profile.deref().clone(),
-    }))
-}
-
-pub(crate) async fn get_table_metadata_by_s3_location(
-    warehouse_id: WarehouseId,
-    location: &Location,
-    list_flags: crate::service::ListFlags,
-    catalog_state: CatalogState,
-) -> Result<Option<GetTableMetadataResponse>> {
-    let (fs_protocol, fs_location) = split_location(location.as_str())?;
-    let partial_locations = get_partial_fs_locations(location)?;
-
-    // Location might also be a subpath of the table location.
-    // We need to make sure that the location starts with the table location.
-    let table = sqlx::query!(
-        r#"
-         SELECT
-             t."table_id",
-             ti.name as "table_name",
-             ti.fs_location as "fs_location",
-             ti.tabular_namespace_name as namespace_name,
-             ti.namespace_id,
-             ti."metadata_location",
-             w.storage_profile as "storage_profile: Json<StorageProfile>",
-             w."storage_secret_id"
-         FROM "table" t
-         INNER JOIN tabular ti ON t.warehouse_id = $1 AND t.table_id = ti.tabular_id
-         INNER JOIN warehouse w ON w.warehouse_id = $1
-         WHERE t.warehouse_id = $1
-             AND ti.fs_location = ANY($2)
-             AND LENGTH(ti.fs_location) <= $3
-             AND w.status = 'active'
-             AND (ti.deleted_at IS NULL OR $4)
-         "#,
-        *warehouse_id,
-        partial_locations.as_slice(),
-        i32::try_from(fs_location.len()).unwrap_or(i32::MAX) + 1, // account for maybe trailing
-        list_flags.include_deleted
-    )
-    .fetch_one(&catalog_state.read_pool())
-    .await;
-
-    let table = match table {
-        Ok(table) => table,
-        Err(sqlx::Error::RowNotFound) => {
-            tracing::debug!("Table at location {} not found", location);
-            return Ok(None);
-        }
-        Err(e) => {
-            tracing::warn!("Error fetching table: {}", e);
-            return Err(e
-                .into_error_model("Error fetching table".to_string())
-                .into());
-        }
-    };
-
-    if !list_flags.include_staged && table.metadata_location.is_none() {
-        return Ok(None);
-    }
-
-    let namespace = try_parse_namespace_ident(table.namespace_name)?;
-
-    Ok(Some(GetTableMetadataResponse {
-        table: TableIdent {
-            namespace,
-            name: table.table_name,
-        },
-        table_id: table.table_id.into(),
-        namespace_id: table.namespace_id.into(),
-        warehouse_id,
-        location: join_location(fs_protocol, &table.fs_location),
-        metadata_location: table.metadata_location,
-        storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
-        storage_profile: table.storage_profile.deref().clone(),
-    }))
-}
-
-/// Rename a table. Tables may be moved across namespaces.
-pub(crate) async fn rename_table(
-    warehouse_id: WarehouseId,
-    source_id: TableId,
-    source: &TableIdent,
-    destination: &TableIdent,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    crate::implementations::postgres::tabular::rename_tabular(
-        warehouse_id,
-        TabularId::Table(source_id),
-        source,
-        destination,
-        transaction,
-    )
-    .await?;
-
-    Ok(())
-}
-
-pub(crate) async fn drop_table(
-    warehouse_id: WarehouseId,
-    table_id: TableId,
-    force: bool,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<String> {
-    drop_tabular(
-        warehouse_id,
-        TabularId::Table(table_id),
-        force,
-        None,
-        transaction,
-    )
-    .await
+                warehouse_version: warehouse_version.into(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -1079,7 +730,7 @@ pub(crate) mod tests {
             NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
             UnboundPartitionSpec,
         },
-        NamespaceIdent,
+        NamespaceIdent, TableIdent,
     };
     use iceberg_ext::catalog::rest::CreateTableRequest;
     use lakekeeper_io::Location;
@@ -1088,22 +739,33 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         api::{
-            iceberg::{types::PageToken, v1::tables::LoadTableFilters},
+            iceberg::{
+                types::PageToken,
+                v1::{tables::LoadTableFilters, PaginationQuery},
+            },
             management::v1::{warehouse::WarehouseStatus, DeleteKind},
         },
-        catalog::tables::create_table_request_into_table_metadata,
-        implementations::postgres::{
-            namespace::tests::initialize_namespace,
-            tabular::{mark_tabular_as_deleted, table::create::create_table},
-            warehouse::{set_warehouse_status, test::initialize_warehouse},
-            PostgresCatalog,
+        implementations::{
+            postgres::{
+                namespace::tests::initialize_namespace,
+                tabular::{
+                    drop_tabular, get_tabular_infos_by_idents, get_tabular_infos_by_ids,
+                    get_tabular_infos_by_s3_location, list_tabulars, mark_tabular_as_deleted,
+                    rename_tabular, table::create::create_table,
+                },
+                warehouse::{set_warehouse_status, test::initialize_warehouse},
+                PostgresBackend,
+            },
+            CatalogState,
         },
+        server::tables::create_table::create_table_request_into_table_metadata,
         service::{
-            task_queue::{
+            tasks::{
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
                 EntityId, TaskMetadata,
             },
-            ListFlags, NamedEntity, NamespaceId, TableCreation,
+            CreateTableError, NamedEntity, NamespaceId, RenameTabularError, TableCreation,
+            TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
         },
     };
 
@@ -1111,19 +773,21 @@ pub(crate) mod tests {
         stage_create: Option<bool>,
         table_name: Option<String>,
     ) -> (CreateTableRequest, Option<Location>) {
+        let location = format!("s3://my_bucket/my_table/{}", Uuid::now_v7());
+
         let metadata_location = if let Some(stage_create) = stage_create {
             if stage_create {
                 None
             } else {
                 Some(
-                    format!("s3://my_bucket/my_table/metadata/foo/{}", Uuid::now_v7())
+                    format!("{location}/metadata/metadata-{}.json", Uuid::now_v7())
                         .parse()
                         .unwrap(),
                 )
             }
         } else {
             Some(
-                format!("s3://my_bucket/my_table/metadata/foo/{}", Uuid::now_v7())
+                format!("{location}/metadata/metadata-{}.json", Uuid::now_v7())
                     .parse()
                     .unwrap(),
             )
@@ -1132,7 +796,7 @@ pub(crate) mod tests {
         (
             CreateTableRequest {
                 name: table_name.unwrap_or("my_table".to_string()),
-                location: Some(format!("s3://my_bucket/my_table/{}", Uuid::now_v7())),
+                location: Some(location),
                 schema: Schema::builder()
                     .with_fields(vec![
                         NestedField::required(
@@ -1262,7 +926,7 @@ pub(crate) mod tests {
             warehouse_id,
             namespace_id,
             table_ident: &table_ident,
-            table_metadata,
+            table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
         let mut transaction = state.write_pool().begin().await.unwrap();
@@ -1292,26 +956,29 @@ pub(crate) mod tests {
             namespace: namespace.clone(),
             name: request.name.clone(),
         };
+        assert!(metadata_location.is_some());
 
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
 
-        let table_metadata =
-            crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
-                .unwrap();
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
             warehouse_id,
             namespace_id,
             table_ident: &table_ident,
-            table_metadata,
+            table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
 
-        let create_result = create_table(request.clone(), &mut transaction)
+        let original_table_metadata = request.table_metadata;
+        let (tabular_info, staged) = create_table(request.clone(), &mut transaction)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
+        assert_eq!(staged, None);
+        assert_eq!(tabular_info.tabular_id, table_id);
+        assert_eq!(tabular_info.metadata_location, metadata_location);
 
         let mut transaction = pool.begin().await.unwrap();
         // Second create should fail
@@ -1321,22 +988,21 @@ pub(crate) mod tests {
             .as_str()
             .parse::<Location>()
             .unwrap();
-        let build = request
-            .table_metadata
+        let build = (*request.table_metadata)
+            .clone()
             .into_builder(None)
             .set_location(location.to_string())
             .assign_uuid(Uuid::now_v7())
             .build()
             .unwrap()
             .metadata;
-        request.table_metadata = build;
+        request.table_metadata = &build;
         let create_err = create_table(request, &mut transaction).await.unwrap_err();
 
-        assert_eq!(
-            create_err.error.code,
-            StatusCode::CONFLICT,
-            "{create_err:?}"
-        );
+        assert!(matches!(
+            create_err,
+            CreateTableError::TabularAlreadyExists(_)
+        ));
 
         // Load should succeed
         let mut t = pool.begin().await.unwrap();
@@ -1349,10 +1015,14 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
+        let load_result = load_result
+            .into_iter()
+            .map(|r| (r.table_id, r))
+            .collect::<HashMap<_, _>>();
         assert_eq!(load_result.len(), 1);
         assert_eq!(
-            load_result.get(&table_id).unwrap().table_metadata,
-            create_result.table_metadata
+            &load_result.get(&table_id).unwrap().table_metadata,
+            original_table_metadata
         );
     }
 
@@ -1370,16 +1040,18 @@ pub(crate) mod tests {
             namespace: namespace.clone(),
             name: request.name.clone(),
         };
+        assert_eq!(metadata_location, None);
 
         let mut transaction = pool.begin().await.unwrap();
-        let table_id = uuid::Uuid::now_v7().into();
-        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let staged_table_id = uuid::Uuid::now_v7().into();
+        let table_metadata =
+            create_table_request_into_table_metadata(staged_table_id, request).unwrap();
 
         let request = TableCreation {
             warehouse_id,
             namespace_id,
             table_ident: &table_ident,
-            table_metadata,
+            table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
 
@@ -1391,7 +1063,7 @@ pub(crate) mod tests {
         // Its staged - should not have metadata_location
         let load = load_tables(
             warehouse_id,
-            [table_id],
+            [staged_table_id],
             false,
             &LoadTableFilters::default(),
             &mut pool.begin().await.unwrap(),
@@ -1399,42 +1071,46 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(load.len(), 1);
-        assert!(load.get(&table_id).unwrap().metadata_location.is_none());
+        let load = &load[0];
+        assert!(load.metadata_location.is_none());
 
         // Second create should succeed, even with different id
         let mut transaction = pool.begin().await.unwrap();
         let mut request = request;
-        request.table_metadata = request
-            .table_metadata
+        let updated_metadata = (*request.table_metadata)
+            .clone()
             .into_builder(None)
             .assign_uuid(Uuid::now_v7())
             .build()
             .unwrap()
             .metadata;
+        request.table_metadata = &updated_metadata;
 
-        let create_result = create_table(request, &mut transaction).await.unwrap();
+        let _create_result = create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
-
-        assert_eq!(create_result.table_metadata, create_result.table_metadata);
 
         // We can overwrite the table with a regular create
         let (request, metadata_location) = create_request(Some(false), None);
 
-        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let table_metadata =
+            create_table_request_into_table_metadata(staged_table_id, request).unwrap();
 
         let request = TableCreation {
             warehouse_id,
             namespace_id,
             table_ident: &table_ident,
-            table_metadata,
+            table_metadata: &table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
         let mut transaction = pool.begin().await.unwrap();
-        let create_result = create_table(request, &mut transaction).await.unwrap();
+        let (_create_result, previous_staged_table) =
+            create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
+        // New table get's new id
+        assert!(previous_staged_table.unwrap().0 != staged_table_id);
         let load_result = load_tables(
             warehouse_id,
-            [table_id],
+            [staged_table_id],
             false,
             &LoadTableFilters::default(),
             &mut pool.begin().await.unwrap(),
@@ -1442,23 +1118,17 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(load_result.len(), 1);
-        let s1 = format!("{:#?}", load_result.get(&table_id).unwrap().table_metadata);
-        let s2 = format!("{:#?}", create_result.table_metadata);
+        let load_result = &load_result[0];
+        let s1 = format!("{:#?}", load_result.table_metadata);
+        let s2 = format!("{table_metadata:#?}");
         let diff = similar::TextDiff::from_lines(&s1, &s2);
         let diff = diff
             .unified_diff()
             .context_radius(15)
             .missing_newline_hint(false)
             .to_string();
-        assert_eq!(
-            load_result.get(&table_id).unwrap().table_metadata,
-            create_result.table_metadata,
-            "{diff}",
-        );
-        assert_eq!(
-            load_result.get(&table_id).unwrap().metadata_location,
-            metadata_location
-        );
+        assert_eq!(load_result.table_metadata, table_metadata, "{diff}",);
+        assert_eq!(load_result.metadata_location, metadata_location);
     }
 
     #[sqlx::test]
@@ -1474,42 +1144,44 @@ pub(crate) mod tests {
             name: "my_table".to_string(),
         };
 
-        let exists = resolve_table_ident(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            &table_ident,
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert!(exists.is_none());
+        assert!(infos.is_empty());
         drop(table_ident);
 
         let table = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
 
         // Table is staged - no result if include_staged is false
-        let exists = resolve_table_ident(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            &table.table_ident,
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table.table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert!(exists.is_none());
+        assert!(infos.is_empty());
 
-        let exists = resolve_table_ident(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            &table.table_ident,
-            ListFlags {
+            &[TabularIdentBorrowed::Table(&table.table_ident)],
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
+        assert_eq!(infos.len(), 1);
+        let info = &infos[0];
+        assert_eq!(info.tabular_id(), table.table_id.into());
     }
 
     #[sqlx::test]
@@ -1525,88 +1197,81 @@ pub(crate) mod tests {
             name: "my_table".to_string(),
         };
 
-        let exists = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            vec![&table_ident].into_iter().collect(),
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert!(exists.len() == 1 && exists.get(&table_ident).unwrap().is_none());
+        assert_eq!(infos.len(), 0);
 
         let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
-        let mut tables = HashSet::new();
-        tables.insert(&table_1.table_ident);
 
         // Table is staged - no result if include_staged is false
-        let exists = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            tables.clone(),
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table_1.table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(exists.len(), 1);
-        assert!(exists.get(&table_1.table_ident).unwrap().is_none());
+        assert_eq!(infos.len(), 0);
 
-        let exists = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            tables.clone(),
-            ListFlags {
+            &[TabularIdentBorrowed::Table(&table_1.table_ident)],
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(exists.len(), 1);
-        assert_eq!(
-            exists.get(&table_1.table_ident).unwrap(),
-            &Some(table_1.table_id)
-        );
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].tabular_id(), table_1.table_id.into());
 
         // Second Table
         let table_2 = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
-        tables.insert(&table_2.table_ident);
 
-        let exists = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            tables.clone(),
-            ListFlags::default(),
+            &[
+                TabularIdentBorrowed::Table(&table_1.table_ident),
+                TabularIdentBorrowed::Table(&table_2.table_ident),
+            ],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(exists.len(), 2);
-        assert!(exists.get(&table_1.table_ident).unwrap().is_none());
-        assert_eq!(
-            exists.get(&table_2.table_ident).unwrap(),
-            &Some(table_2.table_id)
-        );
+        // Only table_2 should be returned (table_1 is staged)
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].tabular_id(), table_2.table_id.into());
 
-        let exists = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            tables.clone(),
-            ListFlags {
+            &[
+                TabularIdentBorrowed::Table(&table_1.table_ident),
+                TabularIdentBorrowed::Table(&table_2.table_ident),
+            ],
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(exists.len(), 2);
-        assert_eq!(
-            exists.get(&table_1.table_ident).unwrap(),
-            &Some(table_1.table_id)
-        );
-        assert_eq!(
-            exists.get(&table_2.table_ident).unwrap(),
-            &Some(table_2.table_id)
-        );
+        // Both tables should be returned
+        assert_eq!(infos.len(), 2);
+        let ids: std::collections::HashSet<_> =
+            infos.iter().map(ViewOrTableInfo::tabular_id).collect();
+        assert!(ids.contains(&table_1.table_id.into()));
+        assert!(ids.contains(&table_2.table_id.into()));
     }
 
     #[sqlx::test]
@@ -1614,12 +1279,14 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace_parent = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_lower =
             NamespaceIdent::from_vec(vec!["my_namespace".to_string(), "child".to_string()])
                 .unwrap();
         let namespace_upper =
             NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string(), "CHILD".to_string()])
                 .unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace_parent, None).await;
         initialize_namespace(state.clone(), warehouse_id, &namespace_lower, None).await;
 
         let table_ident_lower = TableIdent {
@@ -1651,34 +1318,37 @@ pub(crate) mod tests {
         .await;
 
         // Lower idents are in db and we query upper.
-        let existing = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            HashSet::from([&table_ident_upper]),
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table_ident_upper)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(existing.len(), 1);
-        // The queried ident must be the key in the map.
-        assert_eq!(
-            existing.get(&table_ident_upper),
-            Some(&Some(created.table_id))
-        );
+        assert_eq!(infos.len(), 1);
+        // Should find the table by case-insensitive match
+        assert_eq!(infos[0].tabular_id(), created.table_id.into());
 
         // Verify behavior of querying the same table twice with different cases.
-        let existing = table_idents_to_ids(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            HashSet::from([&table_ident_lower, &table_ident_upper]),
-            ListFlags::default(),
+            &[
+                TabularIdentBorrowed::Table(&table_ident_lower),
+                TabularIdentBorrowed::Table(&table_ident_upper),
+            ],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(existing.len(), 2);
-        let entry_lower = existing.get(&table_ident_lower).unwrap().unwrap();
-        let entry_upper = existing.get(&table_ident_upper).unwrap().unwrap();
-        assert_eq!(entry_lower, entry_upper);
+        // Both queries should resolve to the same table, but we should get 2 results
+        // (one for each queried identifier)
+        assert_eq!(infos.len(), 2);
+        let id_lower = infos[0].tabular_id();
+        let id_upper = infos[1].tabular_id();
+        assert_eq!(id_lower, id_upper);
+        assert_eq!(id_lower, created.table_id.into());
     }
 
     #[sqlx::test]
@@ -1694,9 +1364,9 @@ pub(crate) mod tests {
         };
 
         let mut transaction = pool.begin().await.unwrap();
-        rename_table(
+        rename_tabular(
             warehouse_id,
-            table.table_id,
+            table.table_id.into(),
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1705,26 +1375,27 @@ pub(crate) mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        let exists = resolve_table_ident(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            &table.table_ident,
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table.table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert!(exists.is_none());
+        assert_eq!(infos.len(), 0);
 
-        let exists = resolve_table_ident(
+        let exists = get_tabular_infos_by_idents(
             warehouse_id,
-            &new_table_ident,
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&new_table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
         // Table id should be the same
-        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
+        assert_eq!(exists.len(), 1);
+        assert_eq!(exists[0].tabular_id(), table.table_id.into());
     }
 
     #[sqlx::test]
@@ -1743,9 +1414,9 @@ pub(crate) mod tests {
         };
 
         let mut transaction = pool.begin().await.unwrap();
-        rename_table(
+        rename_tabular(
             warehouse_id,
-            table.table_id,
+            table.table_id.into(),
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1754,25 +1425,26 @@ pub(crate) mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        let exists = resolve_table_ident(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            &table.table_ident,
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&table.table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert!(exists.is_none());
+        assert_eq!(infos.len(), 0);
 
-        let exists = resolve_table_ident(
+        let infos = get_tabular_infos_by_idents(
             warehouse_id,
-            &new_table_ident,
-            ListFlags::default(),
+            &[TabularIdentBorrowed::Table(&new_table_ident)],
+            TabularListFlags::active(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].tabular_id(), table.table_id.into());
     }
 
     #[sqlx::test]
@@ -1790,16 +1462,19 @@ pub(crate) mod tests {
         };
 
         let mut transaction = pool.begin().await.unwrap();
-        let rename_err = rename_table(
+        let rename_err = rename_tabular(
             warehouse_id,
-            table.table_id,
+            table.table_id.into(),
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
         )
         .await
         .unwrap_err();
-        assert_eq!(rename_err.error.code, StatusCode::NOT_FOUND);
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularNotFound(_),),
+            "unexpected error: {rename_err:?}"
+        );
 
         transaction.rollback().await.unwrap();
     }
@@ -1810,12 +1485,15 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
-        let tables = list_tables(
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+        let tables = list_tabulars(
             warehouse_id,
-            &namespace,
-            ListFlags::default(),
+            Some(namespace_id),
+            TabularListFlags::active(),
             &state.read_pool(),
+            None,
             PaginationQuery::empty(),
         )
         .await
@@ -1824,48 +1502,51 @@ pub(crate) mod tests {
 
         let table1 = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
-        let tables = list_tables(
+        let tables = list_tabulars(
             warehouse_id,
-            &table1.namespace,
-            ListFlags::default(),
+            Some(table1.namespace_id),
+            TabularListFlags::active(),
             &state.read_pool(),
+            None,
             PaginationQuery::empty(),
         )
         .await
         .unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(
-            tables.get(&table1.table_id).unwrap().table_ident,
-            table1.table_ident
+            tables.get(&table1.table_id.into()).unwrap().tabular_ident(),
+            &table1.table_ident
         );
 
         let table2 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
-        let tables = list_tables(
+        let tables = list_tabulars(
             warehouse_id,
-            &table2.namespace,
-            ListFlags::default(),
+            Some(table2.namespace_id),
+            TabularListFlags::active(),
             &state.read_pool(),
+            None,
             PaginationQuery::empty(),
         )
         .await
         .unwrap();
         assert_eq!(tables.len(), 0);
-        let tables = list_tables(
+        let tables = list_tabulars(
             warehouse_id,
-            &table2.namespace,
-            ListFlags {
+            Some(table2.namespace_id),
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
+            None,
             PaginationQuery::empty(),
         )
         .await
         .unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(
-            tables.get(&table2.table_id).unwrap().table_ident,
-            table2.table_ident
+            tables.get(&table2.table_id.into()).unwrap().tabular_ident(),
+            &table2.table_ident
         );
     }
 
@@ -1875,12 +1556,15 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
-        let tables = list_tables(
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+        let tables = list_tabulars(
             warehouse_id,
-            &namespace,
-            ListFlags::default(),
+            Some(namespace_id),
+            TabularListFlags::active(),
             &state.read_pool(),
+            None,
             PaginationQuery::empty(),
         )
         .await
@@ -1915,14 +1599,15 @@ pub(crate) mod tests {
         )
         .await;
 
-        let tables = list_tables(
+        let tables = list_tabulars(
             warehouse_id,
-            &namespace,
-            ListFlags {
+            Some(namespace_id),
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
+            None,
             PaginationQuery {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(2),
@@ -1933,18 +1618,19 @@ pub(crate) mod tests {
         assert_eq!(tables.len(), 2);
 
         assert_eq!(
-            tables.get(&table2.table_id).unwrap().table_ident,
-            table2.table_ident
+            tables.get(&table2.table_id.into()).unwrap().tabular_ident(),
+            &table2.table_ident
         );
 
-        let tables = list_tables(
+        let tables = list_tabulars(
             warehouse_id,
-            &namespace,
-            ListFlags {
+            Some(namespace_id),
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
+            None,
             PaginationQuery {
                 page_token: PageToken::Present(tables.next_token().unwrap().to_string()),
                 page_size: Some(2),
@@ -1955,18 +1641,19 @@ pub(crate) mod tests {
 
         assert_eq!(tables.len(), 1);
         assert_eq!(
-            tables.get(&table3.table_id).unwrap().table_ident,
-            table3.table_ident
+            tables.get(&table3.table_id.into()).unwrap().tabular_ident(),
+            &table3.table_ident
         );
 
-        let tables = list_tables(
+        let tables = list_tabulars(
             warehouse_id,
-            &namespace,
-            ListFlags {
+            Some(namespace_id),
+            TabularListFlags {
                 include_staged: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
             &state.read_pool(),
+            None,
             PaginationQuery {
                 page_token: PageToken::Present(tables.next_token().unwrap().to_string()),
                 page_size: Some(2),
@@ -1979,89 +1666,106 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
+    #[tracing_test::traced_test]
     async fn test_get_id_by_location(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
-        let metadata = get_table_metadata_by_id(
+        let table_info = get_tabular_infos_by_ids(
             warehouse_id,
-            table.table_id,
-            ListFlags::default(),
+            &[table.table_id.into()],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(table_info.len(), 1);
+        let table_info = &table_info[0];
+        assert_eq!(table_info.tabular_id(), table.table_id.into());
+        // Exact path works
+        let table_info_by_location = get_tabular_infos_by_s3_location(
+            warehouse_id,
+            table_info.location(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
         .unwrap()
         .unwrap();
-        let mut metadata_location = metadata.location.parse::<Location>().unwrap();
-        // Exact path works
-        let id = get_table_metadata_by_s3_location(
-            warehouse_id,
-            &metadata_location,
-            ListFlags::default(),
-            state.clone(),
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .table_id;
+        pretty_assertions::assert_eq!(table_info, &table_info_by_location);
 
-        assert_eq!(id, table.table_id);
-
-        let mut subpath = metadata_location.clone();
+        let mut subpath = table_info.metadata_location().unwrap().clone();
         subpath.push("data/foo.parquet");
         // Subpath works
-        let id = get_table_metadata_by_s3_location(
+        let table_info_by_location = get_tabular_infos_by_s3_location(
             warehouse_id,
             &subpath,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
         .unwrap()
-        .unwrap()
-        .table_id;
+        .unwrap();
+        assert_eq!(table_info, &table_info_by_location);
 
-        assert_eq!(id, table.table_id);
+        // Metadata path works
+        let table_info_by_location = get_tabular_infos_by_s3_location(
+            warehouse_id,
+            table_info.metadata_location().unwrap(),
+            TabularListFlags::active(),
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(table_info, &table_info_by_location);
 
         // Path without trailing slash works
+        let mut metadata_location = table_info.metadata_location().unwrap().clone();
         metadata_location.without_trailing_slash();
-        get_table_metadata_by_s3_location(
+        let table_info_by_location = get_tabular_infos_by_s3_location(
             warehouse_id,
             &metadata_location,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
+        .unwrap()
         .unwrap();
+        assert_eq!(table_info, &table_info_by_location);
 
         metadata_location.with_trailing_slash();
         // Path with trailing slash works
-        get_table_metadata_by_s3_location(
+        let table_info_by_location = get_tabular_infos_by_s3_location(
             warehouse_id,
             &metadata_location,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
+        .unwrap()
         .unwrap();
+        assert_eq!(table_info, &table_info_by_location);
 
-        let shorter = metadata.location[0..metadata.location.len() - 2]
+        let table_location = table_info.location().to_string();
+        let shorter = table_location.as_str()[0..table_location.len() - 2]
             .to_string()
             .parse()
             .unwrap();
 
         // Shorter path does not work
-        assert!(get_table_metadata_by_s3_location(
+        let table_info_by_location = get_tabular_infos_by_s3_location(
             warehouse_id,
             &shorter,
-            ListFlags::default(),
+            TabularListFlags::active(),
             state.clone(),
         )
         .await
-        .unwrap()
-        .is_none());
+        .unwrap();
+        assert_eq!(table_info_by_location, None);
     }
 
     #[sqlx::test]
@@ -2076,19 +1780,19 @@ pub(crate) mod tests {
             .expect("Failed to set warehouse status");
         transaction.commit().await.unwrap();
 
-        let r = get_table_metadata_by_id(
+        let r = get_tabular_infos_by_ids(
             warehouse_id,
-            table.table_id,
-            ListFlags::default(),
-            state.clone(),
+            &[table.table_id.into()],
+            TabularListFlags::active(),
+            &state.read_pool(),
         )
         .await
         .unwrap();
-        assert!(r.is_none());
+        assert!(r.is_empty());
     }
 
     #[sqlx::test]
-    async fn test_drop_table_works(pool: sqlx::PgPool) {
+    async fn test_drop_table(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2096,7 +1800,7 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
+        let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
             TaskMetadata {
                 entity_id: EntityId::Table(table.table_id),
                 warehouse_id,
@@ -2114,7 +1818,7 @@ pub(crate) mod tests {
 
         mark_tabular_as_deleted(
             warehouse_id,
-            TabularId::Table(table.table_id),
+            table.table_id.into(),
             false,
             None,
             &mut transaction,
@@ -2123,48 +1827,61 @@ pub(crate) mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        assert!(get_table_metadata_by_id(
-            warehouse_id,
-            table.table_id,
-            ListFlags::default(),
-            state.clone(),
-        )
-        .await
-        .unwrap()
-        .is_none());
+        assert_eq!(
+            get_tabular_infos_by_ids(
+                warehouse_id,
+                &[table.table_id.into()],
+                TabularListFlags::active(),
+                &state.read_pool(),
+            )
+            .await
+            .unwrap()
+            .len(),
+            0
+        );
 
-        let ok = get_table_metadata_by_id(
+        let result = get_tabular_infos_by_ids(
             warehouse_id,
-            table.table_id,
-            ListFlags {
+            &[table.table_id.into()],
+            TabularListFlags {
                 include_deleted: true,
-                ..ListFlags::default()
+                ..TabularListFlags::active()
             },
-            state.clone(),
+            &state.read_pool(),
         )
         .await
-        .unwrap()
         .unwrap();
-        assert_eq!(ok.table_id, table.table_id);
+        assert_eq!(result.len(), 1);
+        let result = &result[0];
+        assert_eq!(result.tabular_id(), table.table_id.into());
 
         let mut transaction = pool.begin().await.unwrap();
 
-        drop_table(warehouse_id, table.table_id, false, &mut transaction)
-            .await
-            .unwrap();
-        transaction.commit().await.unwrap();
-
-        assert!(get_table_metadata_by_id(
+        drop_tabular(
             warehouse_id,
-            table.table_id,
-            ListFlags {
-                include_deleted: true,
-                ..ListFlags::default()
-            },
-            state.clone(),
+            table.table_id.into(),
+            false,
+            None,
+            &mut transaction,
         )
         .await
-        .unwrap()
-        .is_none());
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(
+            get_tabular_infos_by_ids(
+                warehouse_id,
+                &[table.table_id.into()],
+                TabularListFlags {
+                    include_deleted: true,
+                    ..TabularListFlags::active()
+                },
+                &state.read_pool(),
+            )
+            .await
+            .unwrap()
+            .len(),
+            0
+        );
     }
 }

@@ -82,6 +82,53 @@ pub mod v1 {
         ordering: Vec<T>,
     }
 
+    /// Iterator over references to key-value pairs in insertion order.
+    #[derive(Debug)]
+    pub struct Iter<'a, T, V>
+    where
+        T: std::hash::Hash + Eq + Debug + Clone,
+        V: Debug,
+    {
+        ordering: &'a [T],
+        entities: &'a HashMap<T, V>,
+        index: usize,
+    }
+
+    impl<'a, T, V> Iterator for Iter<'a, T, V>
+    where
+        T: std::hash::Hash + Eq + Debug + Clone,
+        V: Debug,
+    {
+        type Item = (&'a T, &'a V);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.index < self.ordering.len() {
+                let key = &self.ordering[self.index];
+                self.index += 1;
+                // Safe to unwrap: ordering only contains keys that exist in entities
+                let value = self
+                    .entities
+                    .get(key)
+                    .expect("keys have to be in entities if they are in ordering");
+                Some((key, value))
+            } else {
+                None
+            }
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            let remaining = self.ordering.len() - self.index;
+            (remaining, Some(remaining))
+        }
+    }
+
+    impl<T, V> ExactSizeIterator for Iter<'_, T, V>
+    where
+        T: std::hash::Hash + Eq + Debug + Clone,
+        V: Debug,
+    {
+    }
+
     impl<T, V> PaginatedMapping<T, V>
     where
         T: std::hash::Hash + Eq + Debug + Clone + 'static,
@@ -94,11 +141,12 @@ pub mod v1 {
         pub fn map<
             NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
             NewVal: Debug + 'static,
+            E,
         >(
             self,
-            key_map: impl Fn(T) -> Result<NewKey>,
-            value_map: impl Fn(V) -> Result<NewVal>,
-        ) -> Result<PaginatedMapping<NewKey, NewVal>> {
+            key_map: impl Fn(T) -> std::result::Result<NewKey, E>,
+            value_map: impl Fn(V) -> std::result::Result<NewVal, E>,
+        ) -> std::result::Result<PaginatedMapping<NewKey, NewVal>, E> {
             let mut new_mapping = PaginatedMapping::with_capacity(self.len());
             for (key, value, token) in self.into_iter_with_page_tokens() {
                 let k = key_map(key)?;
@@ -178,6 +226,28 @@ pub mod v1 {
         #[cfg(test)]
         pub(crate) fn next_token(&self) -> Option<&str> {
             self.next_page_tokens.last().map(String::as_str)
+        }
+
+        /// Returns an iterator over the key-value pairs in insertion order.
+        #[must_use]
+        pub fn iter(&self) -> Iter<'_, T, V> {
+            Iter {
+                ordering: &self.ordering,
+                entities: &self.entities,
+                index: 0,
+            }
+        }
+    }
+
+    impl<'a, T, V> IntoIterator for &'a PaginatedMapping<T, V>
+    where
+        T: std::hash::Hash + Eq + Debug + Clone + 'static,
+        V: Debug + 'static,
+    {
+        type Item = (&'a T, &'a V);
+        type IntoIter = Iter<'a, T, V>;
+        fn into_iter(self) -> Self::IntoIter {
+            self.iter()
         }
     }
 
@@ -325,5 +395,55 @@ mod test {
                 (k1, String::from("v1"), String::from("t1"))
             ]
         );
+    }
+
+    #[test]
+    fn iter_is_in_insertion_order() {
+        let mut map = PaginatedMapping::with_capacity(3);
+        let k1 = Uuid::now_v7();
+        let k2 = Uuid::now_v7();
+        let k3 = Uuid::now_v7();
+
+        map.insert(k1, String::from("v1"), String::from("t1"));
+        map.insert(k2, String::from("v2"), String::from("t2"));
+        map.insert(k3, String::from("v3"), String::from("t3"));
+
+        let r = map.iter().collect::<Vec<_>>();
+        assert_eq!(
+            r,
+            vec![
+                (&k1, &String::from("v1")),
+                (&k2, &String::from("v2")),
+                (&k3, &String::from("v3")),
+            ]
+        );
+
+        // Verify we can still use map after iter
+        assert_eq!(map.len(), 3);
+    }
+
+    #[test]
+    fn iter_size_hint_is_correct() {
+        let mut map = PaginatedMapping::with_capacity(3);
+        let k1 = Uuid::now_v7();
+        let k2 = Uuid::now_v7();
+        let k3 = Uuid::now_v7();
+
+        map.insert(k1, String::from("v1"), String::from("t1"));
+        map.insert(k2, String::from("v2"), String::from("t2"));
+        map.insert(k3, String::from("v3"), String::from("t3"));
+
+        let mut iter = map.iter();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        assert_eq!(iter.len(), 3);
+
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        assert_eq!(iter.len(), 2);
+
+        iter.next();
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert_eq!(iter.len(), 0);
     }
 }

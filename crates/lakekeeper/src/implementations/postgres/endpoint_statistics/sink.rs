@@ -82,26 +82,26 @@ impl PostgresStatisticsSink {
             .sum::<usize>();
 
         tracing::debug!(
-            "Preparing to insert '{endpoint_calls_total}' endpoint statistic datapoints across '{}' resolved projects, discarding stats from '{}' not existing projects.",
+            "Processing up to '{endpoint_calls_total}' endpoint statistic datapoints across '{}' resolved projects, discarding stats from '{}' not existing projects.",
             resolved_projects.len(),
             stats.len() - resolved_projects.len()
         );
 
-        let mut uris = Vec::with_capacity(endpoint_calls_total);
-        let mut status_codes = Vec::with_capacity(endpoint_calls_total);
-        let mut warehouses = Vec::with_capacity(endpoint_calls_total);
-        let mut counts = Vec::with_capacity(endpoint_calls_total);
-        let mut projects = Vec::with_capacity(endpoint_calls_total);
+        // Aggregate stats to prevent duplicate constraint violations
+        // Key: (project_id, warehouse_id, matched_path, status_code)
+        let mut aggregated_stats: HashMap<(String, Option<Uuid>, EndpointFlat, i32), i64> =
+            HashMap::new();
 
         for (project, endpoints) in stats.iter() {
             if !resolved_projects.contains(project) {
-                tracing::debug!(
+                tracing::warn!(
                     "Skipping recording stats for project: '{project}' since we couldn't resolve it."
                 );
                 continue;
             }
             tracing::trace!("Processing stats for project: {project}");
 
+            let project_str = project.to_string();
             for (
                 EndpointIdentifier {
                     uri,
@@ -112,24 +112,42 @@ impl PostgresStatisticsSink {
                 count,
             ) in endpoints
             {
-                projects.push(project.to_string());
-                uris.push(EndpointFlat::from(*uri));
-                status_codes.push(i32::from(status_code.as_u16()));
-                counts.push(*count);
+                let uri_flat = EndpointFlat::from(*uri);
+                let status_code_i32 = i32::from(status_code.as_u16());
 
-                let warehouse = warehouse
-                    .as_deref()
-                    .or_else(|| {
-                        warehouse_name.as_deref().and_then(|wn| {
-                            warehouse_ids.get(&(project.to_string(), wn.to_string()))
-                        })
-                    })
-                    .copied();
-                warehouses.push(warehouse);
+                let resolved_warehouse = warehouse.as_ref().map(|w| **w).or_else(|| {
+                    warehouse_name
+                        .as_deref()
+                        .and_then(|wn| warehouse_ids.get(&(project_str.clone(), wn.to_string())))
+                        .copied()
+                });
+
+                let key = (
+                    project_str.clone(),
+                    resolved_warehouse,
+                    uri_flat,
+                    status_code_i32,
+                );
+                *aggregated_stats.entry(key).or_insert(0) += count;
             }
         }
 
-        tracing::debug!("Inserting stats batch");
+        let final_count = aggregated_stats.len();
+        let mut uris = Vec::with_capacity(final_count);
+        let mut status_codes = Vec::with_capacity(final_count);
+        let mut warehouses = Vec::with_capacity(final_count);
+        let mut counts = Vec::with_capacity(final_count);
+        let mut projects = Vec::with_capacity(final_count);
+
+        for ((project, warehouse, uri, status_code), count) in aggregated_stats {
+            projects.push(project);
+            warehouses.push(warehouse);
+            uris.push(uri);
+            status_codes.push(status_code);
+            counts.push(count);
+        }
+
+        tracing::debug!("Inserting '{final_count}' aggregated stats records (reduced from '{endpoint_calls_total}' raw datapoints)");
 
         sqlx::query!(r#"INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count, timestamp)
                         SELECT
@@ -190,7 +208,7 @@ async fn resolve_projects(
             .then_some(ProjectId::try_new(p.project_id))
             .transpose()
             .inspect_err(|e| {
-                tracing::error!("Failed to parse project id from db: {:?}", e.error);
+                tracing::error!("Failed to parse project id from db: {e}");
             })
             .ok()
             .flatten()
@@ -212,7 +230,7 @@ async fn resolve_warehouses(
             e.keys().filter_map(|epi| {
                 epi.warehouse_name
                     .as_ref()
-                    .map(|warehouse| (p.to_string(), warehouse.to_string()))
+                    .map(|warehouse| (p.to_string(), warehouse.clone()))
             })
         })
         .unique()

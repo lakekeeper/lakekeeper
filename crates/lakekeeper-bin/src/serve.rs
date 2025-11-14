@@ -1,45 +1,46 @@
 use std::{sync::Arc, vec};
 
 use lakekeeper::{
-    implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
+    implementations::{get_default_catalog_from_config, postgres::PostgresBackend},
     limes::{Authenticator, AuthenticatorEnum},
     serve::{serve, ServeConfiguration},
     service::{
         authn::{get_default_authenticator_from_config, BuiltInAuthenticators},
-        authz::{
-            implementations::{get_default_authorizer_from_config, BuiltInAuthorizers},
-            Authorizer,
-        },
+        authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
         event_publisher::get_default_cloud_event_backends_from_config,
-        Catalog, SecretStore,
+        CatalogStore, SecretStore,
     },
+    tracing,
 };
 
+use crate::authorizer::AuthorizerEnum;
 #[cfg(feature = "ui")]
 use crate::ui;
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
-    let server_id = <PostgresCatalog as Catalog>::get_server_info(catalog.clone())
+    let server_id = <PostgresBackend as CatalogStore>::get_server_info(catalog.clone())
         .await?
         .server_id();
-    let authorizer = get_default_authorizer_from_config(server_id).await?;
+    let authorizer = AuthorizerEnum::init_from_env(server_id).await?;
     let stats = vec![stats];
 
     match authorizer {
-        BuiltInAuthorizers::AllowAll(authz) => {
-            serve_with_authn::<PostgresCatalog, _, _>(bind_addr, secrets, catalog, authz, stats)
+        AuthorizerEnum::AllowAll(authz) => {
+            tracing::info!("Using AllowAll authorizer");
+            serve_with_authn::<PostgresBackend, _, _>(bind_addr, secrets, catalog, authz, stats)
                 .await
         }
-        BuiltInAuthorizers::OpenFGA(authz) => {
-            serve_with_authn::<PostgresCatalog, _, _>(bind_addr, secrets, catalog, authz, stats)
+        AuthorizerEnum::OpenFGA(authz) => {
+            tracing::info!("Using OpenFGA authorizer");
+            serve_with_authn::<PostgresBackend, _, _>(bind_addr, secrets, catalog, *authz, stats)
                 .await
         }
     }
 }
 
-async fn serve_with_authn<C: Catalog, S: SecretStore, A: Authorizer>(
+async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
     bind: std::net::SocketAddr,
     secret: S,
     catalog: C::State,
@@ -62,7 +63,7 @@ async fn serve_with_authn<C: Catalog, S: SecretStore, A: Authorizer>(
     }
 }
 
-async fn serve_inner<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
+async fn serve_inner<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     bind: std::net::SocketAddr,
     secrets: S,
     catalog: C::State,

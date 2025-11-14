@@ -1,6 +1,11 @@
 #![allow(clippy::module_name_repetitions)]
 
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashMap},
+    hash::Hash,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use aws_config::SdkConfig;
 use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
@@ -20,9 +25,9 @@ use lakekeeper_io::{
     InvalidLocationError, Location,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use veil::Redact;
 
+use super::ShortTermCredentialsRequest;
 use crate::{
     api::{
         iceberg::{
@@ -33,15 +38,16 @@ use crate::{
         CatalogConfig,
     },
     request_metadata::RequestMetadata,
-    service::{
-        storage::{
-            error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
-            },
-            StoragePermissions, TableConfig,
+    service::storage::{
+        cache::{
+            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
+            ShortTermCredential,
         },
-        TabularId,
+        error::{
+            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+            UpdateError, ValidationError,
+        },
+        StoragePermissions, TableConfig,
     },
     WarehouseId, CONFIG,
 };
@@ -49,15 +55,9 @@ use crate::{
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 #[derive(
-    Debug,
-    Eq,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    utoipa::ToSchema,
-    typed_builder::TypedBuilder,
+    Hash, Debug, Eq, Clone, PartialEq, Serialize, Deserialize, typed_builder::TypedBuilder,
 )]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct S3Profile {
     /// Name of the S3 bucket
@@ -96,7 +96,7 @@ pub struct S3Profile {
     /// Optional session tags for STS assume role operations.
     #[serde(default)]
     #[builder(default)]
-    pub sts_session_tags: HashMap<String, String>,
+    pub sts_session_tags: BTreeMap<String, String>,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -151,7 +151,8 @@ pub struct S3Profile {
     pub aws_kms_key_arn: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
+#[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum S3UrlStyleDetectionMode {
     /// Use the path style for all requests.
@@ -163,7 +164,8 @@ pub enum S3UrlStyleDetectionMode {
     Auto,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum S3Flavor {
@@ -174,7 +176,8 @@ pub enum S3Flavor {
     // CloudflareR2,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum S3Credential {
     /// Authenticate to AWS using access-key and secret-key.
@@ -185,9 +188,10 @@ pub enum S3Credential {
     CloudflareR2(S3CloudflareR2Credential),
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-#[schema(title = "S3CredentialAccessKey")]
+#[cfg_attr(feature = "open-api", schema(title = "S3CredentialAccessKey"))]
 pub struct S3AccessKeyCredential {
     pub aws_access_key_id: String,
     #[redact(partial)]
@@ -196,17 +200,19 @@ pub struct S3AccessKeyCredential {
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-#[schema(title = "S3CredentialSystemIdentity")]
+#[cfg_attr(feature = "open-api", schema(title = "S3CredentialSystemIdentity"))]
 pub struct S3AwsSystemIdentityCredential {
     #[redact(partial)]
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-#[schema(title = "CloudflareR2Credential")]
+#[cfg_attr(feature = "open-api", schema(title = "CloudflareR2Credential"))]
 pub struct S3CloudflareR2Credential {
     /// Access key ID used for IO operations of Lakekeeper
     pub access_key_id: String,
@@ -305,6 +311,7 @@ impl S3Profile {
         self.normalize_endpoint()?;
         self.normalize_assume_role_arn();
         self.normalize_sts_role_arn();
+        self.normalize_kms_key_arn();
 
         if let Some(S3Credential::CloudflareR2(cloudflare_r2_credential)) = s3_credential {
             self.normalize_r2(cloudflare_r2_credential)?;
@@ -398,11 +405,8 @@ impl S3Profile {
         &self,
         data_access: DataAccessMode,
         s3_credential: Option<&S3Credential>,
-        table_location: &Location,
-        storage_permissions: StoragePermissions,
+        stc_request: super::ShortTermCredentialsRequest,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
         let (remote_signing, vended_credentials) = match data_access {
             DataAccessMode::ServerDelegated(DataAccess {
@@ -426,12 +430,12 @@ impl S3Profile {
             config.insert(&s3::PathStyleAccess(true));
         }
 
-        config.insert(&s3::Region(self.region.to_string()));
+        config.insert(&s3::Region(self.region.clone()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
-            value: self.region.to_string(),
+            value: self.region.clone(),
         });
-        config.insert(&client::Region(self.region.to_string()));
+        config.insert(&client::Region(self.region.clone()));
 
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));
@@ -439,47 +443,23 @@ impl S3Profile {
 
         if vended_credentials {
             if self.sts_enabled || matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
+                let cache_key = STCCacheKey::new(
+                    stc_request.clone(),
+                    self.into(),
+                    s3_credential.map(Into::into),
+                );
+
+                let temporary_credential = self
+                    .get_or_fetch_temporary_credentials(&stc_request, s3_credential, cache_key)
+                    .await?;
+
                 let aws_sdk_sts::types::Credentials {
                     access_key_id,
                     secret_access_key,
                     session_token,
                     expiration: _,
                     ..
-                } = match s3_credential.cloned() {
-                    Some(S3Credential::CloudflareR2(c)) => {
-                        self.get_cloudflare_r2_temporary_credentials(
-                            table_location,
-                            c,
-                            storage_permissions,
-                        )
-                        .await?
-                    }
-                    c @ (Some(
-                        S3Credential::AccessKey(..) | S3Credential::AwsSystemIdentity(..),
-                    )
-                    | None) => {
-                        let auth = c.map(S3Auth::try_from).transpose()?;
-                        let sts_arn = self
-                            .sts_role_arn
-                            .as_ref()
-                            .or(self.assume_role_arn.as_ref())
-                            .map(String::as_str);
-
-                        if sts_arn.is_none() && S3Flavor::Aws == self.flavor {
-                            return Err(TableConfigError::Misconfiguration(
-                                "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
-                            ));
-                        }
-
-                        self.get_sts_token(
-                            table_location,
-                            auth.as_ref(),
-                            sts_arn,
-                            storage_permissions,
-                        )
-                        .await?
-                    }
-                };
+                } = temporary_credential;
 
                 config.insert(&s3::AccessKeyId(access_key_id.clone()));
                 config.insert(&s3::SecretAccessKey(secret_access_key.clone()));
@@ -497,6 +477,8 @@ impl S3Profile {
         }
 
         if remote_signing {
+            let warehouse_id = stc_request.warehouse_id;
+            let tabular_id = stc_request.tabular_id;
             config.insert(&s3::RemoteSigningEnabled(true));
             config.insert(&s3::SignerUri(request_metadata.s3_signer_uri(warehouse_id)));
             config.insert(&s3::SignerEndpoint(
@@ -507,12 +489,87 @@ impl S3Profile {
         Ok(TableConfig { creds, config })
     }
 
+    async fn get_or_fetch_temporary_credentials(
+        &self,
+        sts_request: &ShortTermCredentialsRequest,
+        s3_credential: Option<&S3Credential>,
+        cache_key: STCCacheKey,
+    ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
+        // Try to get from cache if enabled
+        if CONFIG.cache.stc.enabled {
+            if let Some(STCCacheValue {
+                credentials: ShortTermCredential::S3(cached),
+                ..
+            }) = get_stc_from_cache(&cache_key).await
+            {
+                tracing::debug!("Using cached STS credentials for request: {sts_request}");
+                return Ok(cached);
+            }
+            tracing::debug!(
+                "No cached STS credentials found for request: {sts_request}, fetching new credentials"
+            );
+        } else {
+            tracing::debug!(
+                "STS caching disabled, fetching new STS credentials for request: {sts_request}"
+            );
+        }
+
+        // Fetch new credentials
+        let temporary_credential = self
+            .get_temporary_credentials(sts_request, s3_credential)
+            .await?;
+
+        // Cache the new credentials if enabled
+        if CONFIG.cache.stc.enabled {
+            let sts_validity_duration = Duration::from_secs(self.sts_token_validity_seconds);
+            let valid_until = Instant::now().checked_add(sts_validity_duration);
+            let cache_value = STCCacheValue::new(temporary_credential.clone(), valid_until);
+            insert_stc_into_cache(cache_key, cache_value).await;
+        }
+
+        Ok(temporary_credential)
+    }
+
+    async fn get_temporary_credentials(
+        &self,
+        sts_request: &ShortTermCredentialsRequest,
+        s3_credential: Option<&S3Credential>,
+    ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
+        match s3_credential.cloned() {
+            Some(S3Credential::CloudflareR2(c)) => self
+                .get_cloudflare_r2_temporary_credentials(sts_request, c)
+                .await
+                .map_err(Into::into),
+            c
+            @ (Some(S3Credential::AccessKey(..) | S3Credential::AwsSystemIdentity(..)) | None) => {
+                let auth = c.map(S3Auth::try_from).transpose()?;
+                let sts_arn = self
+                    .sts_role_arn
+                    .as_ref()
+                    .or(self.assume_role_arn.as_ref())
+                    .map(String::as_str);
+
+                if sts_arn.is_none() && S3Flavor::Aws == self.flavor {
+                    return Err(TableConfigError::Misconfiguration(
+                        "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
+                    ));
+                }
+
+                self.get_sts_token(sts_request, auth.as_ref(), sts_arn)
+                    .await
+                    .map_err(Into::into)
+            }
+        }
+    }
+
     async fn get_cloudflare_r2_temporary_credentials(
         &self,
-        table_location: &Location,
+        sts_request: &ShortTermCredentialsRequest,
         cred: S3CloudflareR2Credential,
-        storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
+        let table_location = &sts_request.table_location;
+        let storage_permissions = sts_request.storage_permissions;
+
         let table_location = S3Location::try_from_location(table_location, true).map_err(|e| {
             CredentialsError::ShortTermCredential {
                 source: None,
@@ -609,12 +666,12 @@ impl S3Profile {
 
     async fn get_sts_token(
         &self,
-        table_location: &Location,
+        sts_request: &ShortTermCredentialsRequest,
         s3_credential: Option<&S3Auth>,
         role_arn: Option<&str>,
-        storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        let policy = self.get_aws_policy_string(table_location, storage_permissions)?;
+        let policy = self
+            .get_sts_policy_string(&sts_request.table_location, sts_request.storage_permissions)?;
         self.assume_role_with_sts(s3_credential, role_arn, Some(policy))
             .await
     }
@@ -787,7 +844,7 @@ impl S3Profile {
         }
     }
 
-    fn get_aws_policy_string(
+    fn get_sts_policy_string(
         &self,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -884,7 +941,7 @@ impl S3Profile {
 
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {
         if let Some(key_prefix) = self.key_prefix.as_mut() {
-            *key_prefix = key_prefix.trim_matches('/').to_string();
+            *key_prefix = key_prefix.trim().trim_matches('/').to_string();
         }
 
         if let Some(key_prefix) = self.key_prefix.as_ref() {
@@ -953,16 +1010,30 @@ impl S3Profile {
 
     fn normalize_assume_role_arn(&mut self) {
         if let Some(assume_role_arn) = self.assume_role_arn.as_ref() {
-            if assume_role_arn.is_empty() {
+            if assume_role_arn.trim().is_empty() {
                 self.assume_role_arn = None;
+            } else {
+                self.assume_role_arn = Some(assume_role_arn.trim().to_string());
             }
         }
     }
 
     fn normalize_sts_role_arn(&mut self) {
         if let Some(sts_role_arn) = self.sts_role_arn.as_ref() {
-            if sts_role_arn.is_empty() {
+            if sts_role_arn.trim().is_empty() {
                 self.sts_role_arn = None;
+            } else {
+                self.sts_role_arn = Some(sts_role_arn.trim().to_string());
+            }
+        }
+    }
+
+    fn normalize_kms_key_arn(&mut self) {
+        if let Some(aws_kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            if aws_kms_key_arn.trim().is_empty() {
+                self.aws_kms_key_arn = None;
+            } else {
+                self.aws_kms_key_arn = Some(aws_kms_key_arn.trim().to_string());
             }
         }
     }
@@ -1122,8 +1193,7 @@ pub(crate) mod test {
     use super::*;
     use crate::service::{
         storage::{StorageLocations as _, StorageProfile},
-        tabular_idents::TabularId,
-        NamespaceId,
+        NamespaceId, TabularId,
     };
 
     #[test]
@@ -1266,7 +1336,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
-            sts_session_tags: HashMap::new(),
+            sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
@@ -1311,7 +1381,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
-            sts_session_tags: HashMap::new(),
+            sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
@@ -1336,7 +1406,7 @@ pub(crate) mod test {
     }
 
     pub(crate) mod minio_integration_tests {
-        use std::{collections::HashMap, sync::LazyLock};
+        use std::{collections::BTreeMap, sync::LazyLock};
 
         use crate::{
             api::RequestMetadata,
@@ -1366,7 +1436,7 @@ pub(crate) mod test {
                 region: TEST_REGION.clone(),
                 path_style_access: Some(true),
                 sts_role_arn: None,
-                sts_session_tags: HashMap::new(),
+                sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
@@ -1391,7 +1461,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);
@@ -1425,7 +1495,7 @@ pub(crate) mod test {
                 region: std::env::var("AWS_S3_REGION").unwrap(),
                 path_style_access: Some(true),
                 sts_role_arn: Some(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap()),
-                sts_session_tags: HashMap::new(),
+                sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
@@ -1451,7 +1521,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1469,7 +1539,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1487,7 +1557,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1520,7 +1590,7 @@ pub(crate) mod test {
                 region: std::env::var("AWS_S3_REGION").unwrap(),
                 path_style_access: Some(true),
                 sts_role_arn: None,
-                sts_session_tags: HashMap::new(),
+                sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
@@ -1545,7 +1615,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1585,7 +1655,7 @@ pub(crate) mod test {
                 sts_role_arn: None,
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
-                sts_session_tags: HashMap::new(),
+                sts_session_tags: BTreeMap::new(),
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1609,7 +1679,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::test::test_block_on(
+            crate::tests::test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1640,12 +1710,11 @@ pub(crate) mod test {
             .sts_enabled(true)
             .build();
         let policy = profile
-            .get_aws_policy_string(
+            .get_sts_policy_string(
                 &table_location.parse().unwrap(),
                 StoragePermissions::ReadWriteDelete,
             )
             .unwrap();
-        println!("Policy: {policy}");
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }
 }
@@ -1669,7 +1738,7 @@ mod is_overlapping_location_tests {
             path_style_access: None,
             sts_role_arn: None,
             sts_enabled: false,
-            sts_session_tags: HashMap::new(),
+            sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,

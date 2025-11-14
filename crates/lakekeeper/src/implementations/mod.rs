@@ -10,7 +10,7 @@ use crate::{
         secrets::{Secret, SecretInStorage},
         SecretStore,
     },
-    SecretIdent,
+    SecretId,
 };
 
 #[cfg(feature = "sqlx-postgres")]
@@ -74,35 +74,35 @@ pub enum Secrets {
 
 #[async_trait]
 impl SecretStore for Secrets {
-    async fn get_secret_by_id<S: SecretInStorage + serde::de::DeserializeOwned>(
+    async fn get_secret_by_id_impl<S: SecretInStorage + serde::de::DeserializeOwned>(
         &self,
-        secret_id: SecretIdent,
-    ) -> crate::api::Result<Secret<S>> {
+        secret_id: SecretId,
+    ) -> crate::api::Result<Option<Secret<S>>> {
         match self {
             #[cfg(feature = "sqlx-postgres")]
-            Self::Postgres(state) => state.get_secret_by_id(secret_id).await,
-            Self::KV2(state) => state.get_secret_by_id(secret_id).await,
+            Self::Postgres(state) => state.get_secret_by_id_impl(secret_id).await,
+            Self::KV2(state) => state.get_secret_by_id_impl(secret_id).await,
         }
     }
 
-    async fn create_secret<
+    async fn create_secret_impl<
         S: SecretInStorage + Send + Sync + serde::Serialize + std::fmt::Debug,
     >(
         &self,
         secret: S,
-    ) -> crate::api::Result<SecretIdent> {
+    ) -> crate::api::Result<SecretId> {
         match self {
             #[cfg(feature = "sqlx-postgres")]
-            Self::Postgres(state) => state.create_secret(secret).await,
-            Self::KV2(state) => state.create_secret(secret).await,
+            Self::Postgres(state) => state.create_secret_impl(secret).await,
+            Self::KV2(state) => state.create_secret_impl(secret).await,
         }
     }
 
-    async fn delete_secret(&self, secret_id: &SecretIdent) -> crate::api::Result<()> {
+    async fn delete_secret_impl(&self, secret_id: &SecretId) -> crate::api::Result<()> {
         match self {
             #[cfg(feature = "sqlx-postgres")]
-            Self::Postgres(state) => state.delete_secret(secret_id).await,
-            Self::KV2(state) => state.delete_secret(secret_id).await,
+            Self::Postgres(state) => state.delete_secret_impl(secret_id).await,
+            Self::KV2(state) => state.delete_secret_impl(secret_id).await,
         }
     }
 }

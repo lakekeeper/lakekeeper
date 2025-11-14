@@ -1,5 +1,3 @@
 {
-    "crates/lakekeeper": "0.10.0",
-    "crates/lakekeeper-bin": "0.10.0",
-    "crates/iceberg-ext": "0.10.0"
+    ".": "0.10.3"
 }

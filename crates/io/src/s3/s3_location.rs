@@ -62,6 +62,17 @@ impl S3Location {
     }
 
     #[must_use]
+    pub fn set_s3_scheme(mut self) -> Self {
+        self.location.set_scheme_unchecked_mut("s3");
+        self
+    }
+
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        self.location.scheme()
+    }
+
+    #[must_use]
     pub fn bucket_name(&self) -> &str {
         (self.location.host_str()).unwrap_or_default()
     }

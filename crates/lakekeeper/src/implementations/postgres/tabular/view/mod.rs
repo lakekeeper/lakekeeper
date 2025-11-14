@@ -1,66 +1,27 @@
 mod load;
 
-use std::{collections::HashMap, default::Default};
+use std::{collections::HashMap, default::Default, str::FromStr as _};
 
 use chrono::{DateTime, Utc};
-use http::StatusCode;
-use iceberg::{
-    spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef},
-    NamespaceIdent,
-};
+use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
 use lakekeeper_io::Location;
 pub(crate) use load::load_view;
 use serde::Deserialize;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 
-pub(crate) use crate::service::ViewMetadataWithLocation;
 use crate::{
-    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     implementations::postgres::{
         dbutils::DBErrorHandler as _,
-        tabular::{
-            self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularId,
-            TabularIdentBorrowed, TabularType,
-        },
+        tabular::{create_tabular, CreateTabular, TabularType},
     },
     service::{
-        ErrorModel, ListFlags, NamespaceId, Result, TableIdent, TableInfo, TabularInfo, ViewId,
+        CatalogBackendError, ConversionError, CreateViewError, CreateViewVersionError,
+        InternalParseLocationError, NamespaceId, SerializationError, UnexpectedTabularInResponse,
+        ViewInfo,
     },
     WarehouseId,
 };
-
-pub(crate) async fn view_ident_to_id<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
-    table: &TableIdent,
-    include_deleted: bool,
-    catalog_state: E,
-) -> Result<Option<ViewId>>
-where
-    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
-    tabular::tabular_ident_to_id(
-        warehouse_id,
-        &TabularIdentBorrowed::View(table),
-        ListFlags {
-            include_deleted,
-            include_staged: false,
-            include_active: true,
-        },
-        catalog_state,
-    )
-    .await?
-    .map(|(id, _)| match id {
-        TabularId::Table(_) => Err(ErrorModel::builder()
-            .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-            .message("DB returned a table when filtering for views.".to_string())
-            .r#type("InternalDatabaseError".to_string())
-            .build()
-            .into()),
-        TabularId::View(view) => Ok(view),
-    })
-    .transpose()
-}
 
 pub(crate) async fn create_view(
     warehouse_id: WarehouseId,
@@ -68,24 +29,12 @@ pub(crate) async fn create_view(
     metadata_location: &Location,
     transaction: &mut Transaction<'_, Postgres>,
     name: &str,
-    metadata: ViewMetadata,
-    location: &Location,
-) -> Result<()> {
-    if location.as_str() != metadata.location() {
-        tracing::error!(
-            "Location in ViewMetadata ('{}') does not match location ('{}') passed into create_view function, this is a bug.",
-            metadata.location(),
-            location.as_str()
-        );
-        return Err(ErrorModel::internal(
-            "Location in ViewMetadata does not match location passed into create_view function.",
-            "InternalServerError",
-            None,
-        )
-        .append_details(vec![location.to_string(), metadata.location().to_string()])
-        .into());
-    }
-    let tabular_id = create_tabular(
+    metadata: &ViewMetadata,
+) -> Result<ViewInfo, CreateViewError> {
+    let location =
+        Location::from_str(metadata.location()).map_err(InternalParseLocationError::from)?;
+
+    let tabular_info = create_tabular(
         CreateTabular {
             id: metadata.uuid(),
             name,
@@ -93,11 +42,17 @@ pub(crate) async fn create_view(
             warehouse_id: *warehouse_id,
             typ: TabularType::View,
             metadata_location: Some(metadata_location),
-            location,
+            location: &location,
         },
         &mut *transaction,
     )
     .await?;
+
+    let Some(view_info) = tabular_info.into_view_info() else {
+        return Err(UnexpectedTabularInResponse::new()
+            .append_detail("Expected created tabular to be of type view")
+            .into());
+    };
 
     let view_id = sqlx::query_scalar!(
         r#"
@@ -106,17 +61,12 @@ pub(crate) async fn create_view(
         returning view_id
         "#,
         *warehouse_id,
-        tabular_id,
+        metadata.uuid(),
         ViewFormatVersion::from(metadata.format_version()) as _,
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| match e {
-        sqlx::Error::RowNotFound => {
-            ErrorModel::internal("Error creating view", "InternalDatabaseError", None)
-        }
-        _ => e.into_error_model("Error creating view".to_string()),
-    })?;
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     tracing::debug!("Inserted base view and tabular.");
     for schema in metadata.schemas_iter() {
@@ -160,13 +110,11 @@ pub(crate) async fn create_view(
             warehouse_id,
             view_id,
             history.version_id(),
-            Some(history.timestamp().map_err(|e| {
-                ErrorModel::internal(
-                    "Error converting timestamp_ms into datetime.",
-                    "ViewVersionTimestampError",
-                    Some(Box::new(e)),
-                )
-            })?),
+            Some(
+                history
+                    .timestamp()
+                    .map_err(|e| ConversionError::new("view_version_log.timestamp", e))?,
+            ),
             transaction,
         )
         .await?;
@@ -176,44 +124,7 @@ pub(crate) async fn create_view(
 
     tracing::debug!("Inserted view properties for view",);
 
-    Ok(())
-}
-
-pub(crate) async fn drop_view(
-    warehouse_id: WarehouseId,
-    view_id: ViewId,
-    force: bool,
-    required_metadata_location: Option<&Location>,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<String> {
-    drop_tabular(
-        warehouse_id,
-        TabularId::View(view_id),
-        force,
-        required_metadata_location,
-        transaction,
-    )
-    .await
-}
-
-/// Rename a table. Tables may be moved across namespaces.
-pub(crate) async fn rename_view(
-    warehouse_id: WarehouseId,
-    source_id: ViewId,
-    source: &TableIdent,
-    destination: &TableIdent,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    tabular::rename_tabular(
-        warehouse_id,
-        TabularId::View(source_id),
-        source,
-        destination,
-        transaction,
-    )
-    .await?;
-
-    Ok(())
+    Ok(view_info)
 }
 
 // TODO: do we wanna do this via a trigger?
@@ -223,7 +134,7 @@ async fn insert_view_version_log(
     version_id: ViewVersionId,
     timestamp_ms: Option<DateTime<Utc>>,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<()> {
+) -> Result<(), CatalogBackendError> {
     if let Some(ts) = timestamp_ms {
         sqlx::query!(
             r#"
@@ -249,9 +160,8 @@ async fn insert_view_version_log(
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
-        let message = "Error inserting view version log".to_string();
-        tracing::warn!("{}", message);
-        e.into_error_model(message)
+        e.into_catalog_backend_error()
+            .append_detail("Error inserting view version log.")
     })?;
     tracing::debug!("Inserted view version log");
     Ok(())
@@ -262,10 +172,10 @@ pub(crate) async fn set_view_properties(
     view_id: Uuid,
     properties: &HashMap<String, String>,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<()> {
+) -> Result<(), CatalogBackendError> {
     let (keys, vals): (Vec<String>, Vec<String>) = properties
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| (k.clone(), v.clone()))
         .unzip();
     sqlx::query!(
         r#"INSERT INTO view_properties (warehouse_id, view_id, key, value)
@@ -281,9 +191,8 @@ pub(crate) async fn set_view_properties(
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
-        let message = "Error inserting view property".to_string();
-        tracing::warn!("{}", message);
-        e.into_error_model(message)
+        e.into_catalog_backend_error()
+            .append_detail("Error setting view properties.")
     })?;
     Ok(())
 }
@@ -293,15 +202,9 @@ pub(crate) async fn create_view_schema(
     view_id: Uuid,
     schema: SchemaRef,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<i32> {
-    let schema_as_value = serde_json::to_value(&schema).map_err(|e| {
-        ErrorModel::builder()
-            .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-            .message("Error serializing view schema".to_string())
-            .r#type("ViewSchemaSerializationError".to_string())
-            .source(Some(Box::new(e)))
-            .build()
-    })?;
+) -> Result<i32, CreateViewError> {
+    let schema_as_value =
+        serde_json::to_value(&schema).map_err(|e| SerializationError::new("schema", e))?;
     Ok(sqlx::query_scalar!(
         r#"
         INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
@@ -315,14 +218,7 @@ pub(crate) async fn create_view_schema(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| match e {
-        sqlx::Error::RowNotFound => ErrorModel::builder()
-            .code(StatusCode::CONFLICT.into())
-            .message("View schema already exists".to_string())
-            .r#type("ViewSchemaAlreadyExists".to_string())
-            .build(),
-        _ => e.into_error_model("Error creating view schema".to_string()),
-    })?)
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?)
 }
 
 #[derive(Debug, FromRow, Clone, Copy)]
@@ -344,7 +240,7 @@ async fn create_view_version(
     view_id: Uuid,
     view_version_request: ViewVersionRef,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<ViewVersionResponse> {
+) -> Result<ViewVersionResponse, CreateViewVersionError> {
     let view_version = view_version_request;
     let version_id = view_version.version_id();
     let schema_id = view_version.schema_id();
@@ -371,21 +267,11 @@ async fn create_view_version(
     )
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|e| {
-        let message = "Error fetching namespace_id".to_string();
-        tracing::warn!("{}", message);
-        e.into_error_model(message)
-    })?;
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
-    let default_cat = view_version.default_catalog();
-    let summary = serde_json::to_value(view_version.summary()).map_err(|e| {
-        ErrorModel::builder()
-            .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-            .message("Error serializing view_version summary".to_string())
-            .r#type("ViewSummarySerializationFailed".to_string())
-            .source(Some(Box::new(e)))
-            .build()
-    })?;
+    let default_catalog = view_version.default_catalog();
+    let summary = serde_json::to_value(view_version.summary())
+        .map_err(|e| SerializationError::new("view_version.summary", e))?;
 
     let insert_response = sqlx::query_as!(ViewVersionResponse,
                 r#"
@@ -398,38 +284,18 @@ async fn create_view_version(
                 version_id,
                 schema_id,
                 view_version.timestamp().map_err(|e|
-                    ErrorModel::builder()
-                        .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-                        .message("Error converting timestamp_ms into datetime.".to_string())
-                        .r#type("ViewVersionTimestampError".to_string())
-                        .source(Some(Box::new(e)))
-                        .build()
+                    ConversionError::new(
+                        "view_version.timestamp",
+                        e
+                    )
                 )?,
                 default_namespace_id,
-                default_cat,
+                default_catalog,
                 summary
             )
         .fetch_one(&mut **transaction)
         .await.map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            let message = "View version already exists";
-            tracing::debug!(?e,"{}", message);
-            ErrorModel::builder()
-                .code(StatusCode::CONFLICT.into())
-                .message(message.to_string())
-                .r#type("ViewVersionAlreadyExists".to_string())
-                .build()
-        } else {
-            let message = "Error creating view version";
-            tracing::warn!(?e, "{} for: '{}'/'{}' with schema_id: '{}' due to: '{}'",
-                message,
-                view_id,
-                version_id,
-                schema_id,
-                e
-            );
-            e.into_error_model(message.to_string())
-        }
+            e.into_catalog_backend_error()
     })?;
 
     for rep in view_version.representations().iter() {
@@ -450,7 +316,7 @@ pub(crate) async fn set_current_view_metadata_version(
     view_id: Uuid,
     version_id: ViewVersionId,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<()> {
+) -> Result<(), CatalogBackendError> {
     sqlx::query!(
         r#"
         INSERT INTO current_view_metadata_version (warehouse_id, view_id, version_id)
@@ -467,59 +333,19 @@ pub(crate) async fn set_current_view_metadata_version(
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
-        let message = "Error setting current view metadata version".to_string();
-        tracing::warn!("{}", message);
-        e.into_error_model(message)
+        e.into_catalog_backend_error()
+            .append_detail("Error setting current view metadata version.")
     })?;
 
     tracing::debug!("Successfully set current view metadata version");
     Ok(())
 }
 
-pub(crate) async fn list_views<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
-    namespace: &NamespaceIdent,
-    include_deleted: bool,
-    transaction: E,
-    paginate_query: PaginationQuery,
-) -> Result<PaginatedMapping<ViewId, TableInfo>>
-where
-    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
-    let page = list_tabulars(
-        warehouse_id,
-        Some(namespace),
-        None,
-        ListFlags {
-            include_deleted,
-            include_staged: false,
-            include_active: true,
-        },
-        transaction,
-        Some(TabularType::View),
-        paginate_query,
-    )
-    .await?;
-    let views = page.map::<ViewId, TableInfo>(
-        |k| match k {
-            TabularId::Table(_) => Err(ErrorModel::internal(
-                "DB returned a table when filtering for views.",
-                "InternalDatabaseError",
-                None,
-            )
-            .into()),
-            TabularId::View(t) => Ok(t),
-        },
-        TabularInfo::into_view_info,
-    )?;
-    Ok(views)
-}
-
 async fn insert_representation(
     rep: &ViewRepresentation,
     transaction: &mut Transaction<'_, Postgres>,
     view_version_response: ViewVersionResponse,
-) -> Result<()> {
+) -> Result<(), CreateViewVersionError> {
     let ViewRepresentation::Sql(repr) = rep;
     sqlx::query!(
         r#"
@@ -536,9 +362,7 @@ async fn insert_representation(
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
-        let message = "Error inserting view_representation".to_string();
-        tracing::warn!(?e, "{}", message);
-        e.into_error_model(message)
+        e.into_catalog_backend_error().append_detail("Error inserting view representation.")
     })?;
     Ok(())
 }
@@ -588,16 +412,17 @@ pub(crate) mod tests {
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             namespace::tests::initialize_namespace,
-            tabular::{mark_tabular_as_deleted, view::load_view},
+            tabular::{mark_tabular_as_deleted, view::load_view, TabularType},
             warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog,
+            CatalogState, PostgresBackend,
         },
         service::{
-            task_queue::{
+            tasks::{
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
                 EntityId, TaskMetadata,
             },
-            TabularId, ViewId,
+            CreateViewError, DropTabularError, LoadViewError, TabularId, TabularIdentBorrowed,
+            TabularListFlags, ViewId,
         },
         WarehouseId,
     };
@@ -726,8 +551,7 @@ pub(crate) mod tests {
             .unwrap(),
             &mut tx,
             "myview",
-            request.clone(),
-            &location,
+            &request,
         )
         .await
         .unwrap();
@@ -735,81 +559,103 @@ pub(crate) mod tests {
 
         let mut tx = pool.begin().await.unwrap();
         // recreate with same uuid should fail
-        let created_view = super::create_view(
+        let new_location = "s3://my_bucket/my_table/metadata/new-location"
+            .parse::<Location>()
+            .unwrap();
+        let new_request = view_request(Some(*view_uuid), &new_location);
+        let created_view_err = super::create_view(
             warehouse_id,
             namespace_id,
-            &format!(
-                "s3://my_bucket/my_table/metadata/barz/metadata-{}.gz.json",
-                Uuid::now_v7()
-            )
-            .parse()
-            .unwrap(),
+            &format!("{new_location}/metadata-{}.gz.json", Uuid::now_v7())
+                .parse()
+                .unwrap(),
             &mut tx,
             "myview2",
-            request.clone(),
-            &"s3://my_bucket/my_table/metadata/barz".parse().unwrap(),
+            &new_request,
         )
         .await
         .expect_err("recreation should fail");
-        // this is not a conflict error since uuids are not externally controlled
-        assert_eq!(created_view.error.code, 500, "{}", created_view.error);
+        assert!(
+            matches!(created_view_err, CreateViewError::TabularAlreadyExists(_)),
+            "created_view_err: {created_view_err:?}"
+        );
         tx.commit().await.unwrap();
 
+        // recreate with other uuid but same name should fail
         let mut tx = pool.begin().await.unwrap();
-
-        // recreate with other uuid should fail
         let created_view = super::create_view(
             warehouse_id,
             namespace_id,
-            &format!(
-                "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
-                Uuid::now_v7()
-            )
-            .parse()
-            .unwrap(),
+            &format!("{new_location}/metadata-{}.gz.json", Uuid::now_v7())
+                .parse()
+                .unwrap(),
             &mut tx,
             "myview",
-            ViewMetadataBuilder::new_from_metadata(request.clone())
+            &ViewMetadataBuilder::new_from_metadata(new_request.clone())
                 .assign_uuid(Uuid::now_v7())
                 .build()
                 .unwrap()
                 .metadata,
-            &"s3://my_bucket/my_table/metadata/bar".parse().unwrap(),
         )
         .await
         .expect_err("recreation should fail");
-        assert_eq!(created_view.error.code, 409, "{:?}", created_view.error);
-
+        assert!(matches!(
+            created_view,
+            CreateViewError::TabularAlreadyExists(_)
+        ));
         tx.commit().await.unwrap();
 
-        let views = super::list_views(
+        let views = super::super::list_tabulars(
             warehouse_id,
-            &namespace,
-            false,
+            Some(namespace_id),
+            TabularListFlags::active(),
             &state.read_pool(),
+            Some(TabularType::View),
             PaginationQuery::empty(),
         )
         .await
         .unwrap();
         assert_eq!(views.len(), 1);
         let (list_view_uuid, view) = views.into_iter().next().unwrap();
-        assert_eq!(list_view_uuid, view_uuid);
-        assert_eq!(view.table_ident.name, "myview");
+        assert_eq!(list_view_uuid, TabularId::View(view_uuid));
+        assert_eq!(view.tabular_ident().name, "myview");
 
-        let mut conn = state.read_pool().acquire().await.unwrap();
-        let metadata = load_view(warehouse_id, view_uuid, false, &mut conn)
+        // New name and uuid should succeed
+        let mut tx = pool.begin().await.unwrap();
+        let _created_view = super::create_view(
+            warehouse_id,
+            namespace_id,
+            &format!("{new_location}/metadata-{}.gz.json", Uuid::now_v7())
+                .parse()
+                .unwrap(),
+            &mut tx,
+            "myview2",
+            &ViewMetadataBuilder::new_from_metadata(new_request.clone())
+                .assign_uuid(Uuid::now_v7())
+                .build()
+                .unwrap()
+                .metadata,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let metadata = load_view(warehouse_id, view_uuid, false, &mut tx)
             .await
             .unwrap();
-        assert_eq!(metadata.metadata, request.clone());
+        tx.commit().await.unwrap();
+        assert_eq!(&*metadata.metadata, &request);
     }
 
     #[sqlx::test]
     async fn drop_view_unconditionally(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
-        let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(
+        let mut tx: sqlx::Transaction<'_, sqlx::Postgres> =
+            state.write_pool().begin().await.unwrap();
+        super::super::drop_tabular(
             warehouse_id,
-            created_meta.uuid().into(),
+            ViewId::from(created_meta.uuid()).into(),
             false,
             None,
             &mut tx,
@@ -817,23 +663,26 @@ pub(crate) mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            false,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect_err("dropped view should not be loadable");
+
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = load_view(warehouse_id, created_meta.uuid().into(), false, &mut tx)
+            .await
+            .expect_err("dropped view should not be loadable");
+        tx.commit().await.unwrap();
+
+        assert!(
+            matches!(err, LoadViewError::TabularNotFound(_)),
+            "err: {err:?}"
+        );
     }
 
     #[sqlx::test]
     async fn drop_view_correct_location(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, metadata_location) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(
+        super::super::drop_tabular(
             warehouse_id,
-            created_meta.uuid().into(),
+            ViewId::from(created_meta.uuid()).into(),
             false,
             Some(&metadata_location),
             &mut tx,
@@ -841,23 +690,25 @@ pub(crate) mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            false,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect_err("dropped view should not be loadable");
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = load_view(warehouse_id, created_meta.uuid().into(), false, &mut tx)
+            .await
+            .expect_err("dropped view should not be loadable");
+        tx.commit().await.unwrap();
+
+        assert!(
+            matches!(err, LoadViewError::TabularNotFound(_)),
+            "err: {err:?}"
+        );
     }
 
     #[sqlx::test]
     async fn test_drop_view_metadata_mismatch(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(
+        let err = super::super::drop_tabular(
             warehouse_id,
-            created_meta.uuid().into(),
+            ViewId::from(created_meta.uuid()).into(),
             false,
             Some(&Location::parse_value("s3://not-the/old-location").unwrap()),
             &mut tx,
@@ -865,6 +716,8 @@ pub(crate) mod tests {
         .await
         .expect_err("dropping view with wrong metadata location should fail");
         tx.commit().await.unwrap();
+
+        assert!(matches!(err, DropTabularError::ConcurrentUpdateError(_)));
     }
 
     #[sqlx::test]
@@ -872,7 +725,7 @@ pub(crate) mod tests {
         let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
+        let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
             TaskMetadata {
                 entity_id: EntityId::View(created_meta.uuid().into()),
                 warehouse_id,
@@ -897,19 +750,16 @@ pub(crate) mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            true,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
+        load_view(warehouse_id, created_meta.uuid().into(), true, &mut tx)
+            .await
+            .expect("soft-dropped view should loadable");
+        tx.commit().await.unwrap();
 
-        super::drop_view(
+        let mut tx = state.write_pool().begin().await.unwrap();
+        super::super::drop_tabular(
             warehouse_id,
-            created_meta.uuid().into(),
+            ViewId::from(created_meta.uuid()).into(),
             false,
             None,
             &mut tx,
@@ -918,62 +768,62 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        load_view(
-            warehouse_id,
-            created_meta.uuid().into(),
-            true,
-            &mut state.write_pool().acquire().await.unwrap(),
-        )
-        .await
-        .expect_err("hard-delete view should not be loadable");
+        let mut tx = state.write_pool().begin().await.unwrap();
+        load_view(warehouse_id, created_meta.uuid().into(), true, &mut tx)
+            .await
+            .expect_err("hard-delete view should not be loadable");
+        tx.commit().await.unwrap();
     }
 
     #[sqlx::test]
     async fn view_exists(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_id, namespace, name, _) = prepare_view(pool).await;
-        let exists = super::view_ident_to_id(
+        let (state, _created_meta, warehouse_id, namespace, name, _) = prepare_view(pool).await;
+        let view_ident = TableIdent {
+            namespace: namespace.clone(),
+            name: name.clone(),
+        };
+        let view_ident_borrowed = TabularIdentBorrowed::View(&view_ident);
+        let exists = super::super::get_tabular_infos_by_idents(
             warehouse_id,
-            &TableIdent {
-                namespace: namespace.clone(),
-                name,
-            },
-            false,
+            &[view_ident_borrowed],
+            TabularListFlags::all(),
             &state.read_pool(),
         )
         .await
         .unwrap();
-        assert_eq!(
-            exists,
-            Some(created_meta.uuid().into()),
-            "view should exist"
-        );
+        assert_eq!(exists.len(), 1);
 
-        assert_eq!(
-            super::view_ident_to_id(
-                warehouse_id,
-                &TableIdent {
-                    namespace,
-                    name: "non_existing".to_string(),
-                },
-                false,
-                &state.read_pool(),
-            )
-            .await
-            .unwrap(),
-            None,
-            "non existing view should not exist"
-        );
+        let non_existing_view_ident = TableIdent {
+            namespace: namespace.clone(),
+            name: "non_existing".to_string(),
+        };
+        let non_existing_view_ident_borrowed = TabularIdentBorrowed::View(&non_existing_view_ident);
+        let non_exists = super::super::get_tabular_infos_by_idents(
+            warehouse_id,
+            &[non_existing_view_ident_borrowed],
+            TabularListFlags::all(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(non_exists.len(), 0);
     }
 
     #[sqlx::test]
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
         let (state, _, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        let e = super::drop_view(warehouse_id, Uuid::now_v7().into(), false, None, &mut tx)
-            .await
-            .expect_err("dropping random uuid should not succeed");
+        let e = super::super::drop_tabular(
+            warehouse_id,
+            ViewId::new_random().into(),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .expect_err("dropping random uuid should not succeed");
         tx.commit().await.unwrap();
-        assert_eq!(e.error.code, 404);
+        assert!(matches!(e, DropTabularError::TabularNotFound(_)));
     }
 
     async fn prepare_view(
@@ -1014,8 +864,7 @@ pub(crate) mod tests {
             &metadata_location,
             &mut tx,
             "myview",
-            request.clone(),
-            &location,
+            &request,
         )
         .await
         .unwrap();

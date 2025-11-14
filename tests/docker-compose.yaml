@@ -7,14 +7,24 @@ services:
     volumes:
       - ../examples/access-control-simple/keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
+      test:
+        [
+          "CMD-SHELL",
+          'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3',
+        ]
       interval: 2s
       timeout: 80s
       retries: 10
       start_period: 60s
     ports:
       - "30080:8080"
-    command: [ "start-dev", "--metrics-enabled=true", "--health-enabled=true",  "--import-realm" ]
+    command:
+      [
+        "start-dev",
+        "--metrics-enabled=true",
+        "--health-enabled=true",
+        "--import-realm",
+      ]
     networks:
       - iceberg_rest_tests
 
@@ -90,7 +100,7 @@ services:
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - LAKEKEEPER__TASK_POLL_INTERVAL="1"
       - RUST_LOG=warn,iceberg_catalog=trace,iceberg_catalog_bin=trace,iceberg_ext=trace
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck:
       test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
       interval: 2s
@@ -137,9 +147,9 @@ services:
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-    command: [ "server", "--console-address", ":9001", "/data" ]
+    command: ["server", "--console-address", ":9001", "/data"]
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -165,7 +175,7 @@ services:
 
   nats:
     image: nats:latest
-    command: [ "-m=8222", "--user=test", "--pass=test" ]
+    command: ["-m=8222", "--user=test", "--pass=test"]
     ports:
       - "31105:4222"
     healthcheck:
@@ -231,7 +241,7 @@ services:
       - iceberg_rest_tests
 
   trino:
-    image: trinodb/trino:467
+    image: trinodb/trino:476
     environment:
       - CATALOG_MANAGEMENT=dynamic
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog

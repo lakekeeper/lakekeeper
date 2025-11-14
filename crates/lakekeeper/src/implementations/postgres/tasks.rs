@@ -8,7 +8,7 @@ use crate::{
         GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
     },
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
+    service::tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
     WarehouseId,
 };
 
@@ -847,7 +847,7 @@ pub(crate) async fn check_and_heartbeat_task(
     }))
 }
 
-use crate::service::task_queue::{
+use crate::service::tasks::{
     EntityId, TaskCheckState, TaskId, TaskInput, TaskMetadata, TaskOutcome,
 };
 
@@ -862,7 +862,7 @@ pub(crate) async fn cancel_scheduled_tasks(
     force_delete_running_tasks: bool,
 ) -> crate::api::Result<()> {
     let queue_name_is_none = queue_name.is_none();
-    let queue_name = queue_name.map(crate::service::task_queue::TaskQueueName::as_str);
+    let queue_name = queue_name.map(crate::service::tasks::TaskQueueName::as_str);
     let queue_name = queue_name.unwrap_or("");
     match filter {
         TaskFilter::WarehouseId(warehouse_id) => {
@@ -1015,7 +1015,7 @@ mod test {
         },
         service::{
             authz::AllowAllAuthorizer,
-            task_queue::{
+            tasks::{
                 EntityId, TaskId, TaskInput, TaskStatus, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },
         },
