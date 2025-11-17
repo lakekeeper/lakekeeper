@@ -62,7 +62,7 @@ where
     VariantArray,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperUserAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogUserAction {
     /// Can get all details of the user given its id
@@ -277,7 +277,7 @@ impl CatalogAction for CatalogTableAction {}
     VariantArray,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     CanDrop,
