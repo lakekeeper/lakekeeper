@@ -314,41 +314,22 @@ OLake is an open-source, quick and scalable tool for replicating Databases to Ap
 
 For a hands-on example, a Docker Compose setup is available in the [RisingWave repository](https://github.com/risingwavelabs/risingwave). You can find detailed deployment instructions in the [official RisingWave documentation](https://docs.risingwave.com/iceberg/catalogs/lakekeeper#deploy-with-docker).
 
-Once you have both services running, you can create a `CONNECTION` in RisingWave to connect to Lakekeeper as shown below:
+Once you have both services running, you can create a `CONNECTION` in RisingWave to connect to Lakekeeper. The following is an example configuration. As parameters may change over time, please refer to the [official RisingWave documentation](https://docs.risingwave.com/iceberg/catalogs/lakekeeper) for the most up-to-date and complete configuration options.
 
-=== "With Vended Credentials"
-
-    RisingWave supports the credential vending protocol, which allows it to obtain temporary object storage credentials directly from Lakekeeper. This is the recommended and most secure approach.
-
-    ```sql
-    CREATE CONNECTION lakekeeper_catalog_conn
-    WITH (
-       type = 'iceberg',
-       catalog.type = 'rest',
-       catalog.uri = 'http://lakekeeper:8181/catalog/',
-       warehouse.path = 'risingwave-warehouse',
-       vended_credentials = true
-    );
-    ```
-
-=== "With Manual S3 Credentials"
-
-    You can also configure the connection by manually providing S3 credentials. This method is suitable for development or environments where credential vending is not configured.
-
-    ```sql
-    CREATE CONNECTION lakekeeper_catalog_conn
-    WITH (
-        type = 'iceberg',
-        catalog.type = 'rest',
-        catalog.uri = 'http://lakekeeper:8181/catalog/',
-        warehouse.path = 'risingwave-warehouse',
-        s3.access.key = 'hummockadmin',
-        s3.secret.key = 'hummockadmin',
-        s3.path.style.access = 'true',
-        s3.endpoint = 'http://minio-0:9301',
-        s3.region = 'us-east-1'
-    );
-    ```
+```sql
+CREATE CONNECTION lakekeeper_catalog_conn
+WITH (
+    type = 'iceberg',
+    catalog.type = 'rest',
+    catalog.uri = 'http://lakekeeper:8181/catalog/',
+    warehouse.path = 'risingwave-warehouse',
+    s3.access.key = 'hummockadmin',
+    s3.secret.key = 'hummockadmin',
+    s3.path.style.access = 'true',
+    s3.endpoint = 'http://minio-0:9301',
+    s3.region = 'us-east-1'
+);
+```
 
 After creating the connection, you must set it as the default for your session to create and query internal Iceberg tables. The `SET` command applies the change to the current session only, while `ALTER SYSTEM` makes it persistent across restarts.
 
