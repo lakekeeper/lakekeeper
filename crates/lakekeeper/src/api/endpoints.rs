@@ -373,6 +373,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_endpoint_completeness() {
         use std::collections::HashSet;
 
