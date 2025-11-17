@@ -125,7 +125,7 @@ pub mod v1 {
     /// Get allowed server actions
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "lakekeeper-actions",
+    tag = "server",
     path = ManagementV1Endpoint::GetServerActions.path(),
     responses(
         (status = 200, body = GetLakekeeperServerActionsResponse),
@@ -510,7 +510,7 @@ pub mod v1 {
     /// Get allowed actions for a role
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "lakekeeper-actions",
+    tag = "role",
     path = ManagementV1Endpoint::GetRoleActions.path(),
     params(("role_id" = Uuid, Path, description = "Role ID"),),
     responses(
@@ -734,7 +734,7 @@ pub mod v1 {
     /// Get allowed actions for a project
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "lakekeeper-actions",
+    tag = "project",
     params(("x-project-id" = String, Header, description = "Optional project ID"),),
     path = ManagementV1Endpoint::GetProjectActions.path(),
     responses(

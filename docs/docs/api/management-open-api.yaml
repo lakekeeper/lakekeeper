@@ -1012,7 +1012,7 @@ paths:
   /management/v1/project/actions:
     get:
       tags:
-        - lakekeeper-actions
+        - project
       summary: Get allowed actions for a project
       operationId: get_project_actions
       parameters:
@@ -1309,7 +1309,7 @@ paths:
   /management/v1/role/{role_id}/actions:
     get:
       tags:
-        - lakekeeper-actions
+        - role
       summary: Get allowed actions for a role
       operationId: get_role_actions
       parameters:
@@ -1388,7 +1388,7 @@ paths:
   /management/v1/server/actions:
     get:
       tags:
-        - lakekeeper-actions
+        - server
       summary: Get allowed server actions
       operationId: get_server_actions
       responses:
