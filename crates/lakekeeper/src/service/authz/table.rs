@@ -573,36 +573,14 @@ pub trait AuthZTableOps: Authorizer {
         // Determine the fetch strategy based on whether we have a TableId or TableIdent
         let (warehouse, namespace, table_info) = match &user_provided_table {
             TableIdentOrId::Id(table_id) => {
-                // For TableId: fetch warehouse and table in parallel first
-                let (warehouse_result, table_result) = tokio::join!(
-                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
-                    C::get_table_info(warehouse_id, *table_id, table_flags, catalog_state.clone())
-                );
-
-                // Validate warehouse and table presence
-                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
-                let table_info = self.require_table_presence(
+                fetch_warehouse_namespace_table_by_id::<C, _>(
+                    self,
                     warehouse_id,
-                    user_provided_table.clone(),
-                    table_result,
-                )?;
-
-                // Fetch namespace with cache policy to ensure it's at least as fresh as the table
-                let namespace_result = C::get_namespace_cache_aware(
-                    warehouse_id,
-                    table_info.table_ident().namespace.clone(), // Must fetch via name to ensure consistency. Id is checked later
-                    CachePolicy::RequireMinimumVersion(*table_info.namespace_version),
+                    *table_id,
+                    table_flags,
                     catalog_state.clone(),
                 )
-                .await;
-
-                let namespace = self.require_namespace_presence(
-                    warehouse_id,
-                    table_info.namespace_id,
-                    namespace_result,
-                )?;
-
-                (warehouse, namespace, table_info)
+                .await?
             }
             TableIdentOrId::Ident(table_ident) => {
                 // For TableIdent: fetch all three in parallel
@@ -959,6 +937,51 @@ pub trait AuthZTableOps: Authorizer {
 }
 
 impl<T> AuthZTableOps for T where T: Authorizer {}
+
+pub(crate) async fn fetch_warehouse_namespace_table_by_id<C, A>(
+    authorizer: &A,
+    warehouse_id: WarehouseId,
+    user_provided_table: TableId,
+    table_flags: TabularListFlags,
+    catalog_state: C::State,
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), ErrorModel>
+where
+    C: CatalogStore,
+    A: AuthzWarehouseOps + AuthzNamespaceOps,
+{
+    // For TableId: fetch warehouse and table in parallel first
+    let (warehouse_result, table_result) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+        C::get_table_info(
+            warehouse_id,
+            user_provided_table,
+            table_flags,
+            catalog_state.clone()
+        )
+    );
+
+    // Validate warehouse and table presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse_result)?;
+    let table_info =
+        authorizer.require_table_presence(warehouse_id, user_provided_table, table_result)?;
+
+    // Fetch namespace with cache policy to ensure it's at least as fresh as the table
+    let namespace_result = C::get_namespace_cache_aware(
+        warehouse_id,
+        table_info.table_ident().namespace.clone(), // Must fetch via name to ensure consistency. Id is checked later
+        CachePolicy::RequireMinimumVersion(*table_info.namespace_version),
+        catalog_state.clone(),
+    )
+    .await;
+
+    let namespace = authorizer.require_namespace_presence(
+        warehouse_id,
+        table_info.namespace_id,
+        namespace_result,
+    )?;
+
+    Ok((warehouse, namespace, table_info))
+}
 
 #[derive(Debug)]
 pub enum ActionOnTableOrView<'a, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {

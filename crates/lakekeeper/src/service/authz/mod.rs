@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use axum::Router;
 use futures::future::try_join_all;
-use strum::EnumIter;
+use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator, VariantArray};
 use strum_macros::EnumString;
 
 use super::{
@@ -41,7 +42,27 @@ pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+pub trait CatalogAction
+where
+    Self: std::fmt::Debug + Copy + Send + Sync + 'static + IntoEnumIterator,
+{
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogUserAction {
     /// Can get all details of the user given its id
@@ -52,7 +73,21 @@ pub enum CatalogUserAction {
     CanDelete,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogServerAction {
     /// Can create items inside the server (can create Warehouses).
@@ -67,7 +102,21 @@ pub enum CatalogServerAction {
     CanProvisionUsers,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogProjectAction {
     CanCreateWarehouse,
@@ -81,16 +130,47 @@ pub enum CatalogProjectAction {
     CanSearchRoles,
     CanGetEndpointStatistics,
 }
+impl CatalogAction for CatalogProjectAction {}
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogRoleAction {
+    CanRead,
     CanDelete,
     CanUpdate,
-    CanRead,
 }
+impl CatalogAction for CatalogRoleAction {}
 
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogWarehouseAction {
     CanCreateNamespace,
@@ -115,8 +195,24 @@ pub enum CatalogWarehouseAction {
     CanSetProtection,
     CanGetEndpointStatistics,
 }
+impl CatalogAction for CatalogWarehouseAction {}
 
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogNamespaceAction {
     CanCreateTable,
@@ -132,8 +228,24 @@ pub enum CatalogNamespaceAction {
     CanSetProtection,
     CanIncludeInList,
 }
+impl CatalogAction for CatalogNamespaceAction {}
 
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     CanDrop,
@@ -148,8 +260,24 @@ pub enum CatalogTableAction {
     CanControlTasks,
     CanSetProtection,
 }
+impl CatalogAction for CatalogTableAction {}
 
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+    VariantArray,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     CanDrop,
@@ -162,6 +290,7 @@ pub enum CatalogViewAction {
     CanControlTasks,
     CanSetProtection,
 }
+impl CatalogAction for CatalogViewAction {}
 
 pub trait AsTableId {
     fn as_table_id(&self) -> TableId;
@@ -284,6 +413,29 @@ where
         action: Self::UserAction,
     ) -> Result<bool, AuthorizationBackendUnavailable>;
 
+    async fn are_allowed_user_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        users_with_actions: &[(&UserId, Self::UserAction)],
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let n_inputs = users_with_actions.len();
+        let futures: Vec<_> = users_with_actions
+            .iter()
+            .map(|(user, a)| async move {
+                self.is_allowed_user_action(metadata, user, *a)
+                    .await
+                    .map(MustUse::into_inner)
+            })
+            .collect();
+        let results = try_join_all(futures).await?;
+        debug_assert_eq!(
+            results.len(),
+            n_inputs,
+            "are_allowed_user_actions_impl to return as many results as provided inputs"
+        );
+        Ok(results)
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
     async fn is_allowed_role_action_impl(
@@ -293,6 +445,29 @@ where
         action: Self::RoleAction,
     ) -> Result<bool, AuthorizationBackendUnavailable>;
 
+    async fn are_allowed_role_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        roles_with_actions: &[(RoleId, Self::RoleAction)],
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let n_inputs = roles_with_actions.len();
+        let futures: Vec<_> = roles_with_actions
+            .iter()
+            .map(|(role, a)| async move {
+                self.is_allowed_role_action(metadata, *role, *a)
+                    .await
+                    .map(MustUse::into_inner)
+            })
+            .collect();
+        let results = try_join_all(futures).await?;
+        debug_assert_eq!(
+            results.len(),
+            n_inputs,
+            "are_allowed_role_actions_impl to return as many results as provided inputs"
+        );
+        Ok(results)
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
     async fn is_allowed_server_action_impl(
@@ -300,6 +475,29 @@ where
         metadata: &RequestMetadata,
         action: Self::ServerAction,
     ) -> Result<bool, AuthorizationBackendUnavailable>;
+
+    async fn are_allowed_server_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        actions: &[Self::ServerAction],
+    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+        let n_inputs = actions.len();
+        let futures: Vec<_> = actions
+            .iter()
+            .map(|a| async move {
+                self.is_allowed_server_action(metadata, *a)
+                    .await
+                    .map(MustUse::into_inner)
+            })
+            .collect();
+        let results = try_join_all(futures).await?;
+        debug_assert_eq!(
+            results.len(),
+            n_inputs,
+            "are_allowed_server_actions_impl to return as many results as provided inputs"
+        );
+        Ok(results)
+    }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.

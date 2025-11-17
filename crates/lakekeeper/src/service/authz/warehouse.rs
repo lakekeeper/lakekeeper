@@ -306,8 +306,16 @@ pub trait AuthzWarehouseOps: Authorizer {
                     .iter()
                     .map(|(id, action)| (*id, (*action).into()))
                     .collect();
-            self.are_allowed_warehouse_actions_impl(metadata, &converted)
-                .await
+            let decisions = self
+                .are_allowed_warehouse_actions_impl(metadata, &converted)
+                .await?;
+
+            debug_assert!(
+                decisions.len() == warehouses_with_actions.len(),
+                "Mismatched warehouse decision lengths",
+            );
+
+            Ok(decisions)
         }
         .map(MustUse::from)
     }

@@ -91,6 +91,32 @@ pub trait AuthZUserOps: Authorizer {
         .map(MustUse::from)
     }
 
+    async fn are_allowed_user_actions_vec<A: Into<Self::UserAction> + Send + Copy + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        users_with_actions: &[(&UserId, A)],
+    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; users_with_actions.len()])
+        } else {
+            let converted = users_with_actions
+                .iter()
+                .map(|(id, action)| (*id, (*action).into()))
+                .collect::<Vec<_>>();
+            let decisions = self
+                .are_allowed_user_actions_impl(metadata, &converted)
+                .await?;
+
+            debug_assert!(
+                decisions.len() == users_with_actions.len(),
+                "Mismatched user decision lengths",
+            );
+
+            Ok(decisions)
+        }
+        .map(MustUse::from)
+    }
+
     async fn require_user_action(
         &self,
         metadata: &RequestMetadata,

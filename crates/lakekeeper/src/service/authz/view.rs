@@ -17,7 +17,7 @@ use crate::{
         Actor, AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
         InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
         ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
-        ViewIdentOrId, ViewInfo,
+        ViewId, ViewIdentOrId, ViewInfo,
     },
     WarehouseId,
 };
@@ -293,36 +293,14 @@ pub trait AuthZViewOps: Authorizer {
         // Determine the fetch strategy based on whether we have a ViewId or ViewIdent
         let (warehouse, namespace, view_info) = match &user_provided_view {
             ViewIdentOrId::Id(view_id) => {
-                // For ViewId: fetch warehouse and view in parallel first
-                let (warehouse_result, view_result) = tokio::join!(
-                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
-                    C::get_view_info(warehouse_id, *view_id, view_flags, catalog_state.clone())
-                );
-
-                // Validate warehouse and view presence
-                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
-                let view_info = self.require_view_presence(
+                fetch_warehouse_namespace_view_by_id::<C, _>(
+                    self,
                     warehouse_id,
-                    user_provided_view.clone(),
-                    view_result,
-                )?;
-
-                // Fetch namespace with cache policy to ensure it's at least as fresh as the view
-                let namespace_result = C::get_namespace_cache_aware(
-                    warehouse_id,
-                    view_info.view_ident().namespace.clone(), // Must fetch via name to ensure consistency. Id is checked later
-                    CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
+                    *view_id,
+                    view_flags,
                     catalog_state.clone(),
                 )
-                .await;
-
-                let namespace = self.require_namespace_presence(
-                    warehouse_id,
-                    view_info.namespace_id(),
-                    namespace_result,
-                )?;
-
-                (warehouse, namespace, view_info)
+                .await?
             }
             ViewIdentOrId::Ident(view_ident) => {
                 // For ViewIdent: fetch all three in parallel
@@ -474,3 +452,48 @@ pub trait AuthZViewOps: Authorizer {
 }
 
 impl<T> AuthZViewOps for T where T: Authorizer {}
+
+pub(crate) async fn fetch_warehouse_namespace_view_by_id<C, A>(
+    authorizer: &A,
+    warehouse_id: WarehouseId,
+    user_provided_view: ViewId,
+    table_flags: TabularListFlags,
+    catalog_state: C::State,
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), ErrorModel>
+where
+    C: CatalogStore,
+    A: AuthzWarehouseOps + AuthzNamespaceOps,
+{
+    // For TableId: fetch warehouse and table in parallel first
+    let (warehouse_result, table_result) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+        C::get_view_info(
+            warehouse_id,
+            user_provided_view,
+            table_flags,
+            catalog_state.clone()
+        )
+    );
+
+    // Validate warehouse and table presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse_result)?;
+    let view_info =
+        authorizer.require_view_presence(warehouse_id, user_provided_view, table_result)?;
+
+    // Fetch namespace with cache policy to ensure it's at least as fresh as the table
+    let namespace_result = C::get_namespace_cache_aware(
+        warehouse_id,
+        view_info.view_ident().namespace.clone(), // Must fetch via name to ensure consistency. Id is checked later
+        CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
+        catalog_state.clone(),
+    )
+    .await;
+
+    let namespace = authorizer.require_namespace_presence(
+        warehouse_id,
+        view_info.namespace_id,
+        namespace_result,
+    )?;
+
+    Ok((warehouse, namespace, view_info))
+}

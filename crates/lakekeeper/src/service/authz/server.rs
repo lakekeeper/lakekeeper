@@ -91,6 +91,29 @@ pub trait AuthZServerOps: Authorizer {
         .map(MustUse::from)
     }
 
+    async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Copy + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        actions: &[A],
+    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; actions.len()])
+        } else {
+            let converted = actions.iter().map(|a| (*a).into()).collect::<Vec<_>>();
+            let decisions = self
+                .are_allowed_server_actions_impl(metadata, &converted)
+                .await?;
+
+            debug_assert!(
+                decisions.len() == actions.len(),
+                "Mismatched server decision lengths",
+            );
+
+            Ok(decisions)
+        }
+        .map(MustUse::from)
+    }
+
     async fn require_server_action(
         &self,
         metadata: &RequestMetadata,

@@ -49,7 +49,7 @@ pub struct RequestMetadata {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("This endpoint requires a project ID to be specified, but none was provided.")]
+#[error("This endpoint requires a project ID to be specified, but none was provided. Please set the x-project-id header.")]
 pub struct ProjectIdMissing;
 
 impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {

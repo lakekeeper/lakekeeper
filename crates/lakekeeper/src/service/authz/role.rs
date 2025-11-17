@@ -91,6 +91,32 @@ pub trait AuthZRoleOps: Authorizer {
         .map(MustUse::from)
     }
 
+    async fn are_allowed_role_actions_vec<A: Into<Self::RoleAction> + Send + Copy + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        roles_with_actions: &[(RoleId, A)],
+    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; roles_with_actions.len()])
+        } else {
+            let converted: Vec<(RoleId, Self::RoleAction)> = roles_with_actions
+                .iter()
+                .map(|(id, action)| (*id, (*action).into()))
+                .collect();
+            let decisions = self
+                .are_allowed_role_actions_impl(metadata, &converted)
+                .await?;
+
+            debug_assert!(
+                decisions.len() == roles_with_actions.len(),
+                "Mismatched role decision lengths",
+            );
+
+            Ok(decisions)
+        }
+        .map(MustUse::from)
+    }
+
     async fn require_role_action(
         &self,
         metadata: &RequestMetadata,

@@ -50,72 +50,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/default-project:
-    get:
-      tags:
-        - project
-      summary: Get Default Project
-      description: |-
-        Retrieves information about the user's default project.
-        This endpoint is deprecated and will be removed in a future version.
-      operationId: get_default_project_deprecated
-      responses:
-        '200':
-          description: Project details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetProjectResponse'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
-    delete:
-      tags:
-        - project
-      summary: Delete default Project
-      description: |-
-        Removes the user's default project and all its resources.
-        This endpoint is deprecated and will be removed in a future version.
-      operationId: delete_default_project_deprecated
-      responses:
-        '204':
-          description: Project deleted successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
-  /management/v1/default-project/rename:
-    post:
-      tags:
-        - project
-      summary: Rename the default project.
-      description: |-
-        Updates the name of the user's default project.
-        This endpoint is deprecated and will be removed in a future version.
-      operationId: rename_default_project_deprecated
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RenameProjectRequest'
-        required: true
-      responses:
-        '200':
-          description: Project renamed successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
   /management/v1/endpoint-statistics:
     post:
       tags:
@@ -988,7 +922,7 @@ paths:
         - project
       summary: Get Project
       description: Retrieves information about the user's default project.
-      operationId: get_default_project
+      operationId: get_project
       parameters:
         - name: x-project-id
           in: header
@@ -1038,7 +972,7 @@ paths:
       tags:
         - project
       summary: Delete Project
-      operationId: delete_default_project
+      operationId: delete_project
       parameters:
         - name: x-project-id
           in: header
@@ -1075,12 +1009,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/actions:
+    get:
+      tags:
+        - lakekeeper-actions
+      summary: Get allowed actions for a project
+      operationId: get_project_actions
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperProjectActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/rename:
     post:
       tags:
         - project
       summary: Rename Project
-      operationId: rename_default_project
+      operationId: rename_project
       parameters:
         - name: x-project-id
           in: header
@@ -1108,7 +1068,7 @@ paths:
       tags:
         - project
       summary: Get Project
-      operationId: get_project_by_id
+      operationId: get_project_by_id_deprecated
       parameters:
         - name: project_id
           in: path
@@ -1128,12 +1088,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
     delete:
       tags:
         - project
       summary: Delete Project by ID
       description: Permanently removes a specific project and all its associated resources.
-      operationId: delete_project_by_id
+      operationId: delete_project_by_id_deprecated
       parameters:
         - name: project_id
           in: path
@@ -1149,13 +1110,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
   /management/v1/project/{project_id}/rename:
     post:
       tags:
         - project
       summary: Rename Project by ID
       description: Updates the name of a specific project.
-      operationId: rename_project_by_id
+      operationId: rename_project_by_id_deprecated
       parameters:
         - name: project_id
           in: path
@@ -1177,6 +1139,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
   /management/v1/role:
     get:
       tags:
@@ -1270,6 +1233,7 @@ paths:
       parameters:
         - name: role_id
           in: path
+          description: Role ID
           required: true
           schema:
             type: string
@@ -1295,6 +1259,7 @@ paths:
       parameters:
         - name: role_id
           in: path
+          description: Role ID
           required: true
           schema:
             type: string
@@ -1327,6 +1292,7 @@ paths:
       parameters:
         - name: role_id
           in: path
+          description: Role ID
           required: true
           schema:
             type: string
@@ -1334,6 +1300,33 @@ paths:
       responses:
         '204':
           description: Role deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/actions:
+    get:
+      tags:
+        - lakekeeper-actions
+      summary: Get allowed actions for a role
+      operationId: get_role_actions
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperRoleActionsResponse'
         4XX:
           description: ''
           content:
@@ -1386,6 +1379,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchUserResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/server/actions:
+    get:
+      tags:
+        - lakekeeper-actions
+      summary: Get allowed server actions
+      operationId: get_server_actions
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperServerActionsResponse'
         4XX:
           description: ''
           content:
@@ -1551,6 +1563,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/actions:
+    get:
+      tags:
+        - user
+      summary: Get allowed actions on a user
+      operationId: get_user_actions
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperUserActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse:
     get:
       tags:
@@ -1669,6 +1706,33 @@ paths:
       responses:
         '204':
           description: Warehouse deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a warehouse
+      operationId: get_warehouse_actions
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperWarehouseActionsResponse'
         4XX:
           description: ''
           content:
@@ -1836,15 +1900,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
-    post:
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions:
+    get:
       tags:
         - warehouse
-      summary: Undrop Tabular
-      description: |-
-        Restores previously deleted tables or views to make them accessible again.
-        This endpoint is deprecated and will be removed soon.
-      operationId: undrop_tabulars_deprecated
+      summary: Get allowed actions for a namespace
+      operationId: get_namespace_actions
       parameters:
         - name: warehouse_id
           in: path
@@ -1852,22 +1913,25 @@ paths:
           schema:
             type: string
             format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UndropTabularsRequest'
-        required: true
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
       responses:
-        '204':
-          description: Tabular undropped successfully
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperNamespaceActionsResponse'
         4XX:
           description: ''
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
     get:
       tags:
@@ -2169,6 +2233,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a table
+      operationId: get_table_actions
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperTableActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -2460,6 +2556,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListTasksResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a view
+      operationId: get_view_actions
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperViewActionsResponse'
         4XX:
           description: ''
           content:
@@ -3266,6 +3394,78 @@ components:
 
             Can return statistics for a specific warehouse, all warehouses or requests that could not be
             associated to any warehouse.
+    GetLakekeeperNamespaceActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperNamespaceAction'
+    GetLakekeeperProjectActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperProjectAction'
+    GetLakekeeperRoleActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperRoleAction'
+    GetLakekeeperServerActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperServerAction'
+    GetLakekeeperTableActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperTableAction'
+    GetLakekeeperUserActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperRoleAction'
+    GetLakekeeperViewActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperRoleAction'
+    GetLakekeeperWarehouseActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperWarehouseAction'
     GetNamespaceAccessResponse:
       type: object
       required:
@@ -3524,6 +3724,92 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorModel'
+    LakekeeperNamespaceAction:
+      type: string
+      enum:
+        - CanCreateTable
+        - CanCreateView
+        - CanCreateNamespace
+        - CanDelete
+        - CanUpdateProperties
+        - CanGetMetadata
+        - CanListTables
+        - CanListViews
+        - CanListNamespaces
+        - CanListEverything
+        - CanSetProtection
+        - CanIncludeInList
+    LakekeeperProjectAction:
+      type: string
+      enum:
+        - CanCreateWarehouse
+        - CanDelete
+        - CanRename
+        - CanGetMetadata
+        - CanListWarehouses
+        - CanIncludeInList
+        - CanCreateRole
+        - CanListRoles
+        - CanSearchRoles
+        - CanGetEndpointStatistics
+    LakekeeperRoleAction:
+      type: string
+      enum:
+        - CanDrop
+        - CanGetMetadata
+        - CanCommit
+        - CanIncludeInList
+        - CanRename
+        - CanUndrop
+        - CanGetTasks
+        - CanControlTasks
+        - CanSetProtection
+    LakekeeperServerAction:
+      type: string
+      enum:
+        - CanCreateProject
+        - CanUpdateUsers
+        - CanDeleteUsers
+        - CanListUsers
+        - CanProvisionUsers
+    LakekeeperTableAction:
+      type: string
+      enum:
+        - CanDrop
+        - CanWriteData
+        - CanReadData
+        - CanGetMetadata
+        - CanCommit
+        - CanRename
+        - CanIncludeInList
+        - CanUndrop
+        - CanGetTasks
+        - CanControlTasks
+        - CanSetProtection
+    LakekeeperWarehouseAction:
+      type: string
+      enum:
+        - CanCreateNamespace
+        - CanDelete
+        - CanUpdateStorage
+        - CanUpdateStorageCredential
+        - CanGetMetadata
+        - CanGetConfig
+        - CanListNamespaces
+        - CanListEverything
+        - CanUse
+        - CanIncludeInList
+        - CanDeactivate
+        - CanActivate
+        - CanRename
+        - CanListDeletedTabulars
+        - CanModifySoftDeletion
+        - CanGetTaskQueueConfig
+        - CanModifyTaskQueueConfig
+        - CanGetAllTasks
+        - CanControlAllTasks
+        - CanSetProtection
+        - CanGetEndpointStatistics
     LicenseStatus:
       type: object
       description: Status of license validation
