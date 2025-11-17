@@ -184,7 +184,7 @@ generate_endpoints! {
         UpdateUser(PUT, "/management/v1/user/{user_id}"),
         ListUser(GET, "/management/v1/user"),
         DeleteUser(DELETE, "/management/v1/user/{user_id}"),
-        GetUserActions(PUT, "/management/v1/user/{user_id}/actions"),
+        GetUserActions(GET, "/management/v1/user/{user_id}/actions"),
         CreateRole(POST, "/management/v1/role"),
         SearchRole(POST, "/management/v1/search/role"),
         ListRole(GET, "/management/v1/role"),
@@ -198,7 +198,7 @@ generate_endpoints! {
         GetProject(GET, "/management/v1/project"),
         DeleteProject(DELETE, "/management/v1/project"),
         RenameProject(POST, "/management/v1/project/rename"),
-        GetProjectActions(POST, "/management/v1/project/actions"),
+        GetProjectActions(GET, "/management/v1/project/actions"),
         ListWarehouses(GET, "/management/v1/warehouse"),
         GetWarehouse(GET, "/management/v1/warehouse/{warehouse_id}"),
         GetWarehouseActions(GET, "/management/v1/warehouse/{warehouse_id}/actions"),
@@ -216,10 +216,10 @@ generate_endpoints! {
         UndropTabulars(POST, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"),
         GetTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         SetTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
-        GetTableActions(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions"),
+        GetTableActions(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions"),
         GetViewProtection(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         SetViewProtection(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
-        GetViewActions(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
+        GetViewActions(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
         SetNamespaceProtection(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceProtection(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceActions(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions"),
@@ -440,6 +440,19 @@ mod test {
             if matches!(endpoint, Endpoint::PermissionV1(_))
                 || matches!(endpoint, Endpoint::Sign(_))
             {
+                continue;
+            }
+
+            // Deprecated endpoints
+            if matches!(
+                endpoint,
+                Endpoint::ManagementV1(
+                    ManagementV1Endpoint::DeleteDefaultProjectDeprecated
+                        | ManagementV1Endpoint::GetDefaultProjectDeprecated
+                        | ManagementV1Endpoint::RenameDefaultProjectDeprecated
+                        | ManagementV1Endpoint::UndropTabularsDeprecated
+                )
+            ) {
                 continue;
             }
 
