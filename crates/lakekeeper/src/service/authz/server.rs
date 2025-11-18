@@ -4,8 +4,9 @@ use crate::{
     api::RequestMetadata,
     service::{
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
-            CatalogServerAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         Actor, ServerId,
     },
@@ -95,12 +96,15 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         action: impl Into<Self::ServerAction> + Send,
-    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_server_action_impl(metadata, for_user, action.into())
-                .await
+            let [decision] = self
+                .are_allowed_server_actions_arr(metadata, for_user, &[action])
+                .await?
+                .into_inner();
+            Ok(decision)
         }
         .map(MustUse::from)
     }
@@ -127,6 +131,26 @@ pub trait AuthZServerOps: Authorizer {
             Ok(decisions)
         }
         .map(MustUse::from)
+    }
+
+    async fn are_allowed_server_actions_arr<
+        const N: usize,
+        A: Into<Self::ServerAction> + Send + Copy + Sync,
+    >(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        actions: &[A; N],
+    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+        let result = self
+            .are_allowed_server_actions_vec(metadata, for_user, actions)
+            .await?
+            .into_inner();
+        let n_returned = result.len();
+        let arr: [bool; N] = result
+            .try_into()
+            .map_err(|_| AuthorizationCountMismatch::new(N, n_returned, "server"))?;
+        Ok(MustUse::from(arr))
     }
 
     async fn require_server_action(

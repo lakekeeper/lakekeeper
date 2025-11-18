@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use http::StatusCode;
 use lakekeeper::{
     api::{
-        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery, UserOrRole},
+        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
         ApiContext, RequestMetadata,
     },
     axum::{
@@ -14,7 +14,8 @@ use lakekeeper::{
         Extension, Json, Router,
     },
     service::{
-        Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
+        authz::UserOrRole, Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State,
+        TableId, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -1704,7 +1705,7 @@ mod tests {
             let result = checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id.clone()),
-                vec![RoleAssignment::Assignee(role_id.into())],
+                vec![RoleAssignment::Assignee(role_id.into_assignees().into())],
                 vec![],
                 &role_id.to_openfga(),
             )
@@ -1790,6 +1791,7 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
                     &RequestMetadata::test_user(user_id_assignee.clone()),
+                    None,
                     &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
@@ -1812,6 +1814,7 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
                     &RequestMetadata::test_user(user_id_assignee.clone()),
+                    None,
                     &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
@@ -1950,7 +1953,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into()),
+                Some(&role_id.into_assignees().into()),
             )
             .await
             .unwrap();
@@ -1973,7 +1976,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into()),
+                Some(&role_id.into_assignees().into()),
             )
             .await
             .unwrap();
@@ -2047,7 +2050,7 @@ mod tests {
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     RoleAssignment::Assignee(user_id_owner.into()),
-                    RoleAssignment::Assignee(role_id_2.into()),
+                    RoleAssignment::Assignee(role_id_2.into_assignees().into()),
                 ],
                 vec![],
                 &role_id_1.to_openfga(),
@@ -2212,7 +2215,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_warehouse_actions_impl(&metadata, &actions)
+                .are_allowed_warehouse_actions_impl(&metadata, None, &actions)
                 .await
                 .unwrap();
 
@@ -2267,7 +2270,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
                 .await
                 .unwrap();
 
@@ -2315,7 +2318,7 @@ mod tests {
                 .collect::<Vec<_>>();
 
             let results = authorizer
-                .are_allowed_project_actions_impl(&metadata, &actions)
+                .are_allowed_project_actions_impl(&metadata, None, &actions)
                 .await
                 .unwrap();
 
@@ -2350,7 +2353,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
                 .await
                 .unwrap();
 
@@ -2401,7 +2404,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
                 .await
                 .unwrap();
 

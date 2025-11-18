@@ -119,14 +119,13 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_role_action_impl(
+    async fn are_allowed_role_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _role_id: RoleId,
-        _action: Self::RoleAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        roles_with_actions: &[(RoleId, Self::RoleAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; roles_with_actions.len()])
     }
 
     async fn is_allowed_server_action_impl(

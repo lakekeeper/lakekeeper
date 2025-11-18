@@ -491,72 +491,19 @@ where
         Ok(results)
     }
 
-    /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
-    /// Return Err for internal errors.
-    async fn is_allowed_role_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
-        role_id: RoleId,
-        action: Self::RoleAction,
-    ) -> Result<bool, IsAllowedActionError>;
-
     async fn are_allowed_role_actions_impl(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(RoleId, Self::RoleAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let n_inputs = roles_with_actions.len();
-        let futures: Vec<_> = roles_with_actions
-            .iter()
-            .map(|(role, a)| async move {
-                self.is_allowed_role_action(metadata, for_user, *role, *a)
-                    .await
-                    .map(MustUse::into_inner)
-            })
-            .collect();
-        let results = try_join_all(futures).await?;
-        debug_assert_eq!(
-            results.len(),
-            n_inputs,
-            "are_allowed_role_actions_impl to return as many results as provided inputs"
-        );
-        Ok(results)
-    }
-
-    /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
-    /// Return Err for internal errors.
-    async fn is_allowed_server_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
-        action: Self::ServerAction,
-    ) -> Result<bool, IsAllowedActionError>;
+    ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     async fn are_allowed_server_actions_impl(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         actions: &[Self::ServerAction],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let n_inputs = actions.len();
-        let futures: Vec<_> = actions
-            .iter()
-            .map(|a| async move {
-                self.is_allowed_server_action(metadata, for_user, *a)
-                    .await
-                    .map(MustUse::into_inner)
-            })
-            .collect();
-        let results = try_join_all(futures).await?;
-        debug_assert_eq!(
-            results.len(),
-            n_inputs,
-            "are_allowed_server_actions_impl to return as many results as provided inputs"
-        );
-        Ok(results)
-    }
+    ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
@@ -1074,17 +1021,22 @@ pub(crate) mod tests {
             Ok(true)
         }
 
-        async fn is_allowed_role_action_impl(
+        async fn are_allowed_role_actions_impl(
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
-            role_id: RoleId,
-            action: CatalogRoleAction,
-        ) -> Result<bool, IsAllowedActionError> {
-            if self.action_is_blocked(format!("role:{action}").as_str()) {
-                return Ok(false);
-            }
-            Ok(self.check_available(format!("role:{role_id}").as_str()))
+            roles_with_actions: &[(RoleId, Self::RoleAction)],
+        ) -> Result<Vec<bool>, IsAllowedActionError> {
+            let results: Vec<bool> = roles_with_actions
+                .iter()
+                .map(|(role_id, action)| {
+                    if self.action_is_blocked(format!("role:{action}").as_str()) {
+                        return false;
+                    }
+                    self.check_available(format!("role:{role_id}").as_str())
+                })
+                .collect();
+            Ok(results)
         }
 
         async fn is_allowed_server_action_impl(

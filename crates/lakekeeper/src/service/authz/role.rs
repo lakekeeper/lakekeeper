@@ -4,8 +4,9 @@ use crate::{
     api::RequestMetadata,
     service::{
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
-            CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogRoleAction,
+            MustUse, UserOrRole,
         },
         Actor, RoleId,
     },
@@ -63,12 +64,14 @@ pub enum RequireRoleActionError {
     AuthZRoleActionForbidden(AuthZRoleActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizationCountMismatch(AuthorizationCountMismatch),
 }
-impl From<IsAllowedActionError> for RequireRoleActionError {
-    fn from(err: IsAllowedActionError) -> Self {
+impl From<BackendUnavailableOrCountMismatch> for RequireRoleActionError {
+    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
         }
     }
 }
@@ -78,6 +81,7 @@ impl From<RequireRoleActionError> for ErrorModel {
             RequireRoleActionError::AuthZRoleActionForbidden(e) => e.into(),
             RequireRoleActionError::AuthorizationBackendUnavailable(e) => e.into(),
             RequireRoleActionError::CannotInspectPermissions(e) => e.into(),
+            RequireRoleActionError::AuthorizationCountMismatch(e) => e.into(),
         }
     }
 }
@@ -94,13 +98,16 @@ pub trait AuthZRoleOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         role_id: RoleId,
-        action: impl Into<Self::RoleAction> + Send,
-    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+        action: impl Into<Self::RoleAction> + Send + Copy + Sync,
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_role_action_impl(metadata, for_user, role_id, action.into())
-                .await
+            let [decision] = self
+                .are_allowed_role_actions_arr(metadata, for_user, &[(role_id, action)])
+                .await?
+                .into_inner();
+            Ok(decision)
         }
         .map(MustUse::from)
     }
@@ -110,7 +117,7 @@ pub trait AuthZRoleOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(RoleId, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; roles_with_actions.len()])
         } else {
@@ -130,6 +137,26 @@ pub trait AuthZRoleOps: Authorizer {
             Ok(decisions)
         }
         .map(MustUse::from)
+    }
+
+    async fn are_allowed_role_actions_arr<
+        const N: usize,
+        A: Into<Self::RoleAction> + Send + Copy + Sync,
+    >(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        roles_with_actions: &[(RoleId, A); N],
+    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+        let result = self
+            .are_allowed_role_actions_vec(metadata, for_user, roles_with_actions)
+            .await?
+            .into_inner();
+        let n_returned = result.len();
+        let arr: [bool; N] = result
+            .try_into()
+            .map_err(|_| AuthorizationCountMismatch::new(N, n_returned, "role"))?;
+        Ok(MustUse::from(arr))
     }
 
     async fn require_role_action(

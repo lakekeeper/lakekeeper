@@ -11,7 +11,8 @@ use lakekeeper::{
     service::{
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CatalogProjectAction, CatalogRoleAction,
-            CatalogServerAction, CatalogUserAction, ListProjectsResponse, NamespaceParent,
+            CatalogServerAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
+            NamespaceParent, UserOrRole,
         },
         health::Health,
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
@@ -184,34 +185,77 @@ impl Authorizer for OpenFGAAuthorizer {
         Ok(metadata.actor().is_authenticated())
     }
 
-    async fn is_allowed_role_action_impl(
+    // async fn is_allowed_role_action_impl(
+    //     &self,
+    //     metadata: &RequestMetadata,
+    //     for_user: Option<&UserOrRole>,
+    //     role_id: RoleId,
+    //     action: Self::RoleAction,
+    // ) -> Result<bool, IsAllowedActionError> {
+    //     if CatalogRoleAction::CanRead == action {
+    //         // Everyone with access to the catalog can read role metadata.
+    //         // This does not include assignments to the role.
+    //         // Used for cross-project role get.
+    //         return Ok(true);
+    //     }
+
+    //     self.check(CheckRequestTupleKey {
+    //         user: metadata.actor().to_openfga(),
+    //         relation: action.to_string(),
+    //         object: role_id.to_openfga(),
+    //     })
+    //     .await
+    //     .map_err(Into::into)
+    // }
+
+    async fn are_allowed_role_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        role_id: RoleId,
-        action: Self::RoleAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        if CatalogRoleAction::CanRead == action {
-            // Everyone with access to the catalog can read role metadata.
-            // This does not include assignments to the role.
-            // Used for cross-project role get.
-            return Ok(true);
+        for_user: Option<&UserOrRole>,
+        roles_with_actions: &[(RoleId, Self::RoleAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        // Everyone with access to the catalog can read role metadata.
+        // This does not include assignments to the role.
+        // Used for cross-project role get.
+
+        // Separate CanRead actions from others to avoid unnecessary batch checks
+        let mut results = Vec::with_capacity(roles_with_actions.len());
+        let mut batch_items = Vec::new();
+        let mut batch_indices = Vec::new();
+
+        for (idx, (role, action)) in roles_with_actions.iter().enumerate() {
+            if *action == CatalogRoleAction::CanRead {
+                results.push((idx, true));
+            } else {
+                batch_indices.push(idx);
+                batch_items.push(CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: action.to_string(),
+                    object: role.to_openfga(),
+                });
+            }
         }
 
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: role_id.to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        // Only perform batch check if there are non-CanRead actions
+        if !batch_items.is_empty() {
+            let batch_results = self.batch_check(batch_items).await?;
+            for (batch_idx, &result) in batch_results.iter().enumerate() {
+                results.push((batch_indices[batch_idx], result));
+            }
+        }
+
+        // Sort by original index and extract boolean values
+        results.sort_by_key(|(idx, _)| *idx);
+        Ok(results.into_iter().map(|(_, allowed)| allowed).collect())
     }
 
     async fn is_allowed_user_action_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         user_id: &UserId,
         action: Self::UserAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         let actor = metadata.actor();
 
         let is_same_user = match actor {
@@ -254,26 +298,30 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_server_action_impl(
+    async fn are_allowed_server_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        action: Self::ServerAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: self.openfga_server().clone(),
-        })
-        .await
-        .map_err(Into::into)
+        for_user: Option<&UserOrRole>,
+        actions: &[Self::ServerAction],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let items: Vec<_> = actions
+            .iter()
+            .map(|a| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: self.openfga_server().clone(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
     }
 
     async fn is_allowed_project_action_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         project_id: &ProjectId,
         action: Self::ProjectAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -286,8 +334,9 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_project_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
         let items: Vec<_> = projects_with_actions
             .iter()
             .map(|(project, a)| CheckRequestTupleKey {
@@ -302,9 +351,10 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         action: Self::WarehouseAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -317,8 +367,9 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
         let items: Vec<_> = warehouses_with_actions
             .iter()
             .map(|(wh, a)| CheckRequestTupleKey {
@@ -333,10 +384,11 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_namespace_action_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         namespace: &NamespaceHierarchy,
         action: Self::NamespaceAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -349,9 +401,10 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
-    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
         let items: Vec<_> = actions
             .iter()
             .map(|(namespace, a)| CheckRequestTupleKey {
@@ -366,11 +419,12 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_table_action_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         action: Self::TableAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         let warehouse_id = table.warehouse_id();
         let table_id = table.table_id();
         self.check(CheckRequestTupleKey {
@@ -385,6 +439,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_table_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         tables_with_actions: &[(
@@ -392,7 +447,7 @@ impl Authorizer for OpenFGAAuthorizer {
             &impl AuthZTableInfo,
             Self::TableAction,
         )],
-    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
         let items: Vec<_> = tables_with_actions
             .iter()
             .map(|(_ns, table, a)| CheckRequestTupleKey {
@@ -407,11 +462,12 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_view_action_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: Self::ViewAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -424,10 +480,11 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_view_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
-    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
         let items: Vec<_> = views_with_actions
             .iter()
             .map(|(_ns, view, a)| CheckRequestTupleKey {
