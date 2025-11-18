@@ -5,7 +5,10 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::RequestMetadata,
     service::{
-        authz::{AuthorizationBackendUnavailable, Authorizer, CatalogProjectAction, MustUse},
+        authz::{
+            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
+            CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole,
+        },
         Actor,
     },
     ProjectId,
@@ -70,12 +73,22 @@ impl From<AuthZProjectActionForbidden> for IcebergErrorResponse {
 pub enum RequireProjectActionError {
     AuthZProjectActionForbidden(AuthZProjectActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
+    CannotInspectPermissions(CannotInspectPermissions),
+}
+impl From<IsAllowedActionError> for RequireProjectActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+        }
+    }
 }
 impl From<RequireProjectActionError> for ErrorModel {
     fn from(err: RequireProjectActionError) -> Self {
         match err {
             RequireProjectActionError::AuthZProjectActionForbidden(e) => e.into(),
             RequireProjectActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            RequireProjectActionError::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -101,8 +114,9 @@ pub trait AuthZProjectOps: Authorizer {
     async fn are_allowed_project_actions_vec<A: Into<Self::ProjectAction> + Send + Copy + Sync>(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ProjectId, A)],
-    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; projects_with_actions.len()])
         } else {
@@ -110,7 +124,7 @@ pub trait AuthZProjectOps: Authorizer {
                 .iter()
                 .map(|(id, action)| (*id, (*action).into()))
                 .collect();
-            let decisions = self.are_allowed_project_actions_impl(metadata, &converted)
+            let decisions = self.are_allowed_project_actions_impl(metadata, for_user, &converted)
                 .await;
 
             #[cfg(debug_assertions)]
@@ -132,13 +146,14 @@ pub trait AuthZProjectOps: Authorizer {
     async fn is_allowed_project_action(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         project_id: &ProjectId,
         action: impl Into<Self::ProjectAction> + Send,
-    ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_project_action_impl(metadata, project_id, action.into())
+            self.is_allowed_project_action_impl(metadata, for_user, project_id, action.into())
                 .await
         }
         .map(MustUse::from)
@@ -151,7 +166,7 @@ pub trait AuthZProjectOps: Authorizer {
         action: CatalogProjectAction,
     ) -> Result<(), RequireProjectActionError> {
         if self
-            .is_allowed_project_action(metadata, project_id, action)
+            .is_allowed_project_action(metadata, None, project_id, action)
             .await?
             .into_inner()
         {

@@ -13,8 +13,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, ListProjectsResponse,
-            NamespaceParent,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
+            ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
         AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId, ProjectId,
@@ -112,76 +112,84 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_user_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _user_id: &UserId,
         _action: Self::UserAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_role_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _role_id: RoleId,
         _action: Self::RoleAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_server_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_principal: Option<&UserOrRole>,
         _action: CatalogServerAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_project_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _project_id: &ProjectId,
         _action: CatalogProjectAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_warehouse_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _action: Self::WarehouseAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_namespace_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         _action: Self::NamespaceAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_table_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         _table: &impl AuthZTableInfo,
         _action: Self::TableAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 
     async fn is_allowed_view_action_impl(
         &self,
         _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _namespace: &NamespaceHierarchy,
         _view: &impl AuthZViewInfo,
         _action: Self::ViewAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, IsAllowedActionError> {
         Ok(true)
     }
 

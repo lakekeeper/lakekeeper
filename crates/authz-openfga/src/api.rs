@@ -4,15 +4,17 @@ use std::collections::HashSet;
 
 use http::StatusCode;
 use lakekeeper::{
-    api::{ApiContext, RequestMetadata},
+    api::{
+        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery, UserOrRole},
+        ApiContext, RequestMetadata,
+    },
     axum::{
         extract::{Path, Query, State as AxumState},
         routing::{get, post},
         Extension, Json, Router,
     },
     service::{
-        Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId,
-        ViewId,
+        Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -38,54 +40,16 @@ use super::{
         NamespaceRelation as AllNamespaceRelations, ProjectAssignment,
         ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
         RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
-        TableAssignment, TableRelation as AllTableRelations, UserOrRole, ViewAssignment,
+        TableAssignment, TableRelation as AllTableRelations, ViewAssignment,
         ViewRelation as AllViewRelations, WarehouseAssignment,
         WarehouseRelation as AllWarehouseRelation,
     },
 };
 #[cfg(feature = "open-api")]
 use crate::check::__path_check;
-use crate::{
-    entities::OpenFgaEntity, models::RoleIdExt as _, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
-};
+use crate::{entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult};
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
-
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
-#[serde(rename_all = "camelCase")]
-struct GetAccessQuery {
-    /// The user or role to show access for.
-    /// If not specified, shows access for the current user.
-    #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(required = false, value_type=String))]
-    principal_user: Option<UserId>,
-    #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(required = false, value_type=Uuid))]
-    principal_role: Option<RoleId>,
-}
-
-struct ParsedAccessQuery {
-    principal: Option<UserOrRole>,
-}
-
-impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
-    type Error = OpenFGAError;
-
-    fn try_from(query: GetAccessQuery) -> Result<Self, Self::Error> {
-        let principal = match (query.principal_user, query.principal_role) {
-            (Some(user), None) => Some(UserOrRole::User(user)),
-            (None, Some(role)) => Some(UserOrRole::Role(role.into_assignees())),
-            (Some(_), Some(_)) => {
-                return Err(OpenFGAError::InvalidQuery(
-                    "Cannot specify both user and role in GetAccessQuery".to_string(),
-                ))
-            }
-            (None, None) => None,
-        };
-        Ok(Self { principal })
-    }
-}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]

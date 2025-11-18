@@ -89,6 +89,7 @@ where
             authorizer
                 .are_allowed_tabular_actions_vec(
                     &request_metadata,
+                    None,
                     &warehouse,
                     &namespaces,
                     &actions,

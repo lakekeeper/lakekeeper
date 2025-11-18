@@ -3,9 +3,9 @@ use lakekeeper::service::{
     authz::{
         CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
         CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, NamespaceAction,
-        ProjectAction, ServerAction, TableAction, ViewAction, WarehouseAction,
+        ProjectAction, RoleAssignee, ServerAction, TableAction, UserOrRole, ViewAction,
+        WarehouseAction,
     },
-    Actor, RoleId,
 };
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
@@ -13,7 +13,6 @@ use strum_macros::EnumIter;
 
 use crate::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
-    models::RoleAssignee,
     FgaType, OpenFGAError, OpenFGAResult,
 };
 
@@ -43,51 +42,6 @@ pub(super) trait ReducedRelation:
 
 pub(super) trait GrantableRelation: ReducedRelation {
     fn grant_relation(&self) -> Self::OpenFgaRelation;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-/// Identifies a user or a role
-pub(super) enum UserOrRole {
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
-    /// Id of the user
-    User(UserId),
-    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleRole"))]
-    /// Id of the role
-    Role(RoleAssignee),
-}
-
-pub(crate) trait ActorExt {
-    #[must_use]
-    fn to_user_or_role(&self) -> Option<UserOrRole>;
-}
-
-impl ActorExt for Actor {
-    fn to_user_or_role(&self) -> Option<UserOrRole> {
-        match self {
-            Actor::Principal(user) => Some(UserOrRole::User(user.clone())),
-            Actor::Role {
-                assumed_role,
-                principal: _,
-            } => Some(UserOrRole::Role(RoleAssignee::from_role(*assumed_role))),
-            Actor::Anonymous => None,
-        }
-    }
-}
-
-impl From<UserId> for UserOrRole {
-    fn from(user: UserId) -> Self {
-        UserOrRole::User(user)
-    }
-}
-
-impl From<RoleId> for UserOrRole {
-    fn from(role: RoleId) -> Self {
-        UserOrRole::Role(RoleAssignee::from_role(role))
-    }
 }
 
 impl ParseOpenFgaEntity for UserOrRole {

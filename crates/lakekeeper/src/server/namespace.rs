@@ -113,6 +113,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 || authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
+                        None,
                         &warehouse,
                         &parent_namespace,
                         CatalogNamespaceAction::CanListEverything,
@@ -156,6 +157,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         authorizer
                             .are_allowed_namespace_actions_vec(
                                 &request_metadata,
+                                None,
                                 &warehouse,
                                 &responses
                                     .iter()

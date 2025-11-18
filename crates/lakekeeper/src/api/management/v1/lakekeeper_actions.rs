@@ -1,4 +1,5 @@
-use serde::Serialize;
+use iceberg_ext::catalog::rest::ErrorModel;
+use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::{
@@ -10,13 +11,60 @@ use crate::{
             AuthZProjectOps, AuthZRoleOps, AuthZServerOps, AuthZTableOps, AuthZUserOps,
             AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, UserOrRole,
         },
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceId, Result,
         RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewId, WarehouseStatus,
     },
     ProjectId, WarehouseId,
 };
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+#[serde(rename_all = "camelCase")]
+pub struct GetAccessQuery {
+    /// The user to show access for.
+    /// If neither user nor role is specified, shows access for the current user.
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", param(required = false, value_type=String))]
+    pub principal_user: Option<UserId>,
+    /// The role to show access for.
+    /// If neither user nor role is specified, shows access for the current user.
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", param(required = false, value_type=Uuid))]
+    pub principal_role: Option<RoleId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedAccessQuery {
+    pub principal: Option<UserOrRole>,
+}
+
+impl GetAccessQuery {
+    pub fn try_parse(self) -> Result<ParsedAccessQuery, ErrorModel> {
+        ParsedAccessQuery::try_from(self)
+    }
+}
+
+impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
+    type Error = ErrorModel;
+
+    fn try_from(query: GetAccessQuery) -> Result<Self, ErrorModel> {
+        let principal = match (query.principal_user, query.principal_role) {
+            (Some(user), None) => Some(UserOrRole::User(user)),
+            (None, Some(role)) => Some(UserOrRole::Role(role.into_assignees())),
+            (Some(_), Some(_)) => {
+                return Err(ErrorModel::bad_request(
+                    "Cannot specify both user and role in GetAccessQuery".to_string(),
+                    "InvalidGetAccessQuery",
+                    None,
+                ))
+            }
+            (None, None) => None,
+        };
+        Ok(Self { principal })
+    }
+}
 
 /// Macro to generate action response structs
 macro_rules! action_response {
@@ -49,11 +97,13 @@ action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
 pub(super) async fn get_allowed_server_actions(
     authorizer: impl Authorizer,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
 ) -> Result<Vec<CatalogServerAction>> {
+    let for_user = query.try_parse()?.principal;
     let actions = CatalogServerAction::VARIANTS;
 
     let results = authorizer
-        .are_allowed_server_actions_vec(request_metadata, actions)
+        .are_allowed_server_actions_vec(request_metadata, for_user.as_ref(), actions)
         .await?
         .into_inner();
 
@@ -77,14 +127,17 @@ pub(super) async fn get_allowed_server_actions(
 pub(super) async fn get_allowed_user_actions(
     authorizer: impl Authorizer,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     object: UserId,
 ) -> Result<Vec<CatalogUserAction>> {
+    let for_user = query.try_parse()?.principal;
     let actions = CatalogUserAction::VARIANTS;
     let can_see_permission = CatalogUserAction::CanRead;
 
     let results = authorizer
         .are_allowed_user_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &actions
                 .iter()
                 .map(|action| (&object, *action))
@@ -115,14 +168,17 @@ pub(super) async fn get_allowed_user_actions(
 pub(super) async fn get_allowed_role_actions(
     authorizer: impl Authorizer,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     object: RoleId,
 ) -> Result<Vec<CatalogRoleAction>> {
+    let for_user = query.try_parse()?.principal;
     let actions = CatalogRoleAction::VARIANTS;
     let can_see_permission = CatalogRoleAction::CanRead;
 
     let results = authorizer
         .are_allowed_role_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &actions
                 .iter()
                 .map(|action| (object, *action))
@@ -153,14 +209,17 @@ pub(super) async fn get_allowed_role_actions(
 pub(super) async fn get_allowed_project_actions(
     authorizer: impl Authorizer,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     object: &ProjectId,
 ) -> Result<Vec<CatalogProjectAction>> {
+    let for_user = query.try_parse()?.principal;
     let actions = CatalogProjectAction::VARIANTS;
     let can_see_permission = CatalogProjectAction::CanGetMetadata;
 
     let results = authorizer
         .are_allowed_project_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &actions
                 .iter()
                 .map(|action| (object, *action))
@@ -195,8 +254,10 @@ pub(super) async fn get_allowed_warehouse_actions<
 >(
     context: ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     object: WarehouseId,
 ) -> Result<Vec<CatalogWarehouseAction>> {
+    let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let actions = CatalogWarehouseAction::VARIANTS;
     let can_see_permission = CatalogWarehouseAction::CanIncludeInList;
@@ -213,6 +274,7 @@ pub(super) async fn get_allowed_warehouse_actions<
     let results = authorizer
         .are_allowed_warehouse_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &actions
                 .iter()
                 .map(|action| (&*warehouse, *action))
@@ -247,9 +309,11 @@ pub(super) async fn get_allowed_namespace_actions<
 >(
     context: ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     warehouse_id: WarehouseId,
     provided_namespace_id: NamespaceId,
 ) -> Result<Vec<CatalogNamespaceAction>> {
+    let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let actions = CatalogNamespaceAction::VARIANTS;
     let can_see_permission = CatalogNamespaceAction::CanIncludeInList;
@@ -270,6 +334,7 @@ pub(super) async fn get_allowed_namespace_actions<
     let results = authorizer
         .are_allowed_namespace_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &warehouse,
             &actions
                 .iter()
@@ -301,9 +366,11 @@ pub(super) async fn get_allowed_namespace_actions<
 pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
     context: ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     warehouse_id: WarehouseId,
     table_id: TableId,
 ) -> Result<Vec<CatalogTableAction>> {
+    let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let catalog_state = context.v1_state.catalog;
     let actions = CatalogTableAction::VARIANTS;
@@ -338,6 +405,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
     let results = authorizer
         .are_allowed_table_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &warehouse,
             &parents_map,
             &actions
@@ -370,9 +438,11 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
 pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
     context: ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
+    query: GetAccessQuery,
     warehouse_id: WarehouseId,
     view_id: ViewId,
 ) -> Result<Vec<CatalogViewAction>> {
+    let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let catalog_state = context.v1_state.catalog;
     let actions = CatalogViewAction::VARIANTS;
@@ -407,6 +477,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
     let results = authorizer
         .are_allowed_view_actions_vec(
             request_metadata,
+            for_user.as_ref(),
             &warehouse,
             &parents_map,
             &actions

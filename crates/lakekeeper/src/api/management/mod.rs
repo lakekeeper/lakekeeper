@@ -71,6 +71,7 @@ pub mod v1 {
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
+                lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
@@ -127,6 +128,7 @@ pub mod v1 {
     get,
     tag = "server",
     path = ManagementV1Endpoint::GetServerActions.path(),
+    params(GetAccessQuery),
     responses(
         (status = 200, body = GetLakekeeperServerActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -135,9 +137,10 @@ pub mod v1 {
     async fn get_server_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperServerActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_server_actions(authorizer, &metadata).await?;
+        let relations = get_allowed_server_actions(authorizer, &metadata, query).await?;
 
         Ok((
             StatusCode::OK,
@@ -248,7 +251,7 @@ pub mod v1 {
         get,
         tag = "user",
         path = ManagementV1Endpoint::GetUserActions.path(),
-        params(("user_id" = String,)),
+        params(GetAccessQuery, ("user_id" = String,)),
         responses(
             (status = 200, body = GetLakekeeperUserActionsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -258,9 +261,10 @@ pub mod v1 {
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperUserActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_user_actions(authorizer, &metadata, user_id).await?;
+        let relations = get_allowed_user_actions(authorizer, &metadata, query, user_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -512,7 +516,7 @@ pub mod v1 {
     get,
     tag = "role",
     path = ManagementV1Endpoint::GetRoleActions.path(),
-    params(("role_id" = Uuid, Path, description = "Role ID"),),
+    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"),),
     responses(
         (status = 200, body = GetLakekeeperRoleActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -522,9 +526,10 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperRoleActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_role_actions(authorizer, &metadata, role_id).await?;
+        let relations = get_allowed_role_actions(authorizer, &metadata, query, role_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -735,7 +740,7 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "project",
-    params(("x-project-id" = String, Header, description = "Optional project ID"),),
+    params(GetAccessQuery, ("x-project-id" = String, Header, description = "Optional project ID"),),
     path = ManagementV1Endpoint::GetProjectActions.path(),
     responses(
         (status = 200, body = GetLakekeeperProjectActionsResponse),
@@ -745,11 +750,13 @@ pub mod v1 {
     async fn get_project_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperProjectActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
         let project_id = metadata.require_project_id(None)?;
 
-        let actions = get_allowed_project_actions(authorizer, &metadata, &project_id).await?;
+        let actions =
+            get_allowed_project_actions(authorizer, &metadata, query, &project_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -943,7 +950,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetWarehouseActions.path(),
-    params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"),),
+    params(GetAccessQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),),
     responses(
         (status = 200, body = GetLakekeeperWarehouseActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -953,9 +960,11 @@ pub mod v1 {
         Path(warehouse_id): Path<WarehouseId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperWarehouseActionsResponse>)> {
         let relations =
-            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, warehouse_id).await?;
+            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, query, warehouse_id)
+                .await?;
 
         Ok((
             StatusCode::OK,
@@ -1313,7 +1322,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetTableActions.path(),
-    params(("warehouse_id" = Uuid,),("table_id" = Uuid,)),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("table_id" = Uuid,)),
     responses(
         (status = 200, body = GetLakekeeperTableActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -1323,10 +1332,16 @@ pub mod v1 {
         Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperTableActionsResponse>)> {
-        let relations =
-            get_allowed_table_actions::<A, C, S>(api_context, &metadata, warehouse_id, table_id)
-                .await?;
+        let relations = get_allowed_table_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            table_id,
+        )
+        .await?;
 
         Ok((
             StatusCode::OK,
@@ -1397,7 +1412,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetViewActions.path(),
-    params(("warehouse_id" = Uuid,),("view_id" = Uuid,)),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("view_id" = Uuid,)),
     responses(
         (status = 200, body = GetLakekeeperViewActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -1407,10 +1422,16 @@ pub mod v1 {
         Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperViewActionsResponse>)> {
-        let relations =
-            get_allowed_view_actions::<A, C, S>(api_context, &metadata, warehouse_id, view_id)
-                .await?;
+        let relations = get_allowed_view_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            view_id,
+        )
+        .await?;
 
         Ok((
             StatusCode::OK,
@@ -1481,7 +1502,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetNamespaceActions.path(),
-    params(("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
     responses(
         (status = 200, body = GetLakekeeperNamespaceActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -1491,10 +1512,12 @@ pub mod v1 {
         Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperNamespaceActionsResponse>)> {
         let relations = get_allowed_namespace_actions::<A, C, S>(
             api_context,
             &metadata,
+            query,
             warehouse_id,
             namespace_id,
         )

@@ -12,6 +12,15 @@ use crate::service::{error_chain_fmt, impl_error_stack_methods};
 pub enum BackendUnavailableOrCountMismatch {
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
+    CannotInspectPermissions(CannotInspectPermissions),
+}
+impl From<IsAllowedActionError> for BackendUnavailableOrCountMismatch {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+        }
+    }
 }
 
 impl From<BackendUnavailableOrCountMismatch> for ErrorModel {
@@ -19,6 +28,7 @@ impl From<BackendUnavailableOrCountMismatch> for ErrorModel {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -71,6 +81,44 @@ impl From<AuthorizationCountMismatch> for ErrorModel {
 }
 impl From<AuthorizationCountMismatch> for IcebergErrorResponse {
     fn from(err: AuthorizationCountMismatch) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct CannotInspectPermissions {}
+
+impl From<CannotInspectPermissions> for ErrorModel {
+    fn from(_err: CannotInspectPermissions) -> Self {
+        ErrorModel::forbidden(
+            "Cannot inspect permissions for the specified user or role",
+            "CannotInspectPermissions",
+            None,
+        )
+    }
+}
+
+impl From<CannotInspectPermissions> for IcebergErrorResponse {
+    fn from(err: CannotInspectPermissions) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+#[derive(Debug, derive_more::From)]
+pub enum IsAllowedActionError {
+    AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
+    CannotInspectPermissions(CannotInspectPermissions),
+}
+impl From<IsAllowedActionError> for ErrorModel {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for IcebergErrorResponse {
+    fn from(err: IsAllowedActionError) -> Self {
         ErrorModel::from(err).into()
     }
 }

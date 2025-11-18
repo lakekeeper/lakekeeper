@@ -97,7 +97,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_server_action(&request_metadata, CatalogServerAction::CanCreateProject)
+            .require_server_action(
+                &request_metadata,
+                None,
+                CatalogServerAction::CanCreateProject,
+            )
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -231,6 +235,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             let decisions = authorizer
                 .are_allowed_project_actions_vec(
                     &request_metadata,
+                    None,
                     &projects
                         .iter()
                         .map(|p| (&p.project_id, CatalogProjectAction::CanGetMetadata))

@@ -3,7 +3,10 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::RequestMetadata,
     service::{
-        authz::{AuthorizationBackendUnavailable, Authorizer, CatalogServerAction, MustUse},
+        authz::{
+            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
+            CatalogServerAction, IsAllowedActionError, MustUse, UserOrRole,
+        },
         Actor, ServerId,
     },
 };
@@ -58,12 +61,22 @@ impl From<AuthZServerActionForbidden> for IcebergErrorResponse {
 pub enum RequireServerActionError {
     AuthZServerActionForbidden(AuthZServerActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
+    CannotInspectPermissions(CannotInspectPermissions),
+}
+impl From<IsAllowedActionError> for RequireServerActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+        }
+    }
 }
 impl From<RequireServerActionError> for ErrorModel {
     fn from(err: RequireServerActionError) -> Self {
         match err {
             RequireServerActionError::AuthZServerActionForbidden(e) => e.into(),
             RequireServerActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            RequireServerActionError::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -80,12 +93,13 @@ pub trait AuthZServerOps: Authorizer {
     async fn is_allowed_server_action(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         action: impl Into<Self::ServerAction> + Send,
-    ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_server_action_impl(metadata, action.into())
+            self.is_allowed_server_action_impl(metadata, for_user, action.into())
                 .await
         }
         .map(MustUse::from)
@@ -94,14 +108,15 @@ pub trait AuthZServerOps: Authorizer {
     async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Copy + Sync>(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         actions: &[A],
-    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
         } else {
             let converted = actions.iter().map(|a| (*a).into()).collect::<Vec<_>>();
             let decisions = self
-                .are_allowed_server_actions_impl(metadata, &converted)
+                .are_allowed_server_actions_impl(metadata, for_user, &converted)
                 .await?;
 
             debug_assert!(
@@ -117,11 +132,12 @@ pub trait AuthZServerOps: Authorizer {
     async fn require_server_action(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         action: impl Into<Self::ServerAction> + Send,
     ) -> Result<(), RequireServerActionError> {
         let action = action.into();
         if self
-            .is_allowed_server_action(metadata, action)
+            .is_allowed_server_action(metadata, for_user, action)
             .await?
             .into_inner()
         {

@@ -1,34 +1,4 @@
-use lakekeeper::service::RoleId;
-
 use crate::FgaType;
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-/// `OpenFGA` userset with `#assignee` suffix to represent role assignees
-pub(crate) struct RoleAssignee(RoleId);
-
-impl RoleAssignee {
-    #[must_use]
-    pub(crate) fn from_role(role: RoleId) -> Self {
-        RoleAssignee(role)
-    }
-
-    #[must_use]
-    pub(crate) fn role(&self) -> RoleId {
-        self.0
-    }
-}
-
-pub(crate) trait RoleIdExt {
-    #[must_use]
-    fn into_assignees(self) -> RoleAssignee;
-}
-
-impl RoleIdExt for RoleId {
-    fn into_assignees(self) -> RoleAssignee {
-        RoleAssignee::from_role(self)
-    }
-}
 
 pub(crate) trait OpenFgaType {
     fn user_of(&self) -> &[FgaType];

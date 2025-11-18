@@ -1016,6 +1016,20 @@ paths:
       summary: Get allowed actions for a project
       operationId: get_project_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: x-project-id
           in: header
           description: Optional project ID
@@ -1313,6 +1327,20 @@ paths:
       summary: Get allowed actions for a role
       operationId: get_role_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: role_id
           in: path
           description: Role ID
@@ -1391,6 +1419,21 @@ paths:
         - server
       summary: Get allowed server actions
       operationId: get_server_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
       responses:
         '200':
           description: ''
@@ -1570,6 +1613,20 @@ paths:
       summary: Get allowed actions on a user
       operationId: get_user_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: user_id
           in: path
           required: true
@@ -1719,6 +1776,20 @@ paths:
       summary: Get allowed actions for a warehouse
       operationId: get_warehouse_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -1907,6 +1978,20 @@ paths:
       summary: Get allowed actions for a namespace
       operationId: get_namespace_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: warehouse_id
           in: path
           required: true
@@ -2240,6 +2325,20 @@ paths:
       summary: Get allowed actions for a table
       operationId: get_table_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: warehouse_id
           in: path
           required: true
@@ -2569,6 +2668,20 @@ paths:
       summary: Get allowed actions for a view
       operationId: get_view_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: warehouse_id
           in: path
           required: true

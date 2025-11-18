@@ -287,7 +287,11 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let self_provision = is_self_provisioning(acting_user_id, request.id.as_ref());
         if !self_provision {
             authorizer
-                .require_server_action(&request_metadata, CatalogServerAction::CanProvisionUsers)
+                .require_server_action(
+                    &request_metadata,
+                    None,
+                    CatalogServerAction::CanProvisionUsers,
+                )
                 .await?;
         }
 
@@ -382,7 +386,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_server_action(&request_metadata, CatalogServerAction::CanListUsers)
+            .require_server_action(&request_metadata, None, CatalogServerAction::CanListUsers)
             .await?;
 
         // ------------------- Business Logic -------------------

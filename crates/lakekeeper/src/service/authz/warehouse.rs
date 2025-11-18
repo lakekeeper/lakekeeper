@@ -7,7 +7,8 @@ use crate::{
     service::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CatalogWarehouseAction, MustUse,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         Actor, CatalogBackendError, CatalogGetWarehouseByIdError, DatabaseIntegrityError,
         ResolvedWarehouse, WarehouseIdNotFound,
@@ -142,17 +143,27 @@ pub enum RequireWarehouseActionError {
     AuthZWarehouseActionForbidden(AuthZWarehouseActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    CannotInspectPermissions(CannotInspectPermissions),
     // Hide the existence of the namespace
     AuthZCannotUseWarehouseId(AuthZCannotUseWarehouseId),
     // Propagated directly
     CatalogBackendError(CatalogBackendError),
     DatabaseIntegrityError(DatabaseIntegrityError),
 }
+impl From<IsAllowedActionError> for RequireWarehouseActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
 impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -165,6 +176,7 @@ impl From<RequireWarehouseActionError> for ErrorModel {
             RequireWarehouseActionError::AuthZCannotUseWarehouseId(e) => e.into(),
             RequireWarehouseActionError::CatalogBackendError(e) => e.into(),
             RequireWarehouseActionError::DatabaseIntegrityError(e) => e.into(),
+            RequireWarehouseActionError::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -184,24 +196,6 @@ impl From<CatalogGetWarehouseByIdError> for RequireWarehouseActionError {
 
 #[async_trait::async_trait]
 pub trait AuthzWarehouseOps: Authorizer {
-    async fn require_warehouse_use(
-        &self,
-        metadata: &RequestMetadata,
-        warehouse: &ResolvedWarehouse,
-    ) -> Result<(), AuthZRequireWarehouseUseError> {
-        let allowed = self
-            .is_allowed_warehouse_action(metadata, warehouse, CatalogWarehouseAction::CanUse)
-            .await?
-            .into_inner();
-        if allowed {
-            Ok(())
-        } else {
-            Err(AuthZRequireWarehouseUseError::from(
-                AuthZCannotUseWarehouseId::new(warehouse.warehouse_id),
-            ))
-        }
-    }
-
     fn require_warehouse_presence(
         &self,
         user_provided_warehouse: WarehouseId,
@@ -227,7 +221,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         };
         if action == CAN_SEE_PERMISSION.into() {
             let is_allowed = self
-                .is_allowed_warehouse_action(metadata, &warehouse, action)
+                .is_allowed_warehouse_action(metadata, None, &warehouse, action)
                 .await?
                 .into_inner();
             is_allowed.then_some(warehouse).ok_or(cant_see_err)
@@ -260,13 +254,14 @@ pub trait AuthzWarehouseOps: Authorizer {
     async fn is_allowed_warehouse_action(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         action: impl Into<Self::WarehouseAction> + Send,
-    ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_warehouse_action_impl(metadata, warehouse, action.into())
+            self.is_allowed_warehouse_action_impl(metadata, for_user, warehouse, action.into())
                 .await
         }
         .map(MustUse::from)
@@ -281,7 +276,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         warehouses_with_actions: &[(&ResolvedWarehouse, A); N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let result = self
-            .are_allowed_warehouse_actions_vec(metadata, warehouses_with_actions)
+            .are_allowed_warehouse_actions_vec(metadata, None, warehouses_with_actions)
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -296,8 +291,9 @@ pub trait AuthzWarehouseOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A)],
-    ) -> Result<MustUse<Vec<bool>>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.has_admin_privileges() {
             Ok(vec![true; warehouses_with_actions.len()])
         } else {
@@ -307,7 +303,7 @@ pub trait AuthzWarehouseOps: Authorizer {
                     .map(|(id, action)| (*id, (*action).into()))
                     .collect();
             let decisions = self
-                .are_allowed_warehouse_actions_impl(metadata, &converted)
+                .are_allowed_warehouse_actions_impl(metadata, for_user, &converted)
                 .await?;
 
             debug_assert!(
