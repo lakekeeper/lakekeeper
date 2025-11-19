@@ -6,7 +6,7 @@ use std::{
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
-use crate::service::{error_chain_fmt, impl_error_stack_methods};
+use crate::service::{error_chain_fmt, impl_error_stack_methods, Actor};
 
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum BackendUnavailableOrCountMismatch {
@@ -85,16 +85,25 @@ impl From<AuthorizationCountMismatch> for IcebergErrorResponse {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct CannotInspectPermissions {}
+#[derive(Debug, PartialEq, thiserror::Error)]
+#[error("Actor {actor} is not allowed to inspect permissions for object {object}")]
+pub struct CannotInspectPermissions {
+    actor: Actor,
+    object: String,
+}
+impl CannotInspectPermissions {
+    #[must_use]
+    pub fn new(actor: Actor, object: &impl ToString) -> Self {
+        Self {
+            actor,
+            object: object.to_string(),
+        }
+    }
+}
 
 impl From<CannotInspectPermissions> for ErrorModel {
-    fn from(_err: CannotInspectPermissions) -> Self {
-        ErrorModel::forbidden(
-            "Cannot inspect permissions for the specified user or role",
-            "CannotInspectPermissions",
-            None,
-        )
+    fn from(err: CannotInspectPermissions) -> Self {
+        ErrorModel::forbidden(err.to_string(), "CannotInspectPermissions", None)
     }
 }
 

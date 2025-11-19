@@ -371,6 +371,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let [authz_can_use, authz_get_all_warehouse] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
                     (&warehouse, CatalogWarehouseAction::CanUse),
                     (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
@@ -453,6 +454,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let [authz_can_use, authz_control_all] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
                     (&warehouse, CatalogWarehouseAction::CanUse),
                     (&warehouse, CONTROL_TASK_WAREHOUSE_PERMISSION),
@@ -546,6 +548,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     let [can_use, can_list_everything] = authorizer
         .are_allowed_warehouse_actions_arr(
             request_metadata,
+            None,
             &[
                 (warehouse, CatalogWarehouseAction::CanUse),
                 (warehouse, CatalogWarehouseAction::CanListEverything),

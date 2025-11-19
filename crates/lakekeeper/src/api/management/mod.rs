@@ -608,7 +608,7 @@ pub mod v1 {
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -618,6 +618,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
+        // project_id header is parsed by RequestMetadata and used from there.
         ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 

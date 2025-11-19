@@ -6,7 +6,7 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
-            IsAllowedActionError, MustUse, UserOrRole,
+            MustUse, UserOrRole,
         },
         Actor, ServerId,
     },
@@ -63,12 +63,14 @@ pub enum RequireServerActionError {
     AuthZServerActionForbidden(AuthZServerActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizationCountMismatch(AuthorizationCountMismatch),
 }
-impl From<IsAllowedActionError> for RequireServerActionError {
-    fn from(err: IsAllowedActionError) -> Self {
+impl From<BackendUnavailableOrCountMismatch> for RequireServerActionError {
+    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -78,6 +80,7 @@ impl From<RequireServerActionError> for ErrorModel {
             RequireServerActionError::AuthZServerActionForbidden(e) => e.into(),
             RequireServerActionError::AuthorizationBackendUnavailable(e) => e.into(),
             RequireServerActionError::CannotInspectPermissions(e) => e.into(),
+            RequireServerActionError::AuthorizationCountMismatch(e) => e.into(),
         }
     }
 }
@@ -95,7 +98,7 @@ pub trait AuthZServerOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        action: impl Into<Self::ServerAction> + Send,
+        action: impl Into<Self::ServerAction> + Send + Sync + Copy,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(true)
@@ -109,12 +112,16 @@ pub trait AuthZServerOps: Authorizer {
         .map(MustUse::from)
     }
 
-    async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Copy + Sync>(
+    async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Sync + Copy>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
+        mut for_user: Option<&UserOrRole>,
         actions: &[A],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
+        }
+
         if metadata.has_admin_privileges() {
             Ok(vec![true; actions.len()])
         } else {
@@ -123,10 +130,14 @@ pub trait AuthZServerOps: Authorizer {
                 .are_allowed_server_actions_impl(metadata, for_user, &converted)
                 .await?;
 
-            debug_assert!(
-                decisions.len() == actions.len(),
-                "Mismatched server decision lengths",
-            );
+            if decisions.len() != actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    actions.len(),
+                    decisions.len(),
+                    "server",
+                )
+                .into());
+            }
 
             Ok(decisions)
         }
@@ -135,7 +146,7 @@ pub trait AuthZServerOps: Authorizer {
 
     async fn are_allowed_server_actions_arr<
         const N: usize,
-        A: Into<Self::ServerAction> + Send + Copy + Sync,
+        A: Into<Self::ServerAction> + Send + Sync + Copy,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -157,7 +168,7 @@ pub trait AuthZServerOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        action: impl Into<Self::ServerAction> + Send,
+        action: impl Into<Self::ServerAction> + Send + Sync + Copy,
     ) -> Result<(), RequireServerActionError> {
         let action = action.into();
         if self

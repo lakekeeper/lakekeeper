@@ -1065,6 +1065,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
                     (&warehouse, CatalogWarehouseAction::CanUse),
                     (&warehouse, CatalogWarehouseAction::CanListDeletedTabulars),

@@ -73,6 +73,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
             &request_metadata,
+            None,
             &warehouse,
             &namespace,
             &view_info,

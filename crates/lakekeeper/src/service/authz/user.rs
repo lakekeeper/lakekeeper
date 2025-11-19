@@ -4,8 +4,9 @@ use crate::{
     api::RequestMetadata,
     service::{
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
-            CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogUserAction,
+            MustUse, UserOrRole,
         },
         Actor, UserId,
     },
@@ -63,12 +64,14 @@ pub enum RequireUserActionError {
     AuthZUserActionForbidden(AuthZUserActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizationCountMismatch(AuthorizationCountMismatch),
 }
-impl From<IsAllowedActionError> for RequireUserActionError {
-    fn from(err: IsAllowedActionError) -> Self {
+impl From<BackendUnavailableOrCountMismatch> for RequireUserActionError {
+    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
         }
     }
 }
@@ -78,6 +81,7 @@ impl From<RequireUserActionError> for ErrorModel {
             RequireUserActionError::AuthZUserActionForbidden(e) => e.into(),
             RequireUserActionError::AuthorizationBackendUnavailable(e) => e.into(),
             RequireUserActionError::CannotInspectPermissions(e) => e.into(),
+            RequireUserActionError::AuthorizationCountMismatch(e) => e.into(),
         }
     }
 }
@@ -95,12 +99,15 @@ pub trait AuthZUserOps: Authorizer {
         for_user: Option<&UserOrRole>,
         user_id: &UserId,
         action: impl Into<Self::UserAction> + Send,
-    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_user_action_impl(metadata, for_user, user_id, action.into())
-                .await
+            let [decision] = self
+                .are_allowed_user_actions_arr(metadata, for_user, &[(user_id, action.into())])
+                .await?
+                .into_inner();
+            Ok(decision)
         }
         .map(MustUse::from)
     }
@@ -108,9 +115,13 @@ pub trait AuthZUserOps: Authorizer {
     async fn are_allowed_user_actions_vec<A: Into<Self::UserAction> + Send + Copy + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
+        mut for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
+        }
+
         if metadata.has_admin_privileges() {
             Ok(vec![true; users_with_actions.len()])
         } else {
@@ -130,6 +141,26 @@ pub trait AuthZUserOps: Authorizer {
             Ok(decisions)
         }
         .map(MustUse::from)
+    }
+
+    async fn are_allowed_user_actions_arr<
+        const N: usize,
+        A: Into<Self::UserAction> + Send + Copy + Sync,
+    >(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        users_with_actions: &[(&UserId, A)],
+    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+        let result = self
+            .are_allowed_user_actions_vec(metadata, for_user, users_with_actions)
+            .await?
+            .into_inner();
+        let n_returned = result.len();
+        let arr: [bool; N] = result
+            .try_into()
+            .map_err(|_| AuthorizationCountMismatch::new(N, n_returned, "user"))?;
+        Ok(MustUse::from(arr))
     }
 
     async fn require_user_action(

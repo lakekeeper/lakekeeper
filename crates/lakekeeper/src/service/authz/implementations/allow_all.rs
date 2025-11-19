@@ -1,5 +1,7 @@
 #![allow(clippy::needless_for_each)]
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use axum::Router;
 #[cfg(feature = "open-api")]
@@ -17,8 +19,9 @@ use crate::{
             ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
-        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId, ProjectId,
-        ResolvedWarehouse, RoleId, SecretStore, ServerId, State, TableId, ViewId, WarehouseId,
+        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId,
+        NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
+        TableId, ViewId, WarehouseId,
     },
 };
 
@@ -109,14 +112,13 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_user_action_impl(
+    async fn are_allowed_user_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _user_id: &UserId,
-        _action: Self::UserAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        users_with_actions: &[(&UserId, Self::UserAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; users_with_actions.len()])
     }
 
     async fn are_allowed_role_actions_impl(
@@ -128,68 +130,67 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![true; roles_with_actions.len()])
     }
 
-    async fn is_allowed_server_action_impl(
-        &self,
-        _metadata: &RequestMetadata,
-        _for_principal: Option<&UserOrRole>,
-        _action: CatalogServerAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
-    }
-
-    async fn is_allowed_project_action_impl(
+    async fn are_allowed_server_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _project_id: &ProjectId,
-        _action: CatalogProjectAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        actions: &[Self::ServerAction],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; actions.len()])
     }
 
-    async fn is_allowed_warehouse_action_impl(
+    async fn are_allowed_project_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _warehouse: &ResolvedWarehouse,
-        _action: Self::WarehouseAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; projects_with_actions.len()])
     }
 
-    async fn is_allowed_namespace_action_impl(
+    async fn are_allowed_warehouse_actions_impl(
+        &self,
+        _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
+        warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; warehouses_with_actions.len()])
+    }
+
+    async fn are_allowed_namespace_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
-        _namespace: &NamespaceHierarchy,
-        _action: Self::NamespaceAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; actions.len()])
     }
 
-    async fn is_allowed_table_action_impl(
+    async fn are_allowed_table_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
-        _namespace: &NamespaceHierarchy,
-        _table: &impl AuthZTableInfo,
-        _action: Self::TableAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            &impl AuthZTableInfo,
+            Self::TableAction,
+        )],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; actions.len()])
     }
 
-    async fn is_allowed_view_action_impl(
+    async fn are_allowed_view_actions_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
-        _namespace: &NamespaceHierarchy,
-        _view: &impl AuthZViewInfo,
-        _action: Self::ViewAction,
-    ) -> Result<bool, IsAllowedActionError> {
-        Ok(true)
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; views_with_actions.len()])
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {

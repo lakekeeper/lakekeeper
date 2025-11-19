@@ -280,6 +280,7 @@ pub trait AuthzNamespaceOps: Authorizer {
             let [can_see_namespace, is_allowed] = self
                 .are_allowed_namespace_actions_arr(
                     metadata,
+                    None,
                     warehouse,
                     &namespace,
                     &[CAN_SEE_PERMISSION.into(), action],
@@ -308,8 +309,8 @@ pub trait AuthzNamespaceOps: Authorizer {
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         namespace: &NamespaceHierarchy,
-        action: impl Into<Self::NamespaceAction> + Send,
-    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+        action: impl Into<Self::NamespaceAction> + Send + Sync + Copy,
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if namespace.warehouse_id() != warehouse.warehouse_id {
             tracing::debug!(
                 "Namespace warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
@@ -322,14 +323,17 @@ pub trait AuthzNamespaceOps: Authorizer {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_namespace_action_impl(
-                metadata,
-                for_user,
-                warehouse,
-                namespace,
-                action.into(),
-            )
-            .await
+            let [decision] = self
+                .are_allowed_namespace_actions_arr(
+                    metadata,
+                    for_user,
+                    warehouse,
+                    namespace,
+                    &[action],
+                )
+                .await?
+                .into_inner();
+            Ok(decision)
         }
         .map(MustUse::from)
     }
@@ -340,6 +344,7 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         namespace: &NamespaceHierarchy,
         actions: &[A; N],
@@ -349,7 +354,7 @@ pub trait AuthzNamespaceOps: Authorizer {
             .map(|a| (namespace, (*a).into()))
             .collect::<Vec<_>>();
         let result = self
-            .are_allowed_namespace_actions_vec(metadata, None, warehouse, &actions)
+            .are_allowed_namespace_actions_vec(metadata, for_user, warehouse, &actions)
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -364,10 +369,13 @@ pub trait AuthzNamespaceOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
+        mut for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         actions: &[(&NamespaceHierarchy, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
+        }
         // First check warehouse_id for all namespaces
         let warehouse_matches: Vec<bool> = actions
             .iter()
@@ -391,7 +399,17 @@ pub trait AuthzNamespaceOps: Authorizer {
                 .iter()
                 .zip(authz_results.iter())
                 .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
-                .collect();
+                .collect::<Vec<_>>();
+
+            if results.len() != actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    actions.len(),
+                    results.len(),
+                    "namespace",
+                )
+                .into());
+            }
+
             Ok(results)
         }
         .map(MustUse::from)

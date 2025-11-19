@@ -115,9 +115,12 @@ pub trait AuthZRoleOps: Authorizer {
     async fn are_allowed_role_actions_vec<A: Into<Self::RoleAction> + Send + Copy + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
+        mut for_user: Option<&UserOrRole>,
         roles_with_actions: &[(RoleId, A)],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
+        }
         if metadata.has_admin_privileges() {
             Ok(vec![true; roles_with_actions.len()])
         } else {

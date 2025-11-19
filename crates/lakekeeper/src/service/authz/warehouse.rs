@@ -8,7 +8,7 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
-            IsAllowedActionError, MustUse, UserOrRole,
+            MustUse, UserOrRole,
         },
         Actor, CatalogBackendError, CatalogGetWarehouseByIdError, DatabaseIntegrityError,
         ResolvedWarehouse, WarehouseIdNotFound,
@@ -150,14 +150,6 @@ pub enum RequireWarehouseActionError {
     CatalogBackendError(CatalogBackendError),
     DatabaseIntegrityError(DatabaseIntegrityError),
 }
-impl From<IsAllowedActionError> for RequireWarehouseActionError {
-    fn from(err: IsAllowedActionError) -> Self {
-        match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
 impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
@@ -229,6 +221,7 @@ pub trait AuthzWarehouseOps: Authorizer {
             let [can_see, is_allowed] = self
                 .are_allowed_warehouse_actions_arr(
                     metadata,
+                    None,
                     &[
                         (&warehouse, CAN_SEE_PERMISSION.into()),
                         (&warehouse, action),
@@ -256,13 +249,16 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        action: impl Into<Self::WarehouseAction> + Send,
-    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+        action: impl Into<Self::WarehouseAction> + Send + Sync + Copy,
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_warehouse_action_impl(metadata, for_user, warehouse, action.into())
-                .await
+            let [decision] = self
+                .are_allowed_warehouse_actions_arr(metadata, for_user, &[(warehouse, action)])
+                .await?
+                .into_inner();
+            Ok(decision)
         }
         .map(MustUse::from)
     }
@@ -273,10 +269,11 @@ pub trait AuthzWarehouseOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A); N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let result = self
-            .are_allowed_warehouse_actions_vec(metadata, None, warehouses_with_actions)
+            .are_allowed_warehouse_actions_vec(metadata, for_user, warehouses_with_actions)
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -291,9 +288,13 @@ pub trait AuthzWarehouseOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
+        mut for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
+        }
+
         if metadata.has_admin_privileges() {
             Ok(vec![true; warehouses_with_actions.len()])
         } else {
@@ -306,10 +307,14 @@ pub trait AuthzWarehouseOps: Authorizer {
                 .are_allowed_warehouse_actions_impl(metadata, for_user, &converted)
                 .await?;
 
-            debug_assert!(
-                decisions.len() == warehouses_with_actions.len(),
-                "Mismatched warehouse decision lengths",
-            );
+            if decisions.len() != warehouses_with_actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    warehouses_with_actions.len(),
+                    decisions.len(),
+                    "warehouse",
+                )
+                .into());
+            }
 
             Ok(decisions)
         }

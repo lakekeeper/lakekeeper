@@ -77,6 +77,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let [can_use_warehouse, can_list_namespaces, can_list_everything] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
                     (&warehouse, CatalogWarehouseAction::CanUse),
                     (&warehouse, CatalogWarehouseAction::CanListNamespaces),

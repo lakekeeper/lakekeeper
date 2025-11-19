@@ -833,6 +833,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     let [can_get_metadata, can_read, can_write] = authorizer
         .are_allowed_table_actions_arr(
             request_metadata,
+            None,
             &warehouse,
             &namespace,
             &table_info,

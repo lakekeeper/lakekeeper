@@ -9,7 +9,7 @@ use crate::{
             refresh_warehouse_and_namespace_if_needed, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogViewAction,
-            IsAllowedActionError, MustUse, UserOrRole,
+            MustUse, UserOrRole,
         },
         catalog_store::{
             CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
@@ -133,14 +133,6 @@ impl From<BackendUnavailableOrCountMismatch> for RequireViewActionError {
         }
     }
 }
-impl From<IsAllowedActionError> for RequireViewActionError {
-    fn from(err: IsAllowedActionError) -> Self {
-        match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
 impl From<GetTabularInfoError> for RequireViewActionError {
     fn from(err: GetTabularInfoError) -> Self {
         match err {
@@ -240,6 +232,7 @@ pub trait AuthZViewOps: Authorizer {
             let [can_see_view, is_allowed] = self
                 .are_allowed_view_actions_arr(
                     metadata,
+                    None,
                     warehouse,
                     namespace,
                     &view,
@@ -379,19 +372,22 @@ pub trait AuthZViewOps: Authorizer {
         namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: impl Into<Self::ViewAction> + Send,
-    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
-            self.is_allowed_view_action_impl(
-                metadata,
-                for_user,
-                warehouse,
-                namespace,
-                view,
-                action.into(),
-            )
-            .await
+            let [decision] = self
+                .are_allowed_view_actions_arr(
+                    metadata,
+                    for_user,
+                    warehouse,
+                    namespace,
+                    view,
+                    &[action.into()],
+                )
+                .await?
+                .into_inner();
+            Ok(decision)
         }
         .map(MustUse::from)
     }
@@ -402,6 +398,7 @@ pub trait AuthZViewOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         namespace_hierarchy: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
@@ -414,7 +411,7 @@ pub trait AuthZViewOps: Authorizer {
         let result = self
             .are_allowed_view_actions_vec(
                 metadata,
-                None,
+                for_user,
                 warehouse,
                 &namespace_hierarchy
                     .parents
@@ -435,7 +432,7 @@ pub trait AuthZViewOps: Authorizer {
     async fn are_allowed_view_actions_vec<A: Into<Self::ViewAction> + Send + Copy + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
+        mut for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, A)],
@@ -445,6 +442,10 @@ pub trait AuthZViewOps: Authorizer {
             let namespaces: Vec<&NamespaceWithParent> =
                 actions.iter().map(|(ns, _, _)| *ns).collect();
             super::table::validate_namespace_hierarchy(&namespaces, parent_namespaces);
+        }
+
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
         }
 
         if metadata.has_admin_privileges() {
