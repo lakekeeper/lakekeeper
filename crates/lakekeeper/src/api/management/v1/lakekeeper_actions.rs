@@ -23,13 +23,13 @@ use crate::{
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct GetAccessQuery {
-    /// The user to show access for.
-    /// If neither user nor role is specified, shows access for the current user.
+    /// The user to show actions for.
+    /// If neither user nor role is specified, shows actions for the current user.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type=String))]
     pub principal_user: Option<UserId>,
-    /// The role to show access for.
-    /// If neither user nor role is specified, shows access for the current user.
+    /// The role to show actions for.
+    /// If neither user nor role is specified, shows actions for the current user.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type=Uuid))]
     pub principal_role: Option<RoleId>,

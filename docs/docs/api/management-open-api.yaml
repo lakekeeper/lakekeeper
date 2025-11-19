@@ -185,22 +185,22 @@ paths:
       summary: Get my access to a namespace
       description: |-
         **Deprecated:** Use `/management/v1/permissions/namespace/{namespace_id}/authorizer-actions` for Authorizer permissions
-        or `/management/v1/namespace/{namespace_id}/actions` for Catalog permissions instead.
+        or `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` for Catalog permissions instead.
       operationId: get_namespace_access_by_id
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -284,16 +284,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -348,16 +348,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -419,16 +419,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -455,22 +455,22 @@ paths:
       summary: Get my access to a project
       description: |-
         **Deprecated:** Use `/management/v1/permissions/project/{project_id}/authorizer-actions` for Authorizer permissions
-        or `/management/v1/project/{project_id}/actions` for Catalog permissions instead.
+        or `/management/v1/project/actions` for Catalog permissions instead.
       operationId: get_project_access_by_id
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -554,16 +554,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -667,6 +667,23 @@ paths:
         For Catalog permissions, use `/management/v1/role/{role_id}/actions` instead.
       operationId: get_authorizer_role_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: role_id
           in: path
           description: Role ID
@@ -694,16 +711,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -765,16 +782,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -820,16 +837,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -913,16 +930,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -977,16 +994,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -1091,16 +1108,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -1139,16 +1156,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -1253,16 +1270,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -1395,16 +1412,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -1713,16 +1730,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -1809,16 +1826,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -2005,16 +2022,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -2171,16 +2188,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -2376,16 +2393,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -2726,16 +2743,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -3072,16 +3089,16 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            The user to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
           description: |-
-            The role to show access for.
-            If neither user nor role is specified, shows access for the current user.
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string

@@ -393,6 +393,7 @@ async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/authorizer-actions",
     params(
+        GetAccessQuery,
         ("role_id" = Uuid, Path, description = "Role ID"),
     ),
     responses(
@@ -586,7 +587,7 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
 /// Get my access to a project
 ///
 /// **Deprecated:** Use `/management/v1/permissions/project/{project_id}/authorizer-actions` for Authorizer permissions
-/// or `/management/v1/project/{project_id}/actions` for Catalog permissions instead.
+/// or `/management/v1/project/actions` for Catalog permissions instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
@@ -601,7 +602,7 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
 ))]
 #[deprecated(
     since = "0.11.0",
-    note = "Use /management/v1/project/{project_id}/actions and /management/v1/permissions/project/{project_id}/authorizer-actions instead"
+    note = "Use /management/v1/project/actions and /management/v1/permissions/project/{project_id}/authorizer-actions instead"
 )]
 async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(project_id): Path<ProjectId>,
@@ -897,7 +898,7 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
 /// Get my access to a namespace
 ///
 /// **Deprecated:** Use `/management/v1/permissions/namespace/{namespace_id}/authorizer-actions` for Authorizer permissions
-/// or `/management/v1/namespace/{namespace_id}/actions` for Catalog permissions instead.
+/// or `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` for Catalog permissions instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",
@@ -912,7 +913,7 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
 ))]
 #[deprecated(
     since = "0.11.0",
-    note = "Use /management/v1/namespace/{namespace_id}/actions and /management/v1/permissions/namespace/{namespace_id}/authorizer-actions instead"
+    note = "Use /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions and /management/v1/permissions/namespace/{namespace_id}/authorizer-actions instead"
 )]
 async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
@@ -1710,7 +1711,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         get_authorizer_server_actions,
         get_authorizer_table_actions_by_id,
         get_authorizer_view_actions_by_id,
-        get_authorizer_warehouse_actions,        
+        get_authorizer_warehouse_actions,
         get_namespace_access_by_id,
         get_namespace_assignments_by_id,
         get_namespace_by_id,
