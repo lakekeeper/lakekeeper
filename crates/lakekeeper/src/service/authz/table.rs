@@ -28,7 +28,7 @@ use crate::{
     WarehouseId,
 };
 
-const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::CanGetMetadata;
+const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::GetMetadata;
 
 /// Refreshes warehouse and namespace if their versions are outdated.
 ///
@@ -1123,11 +1123,11 @@ mod tests {
         let actions = vec![
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table_info, CatalogTableAction::CanGetMetadata)),
+                ActionOnTableOrView::Table((&table_info, CatalogTableAction::GetMetadata)),
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view_info, CatalogViewAction::CanGetMetadata)),
+                ActionOnTableOrView::View((&view_info, CatalogViewAction::GetMetadata)),
             ),
         ];
 
@@ -1222,11 +1222,11 @@ mod tests {
         let actions = vec![
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table_info, CatalogTableAction::CanGetMetadata)),
+                ActionOnTableOrView::Table((&table_info, CatalogTableAction::GetMetadata)),
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view_info, CatalogViewAction::CanGetMetadata)),
+                ActionOnTableOrView::View((&view_info, CatalogViewAction::GetMetadata)),
             ),
         ];
 
@@ -1299,7 +1299,7 @@ mod tests {
             "table:{}/{}",
             warehouse_resp.warehouse_id, table2_info.tabular_id
         ));
-        authz.block_action(&format!("view:{}", CatalogViewAction::CanDrop));
+        authz.block_action(&format!("view:{}", CatalogViewAction::Drop));
 
         let warehouse = PostgresBackend::get_active_warehouse_by_id(
             warehouse_resp.warehouse_id,
@@ -1326,19 +1326,19 @@ mod tests {
         let actions = vec![
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table1_info, CatalogTableAction::CanGetMetadata)),
+                ActionOnTableOrView::Table((&table1_info, CatalogTableAction::GetMetadata)),
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view1_info, CatalogViewAction::CanDrop)), // Blocked
+                ActionOnTableOrView::View((&view1_info, CatalogViewAction::Drop)), // Blocked
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table2_info, CatalogTableAction::CanReadData)), // Hidden
+                ActionOnTableOrView::Table((&table2_info, CatalogTableAction::ReadData)), // Hidden
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view1_info, CatalogViewAction::CanGetMetadata)), // Allowed
+                ActionOnTableOrView::View((&view1_info, CatalogViewAction::GetMetadata)), // Allowed
             ),
         ];
 

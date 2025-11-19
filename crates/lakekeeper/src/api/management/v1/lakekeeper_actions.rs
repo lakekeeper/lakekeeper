@@ -132,7 +132,7 @@ pub(super) async fn get_allowed_user_actions(
 ) -> Result<Vec<CatalogUserAction>> {
     let for_user = query.try_parse()?.principal;
     let actions = CatalogUserAction::VARIANTS;
-    let can_see_permission = CatalogUserAction::CanRead;
+    let can_see_permission = CatalogUserAction::Read;
 
     let results = authorizer
         .are_allowed_user_actions_vec(
@@ -173,7 +173,7 @@ pub(super) async fn get_allowed_role_actions(
 ) -> Result<Vec<CatalogRoleAction>> {
     let for_user = query.try_parse()?.principal;
     let actions = CatalogRoleAction::VARIANTS;
-    let can_see_permission = CatalogRoleAction::CanRead;
+    let can_see_permission = CatalogRoleAction::Read;
 
     let results = authorizer
         .are_allowed_role_actions_vec(
@@ -214,7 +214,7 @@ pub(super) async fn get_allowed_project_actions(
 ) -> Result<Vec<CatalogProjectAction>> {
     let for_user = query.try_parse()?.principal;
     let actions = CatalogProjectAction::VARIANTS;
-    let can_see_permission = CatalogProjectAction::CanGetMetadata;
+    let can_see_permission = CatalogProjectAction::GetMetadata;
 
     let results = authorizer
         .are_allowed_project_actions_vec(
@@ -260,7 +260,7 @@ pub(super) async fn get_allowed_warehouse_actions<
     let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let actions = CatalogWarehouseAction::VARIANTS;
-    let can_see_permission = CatalogWarehouseAction::CanIncludeInList;
+    let can_see_permission = CatalogWarehouseAction::IncludeInList;
 
     let warehouse = C::get_warehouse_by_id_cache_aware(
         object,
@@ -316,7 +316,7 @@ pub(super) async fn get_allowed_namespace_actions<
     let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let actions = CatalogNamespaceAction::VARIANTS;
-    let can_see_permission = CatalogNamespaceAction::CanIncludeInList;
+    let can_see_permission = CatalogNamespaceAction::IncludeInList;
 
     let (warehouse, namespace) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()),
@@ -374,7 +374,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
     let authorizer = context.v1_state.authz;
     let catalog_state = context.v1_state.catalog;
     let actions = CatalogTableAction::VARIANTS;
-    let can_see_permission = CatalogTableAction::CanIncludeInList;
+    let can_see_permission = CatalogTableAction::IncludeInList;
 
     let (warehouse, namespace, table_info) = fetch_warehouse_namespace_table_by_id::<C, _>(
         &authorizer,
@@ -446,7 +446,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
     let authorizer = context.v1_state.authz;
     let catalog_state = context.v1_state.catalog;
     let actions = CatalogViewAction::VARIANTS;
-    let can_see_permission = CatalogViewAction::CanIncludeInList;
+    let can_see_permission = CatalogViewAction::IncludeInList;
 
     let (warehouse, namespace, view_info) = fetch_warehouse_namespace_view_by_id::<C, _>(
         &authorizer,

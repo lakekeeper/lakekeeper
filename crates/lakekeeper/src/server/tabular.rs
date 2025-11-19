@@ -82,7 +82,7 @@ macro_rules! list_entities {
                         None,
                         &resolved_warehouse,
                         &namespace_response,
-                        CatalogNamespaceAction::CanListEverything,
+                        CatalogNamespaceAction::ListEverything,
                     )
                     .await?
                     .into_inner();
@@ -115,7 +115,7 @@ macro_rules! list_entities {
                             &idents.iter().map(|t| Ok::<_, ErrorModel>((
                                 require_namespace_for_tabular(&namespaces, &t.tabular)?,
                                 t,
-                                [<Catalog $entity Action>]::CanIncludeInList)
+                                [<Catalog $entity Action>]::IncludeInList)
                             )
                             ).collect::<Result<Vec<_>, _>>()?,
                         ).await?.into_inner()

@@ -52,7 +52,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
             &warehouse,
             provided_namespace,
             namespace,
-            CatalogNamespaceAction::CanListViews,
+            CatalogNamespaceAction::ListViews,
         )
         .await?;
 

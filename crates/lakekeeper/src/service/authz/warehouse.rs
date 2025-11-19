@@ -16,7 +16,7 @@ use crate::{
     WarehouseId,
 };
 
-const CAN_SEE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::CanUse;
+const CAN_SEE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::Use;
 
 pub trait WarehouseAction
 where

@@ -203,7 +203,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let mut batch_items = Vec::new();
         let mut batch_indices = Vec::new();
         for (idx, (role, action)) in roles_with_actions.iter().enumerate() {
-            if *action == CatalogRoleAction::CanRead {
+            if *action == CatalogRoleAction::Read {
                 results.push((idx, true));
             } else {
                 batch_indices.push(idx);
@@ -221,7 +221,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 // Collect unique role objects for permission checks
                 let unique_roles: HashSet<_> = roles_with_actions
                     .iter()
-                    .filter(|(_, action)| *action != CatalogRoleAction::CanRead)
+                    .filter(|(_, action)| *action != CatalogRoleAction::Read)
                     .map(|(role, _)| role.to_openfga())
                     .collect();
 
@@ -273,7 +273,7 @@ impl Authorizer for OpenFGAAuthorizer {
             // 1. Users can perform all actions on themselves
             // 2. Every authenticated user can read user metadata given the user id
             let is_same_user = for_user.is_none() && (actor_principal == Some(*user_id));
-            if is_same_user || *action == CatalogUserAction::CanRead {
+            if is_same_user || *action == CatalogUserAction::Read {
                 results.push((idx, true));
             } else {
                 batch_indices.push((idx, *action));
@@ -289,17 +289,17 @@ impl Authorizer for OpenFGAAuthorizer {
                 .batch_check(vec![
                     CheckRequestTupleKey {
                         user: actor_openfga.clone(),
-                        relation: CatalogServerAction::CanListUsers.to_string(),
+                        relation: CatalogServerAction::ListUsers.to_string(),
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
                         user: user.clone(),
-                        relation: CatalogServerAction::CanUpdateUsers.to_string(),
+                        relation: CatalogServerAction::UpdateUsers.to_string(),
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
                         user,
-                        relation: CatalogServerAction::CanDeleteUsers.to_string(),
+                        relation: CatalogServerAction::DeleteUsers.to_string(),
                         object: server_id.clone(),
                     },
                 ])
@@ -317,9 +317,9 @@ impl Authorizer for OpenFGAAuthorizer {
 
             for (idx, action) in batch_indices {
                 let allowed = match action {
-                    CatalogUserAction::CanRead => true,
-                    CatalogUserAction::CanUpdate => can_update,
-                    CatalogUserAction::CanDelete => can_delete,
+                    CatalogUserAction::Read => true,
+                    CatalogUserAction::Update => can_update,
+                    CatalogUserAction::Delete => can_delete,
                 };
                 results.push((idx, allowed));
             }
@@ -897,7 +897,7 @@ impl OpenFGAAuthorizer {
         let projects = self
             .list_objects(
                 FgaType::Project.to_string(),
-                CatalogProjectAction::CanIncludeInList.to_string(),
+                CatalogProjectAction::IncludeInList.to_string(),
                 actor.to_openfga(),
             )
             .await?

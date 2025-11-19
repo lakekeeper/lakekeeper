@@ -79,9 +79,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
-                    (&warehouse, CatalogWarehouseAction::CanListNamespaces),
-                    (&warehouse, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::Use),
+                    (&warehouse, CatalogWarehouseAction::ListNamespaces),
+                    (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
             .await?
@@ -105,7 +105,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &warehouse,
                     parent_ident,
                     parent_namespace,
-                    CatalogNamespaceAction::CanListNamespaces,
+                    CatalogNamespaceAction::ListNamespaces,
                 )
                 .await?;
             // Rely on short-circuit of `||` to query `namespace:can_list_everything` only if not
@@ -117,7 +117,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         None,
                         &warehouse,
                         &parent_namespace,
-                        CatalogNamespaceAction::CanListEverything,
+                        CatalogNamespaceAction::ListEverything,
                     )
                     .await?
                     .into_inner();
@@ -162,7 +162,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                                 &warehouse,
                                 &responses
                                     .iter()
-                                    .map(|id| (id, CatalogNamespaceAction::CanIncludeInList))
+                                    .map(|id| (id, CatalogNamespaceAction::IncludeInList))
                                     .collect::<Vec<_>>(),
                             )
                             .await?
@@ -265,7 +265,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &warehouse,
                     namespace_parent,
                     parent_namespace,
-                    CatalogNamespaceAction::CanCreateNamespace,
+                    CatalogNamespaceAction::CreateNamespace,
                 )
                 .await?;
             (warehouse, Some(parent_namespace.namespace_id()))
@@ -275,7 +275,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &request_metadata,
                     warehouse_id,
                     Ok(Some(warehouse)),
-                    CatalogWarehouseAction::CanCreateNamespace,
+                    CatalogWarehouseAction::CreateNamespace,
                 )
                 .await?;
             (warehouse, None)
@@ -339,7 +339,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanGetMetadata,
+                CatalogNamespaceAction::GetMetadata,
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
@@ -370,7 +370,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanGetMetadata,
+                CatalogNamespaceAction::GetMetadata,
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
@@ -409,7 +409,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanDelete,
+                CatalogNamespaceAction::Delete,
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
@@ -482,7 +482,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanUpdateProperties,
+                CatalogNamespaceAction::UpdateProperties,
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )

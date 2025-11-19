@@ -77,10 +77,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             &warehouse,
             &namespace,
             &view_info,
-            &[
-                CatalogViewAction::CanGetMetadata,
-                CatalogViewAction::CanCommit,
-            ],
+            &[CatalogViewAction::GetMetadata, CatalogViewAction::Commit],
         )
         .await?
         .into_inner();

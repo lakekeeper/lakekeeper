@@ -942,7 +942,7 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
 /// Get allowed Authorizer actions on a namespace
 ///
 /// Returns Authorizer permissions (OpenFGA relations) for the specified namespace.
-/// For Catalog permissions, use `/management/v1/namespace/{namespace_id}/actions` instead.
+/// For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "permissions",

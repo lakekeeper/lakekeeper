@@ -222,9 +222,9 @@ impl ReducedRelation for CatalogRoleAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogRoleAction::CanDelete => RoleRelation::CanDelete,
-            CatalogRoleAction::CanUpdate => RoleRelation::CanUpdate,
-            CatalogRoleAction::CanRead => RoleRelation::CanRead,
+            CatalogRoleAction::Delete => RoleRelation::CanDelete,
+            CatalogRoleAction::Update => RoleRelation::CanUpdate,
+            CatalogRoleAction::Read => RoleRelation::CanRead,
         }
     }
 }
@@ -360,11 +360,11 @@ impl ReducedRelation for CatalogServerAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogServerAction::CanCreateProject => ServerRelation::CanCreateProject,
-            CatalogServerAction::CanUpdateUsers => ServerRelation::CanUpdateUsers,
-            CatalogServerAction::CanDeleteUsers => ServerRelation::CanDeleteUsers,
-            CatalogServerAction::CanListUsers => ServerRelation::CanListUsers,
-            CatalogServerAction::CanProvisionUsers => ServerRelation::CanProvisionUsers,
+            CatalogServerAction::CreateProject => ServerRelation::CanCreateProject,
+            CatalogServerAction::UpdateUsers => ServerRelation::CanUpdateUsers,
+            CatalogServerAction::DeleteUsers => ServerRelation::CanDeleteUsers,
+            CatalogServerAction::ListUsers => ServerRelation::CanListUsers,
+            CatalogServerAction::ProvisionUsers => ServerRelation::CanProvisionUsers,
         }
     }
 }
@@ -640,16 +640,16 @@ impl ReducedRelation for CatalogProjectAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogProjectAction::CanCreateWarehouse => ProjectRelation::CanCreateWarehouse,
-            CatalogProjectAction::CanDelete => ProjectRelation::CanDelete,
-            CatalogProjectAction::CanRename => ProjectRelation::CanRename,
-            CatalogProjectAction::CanGetMetadata => ProjectRelation::CanGetMetadata,
-            CatalogProjectAction::CanListWarehouses => ProjectRelation::CanListWarehouses,
-            CatalogProjectAction::CanIncludeInList => ProjectRelation::CanIncludeInList,
-            CatalogProjectAction::CanCreateRole => ProjectRelation::CanCreateRole,
-            CatalogProjectAction::CanListRoles => ProjectRelation::CanListRoles,
-            CatalogProjectAction::CanSearchRoles => ProjectRelation::CanSearchRoles,
-            CatalogProjectAction::CanGetEndpointStatistics => {
+            CatalogProjectAction::CreateWarehouse => ProjectRelation::CanCreateWarehouse,
+            CatalogProjectAction::Delete => ProjectRelation::CanDelete,
+            CatalogProjectAction::Rename => ProjectRelation::CanRename,
+            CatalogProjectAction::GetMetadata => ProjectRelation::CanGetMetadata,
+            CatalogProjectAction::ListWarehouses => ProjectRelation::CanListWarehouses,
+            CatalogProjectAction::IncludeInList => ProjectRelation::CanIncludeInList,
+            CatalogProjectAction::CreateRole => ProjectRelation::CanCreateRole,
+            CatalogProjectAction::ListRoles => ProjectRelation::CanListRoles,
+            CatalogProjectAction::SearchRoles => ProjectRelation::CanSearchRoles,
+            CatalogProjectAction::GetEndpointStatistics => {
                 ProjectRelation::CanGetEndpointStatistics
             }
         }
@@ -940,37 +940,33 @@ impl ReducedRelation for CatalogWarehouseAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogWarehouseAction::CanCreateNamespace => WarehouseRelation::CanCreateNamespace,
-            CatalogWarehouseAction::CanDelete => WarehouseRelation::CanDelete,
-            CatalogWarehouseAction::CanUpdateStorage => WarehouseRelation::CanUpdateStorage,
-            CatalogWarehouseAction::CanUpdateStorageCredential => {
+            CatalogWarehouseAction::CreateNamespace => WarehouseRelation::CanCreateNamespace,
+            CatalogWarehouseAction::Delete => WarehouseRelation::CanDelete,
+            CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential => {
                 WarehouseRelation::CanUpdateStorageCredential
             }
-            CatalogWarehouseAction::CanGetMetadata => WarehouseRelation::CanGetMetadata,
-            CatalogWarehouseAction::CanGetConfig => WarehouseRelation::CanGetConfig,
-            CatalogWarehouseAction::CanListNamespaces => WarehouseRelation::CanListNamespaces,
-            CatalogWarehouseAction::CanListEverything => WarehouseRelation::CanListEverything,
-            CatalogWarehouseAction::CanModifySoftDeletion => {
-                WarehouseRelation::CanModifySoftDeletion
-            }
-            CatalogWarehouseAction::CanUse => WarehouseRelation::CanUse,
-            CatalogWarehouseAction::CanIncludeInList => WarehouseRelation::CanIncludeInList,
-            CatalogWarehouseAction::CanDeactivate => WarehouseRelation::CanDeactivate,
-            CatalogWarehouseAction::CanActivate => WarehouseRelation::CanActivate,
-            CatalogWarehouseAction::CanRename => WarehouseRelation::CanRename,
-            CatalogWarehouseAction::CanListDeletedTabulars => {
+            CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
+            CatalogWarehouseAction::GetConfig => WarehouseRelation::CanGetConfig,
+            CatalogWarehouseAction::ListNamespaces => WarehouseRelation::CanListNamespaces,
+            CatalogWarehouseAction::ListEverything => WarehouseRelation::CanListEverything,
+            CatalogWarehouseAction::ModifySoftDeletion => WarehouseRelation::CanModifySoftDeletion,
+            CatalogWarehouseAction::Use => WarehouseRelation::CanUse,
+            CatalogWarehouseAction::IncludeInList => WarehouseRelation::CanIncludeInList,
+            CatalogWarehouseAction::Deactivate => WarehouseRelation::CanDeactivate,
+            CatalogWarehouseAction::Activate => WarehouseRelation::CanActivate,
+            CatalogWarehouseAction::Rename => WarehouseRelation::CanRename,
+            CatalogWarehouseAction::ListDeletedTabulars => {
                 WarehouseRelation::CanListDeletedTabulars
             }
-            CatalogWarehouseAction::CanGetTaskQueueConfig => {
-                WarehouseRelation::CanGetTaskQueueConfig
-            }
-            CatalogWarehouseAction::CanModifyTaskQueueConfig => {
+            CatalogWarehouseAction::GetTaskQueueConfig => WarehouseRelation::CanGetTaskQueueConfig,
+            CatalogWarehouseAction::ModifyTaskQueueConfig => {
                 WarehouseRelation::CanModifyTaskQueueConfig
             }
-            CatalogWarehouseAction::CanGetAllTasks => WarehouseRelation::CanGetAllTasks,
-            CatalogWarehouseAction::CanControlAllTasks => WarehouseRelation::CanControlAllTasks,
-            CatalogWarehouseAction::CanSetProtection => WarehouseRelation::CanSetProtection,
-            CatalogWarehouseAction::CanGetEndpointStatistics => {
+            CatalogWarehouseAction::GetAllTasks => WarehouseRelation::CanGetAllTasks,
+            CatalogWarehouseAction::ControlAllTasks => WarehouseRelation::CanControlAllTasks,
+            CatalogWarehouseAction::SetProtection => WarehouseRelation::CanSetProtection,
+            CatalogWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
         }
@@ -1234,18 +1230,18 @@ impl ReducedRelation for CatalogNamespaceAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogNamespaceAction::CanCreateTable => NamespaceRelation::CanCreateTable,
-            CatalogNamespaceAction::CanCreateView => NamespaceRelation::CanCreateView,
-            CatalogNamespaceAction::CanCreateNamespace => NamespaceRelation::CanCreateNamespace,
-            CatalogNamespaceAction::CanDelete => NamespaceRelation::CanDelete,
-            CatalogNamespaceAction::CanUpdateProperties => NamespaceRelation::CanUpdateProperties,
-            CatalogNamespaceAction::CanGetMetadata => NamespaceRelation::CanGetMetadata,
-            CatalogNamespaceAction::CanListTables => NamespaceRelation::CanListTables,
-            CatalogNamespaceAction::CanListViews => NamespaceRelation::CanListViews,
-            CatalogNamespaceAction::CanListEverything => NamespaceRelation::CanListEverything,
-            CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
-            CatalogNamespaceAction::CanSetProtection => NamespaceRelation::CanSetProtection,
-            CatalogNamespaceAction::CanIncludeInList => NamespaceRelation::CanIncludeInList,
+            CatalogNamespaceAction::CreateTable => NamespaceRelation::CanCreateTable,
+            CatalogNamespaceAction::CreateView => NamespaceRelation::CanCreateView,
+            CatalogNamespaceAction::CreateNamespace => NamespaceRelation::CanCreateNamespace,
+            CatalogNamespaceAction::Delete => NamespaceRelation::CanDelete,
+            CatalogNamespaceAction::UpdateProperties => NamespaceRelation::CanUpdateProperties,
+            CatalogNamespaceAction::GetMetadata => NamespaceRelation::CanGetMetadata,
+            CatalogNamespaceAction::ListTables => NamespaceRelation::CanListTables,
+            CatalogNamespaceAction::ListViews => NamespaceRelation::CanListViews,
+            CatalogNamespaceAction::ListEverything => NamespaceRelation::CanListEverything,
+            CatalogNamespaceAction::ListNamespaces => NamespaceRelation::CanListNamespaces,
+            CatalogNamespaceAction::SetProtection => NamespaceRelation::CanSetProtection,
+            CatalogNamespaceAction::IncludeInList => NamespaceRelation::CanIncludeInList,
         }
     }
 }
@@ -1489,17 +1485,17 @@ impl ReducedRelation for CatalogTableAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogTableAction::CanDrop => TableRelation::CanDrop,
-            CatalogTableAction::CanWriteData => TableRelation::CanWriteData,
-            CatalogTableAction::CanReadData => TableRelation::CanReadData,
-            CatalogTableAction::CanGetMetadata => TableRelation::CanGetMetadata,
-            CatalogTableAction::CanCommit => TableRelation::CanCommit,
-            CatalogTableAction::CanRename => TableRelation::CanRename,
-            CatalogTableAction::CanIncludeInList => TableRelation::CanIncludeInList,
-            CatalogTableAction::CanUndrop => TableRelation::CanUndrop,
-            CatalogTableAction::CanGetTasks => TableRelation::CanGetTasks,
-            CatalogTableAction::CanControlTasks => TableRelation::CanControlTasks,
-            CatalogTableAction::CanSetProtection => TableRelation::CanSetProtection,
+            CatalogTableAction::Drop => TableRelation::CanDrop,
+            CatalogTableAction::WriteData => TableRelation::CanWriteData,
+            CatalogTableAction::ReadData => TableRelation::CanReadData,
+            CatalogTableAction::GetMetadata => TableRelation::CanGetMetadata,
+            CatalogTableAction::Commit => TableRelation::CanCommit,
+            CatalogTableAction::Rename => TableRelation::CanRename,
+            CatalogTableAction::IncludeInList => TableRelation::CanIncludeInList,
+            CatalogTableAction::Undrop => TableRelation::CanUndrop,
+            CatalogTableAction::GetTasks => TableRelation::CanGetTasks,
+            CatalogTableAction::ControlTasks => TableRelation::CanControlTasks,
+            CatalogTableAction::SetProtection => TableRelation::CanSetProtection,
         }
     }
 }
@@ -1722,15 +1718,15 @@ impl ReducedRelation for CatalogViewAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogViewAction::CanDrop => ViewRelation::CanDrop,
-            CatalogViewAction::CanCommit => ViewRelation::CanCommit,
-            CatalogViewAction::CanGetMetadata => ViewRelation::CanGetMetadata,
-            CatalogViewAction::CanRename => ViewRelation::CanRename,
-            CatalogViewAction::CanIncludeInList => ViewRelation::CanIncludeInList,
-            CatalogViewAction::CanUndrop => ViewRelation::CanUndrop,
-            CatalogViewAction::CanGetTasks => ViewRelation::CanGetTasks,
-            CatalogViewAction::CanControlTasks => ViewRelation::CanControlTasks,
-            CatalogViewAction::CanSetProtection => ViewRelation::CanSetProtection,
+            CatalogViewAction::Drop => ViewRelation::CanDrop,
+            CatalogViewAction::Commit => ViewRelation::CanCommit,
+            CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
+            CatalogViewAction::Rename => ViewRelation::CanRename,
+            CatalogViewAction::IncludeInList => ViewRelation::CanIncludeInList,
+            CatalogViewAction::Undrop => ViewRelation::CanUndrop,
+            CatalogViewAction::GetTasks => ViewRelation::CanGetTasks,
+            CatalogViewAction::ControlTasks => ViewRelation::CanControlTasks,
+            CatalogViewAction::SetProtection => ViewRelation::CanSetProtection,
         }
     }
 }

@@ -84,7 +84,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &warehouse,
             &destination.namespace,
             destination_namespace,
-            CatalogNamespaceAction::CanCreateView,
+            CatalogNamespaceAction::CreateView,
         ),
         // Check 2)
         authorizer.require_view_action(
@@ -93,7 +93,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &source_namespace,
             source.clone(),
             Ok::<_, RequireViewActionError>(Some(source_view_info)),
-            CatalogViewAction::CanRename,
+            CatalogViewAction::Rename,
         )
     );
     let source_view_info = source_view_info?;

@@ -278,7 +278,7 @@ paths:
       summary: Get allowed Authorizer actions on a namespace
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the specified namespace.
-        For Catalog permissions, use `/management/v1/namespace/{namespace_id}/actions` instead.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` instead.
       operationId: get_authorizer_namespace_actions
       parameters:
         - name: principalUser
@@ -4324,101 +4324,101 @@ components:
     LakekeeperNamespaceAction:
       type: string
       enum:
-        - CanCreateTable
-        - CanCreateView
-        - CanCreateNamespace
-        - CanDelete
-        - CanUpdateProperties
-        - CanGetMetadata
-        - CanListTables
-        - CanListViews
-        - CanListNamespaces
-        - CanListEverything
-        - CanSetProtection
-        - CanIncludeInList
+        - create_table
+        - create_view
+        - create_namespace
+        - delete
+        - update_properties
+        - get_metadata
+        - list_tables
+        - list_views
+        - list_namespaces
+        - list_everything
+        - set_protection
+        - include_in_list
     LakekeeperProjectAction:
       type: string
       enum:
-        - CanCreateWarehouse
-        - CanDelete
-        - CanRename
-        - CanGetMetadata
-        - CanListWarehouses
-        - CanIncludeInList
-        - CanCreateRole
-        - CanListRoles
-        - CanSearchRoles
-        - CanGetEndpointStatistics
+        - create_warehouse
+        - delete
+        - rename
+        - get_metadata
+        - list_warehouses
+        - include_in_list
+        - create_role
+        - list_roles
+        - search_roles
+        - get_endpoint_statistics
     LakekeeperRoleAction:
       type: string
       enum:
-        - CanRead
-        - CanDelete
-        - CanUpdate
+        - read
+        - delete
+        - update
     LakekeeperServerAction:
       type: string
       enum:
-        - CanCreateProject
-        - CanUpdateUsers
-        - CanDeleteUsers
-        - CanListUsers
-        - CanProvisionUsers
+        - create_project
+        - update_users
+        - delete_users
+        - list_users
+        - provision_users
     LakekeeperTableAction:
       type: string
       enum:
-        - CanDrop
-        - CanWriteData
-        - CanReadData
-        - CanGetMetadata
-        - CanCommit
-        - CanRename
-        - CanIncludeInList
-        - CanUndrop
-        - CanGetTasks
-        - CanControlTasks
-        - CanSetProtection
+        - drop
+        - write_data
+        - read_data
+        - get_metadata
+        - commit
+        - rename
+        - include_in_list
+        - undrop
+        - get_tasks
+        - control_tasks
+        - set_protection
     LakekeeperUserAction:
       type: string
       enum:
-        - CanRead
-        - CanUpdate
-        - CanDelete
+        - read
+        - update
+        - delete
     LakekeeperViewAction:
       type: string
       enum:
-        - CanDrop
-        - CanGetMetadata
-        - CanCommit
-        - CanIncludeInList
-        - CanRename
-        - CanUndrop
-        - CanGetTasks
-        - CanControlTasks
-        - CanSetProtection
+        - drop
+        - get_metadata
+        - commit
+        - include_in_list
+        - rename
+        - undrop
+        - get_tasks
+        - control_tasks
+        - set_protection
     LakekeeperWarehouseAction:
       type: string
       enum:
-        - CanCreateNamespace
-        - CanDelete
-        - CanUpdateStorage
-        - CanUpdateStorageCredential
-        - CanGetMetadata
-        - CanGetConfig
-        - CanListNamespaces
-        - CanListEverything
-        - CanUse
-        - CanIncludeInList
-        - CanDeactivate
-        - CanActivate
-        - CanRename
-        - CanListDeletedTabulars
-        - CanModifySoftDeletion
-        - CanGetTaskQueueConfig
-        - CanModifyTaskQueueConfig
-        - CanGetAllTasks
-        - CanControlAllTasks
-        - CanSetProtection
-        - CanGetEndpointStatistics
+        - create_namespace
+        - delete
+        - update_storage
+        - update_storage_credential
+        - get_metadata
+        - get_config
+        - list_namespaces
+        - list_everything
+        - use
+        - include_in_list
+        - deactivate
+        - activate
+        - rename
+        - list_deleted_tabulars
+        - modify_soft_deletion
+        - get_task_queue_config
+        - modify_task_queue_config
+        - get_all_tasks
+        - control_all_tasks
+        - set_protection
+        - get_endpoint_statistics
     LicenseStatus:
       type: object
       description: Status of license validation

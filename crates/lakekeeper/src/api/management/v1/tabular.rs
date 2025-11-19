@@ -44,8 +44,8 @@ where
                 &request_metadata,
                 None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
-                    (&warehouse, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::Use),
+                    (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
             .await?
@@ -77,8 +77,8 @@ where
                 Ok::<_, ErrorModel>((
                     require_namespace_for_tabular(&namespaces, t)?,
                     t.tabular.as_action_request(
-                        CatalogViewAction::CanIncludeInList,
-                        CatalogTableAction::CanIncludeInList,
+                        CatalogViewAction::IncludeInList,
+                        CatalogTableAction::IncludeInList,
                     ),
                 ))
             })

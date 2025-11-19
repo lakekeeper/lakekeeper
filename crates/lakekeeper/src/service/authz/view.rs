@@ -23,7 +23,7 @@ use crate::{
     WarehouseId,
 };
 
-const CAN_SEE_PERMISSION: CatalogViewAction = CatalogViewAction::CanGetMetadata;
+const CAN_SEE_PERMISSION: CatalogViewAction = CatalogViewAction::GetMetadata;
 
 pub trait ViewAction
 where
