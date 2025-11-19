@@ -726,23 +726,18 @@ pub trait AuthZTableOps: Authorizer {
         table: &impl AuthZTableInfo,
         action: impl Into<Self::TableAction> + Send,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_table_actions_arr(
-                    metadata,
-                    for_user,
-                    warehouse,
-                    namespace,
-                    table,
-                    &[action.into()],
-                )
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_table_actions_arr(
+                metadata,
+                for_user,
+                warehouse,
+                namespace,
+                table,
+                &[action.into()],
+            )
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn are_allowed_table_actions_arr<
@@ -801,8 +796,23 @@ pub trait AuthZTableOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() {
-            Ok(vec![true; actions.len()])
+        let warehouse_matches = actions
+            .iter()
+            .map(|(_, table, _)| {
+                let same_warehouse = table.warehouse_id() == warehouse.warehouse_id;
+                if !same_warehouse {
+                    tracing::warn!(
+                        "Table warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
+                        table.warehouse_id(),
+                        warehouse.warehouse_id
+                    );
+                }
+                same_warehouse
+            })
+            .collect::<Vec<_>>();
+
+        if metadata.has_admin_privileges() && for_user.is_none() {
+            Ok(warehouse_matches)
         } else {
             let converted = actions
                 .iter()
@@ -827,6 +837,12 @@ pub trait AuthZTableOps: Authorizer {
                 .into());
             }
 
+            let decisions = warehouse_matches
+                .iter()
+                .zip(decisions.iter())
+                .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
+                .collect::<Vec<_>>();
+
             Ok(decisions)
         }
         .map(MustUse::from)
@@ -846,97 +862,84 @@ pub trait AuthZTableOps: Authorizer {
             ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
         )],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(vec![true; actions.len()])
+        let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|(ns, a)| match a {
+            ActionOnTableOrView::Table((t, a)) => itertools::Either::Left((*ns, *t, (*a).into())),
+            ActionOnTableOrView::View((v, a)) => itertools::Either::Right((*ns, *v, (*a).into())),
+        });
+
+        let table_results = if tables.is_empty() {
+            Vec::new()
         } else {
-            let (tables, views): (Vec<_>, Vec<_>) =
-                actions.iter().partition_map(|(ns, a)| match a {
-                    ActionOnTableOrView::Table((t, a)) => {
-                        itertools::Either::Left((*ns, *t, (*a).into()))
-                    }
-                    ActionOnTableOrView::View((v, a)) => {
-                        itertools::Either::Right((*ns, *v, (*a).into()))
-                    }
-                });
+            self.are_allowed_table_actions_vec(
+                metadata,
+                for_user,
+                warehouse,
+                parent_namespaces,
+                &tables,
+            )
+            .await?
+            .into_inner()
+        };
 
-            let table_results = if tables.is_empty() {
-                Vec::new()
-            } else {
-                self.are_allowed_table_actions_vec(
-                    metadata,
-                    for_user,
-                    warehouse,
-                    parent_namespaces,
-                    &tables,
-                )
-                .await?
-                .into_inner()
-            };
+        let view_results = if views.is_empty() {
+            Vec::new()
+        } else {
+            self.are_allowed_view_actions_vec(
+                metadata,
+                for_user,
+                warehouse,
+                parent_namespaces,
+                &views,
+            )
+            .await?
+            .into_inner()
+        };
 
-            let view_results = if views.is_empty() {
-                Vec::new()
-            } else {
-                self.are_allowed_view_actions_vec(
-                    metadata,
-                    for_user,
-                    warehouse,
-                    parent_namespaces,
-                    &views,
-                )
-                .await?
-                .into_inner()
-            };
-
-            if table_results.len() != tables.len() {
-                return Err(AuthorizationCountMismatch::new(
-                    tables.len(),
-                    table_results.len(),
-                    "table",
-                )
-                .into());
-            }
-            if view_results.len() != views.len() {
-                return Err(AuthorizationCountMismatch::new(
-                    views.len(),
-                    view_results.len(),
-                    "view",
-                )
-                .into());
-            }
-
-            // Reorder results to match the original order of actions
-            let mut table_idx = 0;
-            let mut view_idx = 0;
-            let ordered_results: Vec<bool> = actions
-                .iter()
-                .map(|(_ns, action)| match action {
-                    ActionOnTableOrView::Table(_) => {
-                        let result = table_results[table_idx];
-                        table_idx += 1;
-                        result
-                    }
-                    ActionOnTableOrView::View(_) => {
-                        let result = view_results[view_idx];
-                        view_idx += 1;
-                        result
-                    }
-                })
-                .collect();
-
-            #[cfg(debug_assertions)]
-            {
-                debug_assert_eq!(
-                    ordered_results.len(),
-                    actions.len(),
-                    "Final result length {} does not match input actions length {}",
-                    ordered_results.len(),
-                    actions.len()
-                );
-            }
-
-            Ok(ordered_results)
+        if table_results.len() != tables.len() {
+            return Err(AuthorizationCountMismatch::new(
+                tables.len(),
+                table_results.len(),
+                "table",
+            )
+            .into());
         }
-        .map(MustUse::from)
+        if view_results.len() != views.len() {
+            return Err(
+                AuthorizationCountMismatch::new(views.len(), view_results.len(), "view").into(),
+            );
+        }
+
+        // Reorder results to match the original order of actions
+        let mut table_idx = 0;
+        let mut view_idx = 0;
+        let ordered_results: Vec<bool> = actions
+            .iter()
+            .map(|(_ns, action)| match action {
+                ActionOnTableOrView::Table(_) => {
+                    let result = table_results[table_idx];
+                    table_idx += 1;
+                    result
+                }
+                ActionOnTableOrView::View(_) => {
+                    let result = view_results[view_idx];
+                    view_idx += 1;
+                    result
+                }
+            })
+            .collect();
+
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                ordered_results.len(),
+                actions.len(),
+                "Final result length {} does not match input actions length {}",
+                ordered_results.len(),
+                actions.len()
+            );
+        }
+
+        Ok(ordered_results.into())
     }
 
     async fn require_tabular_actions<

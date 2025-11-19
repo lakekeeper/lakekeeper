@@ -100,16 +100,11 @@ pub trait AuthZUserOps: Authorizer {
         user_id: &UserId,
         action: impl Into<Self::UserAction> + Send,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_user_actions_arr(metadata, for_user, &[(user_id, action.into())])
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_user_actions_arr(metadata, for_user, &[(user_id, action.into())])
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn are_allowed_user_actions_vec<A: Into<Self::UserAction> + Send + Copy + Sync>(
@@ -122,7 +117,7 @@ pub trait AuthZUserOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() {
+        if metadata.has_admin_privileges() && for_user.is_none() {
             Ok(vec![true; users_with_actions.len()])
         } else {
             let converted = users_with_actions

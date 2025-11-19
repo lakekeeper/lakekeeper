@@ -1802,8 +1802,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
 
-            // Target user has CanCreateWarehouse but not CanListWarehouses
-            assert_eq!(results, vec![true, false]);
+                assert_eq!(results, vec![true, false]);
         }
 
         #[tokio::test]
@@ -1856,7 +1855,6 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
 
-            // Should return false because we're checking target_user's permissions, not admin's
             assert_eq!(results, vec![true, false]);
         }
     }

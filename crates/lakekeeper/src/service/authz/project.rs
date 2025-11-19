@@ -125,28 +125,30 @@ pub trait AuthZProjectOps: Authorizer {
             for_user = None;
         }
 
-        Ok(MustUse::from(if metadata.has_admin_privileges() {
-            vec![true; projects_with_actions.len()]
-        } else {
-            let converted: Vec<(&ProjectId, Self::ProjectAction)> = projects_with_actions
-                .iter()
-                .map(|(id, action)| (*id, (*action).into()))
-                .collect();
-            let decisions = self
-                .are_allowed_project_actions_impl(metadata, for_user, &converted)
-                .await?;
+        Ok(MustUse::from(
+            if metadata.has_admin_privileges() && for_user.is_none() {
+                vec![true; projects_with_actions.len()]
+            } else {
+                let converted: Vec<(&ProjectId, Self::ProjectAction)> = projects_with_actions
+                    .iter()
+                    .map(|(id, action)| (*id, (*action).into()))
+                    .collect();
+                let decisions = self
+                    .are_allowed_project_actions_impl(metadata, for_user, &converted)
+                    .await?;
 
-            if decisions.len() != projects_with_actions.len() {
-                return Err(AuthorizationCountMismatch::new(
-                    projects_with_actions.len(),
-                    decisions.len(),
-                    "project",
-                )
-                .into());
-            }
+                if decisions.len() != projects_with_actions.len() {
+                    return Err(AuthorizationCountMismatch::new(
+                        projects_with_actions.len(),
+                        decisions.len(),
+                        "project",
+                    )
+                    .into());
+                }
 
-            decisions
-        }))
+                decisions
+            },
+        ))
     }
 
     async fn are_allowed_project_actions_arr<
@@ -176,16 +178,11 @@ pub trait AuthZProjectOps: Authorizer {
         project_id: &ProjectId,
         action: impl Into<Self::ProjectAction> + Send + Sync + Copy,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_project_actions_arr(metadata, for_user, &[(project_id, action)])
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_project_actions_arr(metadata, for_user, &[(project_id, action)])
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn require_project_action(

@@ -373,23 +373,18 @@ pub trait AuthZViewOps: Authorizer {
         view: &impl AuthZViewInfo,
         action: impl Into<Self::ViewAction> + Send,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_view_actions_arr(
-                    metadata,
-                    for_user,
-                    warehouse,
-                    namespace,
-                    view,
-                    &[action.into()],
-                )
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_view_actions_arr(
+                metadata,
+                for_user,
+                warehouse,
+                namespace,
+                view,
+                &[action.into()],
+            )
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn are_allowed_view_actions_arr<
@@ -448,8 +443,23 @@ pub trait AuthZViewOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() {
-            Ok(vec![true; actions.len()])
+        let warehouse_matches = actions
+            .iter()
+            .map(|(_, view, _)| {
+                let same_warehouse = view.warehouse_id() == warehouse.warehouse_id;
+                if !same_warehouse {
+                    tracing::warn!(
+                        "View warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
+                        view.warehouse_id(),
+                        warehouse.warehouse_id
+                    );
+                }
+                same_warehouse
+            })
+            .collect::<Vec<_>>();
+
+        if metadata.has_admin_privileges() && for_user.is_none() {
+            Ok(warehouse_matches)
         } else {
             let converted = actions
                 .iter()
@@ -473,6 +483,12 @@ pub trait AuthZViewOps: Authorizer {
                 )
                 .into());
             }
+
+            let decisions = warehouse_matches
+                .iter()
+                .zip(decisions.iter())
+                .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
+                .collect::<Vec<_>>();
 
             Ok(decisions)
         }

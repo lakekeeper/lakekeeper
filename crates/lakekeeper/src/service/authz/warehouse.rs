@@ -251,16 +251,11 @@ pub trait AuthzWarehouseOps: Authorizer {
         warehouse: &ResolvedWarehouse,
         action: impl Into<Self::WarehouseAction> + Send + Sync + Copy,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_warehouse_actions_arr(metadata, for_user, &[(warehouse, action)])
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_warehouse_actions_arr(metadata, for_user, &[(warehouse, action)])
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn are_allowed_warehouse_actions_arr<
@@ -295,7 +290,7 @@ pub trait AuthzWarehouseOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() {
+        if metadata.has_admin_privileges() && for_user.is_none() {
             Ok(vec![true; warehouses_with_actions.len()])
         } else {
             let converted: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =

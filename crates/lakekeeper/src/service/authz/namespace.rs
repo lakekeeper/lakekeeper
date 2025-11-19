@@ -320,22 +320,12 @@ pub trait AuthzNamespaceOps: Authorizer {
             return Ok(MustUse::from(false));
         }
 
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_namespace_actions_arr(
-                    metadata,
-                    for_user,
-                    warehouse,
-                    namespace,
-                    &[action],
-                )
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_namespace_actions_arr(metadata, for_user, warehouse, namespace, &[action])
+            .await?
+            .into_inner();
+
+        Ok(MustUse::from(decision))
     }
 
     async fn are_allowed_namespace_actions_arr<
@@ -379,11 +369,20 @@ pub trait AuthzNamespaceOps: Authorizer {
         // First check warehouse_id for all namespaces
         let warehouse_matches: Vec<bool> = actions
             .iter()
-            .map(|(ns, _)| ns.warehouse_id() == warehouse.warehouse_id)
+            .map(|(ns, _)| {
+                let same_warehouse = ns.warehouse_id() == warehouse.warehouse_id;
+                if !same_warehouse {
+                    tracing::warn!(
+                        "Namespace warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
+                        ns.warehouse_id(),
+                        warehouse.warehouse_id
+                    );
+                }            
+            same_warehouse
+        })
             .collect();
 
-        if metadata.has_admin_privileges() {
-            // Even admins cannot access namespaces from different warehouses
+        if metadata.has_admin_privileges() && for_user.is_none() {
             Ok(warehouse_matches)
         } else {
             let converted = actions
@@ -394,6 +393,16 @@ pub trait AuthzNamespaceOps: Authorizer {
                 .are_allowed_namespace_actions_impl(metadata, for_user, warehouse, &converted)
                 .await?;
 
+
+            if warehouse_matches.len() != actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    actions.len(),
+                    warehouse_matches.len(),
+                    "namespace",
+                )
+                .into());
+            }
+
             // Combine warehouse check with authorization check (both must be true)
             let results = warehouse_matches
                 .iter()
@@ -401,14 +410,6 @@ pub trait AuthzNamespaceOps: Authorizer {
                 .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
                 .collect::<Vec<_>>();
 
-            if results.len() != actions.len() {
-                return Err(AuthorizationCountMismatch::new(
-                    actions.len(),
-                    results.len(),
-                    "namespace",
-                )
-                .into());
-            }
 
             Ok(results)
         }

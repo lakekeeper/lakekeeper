@@ -100,16 +100,11 @@ pub trait AuthZRoleOps: Authorizer {
         role_id: RoleId,
         action: impl Into<Self::RoleAction> + Send + Copy + Sync,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_role_actions_arr(metadata, for_user, &[(role_id, action)])
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_role_actions_arr(metadata, for_user, &[(role_id, action)])
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn are_allowed_role_actions_vec<A: Into<Self::RoleAction> + Send + Copy + Sync>(
@@ -121,7 +116,7 @@ pub trait AuthZRoleOps: Authorizer {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
-        if metadata.has_admin_privileges() {
+        if metadata.has_admin_privileges() && for_user.is_none() {
             Ok(vec![true; roles_with_actions.len()])
         } else {
             let converted: Vec<(RoleId, Self::RoleAction)> = roles_with_actions

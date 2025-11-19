@@ -100,16 +100,11 @@ pub trait AuthZServerOps: Authorizer {
         for_user: Option<&UserOrRole>,
         action: impl Into<Self::ServerAction> + Send + Sync + Copy,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
-        } else {
-            let [decision] = self
-                .are_allowed_server_actions_arr(metadata, for_user, &[action])
-                .await?
-                .into_inner();
-            Ok(decision)
-        }
-        .map(MustUse::from)
+        let [decision] = self
+            .are_allowed_server_actions_arr(metadata, for_user, &[action])
+            .await?
+            .into_inner();
+        Ok(decision.into())
     }
 
     async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Sync + Copy>(
@@ -122,7 +117,7 @@ pub trait AuthZServerOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() {
+        if metadata.has_admin_privileges() && for_user.is_none() {
             Ok(vec![true; actions.len()])
         } else {
             let converted = actions.iter().map(|a| (*a).into()).collect::<Vec<_>>();
