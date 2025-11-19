@@ -1298,7 +1298,7 @@ pub(crate) mod tests {
     // Name is important for test profile
     pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
-        use lakekeeper::tokio;
+        use lakekeeper::{service::authz::AuthZProjectOps, tokio};
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
@@ -1791,7 +1791,7 @@ pub(crate) mod tests {
 
             // Now admin should be able to check target user's permissions
             let results = authorizer
-                .are_allowed_project_actions_impl(
+                .are_allowed_project_actions_vec(
                     &metadata,
                     Some(&target_user),
                     &[
@@ -1800,9 +1800,10 @@ pub(crate) mod tests {
                     ],
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .into_inner();
 
-                assert_eq!(results, vec![true, false]);
+            assert_eq!(results, vec![true, false]);
         }
 
         #[tokio::test]
@@ -1844,7 +1845,7 @@ pub(crate) mod tests {
             // Check target user's permissions (not the admin's)
             // Target user has no permissions
             let results = authorizer
-                .are_allowed_project_actions_impl(
+                .are_allowed_project_actions_vec(
                     &metadata,
                     Some(&target_user),
                     &[
@@ -1853,7 +1854,8 @@ pub(crate) mod tests {
                     ],
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .into_inner();
 
             assert_eq!(results, vec![true, false]);
         }

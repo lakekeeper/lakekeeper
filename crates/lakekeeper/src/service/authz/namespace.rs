@@ -377,7 +377,7 @@ pub trait AuthzNamespaceOps: Authorizer {
                         ns.warehouse_id(),
                         warehouse.warehouse_id
                     );
-                }            
+                }
             same_warehouse
         })
             .collect();
@@ -392,7 +392,6 @@ pub trait AuthzNamespaceOps: Authorizer {
             let authz_results = self
                 .are_allowed_namespace_actions_impl(metadata, for_user, warehouse, &converted)
                 .await?;
-
 
             if warehouse_matches.len() != actions.len() {
                 return Err(AuthorizationCountMismatch::new(
@@ -409,7 +408,6 @@ pub trait AuthzNamespaceOps: Authorizer {
                 .zip(authz_results.iter())
                 .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
                 .collect::<Vec<_>>();
-
 
             Ok(results)
         }
