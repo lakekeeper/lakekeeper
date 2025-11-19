@@ -1179,7 +1179,7 @@ pub(crate) mod tests {
             },
             parents: vec![]
         },
-        &crate::service::TableInfo::new_random()
+        &crate::service::TableInfo::new_random(Uuid::nil().into())
     );
     test_block_action!(
         view,
@@ -1201,6 +1201,6 @@ pub(crate) mod tests {
             },
             parents: vec![]
         },
-        &crate::service::ViewInfo::new_random()
+        &crate::service::ViewInfo::new_random(Uuid::nil().into())
     );
 }

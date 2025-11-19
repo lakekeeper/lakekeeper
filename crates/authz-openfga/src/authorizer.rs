@@ -272,7 +272,7 @@ impl Authorizer for OpenFGAAuthorizer {
         for (idx, (user_id, action)) in users_with_actions.iter().enumerate() {
             // 1. Users can perform all actions on themselves
             // 2. Every authenticated user can read user metadata given the user id
-            let is_same_user = for_user.is_none() & (actor_principal == Some(*user_id));
+            let is_same_user = for_user.is_none() && (actor_principal == Some(*user_id));
             if is_same_user || *action == CatalogUserAction::CanRead {
                 results.push((idx, true));
             } else {
