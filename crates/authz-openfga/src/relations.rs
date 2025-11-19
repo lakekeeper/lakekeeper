@@ -167,6 +167,16 @@ pub(super) enum APIRoleAction {
     ReadAssignments,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGARoleAction {
+    Assume,
+    CanGrantAssignee,
+    CanChangeOwnership,
+    ReadAssignments,
+}
+
 impl ReducedRelation for APIRoleRelation {
     type OpenFgaRelation = RoleRelation;
 
@@ -190,6 +200,19 @@ impl ReducedRelation for APIRoleAction {
             APIRoleAction::Update => RoleRelation::CanUpdate,
             APIRoleAction::Read => RoleRelation::CanRead,
             APIRoleAction::ReadAssignments => RoleRelation::CanReadAssignments,
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGARoleAction {
+    type OpenFgaRelation = RoleRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGARoleAction::Assume => RoleRelation::CanAssume,
+            OpenFGARoleAction::CanGrantAssignee => RoleRelation::CanGrantAssignee,
+            OpenFGARoleAction::CanChangeOwnership => RoleRelation::CanChangeOwnership,
+            OpenFGARoleAction::ReadAssignments => RoleRelation::CanReadAssignments,
         }
     }
 }
@@ -313,6 +336,14 @@ pub(super) enum APIServerAction {
     ReadAssignments,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGAServerAction {
+    ReadAssignments,
+    GrantAdmin,
+}
+
 impl ReducedRelation for APIServerRelation {
     type OpenFgaRelation = ServerRelation;
 
@@ -350,6 +381,17 @@ impl ReducedRelation for APIServerAction {
             APIServerAction::ProvisionUsers => ServerRelation::CanProvisionUsers,
             APIServerAction::ReadAssignments => ServerRelation::CanReadAssignments,
             APIServerAction::GrantAdmin => ServerRelation::CanGrantAdmin,
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGAServerAction {
+    type OpenFgaRelation = ServerRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGAServerAction::ReadAssignments => ServerRelation::CanReadAssignments,
+            OpenFGAServerAction::GrantAdmin => ServerRelation::CanGrantAdmin,
         }
     }
 }
@@ -535,6 +577,21 @@ pub(super) enum APIProjectAction {
     GetEndpointStatistics,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGAProjectAction {
+    ReadAssignments,
+    GrantRoleCreator,
+    GrantCreate,
+    GrantDescribe,
+    GrantModify,
+    GrantSelect,
+    GrantProjectAdmin,
+    GrantSecurityAdmin,
+    GrantDataAdmin,
+}
+
 impl ReducedRelation for APIProjectRelation {
     type OpenFgaRelation = ProjectRelation;
 
@@ -595,6 +652,24 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::CanGetEndpointStatistics => {
                 ProjectRelation::CanGetEndpointStatistics
             }
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGAProjectAction {
+    type OpenFgaRelation = ProjectRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGAProjectAction::ReadAssignments => ProjectRelation::CanReadAssignments,
+            OpenFGAProjectAction::GrantRoleCreator => ProjectRelation::CanGrantRoleCreator,
+            OpenFGAProjectAction::GrantCreate => ProjectRelation::CanGrantCreate,
+            OpenFGAProjectAction::GrantDescribe => ProjectRelation::CanGrantDescribe,
+            OpenFGAProjectAction::GrantModify => ProjectRelation::CanGrantModify,
+            OpenFGAProjectAction::GrantSelect => ProjectRelation::CanGrantSelect,
+            OpenFGAProjectAction::GrantProjectAdmin => ProjectRelation::CanGrantProjectAdmin,
+            OpenFGAProjectAction::GrantSecurityAdmin => ProjectRelation::CanGrantSecurityAdmin,
+            OpenFGAProjectAction::GrantDataAdmin => ProjectRelation::CanGrantDataAdmin,
         }
     }
 }
@@ -793,6 +868,20 @@ pub(super) enum APIWarehouseAction {
     GetEndpointStatistics,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGAWarehouseAction {
+    ReadAssignments,
+    GrantCreate,
+    GrantDescribe,
+    GrantModify,
+    GrantSelect,
+    GrantPassGrants,
+    GrantManageGrants,
+    ChangeOwnership,
+}
+
 impl ReducedRelation for APIWarehouseRelation {
     type OpenFgaRelation = WarehouseRelation;
 
@@ -884,6 +973,23 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::CanGetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGAWarehouseAction {
+    type OpenFgaRelation = WarehouseRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGAWarehouseAction::ReadAssignments => WarehouseRelation::CanReadAssignments,
+            OpenFGAWarehouseAction::GrantCreate => WarehouseRelation::CanGrantCreate,
+            OpenFGAWarehouseAction::GrantDescribe => WarehouseRelation::CanGrantDescribe,
+            OpenFGAWarehouseAction::GrantModify => WarehouseRelation::CanGrantModify,
+            OpenFGAWarehouseAction::GrantSelect => WarehouseRelation::CanGrantSelect,
+            OpenFGAWarehouseAction::GrantPassGrants => WarehouseRelation::CanGrantPassGrants,
+            OpenFGAWarehouseAction::GrantManageGrants => WarehouseRelation::CanGrantManageGrants,
+            OpenFGAWarehouseAction::ChangeOwnership => WarehouseRelation::CanChangeOwnership,
         }
     }
 }
@@ -1071,6 +1177,19 @@ pub(super) enum APINamespaceAction {
     SetProtection,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGANamespaceAction {
+    ReadAssignments,
+    GrantCreate,
+    GrantDescribe,
+    GrantModify,
+    GrantSelect,
+    GrantPassGrants,
+    GrantManageGrants,
+}
+
 impl ReducedRelation for APINamespaceRelation {
     type OpenFgaRelation = NamespaceRelation;
 
@@ -1127,6 +1246,22 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
             CatalogNamespaceAction::CanSetProtection => NamespaceRelation::CanSetProtection,
             CatalogNamespaceAction::CanIncludeInList => NamespaceRelation::CanIncludeInList,
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGANamespaceAction {
+    type OpenFgaRelation = NamespaceRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGANamespaceAction::ReadAssignments => NamespaceRelation::CanReadAssignments,
+            OpenFGANamespaceAction::GrantCreate => NamespaceRelation::CanGrantCreate,
+            OpenFGANamespaceAction::GrantDescribe => NamespaceRelation::CanGrantDescribe,
+            OpenFGANamespaceAction::GrantModify => NamespaceRelation::CanGrantModify,
+            OpenFGANamespaceAction::GrantSelect => NamespaceRelation::CanGrantSelect,
+            OpenFGANamespaceAction::GrantPassGrants => NamespaceRelation::CanGrantPassGrants,
+            OpenFGANamespaceAction::GrantManageGrants => NamespaceRelation::CanGrantManageGrants,
         }
     }
 }
@@ -1296,6 +1431,19 @@ pub(super) enum APITableAction {
     SetProtection,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGATableAction {
+    ReadAssignments,
+    GrantPassGrants,
+    GrantManageGrants,
+    GrantDescribe,
+    GrantSelect,
+    GrantModify,
+    ChangeOwnership,
+}
+
 impl ReducedRelation for APITableRelation {
     type OpenFgaRelation = TableRelation;
 
@@ -1352,6 +1500,22 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::CanGetTasks => TableRelation::CanGetTasks,
             CatalogTableAction::CanControlTasks => TableRelation::CanControlTasks,
             CatalogTableAction::CanSetProtection => TableRelation::CanSetProtection,
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGATableAction {
+    type OpenFgaRelation = TableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGATableAction::ReadAssignments => TableRelation::CanReadAssignments,
+            OpenFGATableAction::GrantPassGrants => TableRelation::CanGrantPassGrants,
+            OpenFGATableAction::GrantManageGrants => TableRelation::CanGrantManageGrants,
+            OpenFGATableAction::GrantDescribe => TableRelation::CanGrantDescribe,
+            OpenFGATableAction::GrantSelect => TableRelation::CanGrantSelect,
+            OpenFGATableAction::GrantModify => TableRelation::CanGrantModify,
+            OpenFGATableAction::ChangeOwnership => TableRelation::CanChangeOwnership,
         }
     }
 }
@@ -1505,6 +1669,18 @@ pub(super) enum APIViewAction {
     SetProtection,
 }
 
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGAViewAction {
+    ReadAssignments,
+    GrantPassGrants,
+    GrantManageGrants,
+    GrantDescribe,
+    GrantModify,
+    ChangeOwnership,
+}
+
 impl ReducedRelation for APIViewRelation {
     type OpenFgaRelation = ViewRelation;
 
@@ -1555,6 +1731,21 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::CanGetTasks => ViewRelation::CanGetTasks,
             CatalogViewAction::CanControlTasks => ViewRelation::CanControlTasks,
             CatalogViewAction::CanSetProtection => ViewRelation::CanSetProtection,
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGAViewAction {
+    type OpenFgaRelation = ViewRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGAViewAction::ReadAssignments => ViewRelation::CanReadAssignments,
+            OpenFGAViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
+            OpenFGAViewAction::GrantManageGrants => ViewRelation::CanGrantManageGrants,
+            OpenFGAViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
+            OpenFGAViewAction::GrantModify => ViewRelation::CanGrantModify,
+            OpenFGAViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
         }
     }
 }

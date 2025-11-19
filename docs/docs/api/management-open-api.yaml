@@ -183,6 +183,9 @@ paths:
       tags:
         - permissions
       summary: Get my access to a namespace
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/namespace/{namespace_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/namespace/{namespace_id}/actions` for Catalog permissions instead.
       operationId: get_namespace_access_by_id
       parameters:
         - name: principalUser
@@ -216,6 +219,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetNamespaceAccessResponse'
+      deprecated: true
   /management/v1/permissions/namespace/{namespace_id}/assignments:
     get:
       tags:
@@ -267,6 +271,47 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/namespace/{namespace_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on a namespace
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified namespace.
+        For Catalog permissions, use `/management/v1/namespace/{namespace_id}/actions` instead.
+      operationId: get_authorizer_namespace_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Namespace Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGANamespaceActionsResponse'
   /management/v1/permissions/namespace/{namespace_id}/managed-access:
     post:
       tags:
@@ -295,6 +340,9 @@ paths:
       tags:
         - permissions
       summary: Get my access to the default project
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
+        or `/management/v1/project/actions` for Catalog permissions instead.
       operationId: get_project_access
       parameters:
         - name: principalUser
@@ -321,6 +369,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAccessResponse'
+      deprecated: true
   /management/v1/permissions/project/assignments:
     get:
       tags:
@@ -357,11 +406,56 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/project/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on the default project
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the default project.
+        For Catalog permissions, use `/management/v1/project/actions` instead.
+      operationId: get_authorizer_project_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Project Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAProjectActionsResponse'
   /management/v1/permissions/project/{project_id}/access:
     get:
       tags:
         - permissions
-      summary: Get my access to the default project
+      summary: Get my access to a project
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/project/{project_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/project/{project_id}/actions` for Catalog permissions instead.
       operationId: get_project_access_by_id
       parameters:
         - name: principalUser
@@ -395,6 +489,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAccessResponse'
+      deprecated: true
   /management/v1/permissions/project/{project_id}/assignments:
     get:
       tags:
@@ -446,11 +541,55 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/project/{project_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on a project
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified project.
+        For Catalog permissions, use `/management/v1/project/{project_id}/actions` instead.
+      operationId: get_authorizer_project_actions_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: project_id
+          in: path
+          description: Project ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Project Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAProjectActionsResponse'
   /management/v1/permissions/role/{role_id}/access:
     get:
       tags:
         - permissions
-      summary: Get my access to the default project
+      summary: Get my access to a role
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/role/{role_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/role/{role_id}/actions` for Catalog permissions instead.
       operationId: get_role_access_by_id
       parameters:
         - name: role_id
@@ -467,6 +606,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetRoleAccessResponse'
+      deprecated: true
   /management/v1/permissions/role/{role_id}/assignments:
     get:
       tags:
@@ -517,11 +657,38 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/role/{role_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on a role
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified role.
+        For Catalog permissions, use `/management/v1/role/{role_id}/actions` instead.
+      operationId: get_authorizer_role_actions
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGARoleActionsResponse'
   /management/v1/permissions/server/access:
     get:
       tags:
         - permissions
       summary: Get my access to the server
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/server/authorizer-actions` for Authorizer permissions
+        or `/management/v1/server/actions` for Catalog permissions instead.
       operationId: get_server_access
       parameters:
         - name: principalUser
@@ -548,6 +715,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetServerAccessResponse'
+      deprecated: true
   /management/v1/permissions/server/assignments:
     get:
       tags:
@@ -584,6 +752,40 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/server/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on the server
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the server.
+        For Catalog permissions, use `/management/v1/server/actions` instead.
+      operationId: get_authorizer_server_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAServerActionsResponse'
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
@@ -610,6 +812,9 @@ paths:
       tags:
         - permissions
       summary: Get my access to a warehouse
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/actions` for Catalog permissions instead.
       operationId: get_warehouse_access_by_id
       parameters:
         - name: principalUser
@@ -643,6 +848,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseAccessResponse'
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/assignments:
     get:
       tags:
@@ -694,6 +900,47 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on a warehouse
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified warehouse.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/actions` instead.
+      operationId: get_authorizer_warehouse_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Warehouse Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAWarehouseActionsResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:
       tags:
@@ -722,6 +969,9 @@ paths:
       tags:
         - permissions
       summary: Get my access to a table
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` for Catalog permissions instead.
       operationId: get_table_access_by_id
       parameters:
         - name: principalUser
@@ -762,6 +1012,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAccessResponse'
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
     get:
       tags:
@@ -827,11 +1078,62 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on a table
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified table.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` instead.
+      operationId: get_authorizer_table_actions_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Table Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGATableActionsResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
     get:
       tags:
         - permissions
       summary: Get my access to a view
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` for Catalog permissions instead.
       operationId: get_view_access_by_id
       parameters:
         - name: principalUser
@@ -872,6 +1174,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetViewAccessResponse'
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
     get:
       tags:
@@ -937,6 +1240,54 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions
+      summary: Get allowed Authorizer actions on a view
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified view.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` instead.
+      operationId: get_authorizer_view_actions_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show access for.
+            If neither user nor role is specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: View Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAViewActionsResponse'
   /management/v1/project:
     get:
       tags:
@@ -1000,9 +1351,11 @@ paths:
         - name: x-project-id
           in: header
           description: Optional project ID
-          required: true
+          required: false
           schema:
-            type: string
+            type:
+              - string
+              - 'null'
       responses:
         '204':
           description: Project deleted successfully
@@ -1059,9 +1412,11 @@ paths:
         - name: x-project-id
           in: header
           description: Optional project ID
-          required: true
+          required: false
           schema:
-            type: string
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -1085,9 +1440,11 @@ paths:
         - name: x-project-id
           in: header
           description: Optional project ID
-          required: true
+          required: false
           schema:
-            type: string
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -3654,6 +4011,69 @@ components:
           type: boolean
         managed-access-inherited:
           type: boolean
+    GetOpenFGANamespaceActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGANamespaceAction'
+    GetOpenFGAProjectActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAProjectAction'
+    GetOpenFGARoleActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGARoleAction'
+    GetOpenFGAServerActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAServerAction'
+    GetOpenFGATableActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGATableAction'
+    GetOpenFGAViewActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAViewAction'
+    GetOpenFGAWarehouseActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAWarehouseAction'
     GetProjectAccessResponse:
       type: object
       required:
@@ -4286,6 +4706,70 @@ components:
         - select
         - create
         - modify
+    OpenFGANamespaceAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_pass_grants
+        - grant_manage_grants
+    OpenFGAProjectAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_role_creator
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_project_admin
+        - grant_security_admin
+        - grant_data_admin
+    OpenFGARoleAction:
+      type: string
+      enum:
+        - assume
+        - can_grant_assignee
+        - can_change_ownership
+        - read_assignments
+    OpenFGAServerAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_admin
+    OpenFGATableAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_select
+        - grant_modify
+        - change_ownership
+    OpenFGAViewAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_modify
+        - change_ownership
+    OpenFGAWarehouseAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_pass_grants
+        - grant_manage_grants
+        - change_ownership
     ProjectAction:
       type: string
       enum:

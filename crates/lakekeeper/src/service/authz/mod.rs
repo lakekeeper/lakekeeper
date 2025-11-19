@@ -504,7 +504,7 @@ where
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
     ///
-    /// Returns `Vec<Ok<bool>>` indicating for each tuple whether the action is allowed. Returns
+    /// Returns `Vec<bool>` indicating for each tuple whether the action is allowed. Returns
     /// `Err` for internal errors.
     ///
     /// The default implementation is provided for backwards compatibility and does not support
@@ -525,7 +525,7 @@ where
     /// Checks if actions are allowed on views. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
     ///
-    /// Returns `Vec<Ok<bool>>` indicating for each tuple whether the action is allowed. Returns
+    /// Returns `Vec<bool>` indicating for each tuple whether the action is allowed. Returns
     /// `Err` for internal errors.
     ///
     /// The default implementation is provided for backwards compatibility and does not support
