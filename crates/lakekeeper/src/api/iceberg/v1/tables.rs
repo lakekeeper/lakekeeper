@@ -70,6 +70,25 @@ impl From<ListTablesQuery> for PaginationQuery {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadTableResultOrNotModified {
+    LoadTableResult(LoadTableResult),
+    NotModifiedResponse,
+}
+
+impl IntoResponse for LoadTableResultOrNotModified {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            LoadTableResultOrNotModified::NotModifiedResponse => {
+                StatusCode::NOT_MODIFIED.into_response()
+            }
+            LoadTableResultOrNotModified::LoadTableResult(load_table_result) => {
+                load_table_result.into_response()
+            }
+        }
+    }
+}
+
 #[async_trait]
 pub trait TablesService<S: crate::api::ThreadSafe>
 where
@@ -449,7 +468,13 @@ pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
+    use std::{collections::HashMap, error::Error, str::FromStr, sync::Arc};
+
+    use axum::response::Response;
+    use http_body_util::BodyExt;
+    use iceberg::spec::{
+        FormatVersion, Schema, SortOrder, TableMetadata, TableMetadataBuilder, UnboundPartitionSpec,
+    };
 
     use super::*;
 
@@ -697,5 +722,78 @@ mod test {
         let response_str = String::from_utf8(bytes.to_vec()).unwrap();
         let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
         assert_eq!(error.error.message, "snapshots=refs");
+    }
+
+    #[test]
+    fn test_load_table_result_or_not_modified_from_not_modified_response() {
+        let not_modified_response =
+            LoadTableResultOrNotModified::NotModifiedResponse.into_response();
+        assert_eq!(not_modified_response.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn test_load_table_result_or_not_modified_from_load_table_result() {
+        let table_metadata = create_table_metadata_mock();
+        let load_table_result = LoadTableResult {
+            metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
+            metadata: table_metadata,
+            config: None,
+            storage_credentials: None,
+        };
+        let load_table_result_response_expected = load_table_result.clone().into_response();
+
+        let load_table_result_response_result = LoadTableResultOrNotModified::LoadTableResult(load_table_result).into_response();
+
+        assert_eq!(load_table_result_response_result.status(), StatusCode::OK);
+        match (extract_body_from_response(load_table_result_response_expected).await, extract_body_from_response(load_table_result_response_result).await) {
+            (Ok(body_result), Ok(body_expected)) => {
+                assert_eq!(body_result, body_expected);
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                panic!("Failed to extract body: {}", e);
+            }
+        }
+    }
+
+    async fn extract_body_from_response(response: Response) -> Result<String, Box<dyn Error>> {
+        let bytes = response.into_body().collect().await?.to_bytes();
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
+    // Duplicated from iceberg-ext/src/catalog/rest/table.rs because package should be independent
+    fn create_table_metadata_mock() -> Arc<TableMetadata> {
+        let schema = Schema::builder().with_schema_id(0).build().unwrap();
+
+        let unbound_spec = UnboundPartitionSpec::default();
+
+        let sort_order = SortOrder::builder()
+            .with_order_id(0)
+            .build(&schema)
+            .unwrap();
+
+        let props = HashMap::new();
+
+        let mut builder = TableMetadataBuilder::new(
+            schema.clone(),
+            unbound_spec.clone(),
+            sort_order.clone(),
+            "memory://dummy".to_string(),
+            FormatVersion::V2,
+            props,
+        )
+        .unwrap();
+        builder = builder.add_schema(schema.clone()).unwrap();
+        builder = builder.set_current_schema(0).unwrap();
+        builder = builder.add_partition_spec(unbound_spec).unwrap();
+        builder = builder
+            .set_default_partition_spec(TableMetadataBuilder::LAST_ADDED)
+            .unwrap();
+        builder = builder.add_sort_order(sort_order).unwrap();
+        builder = builder
+            .set_default_sort_order(TableMetadataBuilder::LAST_ADDED as i64)
+            .unwrap();
+
+        let build_result: TableMetadata = builder.build().unwrap().into();
+        build_result.into()
     }
 }
