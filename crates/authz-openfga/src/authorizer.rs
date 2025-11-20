@@ -41,8 +41,8 @@ use crate::{
     },
     models::OpenFgaType,
     relations::{
-        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, RoleRelation, ServerRelation,
-        TableRelation, ViewRelation, WarehouseRelation,
+        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, ReducedRelation, RoleRelation,
+        ServerRelation, TableRelation, ViewRelation, WarehouseRelation,
     },
     FgaType, AUTH_CONFIG, MAX_TUPLES_PER_WRITE,
 };
@@ -289,17 +289,17 @@ impl Authorizer for OpenFGAAuthorizer {
                 .batch_check(vec![
                     CheckRequestTupleKey {
                         user: actor_openfga.clone(),
-                        relation: CatalogServerAction::ListUsers.to_string(),
+                        relation: CatalogServerAction::ListUsers.to_openfga().to_string(),
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
                         user: user.clone(),
-                        relation: CatalogServerAction::UpdateUsers.to_string(),
+                        relation: CatalogServerAction::UpdateUsers.to_openfga().to_string(),
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
                         user,
-                        relation: CatalogServerAction::DeleteUsers.to_string(),
+                        relation: CatalogServerAction::DeleteUsers.to_openfga().to_string(),
                         object: server_id.clone(),
                     },
                 ])
@@ -897,7 +897,7 @@ impl OpenFGAAuthorizer {
         let projects = self
             .list_objects(
                 FgaType::Project.to_string(),
-                CatalogProjectAction::IncludeInList.to_string(),
+                CatalogProjectAction::IncludeInList.to_openfga().to_string(),
                 actor.to_openfga(),
             )
             .await?

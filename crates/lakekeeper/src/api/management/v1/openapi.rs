@@ -21,12 +21,12 @@ use crate::{
     ),
     servers(
         (
-            url = "{scheme}://{host}/{basePath}",
+            url = "{scheme}://{host}{basePath}",
             description = "Lakekeeper Management API",
             variables(
                 ("scheme" = (default = "https", description = "The scheme of the URI, either http or https")),
-                ("host" = (default = "localhost", description = "The host address for the specified server")),
-                ("basePath" = (default = "", description = "Optional prefix to be appended to all routes"))
+                ("host" = (default = "localhost", description = "The host (and optional port) for the specified server")),
+                ("basePath" = (default = "", description = "Optional path prefix (starting with '/') to be prepended to all routes"))
             )
         )
     ),
