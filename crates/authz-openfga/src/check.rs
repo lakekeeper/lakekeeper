@@ -33,7 +33,7 @@ use crate::entities::OpenFgaEntity;
 /// Check if a specific action is allowed on the given object
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/check",
     request_body = CheckRequest,
     responses(

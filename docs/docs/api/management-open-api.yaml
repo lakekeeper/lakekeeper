@@ -141,7 +141,7 @@ paths:
   /management/v1/permissions/check:
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Check if a specific action is allowed on the given object
       operationId: check
       requestBody:
@@ -160,7 +160,7 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get Authorization properties of a namespace
       operationId: get_namespace_by_id
       parameters:
@@ -181,7 +181,7 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a namespace
       description: |-
         **Deprecated:** Use `/management/v1/permissions/namespace/{namespace_id}/authorizer-actions` for Authorizer permissions
@@ -223,7 +223,7 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a namespace
       operationId: get_namespace_assignments_by_id
       parameters:
@@ -251,7 +251,7 @@ paths:
                 $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a namespace
       operationId: update_namespace_assignments_by_id
       parameters:
@@ -274,7 +274,7 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on a namespace
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the specified namespace.
@@ -315,7 +315,7 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}/managed-access:
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Set managed access property of a namespace
       operationId: set_namespace_managed_access
       parameters:
@@ -338,7 +338,7 @@ paths:
   /management/v1/permissions/project/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to the default project
       description: |-
         **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
@@ -373,7 +373,7 @@ paths:
   /management/v1/permissions/project/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments of a project
       operationId: get_project_assignments
       parameters:
@@ -394,7 +394,7 @@ paths:
                 $ref: '#/components/schemas/GetProjectAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for the default project
       operationId: update_project_assignments
       requestBody:
@@ -409,7 +409,7 @@ paths:
   /management/v1/permissions/project/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on the default project
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the default project.
@@ -451,10 +451,10 @@ paths:
   /management/v1/permissions/project/{project_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a project
       description: |-
-        **Deprecated:** Use `/management/v1/permissions/project/{project_id}/authorizer-actions` for Authorizer permissions
+        **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
         or `/management/v1/project/actions` for Catalog permissions instead.
       operationId: get_project_access_by_id
       parameters:
@@ -493,8 +493,9 @@ paths:
   /management/v1/permissions/project/{project_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments to a project
+      description: '**Deprecated:** Use `/management/v1/permissions/project/assignments` instead.'
       operationId: get_project_assignments_by_id
       parameters:
         - name: relations
@@ -519,9 +520,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+      deprecated: true
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a project
       operationId: update_project_assignments_by_id
       parameters:
@@ -541,51 +543,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
-  /management/v1/permissions/project/{project_id}/authorizer-actions:
-    get:
-      tags:
-        - permissions
-      summary: Get allowed Authorizer actions on a project
-      description: |-
-        Returns Authorizer permissions (OpenFGA relations) for the specified project.
-        For Catalog permissions, use `/management/v1/project/{project_id}/actions` instead.
-      operationId: get_authorizer_project_actions_by_id
-      parameters:
-        - name: principalUser
-          in: query
-          description: |-
-            The user to show actions for.
-            If neither user nor role is specified, shows actions for the current user.
-          required: false
-          schema:
-            type: string
-        - name: principalRole
-          in: query
-          description: |-
-            The role to show actions for.
-            If neither user nor role is specified, shows actions for the current user.
-          required: false
-          schema:
-            type: string
-            format: uuid
-        - name: project_id
-          in: path
-          description: Project ID
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Project Authorizer Actions
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetOpenFGAProjectActionsResponse'
   /management/v1/permissions/role/{role_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a role
       description: |-
         **Deprecated:** Use `/management/v1/permissions/role/{role_id}/authorizer-actions` for Authorizer permissions
@@ -610,7 +571,7 @@ paths:
   /management/v1/permissions/role/{role_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments of a role
       operationId: get_role_assignments_by_id
       parameters:
@@ -638,7 +599,7 @@ paths:
                 $ref: '#/components/schemas/GetRoleAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       operationId: update_role_assignments_by_id
       parameters:
         - name: role_id
@@ -660,7 +621,7 @@ paths:
   /management/v1/permissions/role/{role_id}/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on a role
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the specified role.
@@ -701,7 +662,7 @@ paths:
   /management/v1/permissions/server/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to the server
       description: |-
         **Deprecated:** Use `/management/v1/permissions/server/authorizer-actions` for Authorizer permissions
@@ -736,7 +697,7 @@ paths:
   /management/v1/permissions/server/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments of the server
       operationId: get_server_assignments
       parameters:
@@ -757,7 +718,7 @@ paths:
                 $ref: '#/components/schemas/GetServerAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for this server
       operationId: update_server_assignments
       requestBody:
@@ -772,7 +733,7 @@ paths:
   /management/v1/permissions/server/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on the server
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the server.
@@ -806,7 +767,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get Authorization properties of a warehouse
       operationId: get_warehouse_by_id
       parameters:
@@ -827,7 +788,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a warehouse
       description: |-
         **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions` for Authorizer permissions
@@ -869,7 +830,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a warehouse
       operationId: get_warehouse_assignments_by_id
       parameters:
@@ -897,7 +858,7 @@ paths:
                 $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a warehouse
       operationId: update_warehouse_assignments_by_id
       parameters:
@@ -920,7 +881,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on a warehouse
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the specified warehouse.
@@ -961,7 +922,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Set managed access property of a warehouse
       operationId: set_warehouse_managed_access
       parameters:
@@ -984,7 +945,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a table
       description: |-
         **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions` for Authorizer permissions
@@ -1033,7 +994,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a table
       operationId: get_table_assignments_by_id
       parameters:
@@ -1068,7 +1029,7 @@ paths:
                 $ref: '#/components/schemas/GetTableAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a table
       operationId: update_table_assignments_by_id
       parameters:
@@ -1098,12 +1059,12 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on a table
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the specified table.
         For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` instead.
-      operationId: get_authorizer_table_actions_by_id
+      operationId: get_authorizer_table_actions
       parameters:
         - name: principalUser
           in: query
@@ -1146,7 +1107,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a view
       description: |-
         **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions` for Authorizer permissions
@@ -1195,7 +1156,7 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a view
       operationId: get_view_assignments_by_id
       parameters:
@@ -1230,7 +1191,7 @@ paths:
                 $ref: '#/components/schemas/GetViewAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a view
       operationId: update_view_assignments_by_id
       parameters:
@@ -1260,12 +1221,12 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get allowed Authorizer actions on a view
       description: |-
         Returns Authorizer permissions (OpenFGA relations) for the specified view.
         For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` instead.
-      operationId: get_authorizer_view_actions_by_id
+      operationId: get_authorizer_view_actions
       parameters:
         - name: principalUser
           in: query
@@ -6589,5 +6550,5 @@ tags:
     description: Manage Users
   - name: role
     description: Manage Roles
-  - name: permissions
-    description: Manage Permissions
+  - name: permissions-openfga
+    description: Authorization and permissions management using OpenFGA
