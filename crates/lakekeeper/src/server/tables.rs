@@ -40,7 +40,7 @@ use crate::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest,
-                RenameTableRequest, Result, TableIdent, TableParameters,
+                RenameTableRequest, Result, TableIdent, TableParameters, LoadTableResultOrNotModified,
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
@@ -367,7 +367,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         filters: LoadTableFilters,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<LoadTableResult> {
+    ) -> Result<LoadTableResultOrNotModified> {
         load_table::load_table(parameters, data_access, filters, state, request_metadata).await
     }
 
@@ -1742,7 +1742,7 @@ pub(crate) mod test {
                 types::{PageToken, Prefix},
                 v1::{
                     tables::{LoadTableFilters, TablesService as _},
-                    DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                    DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters, LoadTableResultOrNotModified
                 },
             },
             management::v1::{
@@ -1894,7 +1894,7 @@ pub(crate) mod test {
             name: table_name.to_string(),
         };
 
-        CatalogServer::load_table(
+        let load_table_result = CatalogServer::load_table(
             TableParameters {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident,
@@ -1905,7 +1905,13 @@ pub(crate) mod test {
             RequestMetadata::new_unauthenticated(),
         )
         .await
-        .unwrap()
+        .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(load_table_result) = load_table_result
+        else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+        load_table_result
     }
 
     /// Helper to commit table changes
@@ -2034,6 +2040,11 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2192,6 +2203,10 @@ pub(crate) mod test {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2253,6 +2268,11 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2336,6 +2356,11 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(&*tab.metadata, &builder.metadata);
     }
 
@@ -2383,6 +2408,11 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
         let builder = builder
@@ -2427,6 +2457,10 @@ pub(crate) mod test {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
         let builder = (*committed.new_metadata)
@@ -2470,6 +2504,10 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
     }
@@ -2779,6 +2817,10 @@ pub(crate) mod test {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v2) = loaded_table_v2 else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(loaded_table_v2.metadata.format_version(), FormatVersion::V2);
 
         // Upgrade to V3 using TableUpdate::UpgradeFormatVersion
@@ -2812,6 +2854,10 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v3) = loaded_table_v3 else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(loaded_table_v3.metadata.format_version(), FormatVersion::V3);
         assert_eq!(loaded_table_v3.metadata.next_row_id(), 0); // Should be 0 after migration
@@ -2863,6 +2909,10 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(final_table) = final_table else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(final_table.metadata.format_version(), FormatVersion::V3);
         assert_eq!(final_table.metadata.next_row_id(), 50);
@@ -2945,6 +2995,11 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(tab.metadata.history(), builder.metadata.history());
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3009,6 +3064,10 @@ pub(crate) mod test {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(&*tab.metadata, &builder.metadata);
 
         let last_updated = tab.metadata.last_updated_ms();
@@ -3067,6 +3126,10 @@ pub(crate) mod test {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(&*tab.metadata, &builder.metadata);
 
         let builder = builder
@@ -3105,6 +3168,11 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(tab.metadata.history(), builder.metadata.history());
         assert_eq!(
             tab.metadata
@@ -4207,6 +4275,10 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table) = loaded_table else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());

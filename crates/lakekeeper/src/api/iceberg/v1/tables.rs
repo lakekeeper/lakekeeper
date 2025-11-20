@@ -126,7 +126,7 @@ where
         filters: LoadTableFilters,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<LoadTableResult>;
+    ) -> Result<LoadTableResultOrNotModified>;
 
     /// Load a table from the catalog
     async fn load_table_credentials(
@@ -592,7 +592,7 @@ mod test {
                 filters: super::LoadTableFilters,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-            ) -> crate::api::Result<LoadTableResult> {
+            ) -> crate::api::Result<LoadTableResultOrNotModified> {
                 // Return the snapshots filter in the error message for testing
                 let snapshots_str = match filters.snapshots {
                     super::SnapshotsQuery::All => "all",

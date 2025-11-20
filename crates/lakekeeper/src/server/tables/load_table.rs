@@ -6,7 +6,7 @@ use iceberg_ext::catalog::rest::StorageCredential;
 use crate::{
     api::iceberg::v1::{
         tables::{DataAccessMode, LoadTableFilters},
-        ApiContext, LoadTableResult, Result, TableIdent, TableParameters,
+        ApiContext, LoadTableResult, Result, TableIdent, TableParameters, LoadTableResultOrNotModified
     },
     request_metadata::RequestMetadata,
     server::{
@@ -31,7 +31,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     filters: LoadTableFilters,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-) -> Result<LoadTableResult> {
+) -> Result<LoadTableResultOrNotModified> {
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -58,6 +58,8 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         catalog_state.clone(),
     )
     .await?;
+
+    // TODO: Match If-None-Match Header
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
@@ -133,7 +135,9 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         storage_credentials,
     };
 
-    Ok(load_table_result)
+    Ok(LoadTableResultOrNotModified::LoadTableResult(
+        load_table_result,
+    ))
 }
 
 /// Load a table from the catalog, ensuring that it is not staged
@@ -210,7 +214,10 @@ mod tests {
         api::{
             iceberg::v1::{
                 namespace::NamespaceService as _,
-                tables::{DataAccess, LoadTableFilters, SnapshotsQuery, TablesService as _},
+                tables::{
+                    DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery,
+                    TablesService as _,
+                },
                 NamespaceParameters, TableParameters,
             },
             management::v1::warehouse::TabularDeleteProfile,
@@ -466,7 +473,12 @@ mod tests {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
+
         // Verify that all snapshots are present (1, 2, and 3)
+
         let snapshots: Vec<i64> = result
             .metadata
             .snapshots()
@@ -516,6 +528,10 @@ mod tests {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
+
         // Verify that only referenced snapshots are present (2 and 3)
         // Snapshot 1 should be filtered out as it's not referenced by any branch
         let snapshots: Vec<i64> = result
@@ -563,6 +579,10 @@ mod tests {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
 
         // Verify that all snapshots are present by default
         let snapshots: Vec<i64> = result
@@ -679,6 +699,10 @@ mod tests {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
+
         // Verify that no snapshots are returned when using Refs filter with no references
         let snapshots: Vec<i64> = result
             .metadata
@@ -702,6 +726,10 @@ mod tests {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result_all) = result_all else {
+            panic!("Expected LoadTableResult");
+        };
 
         // Verify that all snapshots are returned with All filter
         let snapshots_all: Vec<i64> = result_all
@@ -742,6 +770,10 @@ mod tests {
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(result_all) = result_all else {
+            panic!("Expected LoadTableResult");
+        };
+
         let result_refs = CatalogServer::load_table(
             table_params,
             DataAccess::not_specified(),
@@ -751,6 +783,10 @@ mod tests {
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result_refs) = result_refs else {
+            panic!("Expected LoadTableResult");
+        };
 
         let snapshots_all: Vec<i64> = result_all
             .metadata

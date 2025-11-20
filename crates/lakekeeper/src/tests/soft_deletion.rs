@@ -13,7 +13,7 @@ use crate::{
             v1::{
                 namespace::NamespaceService,
                 tables::{LoadTableFilters, TablesService},
-                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters, LoadTableResultOrNotModified
             },
         },
         management::v1::{
@@ -230,6 +230,11 @@ async fn test_soft_deletion(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(table) = table else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
     assert_eq!(table.metadata.uuid(), *undrop_table_id);
 
     // Verify listing tables shows the undropped table
