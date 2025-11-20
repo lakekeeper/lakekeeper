@@ -31,6 +31,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     filters: LoadTableFilters,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
+    etags: Vec<String>,
 ) -> Result<LoadTableResultOrNotModified> {
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
@@ -60,6 +61,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     .await?;
 
     // TODO: Match If-None-Match Header
+    // table_info.metadata_location
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
@@ -469,6 +471,7 @@ mod tests {
             filters,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -524,6 +527,7 @@ mod tests {
             filters,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -576,6 +580,7 @@ mod tests {
             filters,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -695,6 +700,7 @@ mod tests {
             filters,
             ctx.clone(),
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -723,6 +729,7 @@ mod tests {
             filters_all,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -766,6 +773,7 @@ mod tests {
             filters_all,
             ctx.clone(),
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -780,6 +788,7 @@ mod tests {
             filters_refs,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();

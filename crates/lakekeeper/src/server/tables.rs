@@ -367,8 +367,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         filters: LoadTableFilters,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        etags: Vec<String>,
     ) -> Result<LoadTableResultOrNotModified> {
-        load_table::load_table(parameters, data_access, filters, state, request_metadata).await
+        load_table::load_table(parameters, data_access, filters, state, request_metadata, etags).await
     }
 
     async fn load_table_credentials(
@@ -1903,6 +1904,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2037,6 +2039,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2199,6 +2202,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2265,6 +2269,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2353,6 +2358,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2405,6 +2411,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2453,6 +2460,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2501,6 +2509,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2813,6 +2822,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2851,6 +2861,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2906,6 +2917,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -2992,6 +3004,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3060,6 +3073,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3122,6 +3136,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3165,6 +3180,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -4272,6 +4288,7 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();

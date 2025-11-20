@@ -227,6 +227,7 @@ async fn test_soft_deletion(pool: PgPool) {
         LoadTableFilters::default(),
         api_context.clone(),
         random_request_metadata(),
+        Vec::new(),
     )
     .await
     .unwrap();

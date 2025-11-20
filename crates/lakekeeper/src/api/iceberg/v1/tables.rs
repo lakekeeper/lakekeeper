@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     extract::{Path, Query, State},
+    http::header,
     response::IntoResponse,
     routing::{get, post},
     Extension, Json, Router,
@@ -126,6 +127,7 @@ where
         filters: LoadTableFilters,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
+        etags: Vec<String>,
     ) -> Result<LoadTableResultOrNotModified>;
 
     /// Load a table from the catalog
@@ -265,6 +267,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                         filters,
                         api_context,
                         metadata,
+                        parse_if_none_match(&headers),
                     )
                 },
             )
@@ -447,6 +450,21 @@ impl DataAccess {
     }
 }
 
+pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|etags| {
+            if etags.trim().is_empty() {
+                None
+            } else {
+                Some(etags)
+            }
+        })
+        .map(|etags| etags.split(", ").map(String::from).collect())
+        .unwrap_or_default()
+}
+
 pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
     let header = headers
         .get_all(DATA_ACCESS_HEADER)
@@ -592,6 +610,7 @@ mod test {
                 filters: super::LoadTableFilters,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
+                _etags: Vec<String>,
             ) -> crate::api::Result<LoadTableResultOrNotModified> {
                 // Return the snapshots filter in the error message for testing
                 let snapshots_str = match filters.snapshots {
@@ -742,10 +761,14 @@ mod test {
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 
-        let load_table_result_response_result = LoadTableResultOrNotModified::LoadTableResult(load_table_result).into_response();
+        let load_table_result_response_result =
+            LoadTableResultOrNotModified::LoadTableResult(load_table_result).into_response();
 
         assert_eq!(load_table_result_response_result.status(), StatusCode::OK);
-        match (extract_body_from_response(load_table_result_response_expected).await, extract_body_from_response(load_table_result_response_result).await) {
+        match (
+            extract_body_from_response(load_table_result_response_expected).await,
+            extract_body_from_response(load_table_result_response_result).await,
+        ) {
             (Ok(body_result), Ok(body_expected)) => {
                 assert_eq!(body_result, body_expected);
             }
@@ -795,5 +818,64 @@ mod test {
 
         let build_result: TableMetadata = builder.build().unwrap().into();
         build_result.into()
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_empty_list_when_no_header_exists() {
+        let headers = HeaderMap::new();
+        let etags = parse_if_none_match(&headers);
+        assert!(etags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_single_value() {
+        let etag = "\"abcdefghi123456789\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["\"abcdefghi123456789\""]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_multiple_values() {
+        let etag1 = "W\\\"etag-value-1\"".to_string();
+        let etag2 = "\"etag-value-2\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::IF_NONE_MATCH,
+            format!("{etag1}, {etag2}").parse().unwrap(),
+        );
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["W\\\"etag-value-1\"", "\"etag-value-2\""]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_with_empty_header() {
+        let etag = "".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert!(etags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_if_none_match_only_contains_spaces() {
+        let etag = " ".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert!(etags.is_empty());
     }
 }
