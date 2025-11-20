@@ -104,7 +104,7 @@ pub struct CommitTransactionRequest {
 
 fn create_etag(text: &str) -> String {
    let hash = xxh3_64(text.as_bytes());
-    format!("{:x}", hash)
+    format!("\"{:x}\"", hash)
 }
 
 #[cfg(feature = "axum")]
@@ -143,7 +143,7 @@ mod tests {
     #[cfg(feature = "axum")]
     fn test_create_etag() {
         let etag = create_etag("Hello World");
-        assert_eq!(etag, "e34615aade2e6333");
+        assert_eq!(etag, "\"e34615aade2e6333\"");
     }
     
     #[test]
