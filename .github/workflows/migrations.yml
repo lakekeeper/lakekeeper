@@ -39,7 +39,7 @@ jobs:
     outputs:
       initial-versions: ${{ steps.initial-versions.outputs.initial-versions }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Get initial versions
         id: initial-versions
         run: |
@@ -60,7 +60,7 @@ jobs:
       - define-initial-versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: extractions/setup-just@v3
 
       - name: Restore binary

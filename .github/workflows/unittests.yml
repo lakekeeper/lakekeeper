@@ -35,7 +35,7 @@ jobs:
   sqlx-check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Cargo sqlx-check
         run: |
           export DEBIAN_FRONTEND=noninteractive 
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: sudo snap install --edge --classic just
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -69,7 +69,7 @@ jobs:
       - run: |
           sudo snap install --edge --classic just
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -89,7 +89,7 @@ jobs:
     steps:
       - run: |
           sudo snap install --edge --classic just
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -139,7 +139,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Start Minio Docker Container
         run: |

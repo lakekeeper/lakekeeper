@@ -20,7 +20,7 @@ jobs:
       current_test: ${{ inputs.test_name }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Restore binary
         uses: actions/download-artifact@v6
