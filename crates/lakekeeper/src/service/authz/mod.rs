@@ -646,7 +646,6 @@ where
 pub(crate) mod tests {
     use std::{
         collections::HashSet,
-        str::FromStr,
         sync::{Arc, RwLock},
     };
 
