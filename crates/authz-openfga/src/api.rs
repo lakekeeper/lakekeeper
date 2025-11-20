@@ -1688,17 +1688,6 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
 
 #[cfg_attr(feature = "open-api", derive(OpenApi))]
 #[cfg_attr(feature = "open-api", openapi(
-    servers(
-        (
-            url = "{scheme}://{host}/{basePath}",
-            description = "Lakekeeper Management API",
-            variables(
-                ("scheme" = (default = "https", description = "The scheme of the URI, either http or https")),
-                ("host" = (default = "localhost", description = "The host address for the specified server")),
-                ("basePath" = (default = "", description = "Optional prefix to be appended to all routes"))
-            )
-        )
-    ),
     tags(
         (name = "permissions", description = "Manage Permissions"),
     ),
