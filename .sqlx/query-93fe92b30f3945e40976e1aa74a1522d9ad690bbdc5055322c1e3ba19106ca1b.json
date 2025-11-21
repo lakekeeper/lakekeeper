@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        DELETE FROM role\n        WHERE id = $1\n        RETURNING id\n        ",
+  "query": "\n        DELETE FROM role\n        WHERE id = $1 AND project_id = $2\n        RETURNING id\n        ",
   "describe": {
     "columns": [
       {
@@ -11,12 +11,13 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "ee88cec672482da3feba486b1070b44ff5167898aac533ef399d2fdb749cd680"
+  "hash": "93fe92b30f3945e40976e1aa74a1522d9ad690bbdc5055322c1e3ba19106ca1b"
 }

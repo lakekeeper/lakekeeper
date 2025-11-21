@@ -157,6 +157,7 @@ utoipa = { version = "5.4.0", features = [
     "url",
     "uuid",
     "yaml",
+    "rc_schema",
 ] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }

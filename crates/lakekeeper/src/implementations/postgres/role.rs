@@ -1,4 +1,5 @@
-use iceberg_ext::catalog::rest::ErrorModel;
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::{
@@ -10,7 +11,11 @@ use crate::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
     },
-    service::{Result, RoleId},
+    service::{
+        CreateRoleError, DeleteRoleError, ListRolesError, ProjectIdNotFoundError, Result,
+        RoleExternalIdAlreadyExists, RoleId, RoleIdNotFound, RoleNameAlreadyExists,
+        SearchRolesError, UpdateRoleError,
+    },
     ProjectId, CONFIG,
 };
 
@@ -56,7 +61,7 @@ pub(crate) async fn create_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     description: Option<&str>,
     external_id: Option<&str>,
     connection: E,
-) -> Result<Role> {
+) -> Result<Role, CreateRoleError> {
     let role = sqlx::query_as!(
         RoleRow,
         r#"
@@ -72,124 +77,94 @@ pub(crate) async fn create_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     )
     .fetch_one(connection)
     .await
-    .map_err(|e| match e {
+    .map_err(|e| match &e {
         sqlx::Error::Database(db_error) => {
             if db_error.is_unique_violation() {
                 match db_error.constraint() {
-                    Some("unique_role_external_id_in_project") => ErrorModel::conflict(
-                        format!(
-                            "A role with external_id '{}' already exists in project {project_id}",
-                            external_id.unwrap_or("")
-                        )
-                        .to_string(),
-                        "RoleExternalIdAlreadyExists".to_string(),
-                        Some(Box::new(db_error)),
-                    ),
-                    Some("unique_role_name_in_project") => ErrorModel::conflict(
-                        format!(
-                            "A role with name '{role_name}' already exists in project {project_id}"
-                        )
-                        .to_string(),
-                        "RoleNameAlreadyExists".to_string(),
-                        Some(Box::new(db_error)),
-                    ),
-                    _ => ErrorModel::conflict(
-                        format!("Unique violation when creating role in project {project_id}")
-                            .to_string(),
-                        "RoleAlreadyExists".to_string(),
-                        Some(Box::new(db_error)),
-                    ),
+                    Some("unique_role_external_id_in_project") => {
+                        let external_id = external_id.unwrap_or("");
+                        CreateRoleError::from(RoleExternalIdAlreadyExists::new(
+                            external_id,
+                            project_id.clone(),
+                        ))
+                    }
+                    Some("unique_role_name_in_project") => {
+                        RoleNameAlreadyExists::new(role_name, project_id.clone()).into()
+                    }
+                    _ => e.into_catalog_backend_error().into(),
                 }
             } else if db_error.is_foreign_key_violation() {
-                ErrorModel::not_found(
-                    format!("Project {project_id} not found").to_string(),
-                    "ProjectNotFound".to_string(),
-                    Some(Box::new(db_error)),
-                )
+                ProjectIdNotFoundError::new(project_id.clone()).into()
             } else {
-                ErrorModel::internal(
-                    "Error creating Role".to_string(),
-                    "RoleCreationFailed",
-                    Some(Box::new(db_error)),
-                )
+                e.into_catalog_backend_error().into()
             }
         }
-        _ => e.into_error_model("Error creating Role"),
+        _ => e.into_catalog_backend_error().into(),
     })?;
 
     Ok(Role::from(role))
 }
 
 pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    project_id: &ProjectId,
     role_id: RoleId,
     role_name: &str,
     description: Option<&str>,
     external_id: Option<&str>,
     connection: E,
-) -> Result<Option<Role>> {
+) -> Result<Role, UpdateRoleError> {
     let role = sqlx::query_as!(
         RoleRow,
         r#"
         UPDATE role
         SET name = $2, description = $3, external_id = COALESCE($4, external_id)
-        WHERE id = $1
+        WHERE id = $1 AND project_id = $5
         RETURNING id, name, description, project_id, external_id, created_at, updated_at
         "#,
         uuid::Uuid::from(role_id),
         role_name,
         description,
-        external_id
+        external_id,
+        project_id,
     )
     .fetch_one(connection)
     .await;
 
     match role {
-        Err(sqlx::Error::RowNotFound) => Ok(None),
-        Err(e) => match e {
+        Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFound::new(
+            role_id,
+            project_id.clone(),
+        ))),
+        Err(e) => match &e {
             sqlx::Error::Database(db_error) => {
                 if db_error.is_unique_violation() {
                     match db_error.constraint() {
-                        Some("unique_role_external_id_in_project") => Err(ErrorModel::conflict(
-                            format!(
-                                "A role with external_id '{}' already exists in the project",
-                                external_id.unwrap_or("")
-                            )
-                            .to_string(),
-                            "RoleExternalIdAlreadyExists".to_string(),
-                            Some(Box::new(db_error)),
+                        Some("unique_role_external_id_in_project") => {
+                            Err(UpdateRoleError::from(RoleExternalIdAlreadyExists::new(
+                                external_id.unwrap_or(""),
+                                project_id.clone(),
+                            )))
+                        }
+                        Some("unique_role_name_in_project") => Err(UpdateRoleError::from(
+                            RoleNameAlreadyExists::new(role_name, project_id.clone()),
                         )),
-                        Some("unique_role_name_in_project") => Err(ErrorModel::conflict(
-                            format!("A role with name '{role_name}' already exists in the project")
-                                .to_string(),
-                            "RoleNameAlreadyExists".to_string(),
-                            Some(Box::new(db_error)),
-                        )),
-                        _ => Err(ErrorModel::conflict(
-                            "Unique violation when updating role".to_string(),
-                            "RoleUpdateConflict".to_string(),
-                            Some(Box::new(db_error)),
-                        )),
+                        _ => Err(e.into_catalog_backend_error().into()),
                     }
                 } else {
-                    Err(ErrorModel::internal(
-                        "Database error updating Role".to_string(),
-                        "RoleUpdateFailed",
-                        Some(Box::new(db_error)),
-                    ))
+                    Err(e.into_catalog_backend_error().into())
                 }
             }
-            _ => Err(e.into_error_model("Error updating Role".to_string())),
+            _ => Err(e.into_catalog_backend_error().into()),
         },
-        Ok(role) => Ok(Some(Role::from(role))),
+        Ok(role) => Ok(Role::from(role)),
     }
-    .map_err(Into::into)
 }
 
 pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     project_id: &ProjectId,
     search_term: &str,
     connection: E,
-) -> Result<SearchRoleResponse> {
+) -> Result<SearchRoleResponse, SearchRolesError> {
     let roles = sqlx::query_as!(
         RoleRow,
         r#"
@@ -210,9 +185,9 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     )
     .fetch_all(connection)
     .await
-    .map_err(|e| e.into_error_model("Error searching role".to_string()))?
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
     .into_iter()
-    .map(Into::into)
+    .map(|r| Arc::new(r.into()))
     .collect();
 
     Ok(SearchRoleResponse { roles })
@@ -227,7 +202,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         page_token,
     }: PaginationQuery,
     connection: E,
-) -> Result<ListRolesResponse> {
+) -> Result<ListRolesResponse, ListRolesError> {
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
     let filter_name = filter_name.unwrap_or_default();
 
@@ -245,7 +220,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         )
         .unzip();
 
-    let roles: Vec<Role> = sqlx::query_as!(
+    let roles = sqlx::query_as!(
         RoleRow,
         r#"
         SELECT
@@ -281,10 +256,10 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     )
     .fetch_all(connection)
     .await
-    .map_err(|e| e.into_error_model("Error fetching roles".to_string()))?
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
     .into_iter()
-    .map(Role::from)
-    .collect();
+    .map(|r| Arc::new(Role::from(r)))
+    .collect::<Vec<_>>();
 
     let next_page_token = roles.last().map(|r| {
         PaginateToken::V1(V1PaginateToken::<Uuid> {
@@ -301,22 +276,31 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 }
 
 pub(crate) async fn delete_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+    project_id: &ProjectId,
     role_id: RoleId,
     connection: E,
-) -> Result<Option<()>> {
+) -> Result<(), DeleteRoleError> {
     let role = sqlx::query!(
         r#"
         DELETE FROM role
-        WHERE id = $1
+        WHERE id = $1 AND project_id = $2
         RETURNING id
         "#,
-        uuid::Uuid::from(role_id)
+        uuid::Uuid::from(role_id),
+        project_id
     )
     .fetch_optional(connection)
     .await
-    .map_err(|e| e.into_error_model("Error deleting Role".to_string()))?;
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    Ok(role.map(|_| ()))
+    if role.is_none() {
+        Err(DeleteRoleError::from(RoleIdNotFound::new(
+            role_id,
+            project_id.clone(),
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -346,7 +330,7 @@ mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.error.code, 404);
+        assert!(matches!(err, CreateRoleError::ProjectIdNotFoundError(_)));
 
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
@@ -389,7 +373,7 @@ mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.error.code, 409);
+        assert!(matches!(err, CreateRoleError::RoleNameAlreadyExists(_)));
     }
 
     #[sqlx::test]
@@ -429,6 +413,7 @@ mod test {
         assert_eq!(role.external_id, role_id.to_string());
 
         let updated_role = update_role(
+            &project_id,
             role_id,
             "Role 2",
             Some("Role 2 description"),
@@ -436,7 +421,6 @@ mod test {
             &state.write_pool(),
         )
         .await
-        .unwrap()
         .unwrap();
         assert_eq!(updated_role.name, "Role 2");
         assert_eq!(
@@ -473,7 +457,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
-            None,
+            Some("external-1"),
             &state.write_pool(),
         )
         .await
@@ -484,7 +468,7 @@ mod test {
             &project_id,
             role_name_2,
             Some("Role 2 description"),
-            None,
+            Some("external-2"),
             &state.write_pool(),
         )
         .await
@@ -495,6 +479,7 @@ mod test {
         assert_eq!(role.project_id, project_id);
 
         let err = update_role(
+            &project_id,
             role_id,
             role_name_2,
             Some("Role 2 description"),
@@ -503,7 +488,22 @@ mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.error.code, 409);
+        assert!(matches!(err, UpdateRoleError::RoleNameAlreadyExists(_)));
+
+        let err = update_role(
+            &project_id,
+            role_id,
+            role_name,
+            None,
+            Some("external-2"),
+            &state.write_pool(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            UpdateRoleError::RoleExternalIdAlreadyExists(_)
+        ));
     }
 
     #[sqlx::test]
@@ -755,9 +755,8 @@ mod test {
         .await
         .unwrap();
 
-        delete_role(role_id, &state.write_pool())
+        delete_role(&project_id, role_id, &state.write_pool())
             .await
-            .unwrap()
             .unwrap();
 
         let roles = list_roles(

@@ -16,7 +16,7 @@ pub mod v1 {
     #[cfg(feature = "open-api")]
     pub mod openapi;
 
-    use std::marker::PhantomData;
+    use std::{marker::PhantomData, sync::Arc};
 
     use axum::{
         extract::{Path, Query, State as AxumState},
@@ -383,6 +383,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::CreateRole.path(),
+        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
         request_body = CreateRoleRequest,
         responses(
             (status = 201, description = "Role successfully created", body = Role),
@@ -407,9 +408,10 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::SearchRole.path(),
+        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
         request_body = SearchRoleRequest,
         responses(
-            (status = 200, description = "List of users", body = SearchRoleResponse),
+            (status = 200, description = "List of roles", body = SearchRoleResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -428,7 +430,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::ListRole.path(),
-        params(ListRolesQuery),
+        params(ListRolesQuery, ("x-project-id" = Option<String>, Header, description = "Project ID")),
         responses(
             (status = 200, description = "List of roles", body = ListRolesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -449,7 +451,7 @@ pub mod v1 {
         delete,
         tag = "role",
         path = ManagementV1Endpoint::DeleteRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"),),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
         responses(
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -472,7 +474,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::GetRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"),),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
         responses(
             (status = 200, description = "Role details", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
@@ -482,7 +484,7 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<Role>)> {
+    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
         ApiServer::<C, A, S>::get_role(api_context, metadata, role_id)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -493,7 +495,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::UpdateRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"),),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = Role),
@@ -505,7 +507,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleRequest>,
-    ) -> Result<(StatusCode, Json<Role>)> {
+    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
         ApiServer::<C, A, S>::update_role(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -516,7 +518,7 @@ pub mod v1 {
     get,
     tag = "role",
     path = ManagementV1Endpoint::GetRoleActions.path(),
-    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"),),
+    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
     responses(
         (status = 200, body = GetLakekeeperRoleActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -528,8 +530,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperRoleActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_role_actions(authorizer, &metadata, query, role_id).await?;
+        let relations = get_allowed_role_actions(api_context, &metadata, query, role_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -608,7 +609,7 @@ pub mod v1 {
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetProject.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -650,7 +651,7 @@ pub mod v1 {
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteProject.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -697,7 +698,7 @@ pub mod v1 {
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameProject.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -741,7 +742,7 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "project",
-    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Project ID"),),
     path = ManagementV1Endpoint::GetProjectActions.path(),
     responses(
         (status = 200, body = GetLakekeeperProjectActionsResponse),

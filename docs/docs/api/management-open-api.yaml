@@ -1276,7 +1276,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID
           required: false
           schema:
             type:
@@ -1328,7 +1328,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID
           required: false
           schema:
             type:
@@ -1389,7 +1389,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID
           required: false
           schema:
             type:
@@ -1417,7 +1417,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID
           required: false
           schema:
             type:
@@ -1560,6 +1560,14 @@ paths:
             type:
               - string
               - 'null'
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: List of roles
@@ -1579,6 +1587,15 @@ paths:
       summary: Create Role
       description: Creates a role with the specified name, description, and permissions.
       operationId: create_role
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1613,6 +1630,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Role details
@@ -1639,6 +1664,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1672,6 +1705,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '204':
           description: Role deleted successfully
@@ -1712,6 +1753,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -1732,6 +1781,15 @@ paths:
       summary: Search Role
       description: Performs a fuzzy search for roles based on the provided criteria.
       operationId: search_role
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1740,7 +1798,7 @@ paths:
         required: true
       responses:
         '200':
-          description: List of users
+          description: List of roles
           content:
             application/json:
               schema:

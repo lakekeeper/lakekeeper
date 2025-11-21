@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -13,7 +15,7 @@ use crate::{
         authz::{
             AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction, CatalogRoleAction,
         },
-        CatalogStore, Result, RoleId, SecretStore, State, Transaction,
+        CatalogRoleOps, CatalogStore, Result, RoleId, SecretStore, State, Transaction,
     },
     ProjectId,
 };
@@ -63,11 +65,28 @@ pub struct Role {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[cfg(feature = "test-utils")]
+impl Role {
+    #[must_use]
+    pub fn new_random() -> Self {
+        let role_id = RoleId::new_random();
+        Self {
+            id: role_id,
+            name: format!("role-{role_id}"),
+            description: Some("A randomly generated role".to_string()),
+            external_id: role_id.to_string(),
+            project_id: ProjectId::new_random(),
+            created_at: chrono::Utc::now(),
+            updated_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchRoleResponse {
     /// List of users matching the search criteria
-    pub roles: Vec<Role>,
+    pub roles: Vec<Arc<Role>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,7 +108,7 @@ pub struct UpdateRoleRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRolesResponse {
-    pub roles: Vec<Role>,
+    pub roles: Vec<Arc<Role>>,
     #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
 }
@@ -165,7 +184,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: CreateRoleRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<Role> {
+    ) -> Result<Arc<Role>> {
         // -------------------- VALIDATIONS --------------------
         if request.name.is_empty() {
             return Err(ErrorModel::bad_request(
@@ -238,37 +257,26 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog,
         )
         .await
+        .map_err(Into::into)
     }
 
     async fn get_role(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         role_id: RoleId,
-    ) -> Result<Role> {
-        // -------------------- AUTHZ --------------------
+    ) -> Result<Arc<Role>> {
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_role_action(&request_metadata, role_id, CatalogRoleAction::Read)
-            .await?;
 
-        // -------------------- Business Logic --------------------
-        let roles = C::list_roles(
-            None,
-            Some(vec![role_id]),
-            None,
-            PaginationQuery {
-                page_size: Some(1),
-                page_token: PageToken::NotSpecified,
-            },
+        let role = C::get_role_by_id(
+            &request_metadata.require_project_id(None)?,
+            role_id,
             context.v1_state.catalog,
         )
-        .await?;
+        .await;
 
-        let role = roles.roles.into_iter().next().ok_or(ErrorModel::not_found(
-            format!("Role with id {role_id} not found."),
-            "RoleNotFound",
-            None,
-        ))?;
+        let role = authorizer
+            .require_role_action(&request_metadata, role, CatalogRoleAction::Read)
+            .await?;
 
         Ok(role)
     }
@@ -298,7 +306,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         if search.chars().count() > 64 {
             search = search.chars().take(64).collect();
         }
-        C::search_role(&project_id, &search, context.v1_state.catalog).await
+        C::search_role(&project_id, &search, context.v1_state.catalog)
+            .await
+            .map_err(Into::into)
     }
 
     async fn delete_role(
@@ -307,21 +317,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         role_id: RoleId,
     ) -> Result<()> {
         let authorizer = context.v1_state.authz;
+        let project_id = request_metadata.require_project_id(None)?;
+
+        let role = C::get_role_by_id(&project_id, role_id, context.v1_state.catalog.clone()).await;
+
         authorizer
-            .require_role_action(&request_metadata, role_id, CatalogRoleAction::Delete)
+            .require_role_action(&request_metadata, role, CatalogRoleAction::Delete)
             .await?;
 
-        // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let deleted = C::delete_role(role_id, t.transaction()).await?;
-        if deleted.is_none() {
-            return Err(ErrorModel::not_found(
-                format!("Role with id {role_id} not found."),
-                "RoleNotFound",
-                None,
-            )
-            .into());
-        }
+        C::delete_role(&project_id, role_id, t.transaction()).await?;
         authorizer.delete_role(&request_metadata, role_id).await?;
         t.commit().await
     }
@@ -331,7 +336,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         role_id: RoleId,
         request: UpdateRoleRequest,
-    ) -> Result<Role> {
+    ) -> Result<Arc<Role>> {
         // -------------------- VALIDATIONS --------------------
         if request.name.is_empty() {
             return Err(ErrorModel::bad_request(
@@ -344,8 +349,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
+        let project_id = request_metadata.require_project_id(None)?;
+
+        let role = C::get_role_by_id(&project_id, role_id, context.v1_state.catalog.clone()).await;
+
         authorizer
-            .require_role_action(&request_metadata, role_id, CatalogRoleAction::Update)
+            .require_role_action(&request_metadata, role, CatalogRoleAction::Update)
             .await?;
 
         // -------------------- Business Logic --------------------
@@ -353,6 +362,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let role = C::update_role(
+            &project_id,
             role_id,
             &request.name,
             description.as_deref(),
@@ -360,17 +370,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             t.transaction(),
         )
         .await?;
-        if let Some(role) = role {
-            t.commit().await?;
-            Ok(role)
-        } else {
-            t.rollback().await?;
-            Err(ErrorModel::not_found(
-                format!("Role with id {role_id} not found."),
-                "RoleNotFound",
-                None,
-            )
-            .into())
-        }
+        t.commit().await?;
+        Ok(role)
     }
 }

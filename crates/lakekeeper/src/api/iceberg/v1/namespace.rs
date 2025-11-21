@@ -329,6 +329,14 @@ impl PaginationQuery {
             page_size,
         }
     }
+
+    #[must_use]
+    pub fn new_with_page_size(page_size: i64) -> Self {
+        PaginationQuery {
+            page_token: PageToken::Empty,
+            page_size: Some(page_size),
+        }
+    }
 }
 
 impl From<ListNamespacesQuery> for PaginationQuery {
