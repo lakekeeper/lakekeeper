@@ -102,7 +102,7 @@ pub struct CommitTransactionRequest {
     pub table_changes: Vec<CommitTableRequest>,
 }
 
-fn create_etag(text: &str) -> String {
+pub fn create_etag(text: &str) -> String {
    let hash = xxh3_64(text.as_bytes());
     format!("\"{:x}\"", hash)
 }
