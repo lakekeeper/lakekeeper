@@ -450,18 +450,26 @@ impl DataAccess {
     }
 }
 
+fn parse_etags(etags: &str) -> Vec<String> {
+    let etags = etags.trim().trim_matches('"');
+    etags
+        .split(",")
+        .map(|s| {
+            s.trim()
+                .trim_matches('"')
+                .trim_start_matches("W/")
+                .trim_matches('"')
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
 pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<String> {
     headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
-        .and_then(|etags| {
-            if etags.trim().is_empty() {
-                None
-            } else {
-                Some(etags)
-            }
-        })
-        .map(|etags| etags.split(", ").map(String::from).collect())
+        .map(parse_etags)
         .unwrap_or_default()
 }
 
@@ -836,13 +844,65 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["\"abcdefghi123456789\""]);
+        assert_eq!(etags, vec!["abcdefghi123456789"]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_single_value_without_additional_space() {
+        let etag = "\"abcdefghi123456789\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, format!(" {etag}").parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789"]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_single_value_with_weak_etag() {
+        let etag = "W/\"abcdefghi123456789\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789"]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_asterisk_with_asterisk() {
+        let etag = "*".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["*"]);
     }
 
     #[test]
     fn test_parse_if_none_match_returns_multiple_values() {
-        let etag1 = "W\\\"etag-value-1\"".to_string();
-        let etag2 = "\"etag-value-2\"".to_string();
+        let etag1 = "W/\"abcdefghi123456789\"".to_string();
+        let etag2 = "\"123456789abcdefghi\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::IF_NONE_MATCH,
+            format!("{etag1},{etag2}").parse().unwrap(),
+        );
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_multiple_values_with_spaces_inbetween() {
+        let etag1 = "W/\"abcdefghi123456789\"".to_string();
+        let etag2 = "\"123456789abcdefghi\"".to_string();
 
         let mut headers = HeaderMap::new();
         headers.append(
@@ -852,7 +912,51 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["W\\\"etag-value-1\"", "\"etag-value-2\""]);
+        assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_multiple_values_with_mixed_styles() {
+        let etag1 = r#"etag-without-quote"#.to_string();
+        let etag2 = r#""etag-with-normal-quote""#.to_string();
+        let etag3 = r#"""etag-with-quotes-twice"""#.to_string();
+        let etag4 = r#"W/weak-etag-without-quote"#.to_string();
+        let etag5 = r#"W/"weak-etag-with-normal-quote""#.to_string();
+        let etag6 = r#"W/""weak-etag-with-quotes-twice"""#.to_string();
+        let etag7 = r#""W/weak-etag-without-inner-quote-and-outer-quote""#.to_string();
+        let etag8 = r#"""W/weak-etag-without-inner-quote-and-outer-quote-twice"""#.to_string();
+        let etag9 = r#""W/"weak-etag-with-normal-inner-quote-and-outer-quote"""#.to_string();
+        let etag10 =
+            r#"""W/"weak-etag-with-normal-inner-quote-and-outer-quote-twice""""#.to_string();
+        let etag11 = r#""W/""weak-etag-with-inner-quote-twice-and-outer-quote""""#.to_string();
+        let etag12 =
+            r#"""W/""weak-etag-with-inner-quote-twice-and-outer-quote-twice"""""#.to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::IF_NONE_MATCH,
+            format!("{etag1}, {etag2}, {etag3}, {etag4}, {etag5}, {etag6}, {etag7}, {etag8}, {etag9}, {etag10}, {etag11}, {etag12}").parse().unwrap(),
+        );
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(
+            etags,
+            vec![
+                "etag-without-quote",
+                "etag-with-normal-quote",
+                "etag-with-quotes-twice",
+                "weak-etag-without-quote",
+                "weak-etag-with-normal-quote",
+                "weak-etag-with-quotes-twice",
+                "weak-etag-without-inner-quote-and-outer-quote",
+                "weak-etag-without-inner-quote-and-outer-quote-twice",
+                "weak-etag-with-normal-inner-quote-and-outer-quote",
+                "weak-etag-with-normal-inner-quote-and-outer-quote-twice",
+                "weak-etag-with-inner-quote-twice-and-outer-quote",
+                "weak-etag-with-inner-quote-twice-and-outer-quote-twice",
+            ]
+        );
     }
 
     #[test]
@@ -877,5 +981,17 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert!(etags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_if_none_match_is_quoted_twice() {
+        let etag = "\"\"abcdefghi123456789\"\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789"]);
     }
 }
