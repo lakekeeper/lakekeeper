@@ -3,7 +3,7 @@ use lakekeeper::service::{
     authz::{
         CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
         CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, NamespaceAction,
-        ProjectAction, RoleAssignee, ServerAction, TableAction, UserOrRole, ViewAction,
+        ProjectAction, RoleAction, RoleAssignee, ServerAction, TableAction, UserOrRole, ViewAction,
         WarehouseAction,
     },
 };
@@ -79,7 +79,7 @@ impl OpenFgaEntity for UserOrRole {
 /// Role Relations in the `OpenFGA` schema
 #[derive(Debug, Copy, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum RoleRelation {
+pub enum RoleRelation {
     // -- Hierarchical relations --
     Project,
     // -- Direct relations --
@@ -93,6 +93,13 @@ pub(super) enum RoleRelation {
     CanUpdate,
     CanRead,
     CanReadAssignments,
+}
+impl RoleAction for RoleRelation {}
+
+impl From<CatalogRoleAction> for RoleRelation {
+    fn from(action: CatalogRoleAction) -> Self {
+        action.to_openfga()
+    }
 }
 
 impl OpenFgaRelation for RoleRelation {}
@@ -232,7 +239,7 @@ impl ReducedRelation for CatalogRoleAction {
 /// Server Relations in the `OpenFGA` schema
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
 #[strum(serialize_all = "snake_case")]
-pub(super) enum ServerRelation {
+pub enum ServerRelation {
     // -- Hierarchical relations --
     Project,
     // -- Direct relations --

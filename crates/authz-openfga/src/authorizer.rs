@@ -11,8 +11,8 @@ use lakekeeper::{
     service::{
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogUserAction,
-            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
+            CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
+            NamespaceParent, UserOrRole,
         },
         health::Health,
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
@@ -74,14 +74,14 @@ impl OpenFGAAuthorizer {
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
-    type ServerAction = CatalogServerAction;
+    type ServerAction = ServerRelation;
     type ProjectAction = ProjectRelation;
     type WarehouseAction = WarehouseRelation;
     type NamespaceAction = NamespaceRelation;
     type TableAction = TableRelation;
     type ViewAction = ViewRelation;
     type UserAction = CatalogUserAction;
-    type RoleAction = CatalogRoleAction;
+    type RoleAction = RoleRelation;
 
     fn implementation_name() -> &'static str {
         "openfga"
@@ -203,7 +203,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let mut batch_items = Vec::new();
         let mut batch_indices = Vec::new();
         for (idx, (role, action)) in roles_with_actions.iter().enumerate() {
-            if *action == CatalogRoleAction::Read {
+            if *action == RoleRelation::CanRead {
                 results.push((idx, true));
             } else {
                 batch_indices.push(idx);
@@ -221,7 +221,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 // Collect unique role objects for permission checks
                 let unique_roles: HashSet<_> = roles_with_actions
                     .iter()
-                    .filter(|(_, action)| *action != CatalogRoleAction::Read)
+                    .filter(|(_, action)| *action != RoleRelation::CanRead)
                     .map(|(role, _)| role.to_openfga())
                     .collect();
 
@@ -289,17 +289,17 @@ impl Authorizer for OpenFGAAuthorizer {
                 .batch_check(vec![
                     CheckRequestTupleKey {
                         user: actor_openfga.clone(),
-                        relation: CatalogServerAction::ListUsers.to_openfga().to_string(),
+                        relation: ServerRelation::CanListUsers.to_string(),
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
                         user: user.clone(),
-                        relation: CatalogServerAction::UpdateUsers.to_openfga().to_string(),
+                        relation: ServerRelation::CanUpdateUsers.to_string(),
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
                         user,
-                        relation: CatalogServerAction::DeleteUsers.to_openfga().to_string(),
+                        relation: ServerRelation::CanDeleteUsers.to_string(),
                         object: server_id.clone(),
                     },
                 ])
