@@ -32,6 +32,11 @@ pub struct CreateRoleRequest {
     #[serde(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
+    /// External ID of the role.
+    /// If not set, this is initialized to the Role ID.
+    /// External IDs must be unique within a project.
+    #[serde(default)]
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,6 +50,10 @@ pub struct Role {
     pub name: String,
     /// Description of the role
     pub description: Option<String>,
+    /// External ID of the role.
+    /// If external ID for this role was not set explicitly, this is same as the role ID.
+    /// Must be unique within a project.
+    pub external_id: String,
     /// Project ID in which the role is created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
@@ -70,6 +79,10 @@ pub struct UpdateRoleRequest {
     /// Description of the role. If not set, the description will be removed.
     #[serde(default)]
     pub description: Option<String>,
+    /// External ID of the role.
+    /// If not set, the external ID will remain unchanged.
+    #[serde(default)]
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -185,6 +198,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &project_id,
             &request.name,
             description.as_deref(),
+            request.external_id.as_deref(),
             t.transaction(),
         )
         .await?;
@@ -342,6 +356,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             role_id,
             &request.name,
             description.as_deref(),
+            request.external_id.as_deref(),
             t.transaction(),
         )
         .await?;

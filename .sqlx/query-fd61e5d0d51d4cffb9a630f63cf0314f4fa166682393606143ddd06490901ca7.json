@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            description,\n            project_id,\n            created_at,\n            updated_at\n        FROM role r\n        WHERE ($1 OR project_id = $2)\n            AND ($3 OR id = any($4))\n            AND ($5 OR name ILIKE ('%' || $6 || '%'))\n            --- PAGINATION\n            AND ((r.created_at > $7 OR $7 IS NULL) OR (r.created_at = $7 AND r.id > $8))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $9\n        ",
+  "query": "\n        INSERT INTO role (id, name, description, project_id, external_id)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING id, name, description, project_id, external_id, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -25,26 +25,27 @@
       },
       {
         "ordinal": 4,
+        "name": "external_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Bool",
-        "Text",
-        "Bool",
-        "UuidArray",
-        "Bool",
-        "Text",
-        "Timestamptz",
         "Uuid",
-        "Int8"
+        "Text",
+        "Text",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -52,9 +53,10 @@
       false,
       true,
       false,
+      true,
       false,
       true
     ]
   },
-  "hash": "9b8c642f39d9cf777c68cebd580739ec10af1030ef3a315eedcd3abe30bfca4a"
+  "hash": "fd61e5d0d51d4cffb9a630f63cf0314f4fa166682393606143ddd06490901ca7"
 }

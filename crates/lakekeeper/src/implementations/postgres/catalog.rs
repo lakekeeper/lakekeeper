@@ -301,6 +301,7 @@ impl CatalogStore for super::PostgresBackend {
         project_id: &ProjectId,
         role_name: &str,
         description: Option<&str>,
+        external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Role> {
         create_role(
@@ -308,6 +309,7 @@ impl CatalogStore for super::PostgresBackend {
             project_id,
             role_name,
             description,
+            external_id,
             &mut **transaction,
         )
         .await
@@ -317,9 +319,17 @@ impl CatalogStore for super::PostgresBackend {
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
+        external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<Role>> {
-        update_role(role_id, role_name, description, &mut **transaction).await
+        update_role(
+            role_id,
+            role_name,
+            description,
+            external_id,
+            &mut **transaction,
+        )
+        .await
     }
 
     async fn list_roles<'a>(

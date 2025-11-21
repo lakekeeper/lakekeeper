@@ -20,6 +20,7 @@ struct RoleRow {
     pub name: String,
     pub description: Option<String>,
     pub project_id: String,
+    pub external_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -30,6 +31,7 @@ impl From<RoleRow> for Role {
             id,
             name,
             description,
+            external_id,
             project_id,
             created_at,
             updated_at,
@@ -40,6 +42,7 @@ impl From<RoleRow> for Role {
             name,
             description,
             project_id: ProjectId::from_db_unchecked(project_id),
+            external_id: external_id.unwrap_or_else(|| id.to_string()),
             created_at,
             updated_at,
         }
@@ -51,31 +54,52 @@ pub(crate) async fn create_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     project_id: &ProjectId,
     role_name: &str,
     description: Option<&str>,
+    external_id: Option<&str>,
     connection: E,
 ) -> Result<Role> {
     let role = sqlx::query_as!(
         RoleRow,
         r#"
-        INSERT INTO role (id, name, description, project_id)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, name, description, project_id, created_at, updated_at
+        INSERT INTO role (id, name, description, project_id, external_id)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, name, description, project_id, external_id, created_at, updated_at
         "#,
         uuid::Uuid::from(role_id),
         role_name,
         description,
-        project_id
+        project_id,
+        external_id
     )
     .fetch_one(connection)
     .await
     .map_err(|e| match e {
         sqlx::Error::Database(db_error) => {
             if db_error.is_unique_violation() {
-                ErrorModel::conflict(
-                    format!("A role with this name or id already exists in project {project_id}")
+                match db_error.constraint() {
+                    Some("unique_role_external_id_in_project") => ErrorModel::conflict(
+                        format!(
+                            "A role with external_id '{}' already exists in project {project_id}",
+                            external_id.unwrap_or("")
+                        )
                         .to_string(),
-                    "RoleAlreadyExists".to_string(),
-                    Some(Box::new(db_error)),
-                )
+                        "RoleExternalIdAlreadyExists".to_string(),
+                        Some(Box::new(db_error)),
+                    ),
+                    Some("unique_role_name_in_project") => ErrorModel::conflict(
+                        format!(
+                            "A role with name '{role_name}' already exists in project {project_id}"
+                        )
+                        .to_string(),
+                        "RoleNameAlreadyExists".to_string(),
+                        Some(Box::new(db_error)),
+                    ),
+                    _ => ErrorModel::conflict(
+                        format!("Unique violation when creating role in project {project_id}")
+                            .to_string(),
+                        "RoleAlreadyExists".to_string(),
+                        Some(Box::new(db_error)),
+                    ),
+                }
             } else if db_error.is_foreign_key_violation() {
                 ErrorModel::not_found(
                     format!("Project {project_id} not found").to_string(),
@@ -100,28 +124,65 @@ pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     role_id: RoleId,
     role_name: &str,
     description: Option<&str>,
+    external_id: Option<&str>,
     connection: E,
 ) -> Result<Option<Role>> {
     let role = sqlx::query_as!(
         RoleRow,
         r#"
         UPDATE role
-        SET name = $2, description = $3
+        SET name = $2, description = $3, external_id = COALESCE($4, external_id)
         WHERE id = $1
-        RETURNING id, name, description, project_id, created_at, updated_at
+        RETURNING id, name, description, project_id, external_id, created_at, updated_at
         "#,
         uuid::Uuid::from(role_id),
         role_name,
-        description
+        description,
+        external_id
     )
     .fetch_one(connection)
     .await;
 
     match role {
         Err(sqlx::Error::RowNotFound) => Ok(None),
-        Err(e) => Err(e.into_error_model("Error updating Role".to_string()).into()),
+        Err(e) => match e {
+            sqlx::Error::Database(db_error) => {
+                if db_error.is_unique_violation() {
+                    match db_error.constraint() {
+                        Some("unique_role_external_id_in_project") => Err(ErrorModel::conflict(
+                            format!(
+                                "A role with external_id '{}' already exists in the project",
+                                external_id.unwrap_or("")
+                            )
+                            .to_string(),
+                            "RoleExternalIdAlreadyExists".to_string(),
+                            Some(Box::new(db_error)),
+                        )),
+                        Some("unique_role_name_in_project") => Err(ErrorModel::conflict(
+                            format!("A role with name '{role_name}' already exists in the project")
+                                .to_string(),
+                            "RoleNameAlreadyExists".to_string(),
+                            Some(Box::new(db_error)),
+                        )),
+                        _ => Err(ErrorModel::conflict(
+                            "Unique violation when updating role".to_string(),
+                            "RoleUpdateConflict".to_string(),
+                            Some(Box::new(db_error)),
+                        )),
+                    }
+                } else {
+                    Err(ErrorModel::internal(
+                        "Database error updating Role".to_string(),
+                        "RoleUpdateFailed",
+                        Some(Box::new(db_error)),
+                    ))
+                }
+            }
+            _ => Err(e.into_error_model("Error updating Role".to_string())),
+        },
         Ok(role) => Ok(Some(Role::from(role))),
     }
+    .map_err(Into::into)
 }
 
 pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
@@ -132,10 +193,16 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     let roles = sqlx::query_as!(
         RoleRow,
         r#"
-        SELECT id, name, description, project_id, created_at, updated_at
+        SELECT id, name, description, project_id, external_id, created_at, updated_at
         FROM role
         WHERE project_id = $2
-        ORDER BY name <-> $1 ASC
+        ORDER BY 
+            CASE 
+                WHEN id::text = $1 THEN 1
+                WHEN external_id = $1 THEN 2
+                ELSE 3
+            END,
+            name <-> $1 ASC
         LIMIT 10
         "#,
         search_term,
@@ -186,6 +253,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             name,
             description,
             project_id,
+            external_id,
             created_at,
             updated_at
         FROM role r
@@ -273,6 +341,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -297,6 +366,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
+            Some("external-1"),
             &state.write_pool(),
         )
         .await
@@ -305,6 +375,7 @@ mod test {
         assert_eq!(role.name, "Role 1");
         assert_eq!(role.description, Some("Role 1 description".to_string()));
         assert_eq!(role.project_id, project_id);
+        assert_eq!(role.external_id, "external-1".to_string());
 
         // Duplicate name yields conflict (case-insensitive) (409)
         let new_role_id = RoleId::new_random();
@@ -313,6 +384,7 @@ mod test {
             &project_id,
             role_name.to_lowercase().as_str(),
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -345,6 +417,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -353,16 +426,25 @@ mod test {
         assert_eq!(role.name, "Role 1");
         assert_eq!(role.description, Some("Role 1 description".to_string()));
         assert_eq!(role.project_id, project_id);
+        assert_eq!(role.external_id, role_id.to_string());
 
-        let _updated_role = update_role(
+        let updated_role = update_role(
             role_id,
             "Role 2",
             Some("Role 2 description"),
+            Some("external-2"),
             &state.write_pool(),
         )
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(updated_role.name, "Role 2");
+        assert_eq!(
+            updated_role.description,
+            Some("Role 2 description".to_string())
+        );
+        assert_eq!(updated_role.project_id, project_id);
+        assert_eq!(updated_role.external_id, "external-2".to_string());
     }
 
     #[sqlx::test]
@@ -391,6 +473,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -401,6 +484,7 @@ mod test {
             &project_id,
             role_name_2,
             Some("Role 2 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -414,6 +498,7 @@ mod test {
             role_id,
             role_name_2,
             Some("Role 2 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -457,6 +542,7 @@ mod test {
             &project1_id,
             "Role 1",
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -467,6 +553,7 @@ mod test {
             &project2_id,
             "Role 2",
             Some("Role 2 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -563,6 +650,7 @@ mod test {
                 &project1_id,
                 &format!("Role-{i}"),
                 Some(&format!("Role-{i} description")),
+                None,
                 &state.write_pool(),
             )
             .await
@@ -661,6 +749,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await
@@ -712,6 +801,7 @@ mod test {
             &project_id,
             role_name,
             Some("Role 1 description"),
+            None,
             &state.write_pool(),
         )
         .await

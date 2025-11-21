@@ -3502,6 +3502,14 @@ components:
             - string
             - 'null'
           description: Description of the role
+        external-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            External ID of the role.
+            If not set, this is initialized to the Role ID.
+            External IDs must be unique within a project.
         name:
           type: string
           description: Name of the role to create
@@ -4916,6 +4924,7 @@ components:
       required:
         - id
         - name
+        - external-id
         - project-id
         - created-at
       properties:
@@ -4928,6 +4937,12 @@ components:
             - string
             - 'null'
           description: Description of the role
+        external-id:
+          type: string
+          description: |-
+            External ID of the role.
+            If external ID for this role was not set explicitly, this is same as the role ID.
+            Must be unique within a project.
         id:
           type: string
           format: uuid
@@ -6075,6 +6090,13 @@ components:
             - string
             - 'null'
           description: Description of the role. If not set, the description will be removed.
+        external-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            External ID of the role.
+            If not set, the external ID will remain unchanged.
         name:
           type: string
           description: Name of the role to create

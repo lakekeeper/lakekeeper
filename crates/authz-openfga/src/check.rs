@@ -682,6 +682,7 @@ mod tests {
                     name: "test_role".to_string(),
                     description: None,
                     project_id: None,
+                    external_id: None,
                 },
                 ctx.clone(),
                 operator_metadata.clone(),

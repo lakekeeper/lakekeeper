@@ -481,14 +481,19 @@ where
         project_id: &ProjectId,
         role_name: &str,
         description: Option<&str>,
+        external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Role>;
 
     /// Return Ok(None) if the role does not exist.
+    ///
+    /// If description is None, the description must be removed.
+    /// If `external_id` is None, the `external_id` remains unchanged.
     async fn update_role<'a>(
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
+        external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<Role>>;
 
