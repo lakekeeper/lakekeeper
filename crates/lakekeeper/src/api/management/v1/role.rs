@@ -35,7 +35,6 @@ pub struct CreateRoleRequest {
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
     /// External ID of the role.
-    /// If not set, this is initialized to the Role ID.
     /// External IDs must be unique within a project.
     #[serde(default)]
     pub external_id: Option<String>,
@@ -53,7 +52,7 @@ pub struct Role {
     /// Description of the role
     pub description: Option<String>,
     /// External ID of the role.
-    /// If external ID for this role was not set explicitly, this is same as the role ID.
+    /// If external ID for this role was not set explicitly, it is identical to role ID.
     /// Must be unique within a project.
     pub external_id: String,
     /// Project ID in which the role is created.
@@ -99,7 +98,8 @@ pub struct UpdateRoleRequest {
     #[serde(default)]
     pub description: Option<String>,
     /// External ID of the role.
-    /// If not set, the external ID will remain unchanged.
+    /// If None, the external ID will remain unchanged.
+    // None behaviour is to protect from accidental removal of external_id during update.
     #[serde(default)]
     pub external_id: Option<String>,
 }
