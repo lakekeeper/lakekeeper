@@ -1774,6 +1774,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/external-id:
+    put:
+      tags:
+        - role
+      summary: Set the external ID of a role
+      operationId: set_role_external_id
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleExternalIdRequest'
+        required: true
+      responses:
+        '200':
+          description: Role External ID set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/search/role:
     post:
       tags:
@@ -4981,7 +5022,6 @@ components:
       required:
         - id
         - name
-        - external-id
         - project-id
         - created-at
       properties:
@@ -4995,10 +5035,11 @@ components:
             - 'null'
           description: Description of the role
         external-id:
-          type: string
+          type:
+            - string
+            - 'null'
           description: |-
             External ID of the role.
-            If external ID for this role was not set explicitly, it is identical to role ID.
             Must be unique within a project.
         id:
           type: string
@@ -6137,6 +6178,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RoleAssignment'
+    UpdateRoleExternalIdRequest:
+      type: object
+      properties:
+        external-id:
+          type:
+            - string
+            - 'null'
+          description: New External ID of the role.
     UpdateRoleRequest:
       type: object
       required:
@@ -6147,13 +6196,6 @@ components:
             - string
             - 'null'
           description: Description of the role. If not set, the description will be removed.
-        external-id:
-          type:
-            - string
-            - 'null'
-          description: |-
-            External ID of the role.
-            If None, the external ID will remain unchanged.
         name:
           type: string
           description: Name of the role to create

@@ -52,9 +52,8 @@ pub struct Role {
     /// Description of the role
     pub description: Option<String>,
     /// External ID of the role.
-    /// If external ID for this role was not set explicitly, it is identical to role ID.
     /// Must be unique within a project.
-    pub external_id: String,
+    pub external_id: Option<String>,
     /// Project ID in which the role is created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
@@ -73,7 +72,7 @@ impl Role {
             id: role_id,
             name: format!("role-{role_id}"),
             description: Some("A randomly generated role".to_string()),
-            external_id: role_id.to_string(),
+            external_id: None,
             project_id: ProjectId::new_random(),
             created_at: chrono::Utc::now(),
             updated_at: None,
@@ -97,10 +96,13 @@ pub struct UpdateRoleRequest {
     /// Description of the role. If not set, the description will be removed.
     #[serde(default)]
     pub description: Option<String>,
-    /// External ID of the role.
-    /// If None, the external ID will remain unchanged.
-    // None behaviour is to protect from accidental removal of external_id during update.
-    #[serde(default)]
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct UpdateRoleExternalIdRequest {
+    /// New External ID of the role.
     pub external_id: Option<String>,
 }
 
@@ -366,6 +368,34 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             role_id,
             &request.name,
             description.as_deref(),
+            t.transaction(),
+        )
+        .await?;
+        t.commit().await?;
+        Ok(role)
+    }
+
+    async fn update_role_external_id(
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        role_id: RoleId,
+        request: UpdateRoleExternalIdRequest,
+    ) -> Result<Arc<Role>> {
+        // -------------------- AUTHZ --------------------
+        let authorizer = context.v1_state.authz;
+        let project_id = request_metadata.require_project_id(None)?;
+
+        let role = C::get_role_by_id(&project_id, role_id, context.v1_state.catalog.clone()).await;
+
+        authorizer
+            .require_role_action(&request_metadata, role, CatalogRoleAction::Update)
+            .await?;
+
+        // -------------------- Business Logic --------------------
+        let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let role = C::set_role_external_id(
+            &project_id,
+            role_id,
             request.external_id.as_deref(),
             t.transaction(),
         )

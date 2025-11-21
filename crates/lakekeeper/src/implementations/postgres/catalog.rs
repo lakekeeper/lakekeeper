@@ -39,7 +39,7 @@ use crate::{
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
         namespace::{get_namespaces_by_id, get_namespaces_by_name, set_namespace_protected},
-        role::search_role,
+        role::{search_role, update_role_external_id},
         tabular::{
             clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
             get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
@@ -321,7 +321,6 @@ impl CatalogStore for super::PostgresBackend {
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
-        external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Role, UpdateRoleError> {
         update_role(
@@ -329,10 +328,18 @@ impl CatalogStore for super::PostgresBackend {
             role_id,
             role_name,
             description,
-            external_id,
             &mut **transaction,
         )
         .await
+    }
+
+    async fn set_role_external_id_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        external_id: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Role, UpdateRoleError> {
+        update_role_external_id(project_id, role_id, external_id, &mut **transaction).await
     }
 
     async fn list_roles_impl<'a>(

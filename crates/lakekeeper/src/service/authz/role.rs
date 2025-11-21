@@ -42,7 +42,7 @@ impl AuthZCannotSeeRole {
 impl From<RoleIdNotFound> for AuthZCannotSeeRole {
     fn from(err: RoleIdNotFound) -> Self {
         // Deliberately discard the stack trace to avoid leaking
-        // information about the existence of the namespace.
+        // information about the existence of the role.
         AuthZCannotSeeRole {
             project_id: err.project_id,
             role_id: err.role_id,

@@ -494,6 +494,12 @@ where
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Role, UpdateRoleError>;
+
+    async fn set_role_external_id_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
         external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Role, UpdateRoleError>;

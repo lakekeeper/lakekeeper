@@ -215,25 +215,28 @@ where
     }
 
     /// If description is None, the description must be removed.
-    /// If `external_id` is None, the `external_id` remains unchanged.
     async fn update_role<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Arc<Role>, UpdateRoleError> {
+        Self::update_role_impl(project_id, role_id, role_name, description, transaction)
+            .await
+            .map(Arc::new)
+    }
+
+    /// Update the external ID of the role.
+    async fn set_role_external_id<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
         external_id: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<Role>, UpdateRoleError> {
-        Self::update_role_impl(
-            project_id,
-            role_id,
-            role_name,
-            description,
-            external_id,
-            transaction,
-        )
-        .await
-        .map(Arc::new)
+        Self::set_role_external_id_impl(project_id, role_id, external_id, transaction)
+            .await
+            .map(Arc::new)
     }
 
     async fn list_roles<'a>(
