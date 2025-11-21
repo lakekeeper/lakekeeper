@@ -137,6 +137,7 @@ pub async fn new_full_router<
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
         ))
         .layer(maybe_auth_layer)
+        // Add health later so that it is not authenticated
         .route(
             "/health",
             get(|| async move {

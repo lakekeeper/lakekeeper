@@ -36,7 +36,7 @@ where
                 warehouse_id,
                 table_id,
                 TabularListFlags::all(),
-                CatalogTableAction::CanSetProtection,
+                CatalogTableAction::SetProtection,
                 state_catalog.clone(),
             )
             .await?;
@@ -71,7 +71,7 @@ where
                 warehouse_id,
                 table_id,
                 TabularListFlags::all(),
-                CatalogTableAction::CanGetMetadata,
+                CatalogTableAction::GetMetadata,
                 state.v1_state.catalog,
             )
             .await?;

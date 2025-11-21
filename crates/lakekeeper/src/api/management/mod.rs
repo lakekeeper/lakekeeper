@@ -650,7 +650,7 @@ pub mod v1 {
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -697,7 +697,7 @@ pub mod v1 {
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -741,7 +741,7 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "project",
-    params(GetAccessQuery, ("x-project-id" = String, Header, description = "Optional project ID"),),
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
     path = ManagementV1Endpoint::GetProjectActions.path(),
     responses(
         (status = 200, body = GetLakekeeperProjectActionsResponse),

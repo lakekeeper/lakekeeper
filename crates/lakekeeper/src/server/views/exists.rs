@@ -27,7 +27,7 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            CatalogViewAction::CanGetMetadata,
+            CatalogViewAction::GetMetadata,
             state.v1_state.catalog.clone(),
         )
         .await?;

@@ -171,7 +171,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::CanCreateRole,
+                CatalogProjectAction::CreateRole,
             )
             .await?;
 
@@ -209,7 +209,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::CanListRoles,
+                CatalogProjectAction::ListRoles,
             )
             .await?;
 
@@ -234,7 +234,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_role_action(&request_metadata, role_id, CatalogRoleAction::CanRead)
+            .require_role_action(&request_metadata, role_id, CatalogRoleAction::Read)
             .await?;
 
         // -------------------- Business Logic --------------------
@@ -276,7 +276,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::CanSearchRoles,
+                CatalogProjectAction::SearchRoles,
             )
             .await?;
 
@@ -294,7 +294,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_role_action(&request_metadata, role_id, CatalogRoleAction::CanDelete)
+            .require_role_action(&request_metadata, role_id, CatalogRoleAction::Delete)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -331,7 +331,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_role_action(&request_metadata, role_id, CatalogRoleAction::CanUpdate)
+            .require_role_action(&request_metadata, role_id, CatalogRoleAction::Update)
             .await?;
 
         // -------------------- Business Logic --------------------

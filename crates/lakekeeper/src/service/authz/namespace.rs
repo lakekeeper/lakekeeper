@@ -17,7 +17,7 @@ use crate::{
     WarehouseId,
 };
 
-const CAN_SEE_PERMISSION: CatalogNamespaceAction = CatalogNamespaceAction::CanGetMetadata;
+const CAN_SEE_PERMISSION: CatalogNamespaceAction = CatalogNamespaceAction::GetMetadata;
 
 pub trait NamespaceAction
 where

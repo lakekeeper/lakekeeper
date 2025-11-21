@@ -116,13 +116,14 @@ where
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperUserAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogUserAction {
     /// Can get all details of the user given its id
-    CanRead,
+    Read,
     /// Can update the user.
-    CanUpdate,
+    Update,
     /// Can delete this user
-    CanDelete,
+    Delete,
 }
 
 #[derive(
@@ -141,17 +142,18 @@ pub enum CatalogUserAction {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogServerAction {
     /// Can create items inside the server (can create Warehouses).
-    CanCreateProject,
+    CreateProject,
     /// Can update all users on this server.
-    CanUpdateUsers,
+    UpdateUsers,
     /// Can delete all users on this server.
-    CanDeleteUsers,
+    DeleteUsers,
     /// Can List all users on this server.
-    CanListUsers,
+    ListUsers,
     /// Can provision user
-    CanProvisionUsers,
+    ProvisionUsers,
 }
 
 #[derive(
@@ -170,17 +172,18 @@ pub enum CatalogServerAction {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogProjectAction {
-    CanCreateWarehouse,
-    CanDelete,
-    CanRename,
-    CanGetMetadata,
-    CanListWarehouses,
-    CanIncludeInList,
-    CanCreateRole,
-    CanListRoles,
-    CanSearchRoles,
-    CanGetEndpointStatistics,
+    CreateWarehouse,
+    Delete,
+    Rename,
+    GetMetadata,
+    ListWarehouses,
+    IncludeInList,
+    CreateRole,
+    ListRoles,
+    SearchRoles,
+    GetEndpointStatistics,
 }
 impl CatalogAction for CatalogProjectAction {}
 
@@ -200,10 +203,11 @@ impl CatalogAction for CatalogProjectAction {}
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogRoleAction {
-    CanRead,
-    CanDelete,
-    CanUpdate,
+    Read,
+    Delete,
+    Update,
 }
 impl CatalogAction for CatalogRoleAction {}
 
@@ -224,28 +228,29 @@ impl CatalogAction for CatalogRoleAction {}
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogWarehouseAction {
-    CanCreateNamespace,
-    CanDelete,
-    CanUpdateStorage,
-    CanUpdateStorageCredential,
-    CanGetMetadata,
-    CanGetConfig,
-    CanListNamespaces,
-    CanListEverything,
-    CanUse,
-    CanIncludeInList,
-    CanDeactivate,
-    CanActivate,
-    CanRename,
-    CanListDeletedTabulars,
-    CanModifySoftDeletion,
-    CanGetTaskQueueConfig,
-    CanModifyTaskQueueConfig,
-    CanGetAllTasks,
-    CanControlAllTasks,
-    CanSetProtection,
-    CanGetEndpointStatistics,
+    CreateNamespace,
+    Delete,
+    UpdateStorage,
+    UpdateStorageCredential,
+    GetMetadata,
+    GetConfig,
+    ListNamespaces,
+    ListEverything,
+    Use,
+    IncludeInList,
+    Deactivate,
+    Activate,
+    Rename,
+    ListDeletedTabulars,
+    ModifySoftDeletion,
+    GetTaskQueueConfig,
+    ModifyTaskQueueConfig,
+    GetAllTasks,
+    ControlAllTasks,
+    SetProtection,
+    GetEndpointStatistics,
 }
 impl CatalogAction for CatalogWarehouseAction {}
 
@@ -266,19 +271,20 @@ impl CatalogAction for CatalogWarehouseAction {}
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogNamespaceAction {
-    CanCreateTable,
-    CanCreateView,
-    CanCreateNamespace,
-    CanDelete,
-    CanUpdateProperties,
-    CanGetMetadata,
-    CanListTables,
-    CanListViews,
-    CanListNamespaces,
-    CanListEverything,
-    CanSetProtection,
-    CanIncludeInList,
+    CreateTable,
+    CreateView,
+    CreateNamespace,
+    Delete,
+    UpdateProperties,
+    GetMetadata,
+    ListTables,
+    ListViews,
+    ListNamespaces,
+    ListEverything,
+    SetProtection,
+    IncludeInList,
 }
 impl CatalogAction for CatalogNamespaceAction {}
 
@@ -299,18 +305,19 @@ impl CatalogAction for CatalogNamespaceAction {}
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogTableAction {
-    CanDrop,
-    CanWriteData,
-    CanReadData,
-    CanGetMetadata,
-    CanCommit,
-    CanRename,
-    CanIncludeInList,
-    CanUndrop,
-    CanGetTasks,
-    CanControlTasks,
-    CanSetProtection,
+    Drop,
+    WriteData,
+    ReadData,
+    GetMetadata,
+    Commit,
+    Rename,
+    IncludeInList,
+    Undrop,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
 }
 impl CatalogAction for CatalogTableAction {}
 
@@ -331,16 +338,17 @@ impl CatalogAction for CatalogTableAction {}
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CatalogViewAction {
-    CanDrop,
-    CanGetMetadata,
-    CanCommit,
-    CanIncludeInList,
-    CanRename,
-    CanUndrop,
-    CanGetTasks,
-    CanControlTasks,
-    CanSetProtection,
+    Drop,
+    GetMetadata,
+    Commit,
+    IncludeInList,
+    Rename,
+    Undrop,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
 }
 impl CatalogAction for CatalogViewAction {}
 
@@ -504,7 +512,7 @@ where
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
     ///
-    /// Returns `Vec<Ok<bool>>` indicating for each tuple whether the action is allowed. Returns
+    /// Returns `Vec<bool>` indicating for each tuple whether the action is allowed. Returns
     /// `Err` for internal errors.
     ///
     /// The default implementation is provided for backwards compatibility and does not support
@@ -525,7 +533,7 @@ where
     /// Checks if actions are allowed on views. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
     ///
-    /// Returns `Vec<Ok<bool>>` indicating for each tuple whether the action is allowed. Returns
+    /// Returns `Vec<bool>` indicating for each tuple whether the action is allowed. Returns
     /// `Err` for internal errors.
     ///
     /// The default implementation is provided for backwards compatibility and does not support
@@ -638,7 +646,6 @@ where
 pub(crate) mod tests {
     use std::{
         collections::HashSet,
-        str::FromStr,
         sync::{Arc, RwLock},
     };
 
@@ -648,73 +655,6 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::service::{health::Health, Namespace};
-
-    #[test]
-    fn test_catalog_resource_action() {
-        // server action
-        assert_eq!(
-            CatalogServerAction::CanCreateProject.to_string(),
-            "can_create_project"
-        );
-        assert_eq!(
-            CatalogServerAction::from_str("can_create_project").unwrap(),
-            CatalogServerAction::CanCreateProject
-        );
-        // user action
-        assert_eq!(CatalogUserAction::CanDelete.to_string(), "can_delete");
-        assert_eq!(
-            CatalogUserAction::from_str("can_delete").unwrap(),
-            CatalogUserAction::CanDelete
-        );
-        // role action
-        assert_eq!(CatalogRoleAction::CanUpdate.to_string(), "can_update");
-        assert_eq!(
-            CatalogRoleAction::from_str("can_update").unwrap(),
-            CatalogRoleAction::CanUpdate
-        );
-        // project action
-        assert_eq!(
-            CatalogProjectAction::CanCreateWarehouse.to_string(),
-            "can_create_warehouse"
-        );
-        assert_eq!(
-            CatalogProjectAction::from_str("can_create_warehouse").unwrap(),
-            CatalogProjectAction::CanCreateWarehouse
-        );
-        // warehouse action
-        assert_eq!(
-            CatalogWarehouseAction::CanCreateNamespace.to_string(),
-            "can_create_namespace"
-        );
-        assert_eq!(
-            CatalogWarehouseAction::from_str("can_create_namespace").unwrap(),
-            CatalogWarehouseAction::CanCreateNamespace
-        );
-        // namespace action
-        assert_eq!(
-            CatalogNamespaceAction::CanCreateTable.to_string(),
-            "can_create_table"
-        );
-        assert_eq!(
-            CatalogNamespaceAction::from_str("can_create_table").unwrap(),
-            CatalogNamespaceAction::CanCreateTable
-        );
-        // table action
-        assert_eq!(CatalogTableAction::CanCommit.to_string(), "can_commit");
-        assert_eq!(
-            CatalogTableAction::from_str("can_commit").unwrap(),
-            CatalogTableAction::CanCommit
-        );
-        // view action
-        assert_eq!(
-            CatalogViewAction::CanGetMetadata.to_string(),
-            "can_get_metadata"
-        );
-        assert_eq!(
-            CatalogViewAction::from_str("can_get_metadata").unwrap(),
-            CatalogViewAction::CanGetMetadata
-        );
-    }
 
     #[derive(Clone, Debug)]
     /// A mock of the [`Authorizer`] that allows to hide objects.
@@ -774,10 +714,10 @@ pub(crate) mod tests {
         /// that skip checking individual permissions.
         pub(crate) fn block_can_list_everything(&self) {
             self.block_action(
-                format!("namespace:{}", CatalogNamespaceAction::CanListEverything).as_str(),
+                format!("namespace:{}", CatalogNamespaceAction::ListEverything).as_str(),
             );
             self.block_action(
-                format!("warehouse:{}", CatalogWarehouseAction::CanListEverything).as_str(),
+                format!("warehouse:{}", CatalogWarehouseAction::ListEverything).as_str(),
             );
         }
     }
@@ -1127,20 +1067,20 @@ pub(crate) mod tests {
             }
         };
     }
-    test_block_action!(role, CatalogRoleAction::CanDelete, RoleId::new_random());
+    test_block_action!(role, CatalogRoleAction::Delete, RoleId::new_random());
     test_block_action!(
         project,
-        CatalogProjectAction::CanRename,
+        CatalogProjectAction::Rename,
         &ProjectId::new_random()
     );
     test_block_action!(
         warehouse,
-        CatalogWarehouseAction::CanCreateNamespace,
+        CatalogWarehouseAction::CreateNamespace,
         &ResolvedWarehouse::new_random()
     );
     test_block_action!(
         namespace,
-        CatalogNamespaceAction::CanListViews,
+        CatalogNamespaceAction::ListViews,
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -1161,7 +1101,7 @@ pub(crate) mod tests {
     );
     test_block_action!(
         table,
-        CatalogTableAction::CanDrop,
+        CatalogTableAction::Drop,
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -1183,7 +1123,7 @@ pub(crate) mod tests {
     );
     test_block_action!(
         view,
-        CatalogViewAction::CanDrop,
+        CatalogViewAction::Drop,
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {

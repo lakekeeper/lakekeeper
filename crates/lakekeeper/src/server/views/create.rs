@@ -63,7 +63,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             provided_ns,
-            CatalogNamespaceAction::CanCreateView,
+            CatalogNamespaceAction::CreateView,
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )
