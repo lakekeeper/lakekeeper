@@ -189,14 +189,13 @@ where
         role_to_create: CatalogCreateRoleRequest<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<Role>, CreateRoleError> {
-        let role = Self::create_roles(project_id, vec![role_to_create], transaction).await?;
-        let n_roles = role.len();
-        let role_ref = role
-            .into_iter()
-            .next()
-            .ok_or_else(|| ResultCountMismatch::new(1, n_roles, "Create Role"))?;
+        let roles = Self::create_roles(project_id, vec![role_to_create], transaction).await?;
+        let n_roles = roles.len();
+        if n_roles != 1 {
+            return Err(ResultCountMismatch::new(1, n_roles, "Create Role").into());
+        }
 
-        Ok(role_ref)
+        Ok(roles.into_iter().next().expect("length checked above"))
     }
 
     async fn create_roles<'a>(

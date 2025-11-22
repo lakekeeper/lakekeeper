@@ -304,27 +304,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Ok(role)
     }
 
-    async fn get_role_by_source(
-        context: ApiContext<State<A, C, S>>,
-        request_metadata: RequestMetadata,
-        role_id: RoleId,
-    ) -> Result<Arc<Role>> {
-        let authorizer = context.v1_state.authz;
-
-        let role = C::get_role_by_id(
-            &request_metadata.require_project_id(None)?,
-            role_id,
-            context.v1_state.catalog,
-        )
-        .await;
-
-        let role = authorizer
-            .require_role_action(&request_metadata, role, CatalogRoleAction::Read)
-            .await?;
-
-        Ok(role)
-    }
-
     async fn search_role(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
