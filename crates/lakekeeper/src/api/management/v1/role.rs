@@ -59,7 +59,7 @@ pub struct Role {
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
     /// Identifier of the role in an external system (source of truth).
-    /// `source-id` is guranteed to be unique within the a project.
+    /// `source-id` is guaranteed to be unique within a project.
     pub source_id: Option<String>,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -87,7 +87,7 @@ impl Role {
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchRoleResponse {
-    /// List of users matching the search criteria
+    /// List of roles matching the search criteria
     pub roles: Vec<Arc<Role>>,
 }
 

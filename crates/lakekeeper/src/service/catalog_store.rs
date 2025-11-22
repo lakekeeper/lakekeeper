@@ -495,7 +495,6 @@ where
     ) -> Result<Vec<Role>, CreateRoleError>;
 
     /// If description is None, the description must be removed.
-    /// If `external_id` is None, the `external_id` remains unchanged.
     async fn update_role_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,

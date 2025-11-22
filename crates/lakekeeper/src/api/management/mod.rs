@@ -95,6 +95,9 @@ pub mod v1 {
         ProjectId, WarehouseId,
     };
 
+    pub const PROJECT_ID_HEADER_DESCRIPTION: &str =
+        "Project ID (optional; falls back to the default project if not provided)";
+
     #[derive(Clone, Debug)]
     pub struct ApiServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
         auth_handler: PhantomData<A>,
@@ -384,7 +387,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::CreateRole.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         request_body = CreateRoleRequest,
         responses(
             (status = 201, description = "Role successfully created", body = Role),
@@ -409,7 +412,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::SearchRole.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         request_body = SearchRoleRequest,
         responses(
             (status = 200, description = "List of roles", body = SearchRoleResponse),
@@ -431,7 +434,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::ListRole.path(),
-        params(ListRolesQuery, ("x-project-id" = Option<String>, Header, description = "Project ID")),
+        params(ListRolesQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "List of roles", body = ListRolesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -452,7 +455,7 @@ pub mod v1 {
         delete,
         tag = "role",
         path = ManagementV1Endpoint::DeleteRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -475,7 +478,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::GetRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Role details", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
@@ -496,7 +499,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::UpdateRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = Role),
@@ -519,7 +522,7 @@ pub mod v1 {
         put,
         tag = "role",
         path = ManagementV1Endpoint::UpdateRoleSourceSystem.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         request_body = UpdateRoleSourceSystemRequest,
         responses(
             (status = 200, description = "Role Source System updated successfully", body = Role),
@@ -542,7 +545,7 @@ pub mod v1 {
     get,
     tag = "role",
     path = ManagementV1Endpoint::GetRoleActions.path(),
-    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
+    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
     responses(
         (status = 200, body = GetLakekeeperRoleActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -633,7 +636,7 @@ pub mod v1 {
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetProject.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -675,7 +678,7 @@ pub mod v1 {
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteProject.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -722,7 +725,7 @@ pub mod v1 {
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameProject.path(),
-        params(("x-project-id" = Option<String>, Header, description = "Project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -766,7 +769,7 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "project",
-    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Project ID"),),
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
     path = ManagementV1Endpoint::GetProjectActions.path(),
     responses(
         (status = 200, body = GetLakekeeperProjectActionsResponse),
