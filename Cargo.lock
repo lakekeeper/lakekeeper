@@ -3420,6 +3420,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "valuable",
 ]
 
 [[package]]
