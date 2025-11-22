@@ -1552,14 +1552,27 @@ paths:
             type:
               - string
               - 'null'
-        - name: sourceSystem
+        - name: roleIds
           in: query
-          description: Filter by source system
+          description: Filter by role IDs
           required: false
           schema:
             type:
-              - string
+              - array
               - 'null'
+            items:
+              type: string
+              format: uuid
+        - name: sourceIds
+          in: query
+          description: Filter by source IDs
+          required: false
+          schema:
+            type:
+              - array
+              - 'null'
+            items:
+              type: string
         - name: x-project-id
           in: header
           description: Project ID
@@ -3617,14 +3630,7 @@ components:
             - 'null'
           description: |-
             Identifier of the role in an external system (source of truth).
-            `source-id` must be unique within the `source-system` in a project.
-        source-system:
-          type:
-            - string
-            - 'null'
-          description: |-
-            Identifier of the role in an external system (source of truth).
-            Defaults to `lakekeeper` if not provided.
+            `source-id` must be unique within a project.
     CreateUserRequest:
       type: object
       properties:
@@ -5030,7 +5036,6 @@ components:
         - id
         - name
         - project-id
-        - source-system
         - created-at
       properties:
         created-at:
@@ -5058,10 +5063,7 @@ components:
             - 'null'
           description: |-
             Identifier of the role in an external system (source of truth).
-            `source-id` is guranteed to be unique within the `source-system` in a project.
-        source-system:
-          type: string
-          description: Identifier of the role in an external system (source of truth).
+            `source-id` is guranteed to be unique within the a project.
         updated-at:
           type:
             - string
@@ -6206,14 +6208,10 @@ components:
       type: object
       required:
         - source-id
-        - source-system
       properties:
         source-id:
           type: string
-          description: New Source ID of the role.
-        source-system:
-          type: string
-          description: New Source System of the role.
+          description: New Source ID / External ID of the role.
     UpdateServerAssignmentsRequest:
       type: object
       properties:
