@@ -8,11 +8,11 @@ use futures::FutureExt;
 use fxhash::FxHashSet;
 use http::StatusCode;
 use iceberg::{
-    spec::{
-        MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataRef,
-        PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
-    },
     NamespaceIdent, TableUpdate,
+    spec::{
+        MetadataLog, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX, SchemaId, TableMetadata,
+        TableMetadataBuildResult, TableMetadataRef,
+    },
 };
 use iceberg_ext::{
     catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
@@ -25,25 +25,27 @@ use uuid::Uuid;
 pub(crate) mod create_table;
 mod load_table;
 use super::{
+    CatalogServer,
     commit_tables::apply_commit,
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer,
+    require_warehouse_id,
 };
 use crate::{
+    WarehouseId,
     api::{
         iceberg::{
             types::DropParams,
             v1::{
-                tables::{DataAccessMode, LoadTableFilters},
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest,
                 RenameTableRequest, Result, TableIdent, TableParameters,
+                tables::{DataAccessMode, LoadTableFilters},
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
+        management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -52,26 +54,25 @@ use crate::{
         tabular::list_entities,
     },
     service::{
+        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
+        CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
+        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
+        TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeTable, AuthZTableOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogTableAction, RequireTableActionError,
+            AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
+            refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
         tasks::{
+            EntityId, TaskMetadata,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
-            EntityId, TaskMetadata,
         },
-        AuthZTableInfo as _, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
-        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
-        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularListFlags,
-        TabularNotFound, Transaction, WarehouseStatus, CONCURRENT_UPDATE_ERROR_TYPE,
     },
-    WarehouseId,
 };
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
@@ -241,7 +242,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             if let Ok(Some(_)) = &previous_table_info {
                 tracing::debug!(
                     "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' for overwrite operation",
-                    table_ident.name, table_ident.namespace, warehouse.name
+                    table_ident.name,
+                    table_ident.namespace,
+                    warehouse.name
                 );
                 // Verify authorization to drop the table first
                 previous_table_to_drop = Some(
@@ -1683,10 +1686,7 @@ where
 }
 
 pub(crate) fn validate_table_or_view_ident(table: &TableIdent) -> Result<()> {
-    let TableIdent {
-        ref namespace,
-        ref name,
-    } = &table;
+    let TableIdent { namespace, name } = &table;
     validate_namespace_ident(namespace)?;
 
     if name.is_empty() {
@@ -1709,7 +1709,9 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
     if let Ok(body) = serde_json::to_value(&request) {
         body
     } else {
-        tracing::warn!("Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event.");
+        tracing::warn!(
+            "Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event."
+        );
         serde_json::Value::Null
     }
 }
@@ -1720,13 +1722,13 @@ pub(crate) mod test {
 
     use http::StatusCode;
     use iceberg::{
-        spec::{
-            EncryptedKey, FormatVersion, NestedField, Operation, PrimitiveType, Schema, Snapshot,
-            SnapshotReference, SnapshotRetention, Summary, TableMetadata, Transform, Type,
-            UnboundPartitionField, UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_FORMAT_VERSION,
-            PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
-        },
         NamespaceIdent, TableIdent, TableUpdate,
+        spec::{
+            EncryptedKey, FormatVersion, MAIN_BRANCH, NestedField, Operation,
+            PROPERTY_FORMAT_VERSION, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX, PrimitiveType,
+            Schema, Snapshot, SnapshotReference, SnapshotRetention, Summary, TableMetadata,
+            Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
+        },
     };
     use iceberg_ext::catalog::rest::{
         CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
@@ -1738,38 +1740,38 @@ pub(crate) mod test {
     use uuid::Uuid;
 
     use crate::{
+        WarehouseId,
         api::{
+            ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    tables::{LoadTableFilters, TablesService as _},
                     DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                    tables::{LoadTableFilters, TablesService as _},
                 },
             },
             management::v1::{
-                table::TableManagementService, warehouse::TabularDeleteProfile,
-                ApiServer as ManagementApiServer,
+                ApiServer as ManagementApiServer, table::TableManagementService,
+                warehouse::TabularDeleteProfile,
             },
-            ApiContext,
         },
         implementations::postgres::{
-            tabular::table::tests::initialize_table, PostgresBackend, SecretsState,
+            PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
         },
         request_metadata::RequestMetadata,
         server::{
+            CatalogServer, CatalogStore,
             tables::validate_table_properties,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
-            CatalogServer, CatalogStore,
         },
         service::{
-            authz::{
-                tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
-                CatalogTableAction,
-            },
             CatalogTabularOps as _, SecretStore, State, TableId, TabularListFlags, UserId,
+            authz::{
+                AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
+                tests::HidingAuthorizer,
+            },
         },
         tests::{create_table_request as create_request, random_request_metadata},
-        WarehouseId,
     };
 
     #[test]

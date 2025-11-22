@@ -5,28 +5,28 @@ use std::{
 
 use futures::future::try_join_all;
 use lakekeeper::{
+    ProjectId, WarehouseId,
     api::{ApiContext, IcebergErrorResponse, RequestMetadata},
     async_trait,
     axum::Router,
     service::{
+        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
+        NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
+        TableId, UserId, ViewId,
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
             CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
             NamespaceParent, UserOrRole,
         },
         health::Health,
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
-        NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, UserId, ViewId,
     },
     tokio::sync::RwLock,
-    ProjectId, WarehouseId,
 };
 use openfga_client::{
     client::{
-        batch_check_single_result::CheckResult, BasicOpenFgaClient, BatchCheckItem,
-        CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, ReadResponse, Tuple,
-        TupleKey, TupleKeyWithoutCondition,
+        BasicOpenFgaClient, BatchCheckItem, CheckRequestTupleKey, ConsistencyPreference,
+        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
+        batch_check_single_result::CheckResult,
     },
     tonic,
 };
@@ -34,6 +34,7 @@ use openfga_client::{
 use utoipa::OpenApi as _;
 
 use crate::{
+    AUTH_CONFIG, FgaType, MAX_TUPLES_PER_WRITE,
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
     error::{
         BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
@@ -44,7 +45,6 @@ use crate::{
         self, NamespaceRelation, OpenFgaRelation, ProjectRelation, ReducedRelation, RoleRelation,
         ServerRelation, TableRelation, ViewRelation, WarehouseRelation,
     },
-    FgaType, AUTH_CONFIG, MAX_TUPLES_PER_WRITE,
 };
 
 type AuthorizerResult<T> = std::result::Result<T, IcebergErrorResponse>;
@@ -145,7 +145,7 @@ impl Authorizer for OpenFGAAuthorizer {
                     "AnonymousBootstrap",
                     None,
                 )
-                .into())
+                .into());
             }
         };
 
@@ -1032,7 +1032,7 @@ impl OpenFGAAuthorizer {
             if let Some((idx, _)) = guard_results
                 .iter()
                 .enumerate()
-                .find(|(_, &allowed)| !allowed)
+                .find(|&(_, allowed)| !allowed)
             {
                 return Err(
                     CannotInspectPermissions::new(actor.clone(), &guard_objects[idx]).into(),

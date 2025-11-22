@@ -15,11 +15,12 @@ use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    adls::{adls_error::parse_error, AdlsLocation},
+    DeleteBatchError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
+    ReadError, WriteError,
+    adls::{AdlsLocation, adls_error::parse_error},
     calculate_ranges, delete_not_found_is_ok,
     error::ErrorKind,
-    execute_with_parallelism, safe_usize_to_i64, validate_file_size, DeleteBatchError, DeleteError,
-    IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
+    execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
 
 #[derive(Debug, Clone)]
@@ -414,8 +415,7 @@ impl LakekeeperStorage for AdlsStorage {
                 }
             }
             result.map(|page| {
-                let locations = page
-                    .paths
+                page.paths
                     .iter()
                     .filter_map(|path| {
                         // Create a location from account, filesystem and blob name
@@ -432,8 +432,7 @@ impl LakekeeperStorage for AdlsStorage {
                         );
                         Location::from_str(&full_path).ok()
                     })
-                    .collect::<Vec<_>>();
-                locations
+                    .collect::<Vec<_>>()
             })
         });
 
