@@ -145,7 +145,7 @@ tower-http = { version = "^0.6", features = [
     "trace",
     "normalize-path",
 ] }
-tracing = { version = "^0.1", features = ["attributes", "valuable"] }
+tracing = { version = "^0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.22.0"

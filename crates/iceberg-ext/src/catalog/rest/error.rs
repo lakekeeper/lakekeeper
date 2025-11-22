@@ -58,9 +58,9 @@ fn error_chain_fmt(e: impl std::error::Error, f: &mut std::fmt::Formatter<'_>) -
     Ok(())
 }
 
-fn error_chain_vec(e: &Box<dyn std::error::Error + Send + Sync + 'static>) -> Vec<String> {
+fn error_chain_vec(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Vec<String> {
     let mut details = Vec::new();
-    let mut current = Some(&**e as &(dyn std::error::Error + 'static));
+    let mut current = Some(e as &(dyn std::error::Error + 'static));
     while let Some(cause) = current {
         details.push(format!("{cause}"));
         current = cause.source();
@@ -341,7 +341,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             stack,
         } = error;
         let error_id = uuid::Uuid::now_v7();
-        let source = source.map(|e| error_chain_vec(&e)).unwrap_or_default();
+        let source = source.map(|e| error_chain_vec(&*e)).unwrap_or_default();
         let mut response = if code >= 500 || [401, 403, 424].contains(&code) {
             tracing::error!(%error_id, stack=stack.as_value(), %message, %r#type, code, source=source.as_value(), "Internal server error response");
             axum::Json(IcebergErrorResponse {
