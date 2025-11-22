@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::StorageCredential;
+use iceberg_ext::catalog::rest::{create_etag, StorageCredential};
 
 use crate::{
     api::iceberg::v1::{
         tables::{DataAccessMode, LoadTableFilters},
-        ApiContext, LoadTableResult, Result, TableIdent, TableParameters, LoadTableResultOrNotModified
+        ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
+        TableParameters,
     },
     request_metadata::RequestMetadata,
     server::{
@@ -17,11 +18,29 @@ use crate::{
         authz::{Authorizer, AuthzWarehouseOps},
         secrets::SecretStore,
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
-        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
+        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId, TabularInfo,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
+
+fn get_etag(table_info: &TabularInfo<TableId>) -> Option<String> {
+    table_info
+        .metadata_location
+        .as_ref()
+        .map(|loc| loc.as_str())
+        .map(create_etag)
+}
+
+fn etag_already_present(etags: &Vec<String>, etag: Option<&String>) -> bool {
+    if etags.contains(&"*".to_string()) {
+        return true;
+    }
+    match etag {
+        Some(etag) => etags.contains(etag),
+        None => false,
+    }
+}
 
 /// Load a table from the catalog
 #[allow(clippy::too_many_lines)]
@@ -60,8 +79,17 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     )
     .await?;
 
-    // TODO: Match If-None-Match Header
-    // table_info.metadata_location
+    let etag = get_etag(&table_info);
+    if etag_already_present(
+        &etags,
+        etag.clone()
+            .map(|e| e.trim_matches('"').to_string())
+            .as_ref(),
+    ) {
+        return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
+            etag.unwrap_or_default(),
+        ));
+    }
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
@@ -231,6 +259,8 @@ mod tests {
         tests::random_request_metadata,
     };
 
+    use super::{create_etag, load_table};
+
     fn create_test_schema() -> Schema {
         Schema::builder()
             .with_fields(vec![
@@ -251,6 +281,60 @@ mod tests {
             stage_create: Some(false),
             properties: None,
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn setup_simple_table(
+        pool: PgPool,
+    ) -> (
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+        NamespaceParameters,
+        TableIdent,
+        LoadTableResult,
+    ) {
+        let prof = crate::server::test::memory_io_profile();
+        let (ctx, warehouse) = setup(
+            pool,
+            prof,
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        // Create namespace
+        let ns_name = NamespaceIdent::new("test_namespace".to_string());
+        let ns_params = NamespaceParameters {
+            namespace: ns_name.clone(),
+            prefix: Some(warehouse.warehouse_id.to_string().into()),
+        };
+
+        let _ = CatalogServer::create_namespace(
+            ns_params.prefix.clone(),
+            crate::api::iceberg::v1::CreateNamespaceRequest {
+                namespace: ns_name.clone(),
+                properties: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        // Create table
+        let table_ident = TableIdent::new(ns_name, "test_table".to_string());
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request("test_table"),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        (ctx, ns_params, table_ident, table)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -829,5 +913,115 @@ mod tests {
             .collect();
 
         assert_eq!(diff, vec![1]); // Only snapshot 1 should be filtered out
+    }
+
+    #[sqlx::test]
+    async fn test_load_table_returns_not_modified_with_single_matching_etag(pool: PgPool) {
+        let (api_context, namespace_parameters, table_identifier, table) =
+            setup_simple_table(pool).await;
+        let parameters = TableParameters {
+            prefix: namespace_parameters.prefix.clone(),
+            table: table_identifier.clone(),
+        };
+
+        let data_access = DataAccess::not_specified();
+        let filters = LoadTableFilters::default();
+
+        let request_metadata = random_request_metadata();
+
+        let etag = create_etag(&table.metadata_location.unwrap());
+        // Load table once to get the metadata location for ETag
+        // TODO: Use newly loaded table's metadata location for ETag
+        let etags = vec![etag.trim_matches('"').to_string().clone()];
+        let load_table_result = load_table(
+            parameters,
+            data_access,
+            filters,
+            api_context,
+            request_metadata,
+            etags,
+        )
+        .await;
+        let Ok(result) = load_table_result else {
+            panic!("Dummy table could not be loaded");
+        };
+        assert_eq!(
+            result,
+            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_load_table_returns_not_modified_when_given_multiple_etags_and_one_matches(
+        pool: PgPool,
+    ) {
+        let (api_context, namespace_parameters, table_identifier, table) =
+            setup_simple_table(pool).await;
+        let parameters = TableParameters {
+            prefix: namespace_parameters.prefix.clone(),
+            table: table_identifier.clone(),
+        };
+
+        let data_access = DataAccess::not_specified();
+        let filters = LoadTableFilters::default();
+
+        let request_metadata = random_request_metadata();
+
+        let etag = create_etag(&table.metadata_location.unwrap());
+        let etags = vec![
+            "a4b2f6c1dd87".to_string(),
+            etag.trim_matches('"').to_string().clone(),
+            "b6f8c2d4a45f".to_string(),
+        ];
+        let load_table_result = load_table(
+            parameters,
+            data_access,
+            filters,
+            api_context,
+            request_metadata,
+            etags,
+        )
+        .await;
+        let Ok(result) = load_table_result else {
+            panic!("Dummy table could not be loaded");
+        };
+        assert_eq!(
+            result,
+            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_load_table_returns_not_modified_when_given_wildcard(pool: PgPool) {
+        let (api_context, namespace_parameters, table_identifier, table) =
+            setup_simple_table(pool).await;
+        let parameters = TableParameters {
+            prefix: namespace_parameters.prefix.clone(),
+            table: table_identifier.clone(),
+        };
+
+        let data_access = DataAccess::not_specified();
+        let filters = LoadTableFilters::default();
+
+        let request_metadata = random_request_metadata();
+
+        let etag = create_etag(&table.metadata_location.unwrap());
+        let etags = vec!["*".to_string()];
+        let load_table_result = load_table(
+            parameters,
+            data_access,
+            filters,
+            api_context,
+            request_metadata,
+            etags,
+        )
+        .await;
+        let Ok(result) = load_table_result else {
+            panic!("Dummy table could not be loaded");
+        };
+        assert_eq!(
+            result,
+            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+        );
     }
 }
