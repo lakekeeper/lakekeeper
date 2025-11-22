@@ -10,8 +10,9 @@ use lakekeeper::{
     axum::Router,
     service::{
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CatalogProjectAction, CatalogRoleAction,
-            CatalogServerAction, CatalogUserAction, ListProjectsResponse, NamespaceParent,
+            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
+            CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
+            NamespaceParent, UserOrRole,
         },
         health::Health,
         Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
@@ -40,8 +41,8 @@ use crate::{
     },
     models::OpenFgaType,
     relations::{
-        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, RoleRelation, ServerRelation,
-        TableRelation, ViewRelation, WarehouseRelation,
+        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, ReducedRelation, RoleRelation,
+        ServerRelation, TableRelation, ViewRelation, WarehouseRelation,
     },
     FgaType, AUTH_CONFIG, MAX_TUPLES_PER_WRITE,
 };
@@ -73,14 +74,14 @@ impl OpenFGAAuthorizer {
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
-    type ServerAction = CatalogServerAction;
+    type ServerAction = ServerRelation;
     type ProjectAction = ProjectRelation;
     type WarehouseAction = WarehouseRelation;
     type NamespaceAction = NamespaceRelation;
     type TableAction = TableRelation;
     type ViewAction = ViewRelation;
     type UserAction = CatalogUserAction;
-    type RoleAction = CatalogRoleAction;
+    type RoleAction = RoleRelation;
 
     fn implementation_name() -> &'static str {
         "openfga"
@@ -184,207 +185,311 @@ impl Authorizer for OpenFGAAuthorizer {
         Ok(metadata.actor().is_authenticated())
     }
 
-    async fn is_allowed_role_action_impl(
+    async fn are_allowed_role_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        role_id: RoleId,
-        action: Self::RoleAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        if CatalogRoleAction::CanRead == action {
-            // Everyone with access to the catalog can read role metadata.
-            // This does not include assignments to the role.
-            // Used for cross-project role get.
-            return Ok(true);
+        for_user: Option<&UserOrRole>,
+        roles_with_actions: &[(RoleId, Self::RoleAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        // Every authenticated user can read role metadata.
+        // This does not include assignments to the role.
+        // Used for cross-project role get so that we can show role names and not just IDs.
+
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+
+        // Separate CanRead actions from others to avoid unnecessary batch checks
+        let mut results = Vec::with_capacity(roles_with_actions.len());
+        let mut batch_items = Vec::new();
+        let mut batch_indices = Vec::new();
+        for (idx, (role, action)) in roles_with_actions.iter().enumerate() {
+            if *action == RoleRelation::CanRead {
+                results.push((idx, true));
+            } else {
+                batch_indices.push(idx);
+                batch_items.push(CheckRequestTupleKey {
+                    user: user.clone(),
+                    relation: action.to_string(),
+                    object: role.to_openfga(),
+                });
+            }
         }
 
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: role_id.to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        // Only perform batch check if there are non-CanRead actions
+        if !batch_items.is_empty() {
+            let guard_tuples = if for_user.is_some() {
+                // Collect unique role objects for permission checks
+                let unique_roles: HashSet<_> = roles_with_actions
+                    .iter()
+                    .filter(|(_, action)| *action != RoleRelation::CanRead)
+                    .map(|(role, _)| role.to_openfga())
+                    .collect();
+
+                unique_roles
+                    .into_iter()
+                    .map(|role_obj| CheckRequestTupleKey {
+                        user: metadata.actor().to_openfga(),
+                        relation: RoleRelation::CanReadAssignments.to_string(),
+                        object: role_obj,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            let batch_results = self
+                .check_actions_with_permission_guard(metadata.actor(), batch_items, guard_tuples)
+                .await?;
+
+            for (batch_idx, result) in batch_results.iter().enumerate() {
+                results.push((batch_indices[batch_idx], *result));
+            }
+        }
+
+        // Sort by original index and extract boolean values
+        results.sort_by_key(|(idx, _)| *idx);
+        Ok(results.into_iter().map(|(_, allowed)| allowed).collect())
     }
 
-    async fn is_allowed_user_action_impl(
+    async fn are_allowed_user_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        user_id: &UserId,
-        action: Self::UserAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        let actor = metadata.actor();
-
-        let is_same_user = match actor {
+        for_user: Option<&UserOrRole>,
+        users_with_actions: &[(&UserId, Self::UserAction)],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let actor_principal = match metadata.actor() {
             Actor::Role {
                 principal,
                 assumed_role: _,
             }
-            | Actor::Principal(principal) => principal == user_id,
-            Actor::Anonymous => false,
+            | Actor::Principal(principal) => Some(principal),
+            Actor::Anonymous => None,
         };
 
-        if is_same_user {
-            return match action {
-                CatalogUserAction::CanRead
-                | CatalogUserAction::CanUpdate
-                | CatalogUserAction::CanDelete => Ok(true),
-            };
-        }
+        let mut results = Vec::with_capacity(users_with_actions.len());
+        let mut batch_indices = Vec::new();
 
-        let server_id = self.openfga_server().clone();
-        match action {
-            CatalogUserAction::CanRead => Ok(true),
-            CatalogUserAction::CanUpdate => {
-                self.check(CheckRequestTupleKey {
-                    user: actor.to_openfga(),
-                    relation: CatalogServerAction::CanUpdateUsers.to_string(),
-                    object: server_id.clone(),
-                })
-                .await
-            }
-            CatalogUserAction::CanDelete => {
-                self.check(CheckRequestTupleKey {
-                    user: actor.to_openfga(),
-                    relation: CatalogServerAction::CanDeleteUsers.to_string(),
-                    object: server_id,
-                })
-                .await
+        for (idx, (user_id, action)) in users_with_actions.iter().enumerate() {
+            // 1. Users can perform all actions on themselves
+            // 2. Every authenticated user can read user metadata given the user id
+            let is_same_user = for_user.is_none() && (actor_principal == Some(*user_id));
+            if is_same_user || *action == CatalogUserAction::Read {
+                results.push((idx, true));
+            } else {
+                batch_indices.push((idx, *action));
             }
         }
-        .map_err(Into::into)
+
+        if !batch_indices.is_empty() {
+            let server_id = self.openfga_server().clone();
+            let actor_openfga = metadata.actor().to_openfga();
+            let user = for_user.map_or_else(|| actor_openfga.clone(), OpenFgaEntity::to_openfga);
+
+            let batch_results = self
+                .batch_check(vec![
+                    CheckRequestTupleKey {
+                        user: actor_openfga.clone(),
+                        relation: ServerRelation::CanListUsers.to_string(),
+                        object: server_id.clone(),
+                    },
+                    CheckRequestTupleKey {
+                        user: user.clone(),
+                        relation: ServerRelation::CanUpdateUsers.to_string(),
+                        object: server_id.clone(),
+                    },
+                    CheckRequestTupleKey {
+                        user,
+                        relation: ServerRelation::CanDeleteUsers.to_string(),
+                        object: server_id.clone(),
+                    },
+                ])
+                .await?;
+
+            let is_allowed_to_know = batch_results[0];
+            let can_update = batch_results[1];
+            let can_delete = batch_results[2];
+
+            if for_user.is_some() && !is_allowed_to_know {
+                return Err(
+                    CannotInspectPermissions::new(metadata.actor().clone(), &server_id).into(),
+                );
+            }
+
+            for (idx, action) in batch_indices {
+                let allowed = match action {
+                    CatalogUserAction::Read => true,
+                    CatalogUserAction::Update => can_update,
+                    CatalogUserAction::Delete => can_delete,
+                };
+                results.push((idx, allowed));
+            }
+        }
+
+        results.sort_by_key(|(idx, _)| *idx);
+        Ok(results.into_iter().map(|(_, allowed)| allowed).collect())
     }
 
-    async fn is_allowed_server_action_impl(
+    async fn are_allowed_server_actions_impl(
         &self,
         metadata: &RequestMetadata,
-        action: Self::ServerAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: self.openfga_server().clone(),
-        })
-        .await
-        .map_err(Into::into)
-    }
+        for_user: Option<&UserOrRole>,
+        actions: &[Self::ServerAction],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let object = self.openfga_server().clone();
 
-    async fn is_allowed_project_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        project_id: &ProjectId,
-        action: Self::ProjectAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: project_id.to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        let items: Vec<_> = actions
+            .iter()
+            .map(|a| CheckRequestTupleKey {
+                user: user.clone(),
+                relation: a.to_string(),
+                object: object.clone(),
+            })
+            .collect();
+
+        let guard_tuples = if for_user.is_some() {
+            vec![CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: ServerRelation::CanReadAssignments.to_string(),
+                object: object.clone(),
+            }]
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_project_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+
         let items: Vec<_> = projects_with_actions
             .iter()
             .map(|(project, a)| CheckRequestTupleKey {
-                user: metadata.actor().to_openfga(),
+                user: user.clone(),
                 relation: a.to_string(),
                 object: project.to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
-    }
 
-    async fn is_allowed_warehouse_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        warehouse: &ResolvedWarehouse,
-        action: Self::WarehouseAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: warehouse.warehouse_id.to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique project objects for permission checks
+            let unique_projects: HashSet<_> = projects_with_actions
+                .iter()
+                .map(|(project, _)| project.to_openfga())
+                .collect();
+
+            unique_projects
+                .into_iter()
+                .map(|project_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: ProjectRelation::CanReadAssignments.to_string(),
+                    object: project_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-    ) -> std::result::Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+
         let items: Vec<_> = warehouses_with_actions
             .iter()
             .map(|(wh, a)| CheckRequestTupleKey {
-                user: metadata.actor().to_openfga(),
+                user: user.clone(),
                 relation: a.to_string(),
                 object: wh.warehouse_id.to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
-    }
 
-    async fn is_allowed_namespace_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        _warehouse: &ResolvedWarehouse,
-        namespace: &NamespaceHierarchy,
-        action: Self::NamespaceAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: namespace.namespace_id().to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique warehouse objects for permission checks
+            let unique_warehouses: HashSet<_> = warehouses_with_actions
+                .iter()
+                .map(|(wh, _)| wh.warehouse_id.to_openfga())
+                .collect();
+
+            unique_warehouses
+                .into_iter()
+                .map(|warehouse_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: WarehouseRelation::CanReadAssignments.to_string(),
+                    object: warehouse_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_namespace_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
-    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+
         let items: Vec<_> = actions
             .iter()
             .map(|(namespace, a)| CheckRequestTupleKey {
-                user: metadata.actor().to_openfga(),
+                user: user.clone(),
                 relation: a.to_string(),
                 object: namespace.namespace_id().to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
-    }
 
-    async fn is_allowed_table_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        _warehouse: &ResolvedWarehouse,
-        _namespace: &NamespaceHierarchy,
-        table: &impl AuthZTableInfo,
-        action: Self::TableAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        let warehouse_id = table.warehouse_id();
-        let table_id = table.table_id();
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: (warehouse_id, table_id).to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique namespace objects for permission checks
+            let unique_namespaces: HashSet<_> = actions
+                .iter()
+                .map(|(namespace, _)| namespace.namespace_id().to_openfga())
+                .collect();
+
+            unique_namespaces
+                .into_iter()
+                .map(|namespace_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: NamespaceRelation::CanReadAssignments.to_string(),
+                    object: namespace_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_table_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         tables_with_actions: &[(
@@ -392,51 +497,83 @@ impl Authorizer for OpenFGAAuthorizer {
             &impl AuthZTableInfo,
             Self::TableAction,
         )],
-    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+
         let items: Vec<_> = tables_with_actions
             .iter()
             .map(|(_ns, table, a)| CheckRequestTupleKey {
-                user: metadata.actor().to_openfga(),
+                user: user.clone(),
                 relation: a.to_string(),
                 object: (table.warehouse_id(), table.table_id()).to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
-    }
 
-    async fn is_allowed_view_action_impl(
-        &self,
-        metadata: &RequestMetadata,
-        _warehouse: &ResolvedWarehouse,
-        _namespace: &NamespaceHierarchy,
-        view: &impl AuthZViewInfo,
-        action: Self::ViewAction,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
-        self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: action.to_string(),
-            object: (view.warehouse_id(), view.view_id()).to_openfga(),
-        })
-        .await
-        .map_err(Into::into)
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique table objects for permission checks
+            let unique_tables: HashSet<_> = tables_with_actions
+                .iter()
+                .map(|(_ns, table, _)| (table.warehouse_id(), table.table_id()).to_openfga())
+                .collect();
+
+            unique_tables
+                .into_iter()
+                .map(|table_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: TableRelation::CanReadAssignments.to_string(),
+                    object: table_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_view_actions_impl(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
-    ) -> Result<Vec<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let user =
+            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+
         let items: Vec<_> = views_with_actions
             .iter()
             .map(|(_ns, view, a)| CheckRequestTupleKey {
-                user: metadata.actor().to_openfga(),
+                user: user.clone(),
                 relation: a.to_string(),
                 object: (view.warehouse_id(), view.view_id()).to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
+
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique view objects for permission checks
+            let unique_views: HashSet<_> = views_with_actions
+                .iter()
+                .map(|(_ns, view, _)| (view.warehouse_id(), view.view_id()).to_openfga())
+                .collect();
+
+            unique_views
+                .into_iter()
+                .map(|view_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: ViewRelation::CanReadAssignments.to_string(),
+                    object: view_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn delete_user(
@@ -527,9 +664,9 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn delete_project(
         &self,
         _metadata: &RequestMetadata,
-        project_id: ProjectId,
+        project_id: &ProjectId,
     ) -> AuthorizerResult<()> {
-        self.delete_all_relations(&project_id).await
+        self.delete_all_relations(project_id).await
     }
 
     async fn create_warehouse(
@@ -760,7 +897,7 @@ impl OpenFGAAuthorizer {
         let projects = self
             .list_objects(
                 FgaType::Project.to_string(),
-                CatalogProjectAction::CanIncludeInList.to_string(),
+                CatalogProjectAction::IncludeInList.to_openfga().to_string(),
                 actor.to_openfga(),
             )
             .await?
@@ -867,6 +1004,44 @@ impl OpenFGAAuthorizer {
             .map_err(Into::into)
     }
 
+    /// Helper method to check actions with permission guards when inspecting another user's permissions.
+    /// This pattern is used across multiple resource types (server, project, warehouse, etc.).
+    ///
+    /// The `items` parameter should contain the pre-built check requests for the actions.
+    /// The `guard_tuples` parameter should contain permission checks to verify the actor
+    /// has the right to inspect another user's permissions. If empty, no permission checks are performed.
+    async fn check_actions_with_permission_guard(
+        &self,
+        actor: &Actor,
+        mut items: Vec<CheckRequestTupleKey>,
+        guard_tuples: Vec<CheckRequestTupleKey>,
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let num_guards = guard_tuples.len();
+
+        // Collect objects for error reporting if guards fail
+        let guard_objects: Vec<_> = guard_tuples.iter().map(|t| t.object.clone()).collect();
+
+        // Append the permission guard checks
+        items.extend(guard_tuples);
+
+        let mut results = self.batch_check(items).await?;
+
+        // If we had guard checks, pop them and verify all passed
+        if num_guards > 0 {
+            let guard_results: Vec<_> = results.drain(results.len() - num_guards..).collect();
+            if let Some((idx, _)) = guard_results
+                .iter()
+                .enumerate()
+                .find(|(_, &allowed)| !allowed)
+            {
+                return Err(
+                    CannotInspectPermissions::new(actor.clone(), &guard_objects[idx]).into(),
+                );
+            }
+        }
+
+        Ok(results)
+    }
     /// A convenience wrapper around `batch_check`.
     async fn batch_check(
         &self,
@@ -1123,7 +1298,7 @@ pub(crate) mod tests {
     // Name is important for test profile
     pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
-        use lakekeeper::tokio;
+        use lakekeeper::{service::authz::AuthZProjectOps, tokio};
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
@@ -1495,6 +1670,194 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&user).await.unwrap_err();
             authorizer.delete_user_relations(&user).await.unwrap();
             authorizer.require_no_relations(&user).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_are_allowed_project_actions_without_for_user() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id: UserId = UserId::new_unchecked("oidc", "test_user");
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+
+            let metadata = RequestMetadata::test_user(user_id.clone());
+
+            // Before granting any permissions, user should not have access
+            let results = authorizer
+                .are_allowed_project_actions_impl(
+                    &metadata,
+                    None,
+                    &[
+                        (&project_id, ProjectRelation::CanCreateWarehouse),
+                        (&project_id, ProjectRelation::CanListWarehouses),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false, false]);
+
+            // Grant the user ProjectAdmin permission
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id.to_openfga(),
+                        relation: ProjectRelation::ProjectAdmin.to_string(),
+                        object: project_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Now user should have access to both actions
+            let results = authorizer
+                .are_allowed_project_actions_impl(
+                    &metadata,
+                    None,
+                    &[
+                        (&project_id, ProjectRelation::CanCreateWarehouse),
+                        (&project_id, ProjectRelation::CanListWarehouses),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true, true]);
+        }
+
+        #[tokio::test]
+        async fn test_are_allowed_project_actions_with_for_user() {
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            // Admin user who can check permissions
+            let admin_user_id = UserId::new_unchecked("oidc", "admin_user");
+
+            // Target user whose permissions we're checking
+            let target_user_id = UserId::new_unchecked("oidc", "target_user");
+            let target_user = UserOrRole::User(target_user_id.clone());
+
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let metadata = RequestMetadata::test_user(admin_user_id.clone());
+
+            // Grant target user some permissions on the project
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: target_user_id.to_openfga(),
+                        relation: ProjectRelation::DataAdmin.to_string(),
+                        object: project_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Admin tries to check target user's permissions without having CanReadAssignments
+            // Should fail with CannotInspectPermissions
+            let result = authorizer
+                .are_allowed_project_actions_impl(
+                    &metadata,
+                    Some(&target_user),
+                    &[
+                        (&project_id, ProjectRelation::CanCreateWarehouse),
+                        (&project_id, ProjectRelation::CanListWarehouses),
+                    ],
+                )
+                .await;
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            match err {
+                IsAllowedActionError::CannotInspectPermissions(_) => {
+                    // Expected error
+                }
+                IsAllowedActionError::AuthorizationBackendUnavailable(_) => {
+                    panic!("Expected CannotInspectPermissions error, got: {err:?}")
+                }
+            }
+
+            // Grant admin user CanReadAssignments permission on the project
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: admin_user_id.to_openfga(),
+                        relation: ProjectRelation::ProjectAdmin.to_string(),
+                        object: project_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Now admin should be able to check target user's permissions
+            let results = authorizer
+                .are_allowed_project_actions_vec(
+                    &metadata,
+                    Some(&target_user),
+                    &[
+                        (&project_id, ProjectRelation::CanGetMetadata),
+                        (&project_id, ProjectRelation::CanGrantProjectAdmin),
+                    ],
+                )
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert_eq!(results, vec![true, false]);
+        }
+
+        #[tokio::test]
+        async fn test_are_allowed_project_actions_for_user_checks_correct_user() {
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            // Admin user who can check permissions
+            let admin_user_id = UserId::new_unchecked("oidc", "admin_user");
+
+            // Target user whose permissions we're checking
+            let target_user_id = UserId::new_unchecked("oidc", "target_user");
+            let target_user = UserOrRole::User(target_user_id.clone());
+
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let metadata = RequestMetadata::test_user(admin_user_id.clone());
+
+            // Grant admin user permissions on the project
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: admin_user_id.to_openfga(),
+                            relation: ProjectRelation::ProjectAdmin.to_string(),
+                            object: project_id.to_openfga(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: target_user.to_openfga(),
+                            relation: ProjectRelation::DataAdmin.to_string(),
+                            object: project_id.to_openfga(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Check target user's permissions (not the admin's)
+            // Target user has no permissions
+            let results = authorizer
+                .are_allowed_project_actions_vec(
+                    &metadata,
+                    Some(&target_user),
+                    &[
+                        (&project_id, ProjectRelation::CanGetMetadata),
+                        (&project_id, ProjectRelation::CanGrantProjectAdmin),
+                    ],
+                )
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert_eq!(results, vec![true, false]);
         }
     }
 }

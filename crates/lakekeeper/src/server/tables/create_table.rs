@@ -157,7 +157,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &request_metadata,
             warehouse_id,
             provided_ns,
-            CatalogNamespaceAction::CanCreateTable,
+            CatalogNamespaceAction::CreateTable,
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )

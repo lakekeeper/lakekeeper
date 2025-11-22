@@ -7,15 +7,15 @@ info:
     identifier: Apache-2.0
   version: 0.0.0
 servers:
-  - url: '{scheme}://{host}/{basePath}'
+  - url: '{scheme}://{host}{basePath}'
     description: Lakekeeper Management API
     variables:
       basePath:
         default: ''
-        description: Optional prefix to be appended to all routes
+        description: Optional path prefix (starting with '/') to be prepended to all routes
       host:
         default: localhost
-        description: The host address for the specified server
+        description: The host (and optional port) for the specified server
       scheme:
         default: https
         description: The scheme of the URI, either http or https
@@ -50,72 +50,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/default-project:
-    get:
-      tags:
-        - project
-      summary: Get Default Project
-      description: |-
-        Retrieves information about the user's default project.
-        This endpoint is deprecated and will be removed in a future version.
-      operationId: get_default_project_deprecated
-      responses:
-        '200':
-          description: Project details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetProjectResponse'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
-    delete:
-      tags:
-        - project
-      summary: Delete default Project
-      description: |-
-        Removes the user's default project and all its resources.
-        This endpoint is deprecated and will be removed in a future version.
-      operationId: delete_default_project_deprecated
-      responses:
-        '204':
-          description: Project deleted successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
-  /management/v1/default-project/rename:
-    post:
-      tags:
-        - project
-      summary: Rename the default project.
-      description: |-
-        Updates the name of the user's default project.
-        This endpoint is deprecated and will be removed in a future version.
-      operationId: rename_default_project_deprecated
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RenameProjectRequest'
-        required: true
-      responses:
-        '200':
-          description: Project renamed successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
   /management/v1/endpoint-statistics:
     post:
       tags:
@@ -207,7 +141,7 @@ paths:
   /management/v1/permissions/check:
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Check if a specific action is allowed on the given object
       operationId: check
       requestBody:
@@ -226,7 +160,7 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get Authorization properties of a namespace
       operationId: get_namespace_by_id
       parameters:
@@ -247,20 +181,26 @@ paths:
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a namespace
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/namespace/{namespace_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` for Catalog permissions instead.
       operationId: get_namespace_access_by_id
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -279,10 +219,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetNamespaceAccessResponse'
+      deprecated: true
   /management/v1/permissions/namespace/{namespace_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a namespace
       operationId: get_namespace_assignments_by_id
       parameters:
@@ -310,7 +251,7 @@ paths:
                 $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a namespace
       operationId: update_namespace_assignments_by_id
       parameters:
@@ -330,10 +271,51 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/namespace/{namespace_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on a namespace
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified namespace.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` instead.
+      operationId: get_authorizer_namespace_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Namespace Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGANamespaceActionsResponse'
   /management/v1/permissions/namespace/{namespace_id}/managed-access:
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Set managed access property of a namespace
       operationId: set_namespace_managed_access
       parameters:
@@ -356,20 +338,26 @@ paths:
   /management/v1/permissions/project/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to the default project
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
+        or `/management/v1/project/actions` for Catalog permissions instead.
       operationId: get_project_access
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -381,10 +369,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAccessResponse'
+      deprecated: true
   /management/v1/permissions/project/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments of a project
       operationId: get_project_assignments
       parameters:
@@ -405,7 +394,7 @@ paths:
                 $ref: '#/components/schemas/GetProjectAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for the default project
       operationId: update_project_assignments
       requestBody:
@@ -417,23 +406,71 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
-  /management/v1/permissions/project/{project_id}/access:
+  /management/v1/permissions/project/authorizer-actions:
     get:
       tags:
-        - permissions
-      summary: Get my access to the default project
-      operationId: get_project_access_by_id
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on the default project
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the default project.
+        For Catalog permissions, use `/management/v1/project/actions` instead.
+      operationId: get_authorizer_project_actions
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Project Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAProjectActionsResponse'
+  /management/v1/permissions/project/{project_id}/access:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get my access to a project
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
+        or `/management/v1/project/actions` for Catalog permissions instead.
+      operationId: get_project_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -452,11 +489,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAccessResponse'
+      deprecated: true
   /management/v1/permissions/project/{project_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments to a project
+      description: '**Deprecated:** Use `/management/v1/permissions/project/assignments` instead.'
       operationId: get_project_assignments_by_id
       parameters:
         - name: relations
@@ -481,9 +520,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+      deprecated: true
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a project
       operationId: update_project_assignments_by_id
       parameters:
@@ -506,8 +546,11 @@ paths:
   /management/v1/permissions/role/{role_id}/access:
     get:
       tags:
-        - permissions
-      summary: Get my access to the default project
+        - permissions-openfga
+      summary: Get my access to a role
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/role/{role_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/role/{role_id}/actions` for Catalog permissions instead.
       operationId: get_role_access_by_id
       parameters:
         - name: role_id
@@ -524,10 +567,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetRoleAccessResponse'
+      deprecated: true
   /management/v1/permissions/role/{role_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments of a role
       operationId: get_role_assignments_by_id
       parameters:
@@ -555,7 +599,7 @@ paths:
                 $ref: '#/components/schemas/GetRoleAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       operationId: update_role_assignments_by_id
       parameters:
         - name: role_id
@@ -574,23 +618,70 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
-  /management/v1/permissions/server/access:
+  /management/v1/permissions/role/{role_id}/authorizer-actions:
     get:
       tags:
-        - permissions
-      summary: Get my access to the server
-      operationId: get_server_access
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on a role
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified role.
+        For Catalog permissions, use `/management/v1/role/{role_id}/actions` instead.
+      operationId: get_authorizer_role_actions
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGARoleActionsResponse'
+  /management/v1/permissions/server/access:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get my access to the server
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/server/authorizer-actions` for Authorizer permissions
+        or `/management/v1/server/actions` for Catalog permissions instead.
+      operationId: get_server_access
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -602,10 +693,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetServerAccessResponse'
+      deprecated: true
   /management/v1/permissions/server/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments of the server
       operationId: get_server_assignments
       parameters:
@@ -626,7 +718,7 @@ paths:
                 $ref: '#/components/schemas/GetServerAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for this server
       operationId: update_server_assignments
       requestBody:
@@ -638,10 +730,44 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/server/authorizer-actions:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on the server
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the server.
+        For Catalog permissions, use `/management/v1/server/actions` instead.
+      operationId: get_authorizer_server_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAServerActionsResponse'
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get Authorization properties of a warehouse
       operationId: get_warehouse_by_id
       parameters:
@@ -662,20 +788,26 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a warehouse
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/actions` for Catalog permissions instead.
       operationId: get_warehouse_access_by_id
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -694,10 +826,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseAccessResponse'
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a warehouse
       operationId: get_warehouse_assignments_by_id
       parameters:
@@ -725,7 +858,7 @@ paths:
                 $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a warehouse
       operationId: update_warehouse_assignments_by_id
       parameters:
@@ -745,10 +878,51 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on a warehouse
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified warehouse.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/actions` instead.
+      operationId: get_authorizer_warehouse_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Warehouse Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAWarehouseActionsResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Set managed access property of a warehouse
       operationId: set_warehouse_managed_access
       parameters:
@@ -771,20 +945,26 @@ paths:
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get my access to a table
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` for Catalog permissions instead.
       operationId: get_table_access_by_id
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -810,10 +990,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAccessResponse'
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a table
       operationId: get_table_assignments_by_id
       parameters:
@@ -848,7 +1029,7 @@ paths:
                 $ref: '#/components/schemas/GetTableAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a table
       operationId: update_table_assignments_by_id
       parameters:
@@ -875,23 +1056,77 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
-  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions:
     get:
       tags:
-        - permissions
-      summary: Get my access to a view
-      operationId: get_view_access_by_id
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on a table
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified table.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` instead.
+      operationId: get_authorizer_table_actions
       parameters:
         - name: principalUser
           in: query
           description: |-
-            The user or role to show access for.
-            If not specified, shows access for the current user.
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
         - name: principalRole
           in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Table Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGATableActionsResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get my access to a view
+      description: |-
+        **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions` for Authorizer permissions
+        or `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` for Catalog permissions instead.
+      operationId: get_view_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
           required: false
           schema:
             type: string
@@ -917,10 +1152,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetViewAccessResponse'
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
     get:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Get user and role assignments for a view
       operationId: get_view_assignments_by_id
       parameters:
@@ -955,7 +1191,7 @@ paths:
                 $ref: '#/components/schemas/GetViewAssignmentsResponse'
     post:
       tags:
-        - permissions
+        - permissions-openfga
       summary: Update permissions for a view
       operationId: update_view_assignments_by_id
       parameters:
@@ -982,20 +1218,70 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on a view
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified view.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` instead.
+      operationId: get_authorizer_view_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: View Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAViewActionsResponse'
   /management/v1/project:
     get:
       tags:
         - project
       summary: Get Project
       description: Retrieves information about the user's default project.
-      operationId: get_default_project
+      operationId: get_project
       parameters:
         - name: x-project-id
           in: header
           description: Optional project ID
-          required: true
+          required: false
           schema:
-            type: string
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Project details
@@ -1038,14 +1324,16 @@ paths:
       tags:
         - project
       summary: Delete Project
-      operationId: delete_default_project
+      operationId: delete_project
       parameters:
         - name: x-project-id
           in: header
           description: Optional project ID
-          required: true
+          required: false
           schema:
-            type: string
+            type:
+              - string
+              - 'null'
       responses:
         '204':
           description: Project deleted successfully
@@ -1075,19 +1363,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/actions:
+    get:
+      tags:
+        - project
+      summary: Get allowed actions for a project
+      operationId: get_project_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperProjectActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/rename:
     post:
       tags:
         - project
       summary: Rename Project
-      operationId: rename_default_project
+      operationId: rename_project
       parameters:
         - name: x-project-id
           in: header
           description: Optional project ID
-          required: true
+          required: false
           schema:
-            type: string
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1108,7 +1443,7 @@ paths:
       tags:
         - project
       summary: Get Project
-      operationId: get_project_by_id
+      operationId: get_project_by_id_deprecated
       parameters:
         - name: project_id
           in: path
@@ -1128,12 +1463,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
     delete:
       tags:
         - project
       summary: Delete Project by ID
       description: Permanently removes a specific project and all its associated resources.
-      operationId: delete_project_by_id
+      operationId: delete_project_by_id_deprecated
       parameters:
         - name: project_id
           in: path
@@ -1149,13 +1485,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
   /management/v1/project/{project_id}/rename:
     post:
       tags:
         - project
       summary: Rename Project by ID
       description: Updates the name of a specific project.
-      operationId: rename_project_by_id
+      operationId: rename_project_by_id_deprecated
       parameters:
         - name: project_id
           in: path
@@ -1177,6 +1514,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
   /management/v1/role:
     get:
       tags:
@@ -1270,6 +1608,7 @@ paths:
       parameters:
         - name: role_id
           in: path
+          description: Role ID
           required: true
           schema:
             type: string
@@ -1295,6 +1634,7 @@ paths:
       parameters:
         - name: role_id
           in: path
+          description: Role ID
           required: true
           schema:
             type: string
@@ -1327,6 +1667,7 @@ paths:
       parameters:
         - name: role_id
           in: path
+          description: Role ID
           required: true
           schema:
             type: string
@@ -1334,6 +1675,50 @@ paths:
       responses:
         '204':
           description: Role deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/actions:
+    get:
+      tags:
+        - role
+      summary: Get allowed actions for a role
+      operationId: get_role_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperRoleActionsResponse'
         4XX:
           description: ''
           content:
@@ -1386,6 +1771,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchUserResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/server/actions:
+    get:
+      tags:
+        - server
+      summary: Get allowed server actions
+      operationId: get_server_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperServerActionsResponse'
         4XX:
           description: ''
           content:
@@ -1551,6 +1973,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/actions:
+    get:
+      tags:
+        - user
+      summary: Get allowed actions on a user
+      operationId: get_user_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperUserActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse:
     get:
       tags:
@@ -1669,6 +2133,50 @@ paths:
       responses:
         '204':
           description: Warehouse deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a warehouse
+      operationId: get_warehouse_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperWarehouseActionsResponse'
         4XX:
           description: ''
           content:
@@ -1836,38 +2344,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
-    post:
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions:
+    get:
       tags:
         - warehouse
-      summary: Undrop Tabular
-      description: |-
-        Restores previously deleted tables or views to make them accessible again.
-        This endpoint is deprecated and will be removed soon.
-      operationId: undrop_tabulars_deprecated
+      summary: Get allowed actions for a namespace
+      operationId: get_namespace_actions
       parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: warehouse_id
           in: path
           required: true
           schema:
             type: string
             format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UndropTabularsRequest'
-        required: true
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
       responses:
-        '204':
-          description: Tabular undropped successfully
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperNamespaceActionsResponse'
         4XX:
           description: ''
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-      deprecated: true
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
     get:
       tags:
@@ -2169,6 +2694,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a table
+      operationId: get_table_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperTableActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -2460,6 +3034,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListTasksResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a view
+      operationId: get_view_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperViewActionsResponse'
         4XX:
           description: ''
           content:
@@ -3266,6 +3889,78 @@ components:
 
             Can return statistics for a specific warehouse, all warehouses or requests that could not be
             associated to any warehouse.
+    GetLakekeeperNamespaceActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperNamespaceAction'
+    GetLakekeeperProjectActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperProjectAction'
+    GetLakekeeperRoleActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperRoleAction'
+    GetLakekeeperServerActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperServerAction'
+    GetLakekeeperTableActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperTableAction'
+    GetLakekeeperUserActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperUserAction'
+    GetLakekeeperViewActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperViewAction'
+    GetLakekeeperWarehouseActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperWarehouseAction'
     GetNamespaceAccessResponse:
       type: object
       required:
@@ -3294,6 +3989,69 @@ components:
           type: boolean
         managed-access-inherited:
           type: boolean
+    GetOpenFGANamespaceActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGANamespaceAction'
+    GetOpenFGAProjectActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAProjectAction'
+    GetOpenFGARoleActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGARoleAction'
+    GetOpenFGAServerActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAServerAction'
+    GetOpenFGATableActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGATableAction'
+    GetOpenFGAViewActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAViewAction'
+    GetOpenFGAWarehouseActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAWarehouseAction'
     GetProjectAccessResponse:
       type: object
       required:
@@ -3524,6 +4282,104 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorModel'
+    LakekeeperNamespaceAction:
+      type: string
+      enum:
+        - create_table
+        - create_view
+        - create_namespace
+        - delete
+        - update_properties
+        - get_metadata
+        - list_tables
+        - list_views
+        - list_namespaces
+        - list_everything
+        - set_protection
+        - include_in_list
+    LakekeeperProjectAction:
+      type: string
+      enum:
+        - create_warehouse
+        - delete
+        - rename
+        - get_metadata
+        - list_warehouses
+        - include_in_list
+        - create_role
+        - list_roles
+        - search_roles
+        - get_endpoint_statistics
+    LakekeeperRoleAction:
+      type: string
+      enum:
+        - read
+        - delete
+        - update
+    LakekeeperServerAction:
+      type: string
+      enum:
+        - create_project
+        - update_users
+        - delete_users
+        - list_users
+        - provision_users
+    LakekeeperTableAction:
+      type: string
+      enum:
+        - drop
+        - write_data
+        - read_data
+        - get_metadata
+        - commit
+        - rename
+        - include_in_list
+        - undrop
+        - get_tasks
+        - control_tasks
+        - set_protection
+    LakekeeperUserAction:
+      type: string
+      enum:
+        - read
+        - update
+        - delete
+    LakekeeperViewAction:
+      type: string
+      enum:
+        - drop
+        - get_metadata
+        - commit
+        - include_in_list
+        - rename
+        - undrop
+        - get_tasks
+        - control_tasks
+        - set_protection
+    LakekeeperWarehouseAction:
+      type: string
+      enum:
+        - create_namespace
+        - delete
+        - update_storage
+        - update_storage_credential
+        - get_metadata
+        - get_config
+        - list_namespaces
+        - list_everything
+        - use
+        - include_in_list
+        - deactivate
+        - activate
+        - rename
+        - list_deleted_tabulars
+        - modify_soft_deletion
+        - get_task_queue_config
+        - modify_task_queue_config
+        - get_all_tasks
+        - control_all_tasks
+        - set_protection
+        - get_endpoint_statistics
     LicenseStatus:
       type: object
       description: Status of license validation
@@ -3828,6 +4684,70 @@ components:
         - select
         - create
         - modify
+    OpenFGANamespaceAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_pass_grants
+        - grant_manage_grants
+    OpenFGAProjectAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_role_creator
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_project_admin
+        - grant_security_admin
+        - grant_data_admin
+    OpenFGARoleAction:
+      type: string
+      enum:
+        - assume
+        - can_grant_assignee
+        - can_change_ownership
+        - read_assignments
+    OpenFGAServerAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_admin
+    OpenFGATableAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_select
+        - grant_modify
+        - change_ownership
+    OpenFGAViewAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_modify
+        - change_ownership
+    OpenFGAWarehouseAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_pass_grants
+        - grant_manage_grants
+        - change_ownership
     ProjectAction:
       type: string
       enum:
@@ -5630,5 +6550,5 @@ tags:
     description: Manage Users
   - name: role
     description: Manage Roles
-  - name: permissions
-    description: Manage Permissions
+  - name: permissions-openfga
+    description: Authorization and permissions management using OpenFGA

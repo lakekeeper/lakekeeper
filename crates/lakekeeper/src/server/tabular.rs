@@ -79,9 +79,10 @@ macro_rules! list_entities {
                 let can_list_everything = authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
+                        None,
                         &resolved_warehouse,
                         &namespace_response,
-                        CatalogNamespaceAction::CanListEverything,
+                        CatalogNamespaceAction::ListEverything,
                     )
                     .await?
                     .into_inner();
@@ -108,12 +109,13 @@ macro_rules! list_entities {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions_vec>](
                             &request_metadata,
+                            None,
                             &resolved_warehouse,
                             &namespaces,
                             &idents.iter().map(|t| Ok::<_, ErrorModel>((
                                 require_namespace_for_tabular(&namespaces, &t.tabular)?,
                                 t,
-                                [<Catalog $entity Action>]::CanIncludeInList)
+                                [<Catalog $entity Action>]::IncludeInList)
                             )
                             ).collect::<Result<Vec<_>, _>>()?,
                         ).await?.into_inner()

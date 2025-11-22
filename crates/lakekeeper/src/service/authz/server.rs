@@ -3,7 +3,11 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::RequestMetadata,
     service::{
-        authz::{AuthorizationBackendUnavailable, Authorizer, CatalogServerAction, MustUse},
+        authz::{
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
+            MustUse, UserOrRole,
+        },
         Actor, ServerId,
     },
 };
@@ -58,12 +62,25 @@ impl From<AuthZServerActionForbidden> for IcebergErrorResponse {
 pub enum RequireServerActionError {
     AuthZServerActionForbidden(AuthZServerActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
+    CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizationCountMismatch(AuthorizationCountMismatch),
+}
+impl From<BackendUnavailableOrCountMismatch> for RequireServerActionError {
+    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
+        match err {
+            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
+            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
 }
 impl From<RequireServerActionError> for ErrorModel {
     fn from(err: RequireServerActionError) -> Self {
         match err {
             RequireServerActionError::AuthZServerActionForbidden(e) => e.into(),
             RequireServerActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            RequireServerActionError::CannotInspectPermissions(e) => e.into(),
+            RequireServerActionError::AuthorizationCountMismatch(e) => e.into(),
         }
     }
 }
@@ -80,25 +97,77 @@ pub trait AuthZServerOps: Authorizer {
     async fn is_allowed_server_action(
         &self,
         metadata: &RequestMetadata,
-        action: impl Into<Self::ServerAction> + Send,
-    ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
-        if metadata.has_admin_privileges() {
-            Ok(true)
+        for_user: Option<&UserOrRole>,
+        action: impl Into<Self::ServerAction> + Send + Sync + Copy,
+    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+        let [decision] = self
+            .are_allowed_server_actions_arr(metadata, for_user, &[action])
+            .await?
+            .into_inner();
+        Ok(decision.into())
+    }
+
+    async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Sync + Copy>(
+        &self,
+        metadata: &RequestMetadata,
+        mut for_user: Option<&UserOrRole>,
+        actions: &[A],
+    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        if metadata.actor().to_user_or_role().as_ref() == for_user {
+            for_user = None;
+        }
+
+        if metadata.has_admin_privileges() && for_user.is_none() {
+            Ok(vec![true; actions.len()])
         } else {
-            self.is_allowed_server_action_impl(metadata, action.into())
-                .await
+            let converted = actions.iter().map(|a| (*a).into()).collect::<Vec<_>>();
+            let decisions = self
+                .are_allowed_server_actions_impl(metadata, for_user, &converted)
+                .await?;
+
+            if decisions.len() != actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    actions.len(),
+                    decisions.len(),
+                    "server",
+                )
+                .into());
+            }
+
+            Ok(decisions)
         }
         .map(MustUse::from)
+    }
+
+    async fn are_allowed_server_actions_arr<
+        const N: usize,
+        A: Into<Self::ServerAction> + Send + Sync + Copy,
+    >(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        actions: &[A; N],
+    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+        let result = self
+            .are_allowed_server_actions_vec(metadata, for_user, actions)
+            .await?
+            .into_inner();
+        let n_returned = result.len();
+        let arr: [bool; N] = result
+            .try_into()
+            .map_err(|_| AuthorizationCountMismatch::new(N, n_returned, "server"))?;
+        Ok(MustUse::from(arr))
     }
 
     async fn require_server_action(
         &self,
         metadata: &RequestMetadata,
-        action: impl Into<Self::ServerAction> + Send,
+        for_user: Option<&UserOrRole>,
+        action: impl Into<Self::ServerAction> + Send + Sync + Copy,
     ) -> Result<(), RequireServerActionError> {
         let action = action.into();
         if self
-            .is_allowed_server_action(metadata, action)
+            .is_allowed_server_action(metadata, for_user, action)
             .await?
             .into_inner()
         {

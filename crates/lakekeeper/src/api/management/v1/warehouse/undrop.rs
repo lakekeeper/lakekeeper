@@ -70,7 +70,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, ErrorModel>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(CatalogViewAction::CanUndrop, CatalogTableAction::CanUndrop),
+                t.as_action_request(CatalogViewAction::Undrop, CatalogTableAction::Undrop),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;

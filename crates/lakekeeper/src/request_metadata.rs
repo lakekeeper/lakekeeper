@@ -49,7 +49,7 @@ pub struct RequestMetadata {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("This endpoint requires a project ID to be specified, but none was provided.")]
+#[error("This endpoint requires a project ID to be specified, but none was provided. Please set the x-project-id header.")]
 pub struct ProjectIdMissing;
 
 impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {
@@ -104,9 +104,9 @@ impl RequestMetadata {
     }
 
     #[must_use]
-    pub fn new_lakekeeper_internal() -> Self {
+    pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
-            request_id: Uuid::now_v7(),
+            request_id,
             project_id: None,
             authentication: None,
             base_url: "http://localhost:8181".to_string(),

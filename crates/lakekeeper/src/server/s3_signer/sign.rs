@@ -72,7 +72,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::Use,
             )
             .await?;
 
@@ -159,8 +159,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         };
 
         let action = match operation {
-            Operation::Read => CatalogTableAction::CanReadData,
-            Operation::Write | Operation::Delete => CatalogTableAction::CanWriteData,
+            Operation::Read => CatalogTableAction::ReadData,
+            Operation::Write | Operation::Delete => CatalogTableAction::WriteData,
         };
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.

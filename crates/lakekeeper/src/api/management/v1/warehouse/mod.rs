@@ -331,7 +331,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::CanCreateWarehouse,
+                CatalogProjectAction::CreateWarehouse,
             )
             .await?;
 
@@ -428,7 +428,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::CanListWarehouses,
+                CatalogProjectAction::ListWarehouses,
             )
             .await?;
 
@@ -443,9 +443,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let warehouses = authorizer
             .are_allowed_warehouse_actions_vec(
                 &request_metadata,
+                None,
                 &warehouses
                     .iter()
-                    .map(|w| (&**w, CatalogWarehouseAction::CanIncludeInList))
+                    .map(|w| (&**w, CatalogWarehouseAction::IncludeInList))
                     .collect::<Vec<_>>(),
             )
             .await?
@@ -483,7 +484,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanGetMetadata,
+                CatalogWarehouseAction::GetMetadata,
             )
             .await?;
         Ok((*warehouse).clone().into())
@@ -509,7 +510,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanGetMetadata,
+                CatalogWarehouseAction::GetMetadata,
             )
             .await?;
 
@@ -543,7 +544,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanDelete,
+                CatalogWarehouseAction::Delete,
             )
             .await?;
 
@@ -585,7 +586,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanSetProtection,
+                CatalogWarehouseAction::SetProtection,
             )
             .await?;
 
@@ -633,7 +634,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanRename,
+                CatalogWarehouseAction::Rename,
             )
             .await?;
 
@@ -675,7 +676,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanModifySoftDeletion,
+                CatalogWarehouseAction::ModifySoftDeletion,
             )
             .await?;
 
@@ -722,7 +723,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanDeactivate,
+                CatalogWarehouseAction::Deactivate,
             )
             .await?;
 
@@ -761,7 +762,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanActivate,
+                CatalogWarehouseAction::Activate,
             )
             .await?;
 
@@ -801,7 +802,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanUpdateStorage,
+                CatalogWarehouseAction::UpdateStorage,
             )
             .await?;
 
@@ -896,7 +897,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanUpdateStorage,
+                CatalogWarehouseAction::UpdateStorage,
             )
             .await?;
 
@@ -988,7 +989,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::Use,
             )
             .await?;
 
@@ -1064,10 +1065,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
-                    (&warehouse, CatalogWarehouseAction::CanListDeletedTabulars),
-                    (&warehouse, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::Use),
+                    (&warehouse, CatalogWarehouseAction::ListDeletedTabulars),
+                    (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
             .await?
@@ -1079,7 +1081,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         if !can_list_deleted_tabulars {
             return Err(AuthZWarehouseActionForbidden::new(
                 warehouse_id,
-                CatalogWarehouseAction::CanListDeletedTabulars,
+                CatalogWarehouseAction::ListDeletedTabulars,
                 request_metadata.actor().clone(),
             )
             .into());
@@ -1094,9 +1096,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             authorizer
                 .is_allowed_namespace_action(
                     &request_metadata,
+                    None,
                     &warehouse,
                     &namespace,
-                    CatalogNamespaceAction::CanListEverything,
+                    CatalogNamespaceAction::ListEverything,
                 )
                 .await?
                 .into_inner()
@@ -1151,8 +1154,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                 Ok::<_, ErrorModel>((
                                     require_namespace_for_tabular(&namespaces, t)?,
                                     t.as_action_request(
-                                        CatalogViewAction::CanIncludeInList,
-                                        CatalogTableAction::CanIncludeInList,
+                                        CatalogViewAction::IncludeInList,
+                                        CatalogTableAction::IncludeInList,
                                     ),
                                 ))
                             })
@@ -1161,6 +1164,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         authorizer
                             .are_allowed_tabular_actions_vec(
                                 &request_metadata,
+                                None,
                                 &warehouse,
                                 &namespaces,
                                 &actions,
@@ -1249,7 +1253,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanModifyTaskQueueConfig,
+                CatalogWarehouseAction::ModifyTaskQueueConfig,
             )
             .await?;
 
@@ -1304,7 +1308,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &request_metadata,
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::CanGetTaskQueueConfig,
+                CatalogWarehouseAction::GetTaskQueueConfig,
             )
             .await?;
 

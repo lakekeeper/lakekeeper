@@ -2,12 +2,12 @@ use std::str::FromStr;
 
 use lakekeeper::service::{
     authn::{Actor, UserId},
+    authz::RoleAssignee,
     NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
 };
 
 use crate::{
     error::{OpenFGAError, OpenFGAResult},
-    models::RoleAssignee,
     FgaType,
 };
 

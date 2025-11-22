@@ -1,18 +1,22 @@
 #![allow(clippy::needless_for_each)]
+#![allow(deprecated)]
 
 use std::collections::HashSet;
 
 use http::StatusCode;
 use lakekeeper::{
-    api::{ApiContext, RequestMetadata},
+    api::{
+        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+        ApiContext, RequestMetadata,
+    },
     axum::{
         extract::{Path, Query, State as AxumState},
         routing::{get, post},
         Extension, Json, Router,
     },
     service::{
-        Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId,
-        ViewId,
+        authz::UserOrRole, Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State,
+        TableId, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -38,7 +42,7 @@ use super::{
         NamespaceRelation as AllNamespaceRelations, ProjectAssignment,
         ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
         RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
-        TableAssignment, TableRelation as AllTableRelations, UserOrRole, ViewAssignment,
+        TableAssignment, TableRelation as AllTableRelations, ViewAssignment,
         ViewRelation as AllViewRelations, WarehouseAssignment,
         WarehouseRelation as AllWarehouseRelation,
     },
@@ -46,46 +50,34 @@ use super::{
 #[cfg(feature = "open-api")]
 use crate::check::__path_check;
 use crate::{
-    entities::OpenFgaEntity, models::RoleIdExt as _, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
+    entities::OpenFgaEntity,
+    relations::{
+        OpenFGANamespaceAction, OpenFGAProjectAction, OpenFGARoleAction, OpenFGAServerAction,
+        OpenFGATableAction, OpenFGAViewAction, OpenFGAWarehouseAction,
+    },
+    OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
 
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
-#[serde(rename_all = "camelCase")]
-struct GetAccessQuery {
-    /// The user or role to show access for.
-    /// If not specified, shows access for the current user.
-    #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(required = false, value_type=String))]
-    principal_user: Option<UserId>,
-    #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(required = false, value_type=Uuid))]
-    principal_role: Option<RoleId>,
+macro_rules! access_response {
+    ($name:ident, $action_type:ty) => {
+        #[derive(Debug, Clone, Serialize, PartialEq)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        #[serde(rename_all = "kebab-case")]
+        struct $name {
+            allowed_actions: Vec<$action_type>,
+        }
+    };
 }
 
-struct ParsedAccessQuery {
-    principal: Option<UserOrRole>,
-}
-
-impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
-    type Error = OpenFGAError;
-
-    fn try_from(query: GetAccessQuery) -> Result<Self, Self::Error> {
-        let principal = match (query.principal_user, query.principal_role) {
-            (Some(user), None) => Some(UserOrRole::User(user)),
-            (None, Some(role)) => Some(UserOrRole::Role(role.into_assignees())),
-            (Some(_), Some(_)) => {
-                return Err(OpenFGAError::InvalidQuery(
-                    "Cannot specify both user and role in GetAccessQuery".to_string(),
-                ))
-            }
-            (None, None) => None,
-        };
-        Ok(Self { principal })
-    }
-}
+access_response!(GetOpenFGARoleActionsResponse, OpenFGARoleAction);
+access_response!(GetOpenFGAServerActionsResponse, OpenFGAServerAction);
+access_response!(GetOpenFGAProjectActionsResponse, OpenFGAProjectAction);
+access_response!(GetOpenFGAWarehouseActionsResponse, OpenFGAWarehouseAction);
+access_response!(GetOpenFGANamespaceActionsResponse, OpenFGANamespaceAction);
+access_response!(GetOpenFGATableActionsResponse, OpenFGATableAction);
+access_response!(GetOpenFGAViewActionsResponse, OpenFGAViewAction);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -349,10 +341,13 @@ struct SetManagedAccessRequest {
     managed_access: bool,
 }
 
-/// Get my access to the default project
+/// Get my access to a role
+///
+/// **Deprecated:** Use `/management/v1/permissions/role/{role_id}/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/role/{role_id}/actions` for Catalog permissions instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/role/{role_id}/access",
     params(
         ("role_id" = Uuid, Path, description = "Role ID"),
@@ -361,6 +356,10 @@ struct SetManagedAccessRequest {
             (status = 200, body = GetRoleAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/permissions/role/{role_id}/authorizer-actions and /management/v1/role/{role_id}/actions instead"
+)]
 async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(role_id): Path<RoleId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -385,16 +384,63 @@ async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
-/// Get my access to the server
+/// Get allowed Authorizer actions on a role
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the specified role.
+/// For Catalog permissions, use `/management/v1/role/{role_id}/actions` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/role/{role_id}/authorizer-actions",
+    params(
+        GetAccessQuery,
+        ("role_id" = Uuid, Path, description = "Role ID"),
+    ),
+    responses(
+            (status = 200, body = GetOpenFGARoleActionsResponse),
+    )
+))]
+async fn get_authorizer_role_actions<C: CatalogStore, S: SecretStore>(
+    Path(role_id): Path<RoleId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGARoleActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &role_id.to_openfga(),
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGARoleActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
+/// Get my access to the server
+///
+/// **Deprecated:** Use `/management/v1/permissions/server/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/server/actions` for Catalog permissions instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/server/access",
     params(GetAccessQuery),
     responses(
-            (status = 200, description = "Server Access", body = GetServerAccessResponse),
+        (status = 200, description = "Server Access", body = GetServerAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/server/actions and /management/v1/permissions/server/authorizer-actions instead"
+)]
 async fn get_server_access<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -419,16 +465,60 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
     ))
 }
 
-/// Get my access to the default project
+/// Get allowed Authorizer actions on the server
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the server.
+/// For Catalog permissions, use `/management/v1/server/actions` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/server/authorizer-actions",
+    params(GetAccessQuery),
+    responses(
+            (status = 200, description = "Server Access", body = GetOpenFGAServerActionsResponse),
+    )
+))]
+async fn get_authorizer_server_actions<C: CatalogStore, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGAServerActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let openfga_server = authorizer.openfga_server().clone();
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &openfga_server,
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGAServerActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
+/// Get my access to the default project
+///
+/// **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/project/actions` for Catalog permissions instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/project/access",
     params(GetAccessQuery),
     responses(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/project/actions and /management/v1/permissions/project/authorizer-actions instead"
+)]
 async fn get_project_access<C: CatalogStore, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -455,10 +545,52 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
     ))
 }
 
-/// Get my access to the default project
+/// Get allowed Authorizer actions on the default project
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the default project.
+/// For Catalog permissions, use `/management/v1/project/actions` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/project/authorizer-actions",
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Optional project ID")),
+    responses(
+        (status = 200, description = "Project Authorizer Actions", body = GetOpenFGAProjectActionsResponse),
+    )
+))]
+async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGAProjectActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let project_id = metadata
+        .preferred_project_id()
+        .ok_or(OpenFGAError::NoProjectId)?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &project_id.to_openfga(),
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGAProjectActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
+/// Get my access to a project
+///
+/// **Deprecated:** Use `/management/v1/permissions/project/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/project/actions` for Catalog permissions instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/project/{project_id}/access",
     params(
         GetAccessQuery,
@@ -468,6 +600,10 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/project/actions and /management/v1/permissions/project/authorizer-actions instead"
+)]
 async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -493,9 +629,12 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to a warehouse
+///
+/// **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/warehouse/{warehouse_id}/actions` for Catalog permissions instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/access",
     params(
         GetAccessQuery,
@@ -505,6 +644,10 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
             (status = 200, body = GetWarehouseAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/warehouse/{warehouse_id}/actions and /management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions instead"
+)]
 async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -529,10 +672,50 @@ async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
+/// Get allowed Authorizer actions on a warehouse
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the specified warehouse.
+/// For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/actions` instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions",
+    params(
+        GetAccessQuery,
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
+    ),
+    responses(
+            (status = 200, description = "Warehouse Authorizer Actions", body = GetOpenFGAWarehouseActionsResponse),
+    )
+))]
+async fn get_authorizer_warehouse_actions<C: CatalogStore, S: SecretStore>(
+    Path(warehouse_id): Path<WarehouseId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGAWarehouseActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &warehouse_id.to_openfga(),
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGAWarehouseActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
 /// Get Authorization properties of a warehouse
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}",
     params(
         ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
@@ -566,7 +749,7 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
 /// Set managed access property of a warehouse
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/managed-access",
     params(
         ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
@@ -598,7 +781,7 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
 /// Set managed access property of a namespace
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/namespace/{namespace_id}/managed-access",
     params(
         ("namespace_id" = Uuid, Path, description = "Namespace ID"),
@@ -631,7 +814,7 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
 /// Get Authorization properties of a namespace
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/namespace/{namespace_id}",
     params(
         ("namespace_id" = Uuid, Path, description = "Namespace ID"),
@@ -673,9 +856,12 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get my access to a namespace
+///
+/// **Deprecated:** Use `/management/v1/permissions/namespace/{namespace_id}/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` for Catalog permissions instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/namespace/{namespace_id}/access",
     params(
         GetAccessQuery,
@@ -685,6 +871,10 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
             (status = 200, description = "Server Relations", body = GetNamespaceAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions and /management/v1/permissions/namespace/{namespace_id}/authorizer-actions instead"
+)]
 async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
     Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -709,10 +899,53 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
-/// Get my access to a table
+/// Get allowed Authorizer actions on a namespace
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the specified namespace.
+/// For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/namespace/{namespace_id}/authorizer-actions",
+    params(
+        GetAccessQuery,
+        ("namespace_id" = Uuid, Path, description = "Namespace ID")
+    ),
+    responses(
+            (status = 200, description = "Namespace Authorizer Actions", body = GetOpenFGANamespaceActionsResponse),
+    )
+))]
+async fn get_authorizer_namespace_actions<C: CatalogStore, S: SecretStore>(
+    Path(namespace_id): Path<NamespaceId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGANamespaceActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &namespace_id.to_openfga(),
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGANamespaceActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
+/// Get my access to a table
+///
+/// **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` for Catalog permissions instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access",
     params(
         GetAccessQuery,
@@ -723,6 +956,10 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
             (status = 200, description = "Server Relations", body = GetTableAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions and /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions instead"
+)]
 async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -747,10 +984,54 @@ async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
-/// Get my access to a view
+/// Get allowed Authorizer actions on a table
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the specified table.
+/// For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions",
+    params(
+        GetAccessQuery,
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
+        ("table_id" = Uuid, Path, description = "Table ID")
+    ),
+    responses(
+            (status = 200, description = "Table Authorizer Actions", body = GetOpenFGATableActionsResponse),
+    )
+))]
+async fn get_authorizer_table_actions<C: CatalogStore, S: SecretStore>(
+    Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGATableActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &(warehouse_id, table_id).to_openfga(),
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGATableActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
+/// Get my access to a view
+///
+/// **Deprecated:** Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions` for Authorizer permissions
+/// or `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` for Catalog permissions instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access",
     params(
         GetAccessQuery,
@@ -761,6 +1042,10 @@ async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
             (status = 200, body = GetViewAccessResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/warehouse/{warehouse_id}/view/{view_id}/actions and /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions instead"
+)]
 async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
     Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -785,10 +1070,51 @@ async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
+/// Get allowed Authorizer actions on a view
+///
+/// Returns Authorizer permissions (OpenFGA relations) for the specified view.
+/// For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions` instead.
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions",
+    params(
+        GetAccessQuery,
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
+        ("view_id" = Uuid, Path, description = "View ID"),
+    ),
+    responses(
+            (status = 200, description = "View Authorizer Actions", body = GetOpenFGAViewActionsResponse),
+    )
+))]
+async fn get_authorizer_view_actions<C: CatalogStore, S: SecretStore>(
+    Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetOpenFGAViewActionsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &(warehouse_id, view_id).to_openfga(),
+        query.principal.as_ref(),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetOpenFGAViewActionsResponse {
+            allowed_actions: relations,
+        }),
+    ))
+}
+
 /// Get user and role assignments of a role
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/role/{role_id}/assignments",
     params(
         GetRoleAssignmentsQuery,
@@ -823,7 +1149,7 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Get user and role assignments of the server
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/server/assignments",
     params(GetServerAssignmentsQuery),
     responses(
@@ -851,7 +1177,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
 /// Get user and role assignments of a project
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/project/assignments",
     params(GetProjectAssignmentsQuery),
     responses(
@@ -886,9 +1212,11 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
 }
 
 /// Get user and role assignments to a project
+///
+/// **Deprecated:** Use `/management/v1/permissions/project/assignments` instead.
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/project/{project_id}/assignments",
     params(
         GetProjectAssignmentsQuery,
@@ -898,6 +1226,10 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
             (status = 200, body = GetProjectAssignmentsResponse),
     )
 ))]
+#[deprecated(
+    since = "0.11.0",
+    note = "Use /management/v1/permissions/project/assignments instead"
+)]
 async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
@@ -926,7 +1258,7 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Get user and role assignments for a warehouse
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     params(
         GetWarehouseAssignmentsQuery,
@@ -958,7 +1290,7 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Get user and role assignments for a namespace
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     params(
         GetNamespaceAssignmentsQuery,
@@ -994,7 +1326,7 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Get user and role assignments for a table
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
     params(
         GetTableAssignmentsQuery,
@@ -1027,7 +1359,7 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Get user and role assignments for a view
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments",
     params(
         GetViewAssignmentsQuery,
@@ -1060,7 +1392,7 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Update permissions for this server
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/server/assignments",
     request_body = UpdateServerAssignmentsRequest,
     responses(
@@ -1089,7 +1421,7 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
 /// Update permissions for the default project
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/project/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     responses(
@@ -1120,7 +1452,7 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
 /// Update permissions for a project
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/project/{project_id}/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     params(
@@ -1152,7 +1484,7 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Update permissions for a warehouse
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     request_body = UpdateWarehouseAssignmentsRequest,
     params(
@@ -1184,7 +1516,7 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Update permissions for a namespace
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     request_body = UpdateNamespaceAssignmentsRequest,
     params(
@@ -1216,7 +1548,7 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Update permissions for a table
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
     request_body = UpdateTableAssignmentsRequest,
     params(
@@ -1249,7 +1581,7 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
 /// Update permissions for a view
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments",
     request_body = UpdateViewAssignmentsRequest,
     params(
@@ -1282,7 +1614,7 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
 // Update permissions for a role
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/role/{role_id}/assignments",
     request_body = UpdateRoleAssignmentsRequest,
     params(
@@ -1322,22 +1654,18 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
 
 #[cfg_attr(feature = "open-api", derive(OpenApi))]
 #[cfg_attr(feature = "open-api", openapi(
-    servers(
-        (
-            url = "{scheme}://{host}/{basePath}",
-            description = "Lakekeeper Management API",
-            variables(
-                ("scheme" = (default = "https", description = "The scheme of the URI, either http or https")),
-                ("host" = (default = "localhost", description = "The host address for the specified server")),
-                ("basePath" = (default = "", description = "Optional prefix to be appended to all routes"))
-            )
-        )
-    ),
     tags(
-        (name = "permissions", description = "Manage Permissions"),
+        (name = "permissions-openfga", description = "Authorization and permissions management using OpenFGA"),
     ),
     paths(
         check,
+        get_authorizer_namespace_actions,
+        get_authorizer_project_actions,
+        get_authorizer_role_actions,
+        get_authorizer_server_actions,
+        get_authorizer_table_actions,
+        get_authorizer_view_actions,
+        get_authorizer_warehouse_actions,
         get_namespace_access_by_id,
         get_namespace_assignments_by_id,
         get_namespace_by_id,
@@ -1380,6 +1708,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
 #[derive(Debug)]
 pub(crate) struct ApiDoc;
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(
 ) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
@@ -1387,11 +1716,27 @@ pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(
             "/permissions/role/{role_id}/access",
             get(get_role_access_by_id),
         )
+        .route(
+            "/permissions/role/{role_id}/authorizer-actions",
+            get(get_authorizer_role_actions),
+        )
         .route("/permissions/server/access", get(get_server_access))
+        .route(
+            "/permissions/server/authorizer-actions",
+            get(get_authorizer_server_actions),
+        )
         .route("/permissions/project/access", get(get_project_access))
+        .route(
+            "/permissions/project/authorizer-actions",
+            get(get_authorizer_project_actions),
+        )
         .route(
             "/permissions/warehouse/{warehouse_id}/access",
             get(get_warehouse_access_by_id),
+        )
+        .route(
+            "/permissions/warehouse/{warehouse_id}/authorizer-actions",
+            get(get_authorizer_warehouse_actions),
         )
         .route(
             "/permissions/warehouse/{warehouse_id}",
@@ -1402,12 +1747,20 @@ pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(
             post(set_warehouse_managed_access),
         )
         .route(
+            "/permissions/project/assignments",
+            get(get_project_assignments).post(update_project_assignments),
+        )
+        .route(
             "/permissions/project/{project_id}/access",
             get(get_project_access_by_id),
         )
         .route(
             "/permissions/namespace/{namespace_id}/access",
             get(get_namespace_access_by_id),
+        )
+        .route(
+            "/permissions/namespace/{namespace_id}/authorizer-actions",
+            get(get_authorizer_namespace_actions),
         )
         .route(
             "/permissions/namespace/{namespace_id}",
@@ -1422,8 +1775,16 @@ pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(
             get(get_table_access_by_id),
         )
         .route(
+            "/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions",
+            get(get_authorizer_table_actions),
+        )
+        .route(
             "/permissions/warehouse/{warehouse_id}/view/{view_id}/access",
             get(get_view_access_by_id),
+        )
+        .route(
+            "/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions",
+            get(get_authorizer_view_actions),
         )
         .route(
             "/permissions/role/{role_id}/assignments",
@@ -1432,10 +1793,6 @@ pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(
         .route(
             "/permissions/server/assignments",
             get(get_server_assignments).post(update_server_assignments),
-        )
-        .route(
-            "/permissions/project/assignments",
-            get(get_project_assignments).post(update_project_assignments),
         )
         .route(
             "/permissions/project/{project_id}/assignments",
@@ -1740,7 +2097,7 @@ mod tests {
             let result = checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id.clone()),
-                vec![RoleAssignment::Assignee(role_id.into())],
+                vec![RoleAssignment::Assignee(role_id.into_assignees().into())],
                 vec![],
                 &role_id.to_openfga(),
             )
@@ -1826,6 +2183,7 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
                     &RequestMetadata::test_user(user_id_assignee.clone()),
+                    None,
                     &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
@@ -1848,6 +2206,7 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions_impl(
                     &RequestMetadata::test_user(user_id_assignee.clone()),
+                    None,
                     &ResolvedWarehouse::new_random(),
                     &namespaces
                         .iter()
@@ -1986,7 +2345,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into()),
+                Some(&role_id.into_assignees().into()),
             )
             .await
             .unwrap();
@@ -2009,7 +2368,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into()),
+                Some(&role_id.into_assignees().into()),
             )
             .await
             .unwrap();
@@ -2083,7 +2442,7 @@ mod tests {
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     RoleAssignment::Assignee(user_id_owner.into()),
-                    RoleAssignment::Assignee(role_id_2.into()),
+                    RoleAssignment::Assignee(role_id_2.into_assignees().into()),
                 ],
                 vec![],
                 &role_id_1.to_openfga(),
@@ -2248,7 +2607,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_warehouse_actions_impl(&metadata, &actions)
+                .are_allowed_warehouse_actions_impl(&metadata, None, &actions)
                 .await
                 .unwrap();
 
@@ -2303,7 +2662,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
                 .await
                 .unwrap();
 
@@ -2351,7 +2710,7 @@ mod tests {
                 .collect::<Vec<_>>();
 
             let results = authorizer
-                .are_allowed_project_actions_impl(&metadata, &actions)
+                .are_allowed_project_actions_impl(&metadata, None, &actions)
                 .await
                 .unwrap();
 
@@ -2386,7 +2745,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
                 .await
                 .unwrap();
 
@@ -2437,7 +2796,7 @@ mod tests {
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
                 .await
                 .unwrap();
 

@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 pub mod v1 {
+    pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
     pub mod role;
@@ -27,6 +28,15 @@ pub mod v1 {
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
+    use lakekeeper_actions::{
+        get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
+        get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
+        get_allowed_view_actions, get_allowed_warehouse_actions,
+        GetLakekeeperNamespaceActionsResponse, GetLakekeeperProjectActionsResponse,
+        GetLakekeeperRoleActionsResponse, GetLakekeeperServerActionsResponse,
+        GetLakekeeperTableActionsResponse, GetLakekeeperUserActionsResponse,
+        GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+    };
     use namespace::NamespaceManagementService as _;
     #[cfg(feature = "open-api")]
     pub use openapi::api_doc;
@@ -61,6 +71,7 @@ pub mod v1 {
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
+                lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
@@ -110,6 +121,33 @@ pub mod v1 {
         ApiServer::<C, A, S>::server_info(api_context, metadata)
             .await
             .map(|user| (StatusCode::OK, Json(user)))
+    }
+
+    /// Get allowed server actions
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "server",
+    path = ManagementV1Endpoint::GetServerActions.path(),
+    params(GetAccessQuery),
+    responses(
+        (status = 200, body = GetLakekeeperServerActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_server_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperServerActionsResponse>)> {
+        let authorizer = api_context.v1_state.authz;
+        let relations = get_allowed_server_actions(authorizer, &metadata, query).await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperServerActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
     }
 
     /// Bootstrap
@@ -206,6 +244,34 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_user(api_context, metadata, user_id)
             .await
             .map(|user| (StatusCode::OK, Json(user)))
+    }
+
+    /// Get allowed actions on a user
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "user",
+        path = ManagementV1Endpoint::GetUserActions.path(),
+        params(GetAccessQuery, ("user_id" = String,)),
+        responses(
+            (status = 200, body = GetLakekeeperUserActionsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_user_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(user_id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperUserActionsResponse>)> {
+        let authorizer = api_context.v1_state.authz;
+        let relations = get_allowed_user_actions(authorizer, &metadata, query, user_id).await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperUserActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
     }
 
     /// Whoami
@@ -383,7 +449,7 @@ pub mod v1 {
         delete,
         tag = "role",
         path = ManagementV1Endpoint::DeleteRole.path(),
-        params(("role_id" = Uuid,)),
+        params(("role_id" = Uuid, Path, description = "Role ID"),),
         responses(
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -406,7 +472,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::GetRole.path(),
-        params(("role_id" = Uuid,)),
+        params(("role_id" = Uuid, Path, description = "Role ID"),),
         responses(
             (status = 200, description = "Role details", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
@@ -427,7 +493,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::UpdateRole.path(),
-        params(("role_id" = Uuid,)),
+        params(("role_id" = Uuid, Path, description = "Role ID"),),
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = Role),
@@ -443,6 +509,34 @@ pub mod v1 {
         ApiServer::<C, A, S>::update_role(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
+    }
+
+    /// Get allowed actions for a role
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "role",
+    path = ManagementV1Endpoint::GetRoleActions.path(),
+    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"),),
+    responses(
+        (status = 200, body = GetLakekeeperRoleActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_role_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperRoleActionsResponse>)> {
+        let authorizer = api_context.v1_state.authz;
+        let relations = get_allowed_role_actions(authorizer, &metadata, query, role_id).await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperRoleActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
     }
 
     /// Create Warehouse
@@ -513,41 +607,18 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "project",
-        path = ManagementV1Endpoint::GetDefaultProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        path = ManagementV1Endpoint::GetProject.path(),
+        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn get_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    async fn get_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
-        ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
-    }
-
-    /// Get Default Project
-    ///
-    /// Retrieves information about the user's default project.
-    /// This endpoint is deprecated and will be removed in a future version.
-    #[cfg_attr(feature = "open-api", utoipa::path(
-            get,
-            tag = "project",
-            path = ManagementV1Endpoint::GetDefaultProjectDeprecated.path(),
-            responses(
-                (status = 200, description = "Project details", body = GetProjectResponse),
-                (status = "4XX", body = IcebergErrorResponse),
-            )
-        ))]
-    #[deprecated(
-        since = "0.8.0",
-        note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
-    )]
-    async fn get_default_project_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
-        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<GetProjectResponse> {
+        // project_id header is parsed by RequestMetadata and used from there.
         ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 
@@ -555,14 +626,18 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "project",
-        path = ManagementV1Endpoint::GetDefaultProjectById.path(),
+        path = ManagementV1Endpoint::GetProjectByIdDeprecated.path(),
         params(("project_id" = String,)),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn get_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    #[deprecated(
+        since = "0.11.0",
+        note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/project` and set the `x-project-id` header instead."
+    )]
+    async fn get_project_by_id_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -574,40 +649,14 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "project",
-        path = ManagementV1Endpoint::DeleteDefaultProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        path = ManagementV1Endpoint::DeleteProject.path(),
+        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn delete_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
-        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, ())> {
-        ApiServer::<C, A, S>::delete_project(None, api_context, metadata)
-            .await
-            .map(|()| (StatusCode::NO_CONTENT, ()))
-    }
-
-    /// Delete default Project
-    ///
-    /// Removes the user's default project and all its resources.
-    /// This endpoint is deprecated and will be removed in a future version.
-    #[cfg_attr(feature = "open-api", utoipa::path(
-            delete,
-            tag = "project",
-            path = ManagementV1Endpoint::DeleteDefaultProjectDeprecated .path(),
-            responses(
-                (status = 204, description = "Project deleted successfully"),
-                (status = "4XX", body = IcebergErrorResponse),
-            )
-        ))]
-    #[deprecated(
-        since = "0.8.0",
-        note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
-    )]
-    async fn delete_default_project_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    async fn delete_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
@@ -622,14 +671,18 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "project",
-        path = ManagementV1Endpoint::DeleteProjectById.path(),
+        path = ManagementV1Endpoint::DeleteProjectByIdDeprecated.path(),
         params(("project_id" = String,)),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn delete_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    #[deprecated(
+        since = "0.11.0",
+        note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/project` and set the `x-project-id` header instead."
+    )]
+    async fn delete_project_by_id_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -643,39 +696,14 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "project",
-        path = ManagementV1Endpoint::RenameDefaultProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        path = ManagementV1Endpoint::RenameProject.path(),
+        params(("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn rename_default_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
-        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Extension(metadata): Extension<RequestMetadata>,
-        Json(request): Json<RenameProjectRequest>,
-    ) -> Result<()> {
-        ApiServer::<C, A, S>::rename_project(None, request, api_context, metadata).await
-    }
-
-    /// Rename the default project.
-    ///
-    /// Updates the name of the user's default project.
-    /// This endpoint is deprecated and will be removed in a future version.
-    #[cfg_attr(feature = "open-api", utoipa::path(
-            post,
-            tag = "project",
-            path = ManagementV1Endpoint::RenameDefaultProjectDeprecated.path(),
-            responses(
-                (status = 200, description = "Project renamed successfully"),
-                (status = "4XX", body = IcebergErrorResponse),
-            )
-        ))]
-    #[deprecated(
-        since = "0.8.0",
-        note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
-    )]
-    async fn rename_default_project_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    async fn rename_project<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameProjectRequest>,
@@ -689,20 +717,54 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "project",
-        path = ManagementV1Endpoint::RenameProjectById.path(),
+        path = ManagementV1Endpoint::RenameProjectByIdDeprecated.path(),
         params(("project_id" = String,)),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn rename_project_by_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    #[deprecated(
+        since = "0.11.0",
+        note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/project/rename` and set the `x-project-id` header instead."
+    )]
+    async fn rename_project_by_id_deprecated<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameProjectRequest>,
     ) -> Result<()> {
         ApiServer::<C, A, S>::rename_project(Some(project_id), request, api_context, metadata).await
+    }
+
+    /// Get allowed actions for a project
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "project",
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Optional project ID"),),
+    path = ManagementV1Endpoint::GetProjectActions.path(),
+    responses(
+        (status = 200, body = GetLakekeeperProjectActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_project_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperProjectActionsResponse>)> {
+        let authorizer = api_context.v1_state.authz;
+        let project_id = metadata.require_project_id(None)?;
+
+        let actions =
+            get_allowed_project_actions(authorizer, &metadata, query, &project_id).await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperProjectActionsResponse {
+                allowed_actions: actions,
+            }),
+        ))
     }
 
     /// List Warehouses
@@ -882,6 +944,35 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<()> {
         ApiServer::<C, A, S>::activate_warehouse(warehouse_id.into(), api_context, metadata).await
+    }
+
+    /// Get allowed actions for a warehouse
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetWarehouseActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),),
+    responses(
+        (status = 200, body = GetLakekeeperWarehouseActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_warehouse_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperWarehouseActionsResponse>)> {
+        let relations =
+            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, query, warehouse_id)
+                .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperWarehouseActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
     }
 
     /// Update Storage Profile
@@ -1130,40 +1221,6 @@ pub mod v1 {
     /// Undrop Tabular
     ///
     /// Restores previously deleted tables or views to make them accessible again.
-    /// This endpoint is deprecated and will be removed soon.
-    #[cfg_attr(feature = "open-api", utoipa::path(
-        post,
-        tag = "warehouse",
-        path = ManagementV1Endpoint::UndropTabularsDeprecated.path(),
-        params(("warehouse_id" = Uuid,)),
-        responses(
-            (status = 204, description = "Tabular undropped successfully"),
-            (status = "4XX", body = IcebergErrorResponse),
-        )
-    ))]
-    #[deprecated(
-        since = "0.7.0",
-        note = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."
-    )]
-    async fn undrop_tabulars_deprecated<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
-        Path(warehouse_id): Path<uuid::Uuid>,
-        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Extension(metadata): Extension<RequestMetadata>,
-        Json(request): Json<UndropTabularsRequest>,
-    ) -> Result<StatusCode> {
-        ApiServer::<C, A, S>::undrop_tabulars(
-            WarehouseId::from(warehouse_id),
-            metadata,
-            request,
-            api_context,
-        )
-        .await?;
-        Ok(StatusCode::NO_CONTENT)
-    }
-
-    /// Undrop Tabular
-    ///
-    /// Restores previously deleted tables or views to make them accessible again.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",
@@ -1261,6 +1318,40 @@ pub mod v1 {
         .await
     }
 
+    /// Get allowed actions for a table
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetTableActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("table_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperTableActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_table_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperTableActionsResponse>)> {
+        let relations = get_allowed_table_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            table_id,
+        )
+        .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperTableActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
+    }
+
     /// Get View Protection
     ///
     /// Retrieves whether a view is protected from deletion.
@@ -1317,6 +1408,40 @@ pub mod v1 {
         .await
     }
 
+    /// Get allowed actions for a view
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetViewActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("view_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperViewActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_view_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperViewActionsResponse>)> {
+        let relations = get_allowed_view_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            view_id,
+        )
+        .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperViewActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
+    }
+
     /// Get Namespace Protection
     ///
     /// Retrieves whether a namespace is protected from deletion.
@@ -1371,6 +1496,40 @@ pub mod v1 {
             metadata,
         )
         .await
+    }
+
+    /// Get allowed actions for a namespace
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetNamespaceActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperNamespaceActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_namespace_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperNamespaceActionsResponse>)> {
+        let relations = get_allowed_namespace_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            namespace_id,
+        )
+        .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperNamespaceActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
     }
 
     /// Set Warehouse Protection
@@ -1595,6 +1754,10 @@ pub mod v1 {
                 // Server
                 .route("/info", get(get_server_info))
                 .route("/bootstrap", post(bootstrap))
+                .route(
+                    ManagementV1Endpoint::GetServerActions.path_in_management_v1(),
+                    get(get_server_actions),
+                )
                 .route("/endpoint-statistics", post(get_endpoint_statistics))
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
@@ -1603,36 +1766,41 @@ pub mod v1 {
                     get(get_role).post(update_role).delete(delete_role),
                 )
                 .route("/search/role", post(search_role))
+                .route(
+                    ManagementV1Endpoint::GetRoleActions.path_in_management_v1(),
+                    get(get_role_actions),
+                )
                 // User management
                 .route("/whoami", get(whoami))
                 .route("/search/user", post(search_user))
                 .route(
-                    "/user/{user_id}",
+                    ManagementV1Endpoint::GetUser.path_in_management_v1(),
                     get(get_user).put(update_user).delete(delete_user),
+                )
+                .route(
+                    ManagementV1Endpoint::GetUserActions.path_in_management_v1(),
+                    get(get_user_actions),
                 )
                 .route("/user", get(list_user).post(create_user))
                 // Default project
-                .route(
-                    "/default-project",
-                    get(get_default_project_deprecated).delete(delete_default_project_deprecated),
-                )
-                .route(
-                    "/default-project/rename",
-                    post(rename_default_project_deprecated),
-                )
-                .route("/project/rename", post(rename_default_project))
+                .route("/project/rename", post(rename_project))
                 // Create a new project
                 .route(
-                    "/project",
-                    post(create_project)
-                        .get(get_default_project)
-                        .delete(delete_default_project),
+                    ManagementV1Endpoint::GetProject.path_in_management_v1(),
+                    post(create_project).get(get_project).delete(delete_project),
                 )
                 .route(
-                    "/project/{project_id}",
-                    get(get_project_by_id).delete(delete_project_by_id),
+                    ManagementV1Endpoint::GetProjectActions.path_in_management_v1(),
+                    get(get_project_actions),
                 )
-                .route("/project/{project_id}/rename", post(rename_project_by_id))
+                .route(
+                    ManagementV1Endpoint::GetProjectByIdDeprecated.path_in_management_v1(),
+                    get(get_project_by_id_deprecated).delete(delete_project_by_id_deprecated),
+                )
+                .route(
+                    "/project/{project_id}/rename",
+                    post(rename_project_by_id_deprecated),
+                )
                 // Create a new warehouse
                 .route("/warehouse", post(create_warehouse).get(list_warehouses))
                 // List all projects
@@ -1678,11 +1846,6 @@ pub mod v1 {
                     get(list_deleted_tabulars),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
-                    #[allow(deprecated)]
-                    post(undrop_tabulars_deprecated),
-                )
-                .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars/undrop",
                     post(undrop_tabulars),
                 )
@@ -1691,19 +1854,35 @@ pub mod v1 {
                     post(update_warehouse_delete_profile),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/table/{table_id}/protection",
+                    ManagementV1Endpoint::GetWarehouseActions.path_in_management_v1(),
+                    get(get_warehouse_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTableProtection.path_in_management_v1(),
                     get(get_table_protection).post(set_table_protection),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/view/{view_id}/protection",
+                    ManagementV1Endpoint::GetTableActions.path_in_management_v1(),
+                    get(get_table_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetViewProtection.path_in_management_v1(),
                     get(get_view_protection).post(set_view_protection),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
+                    ManagementV1Endpoint::GetViewActions.path_in_management_v1(),
+                    get(get_view_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetNamespaceProtection.path_in_management_v1(),
                     get(get_namespace_protection).post(set_namespace_protection),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/protection",
+                    ManagementV1Endpoint::GetNamespaceActions.path_in_management_v1(),
+                    get(get_namespace_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::SetWarehouseProtection.path_in_management_v1(),
                     post(set_warehouse_protection),
                 )
                 .route(

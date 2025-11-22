@@ -1,6 +1,6 @@
 use lakekeeper::{
     api::{ErrorModel, IcebergErrorResponse},
-    service::authz::AuthorizationBackendUnavailable,
+    service::authz::{AuthorizationBackendUnavailable, IsAllowedActionError},
 };
 use openfga_client::{
     client::{check_error::Code, CheckError},
@@ -22,7 +22,13 @@ pub enum OpenFGABackendUnavailable {
     #[error(transparent)]
     MissingItemInBatchCheck(#[from] MissingItemInBatchCheck),
 }
-
+impl From<OpenFGABackendUnavailable> for IsAllowedActionError {
+    fn from(err: OpenFGABackendUnavailable) -> Self {
+        IsAllowedActionError::AuthorizationBackendUnavailable(
+            AuthorizationBackendUnavailable::from(err),
+        )
+    }
+}
 impl From<OpenFGAClientError> for OpenFGABackendUnavailable {
     fn from(err: OpenFGAClientError) -> Self {
         OpenFGABackendUnavailable::InternalClientError(Box::new(err))

@@ -175,6 +175,7 @@ generate_endpoints! {
 
     enum ManagementV1 {
         ServerInfo(GET, "/management/v1/info"),
+        GetServerActions(GET, "/management/v1/server/actions"),
         Bootstrap(POST, "/management/v1/bootstrap"),
         CreateUser(POST, "/management/v1/user"),
         SearchUser(POST, "/management/v1/search/user"),
@@ -183,23 +184,24 @@ generate_endpoints! {
         UpdateUser(PUT, "/management/v1/user/{user_id}"),
         ListUser(GET, "/management/v1/user"),
         DeleteUser(DELETE, "/management/v1/user/{user_id}"),
+        GetUserActions(GET, "/management/v1/user/{user_id}/actions"),
         CreateRole(POST, "/management/v1/role"),
         SearchRole(POST, "/management/v1/search/role"),
         ListRole(GET, "/management/v1/role"),
         DeleteRole(DELETE, "/management/v1/role/{role_id}"),
         GetRole(GET, "/management/v1/role/{role_id}"),
         UpdateRole(POST, "/management/v1/role/{role_id}"),
+        GetRoleActions(GET, "/management/v1/role/{role_id}/actions"),
         CreateWarehouse(POST, "/management/v1/warehouse"),
         ListProjects(GET, "/management/v1/project-list"),
         CreateProject(POST, "/management/v1/project"),
-        GetDefaultProject(GET, "/management/v1/project"),
-        GetDefaultProjectById(GET, "/management/v1/project/{project_id}"),
-        DeleteDefaultProject(DELETE, "/management/v1/project"),
-        DeleteProjectById(DELETE, "/management/v1/project/{project_id}"),
-        RenameDefaultProject(POST, "/management/v1/project/rename"),
-        RenameProjectById(POST, "/management/v1/project/{project_id}/rename"),
+        GetProject(GET, "/management/v1/project"),
+        DeleteProject(DELETE, "/management/v1/project"),
+        RenameProject(POST, "/management/v1/project/rename"),
+        GetProjectActions(GET, "/management/v1/project/actions"),
         ListWarehouses(GET, "/management/v1/warehouse"),
         GetWarehouse(GET, "/management/v1/warehouse/{warehouse_id}"),
+        GetWarehouseActions(GET, "/management/v1/warehouse/{warehouse_id}/actions"),
         DeleteWarehouse(DELETE, "/management/v1/warehouse/{warehouse_id}"),
         RenameWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/rename"),
         UpdateWarehouseDeleteProfile(POST, "/management/v1/warehouse/{warehouse_id}/delete-profile"),
@@ -211,23 +213,30 @@ generate_endpoints! {
         LoadEndpointStatistics(POST, "/management/v1/endpoint-statistics"),
         SearchTabular(POST, "/management/v1/warehouse/{warehouse_id}/search-tabular"),
         ListDeletedTabulars(GET, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars"),
-        UndropTabularsDeprecated(POST, "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop"),
         UndropTabulars(POST, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"),
         GetTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         SetTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
+        GetTableActions(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions"),
         GetViewProtection(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         SetViewProtection(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
+        GetViewActions(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
         SetNamespaceProtection(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceProtection(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
+        GetNamespaceActions(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions"),
         SetWarehouseProtection(POST, "/management/v1/warehouse/{warehouse_id}/protection"),
-        GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
-        DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
-        RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
         SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
         GetTaskQueueConfig(GET, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
         ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
         GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
         ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
+        // --------- Deprecated endpoints ---------
+        GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
+        DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
+        RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
+        RenameProjectByIdDeprecated(POST, "/management/v1/project/{project_id}/rename"),
+        DeleteProjectByIdDeprecated(DELETE, "/management/v1/project/{project_id}"),
+        GetProjectByIdDeprecated(GET, "/management/v1/project/{project_id}"),
+        UndropTabularsDeprecated(POST, "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop"),
     }
 
     enum PermissionV1 {
@@ -364,6 +373,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_endpoint_completeness() {
         use std::collections::HashSet;
 
@@ -431,6 +441,19 @@ mod test {
             if matches!(endpoint, Endpoint::PermissionV1(_))
                 || matches!(endpoint, Endpoint::Sign(_))
             {
+                continue;
+            }
+
+            // Deprecated endpoints
+            if matches!(
+                endpoint,
+                Endpoint::ManagementV1(
+                    ManagementV1Endpoint::DeleteDefaultProjectDeprecated
+                        | ManagementV1Endpoint::GetDefaultProjectDeprecated
+                        | ManagementV1Endpoint::RenameDefaultProjectDeprecated
+                        | ManagementV1Endpoint::UndropTabularsDeprecated
+                )
+            ) {
                 continue;
             }
 

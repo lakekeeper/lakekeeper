@@ -397,7 +397,7 @@ def undrop_table(table_0, warehouse):
                 "v1",
                 "warehouse",
                 str(warehouse.warehouse_id),
-                "deleted_tabulars",
+                "deleted-tabulars",
                 "undrop",
             ]
         )

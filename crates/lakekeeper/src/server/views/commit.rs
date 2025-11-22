@@ -66,7 +66,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             warehouse_id,
             view_ident,
             TabularListFlags::active(),
-            CatalogViewAction::CanCommit,
+            CatalogViewAction::Commit,
             state.v1_state.catalog.clone(),
         )
         .await?;

@@ -278,7 +278,7 @@ impl ViewOrTableInfo {
 
 #[cfg(test)]
 impl TableInfo {
-    pub(crate) fn new_random() -> Self {
+    pub(crate) fn new_random(warehouse_id: WarehouseId) -> Self {
         use std::str::FromStr;
 
         let table_id = TableId::new_random();
@@ -289,7 +289,7 @@ impl TableInfo {
         let location =
             Location::from_str(&format!("s3://bucket/path/to/table_{table_id}")).unwrap();
         TableInfo {
-            warehouse_id: WarehouseId::new_random(),
+            warehouse_id,
             namespace_id: NamespaceId::new_random(),
             namespace_version: 0.into(),
             warehouse_version: 0.into(),
@@ -308,7 +308,7 @@ impl TableInfo {
 
 #[cfg(test)]
 impl ViewInfo {
-    pub(crate) fn new_random() -> Self {
+    pub(crate) fn new_random(warehouse_id: WarehouseId) -> Self {
         use std::str::FromStr;
 
         let view_id = ViewId::new_random();
@@ -318,7 +318,7 @@ impl ViewInfo {
         );
         let location = Location::from_str(&format!("s3://bucket/path/to/view_{view_id}")).unwrap();
         ViewInfo {
-            warehouse_id: WarehouseId::new_random(),
+            warehouse_id,
             namespace_id: NamespaceId::new_random(),
             namespace_version: 0.into(),
             warehouse_version: 0.into(),
@@ -354,6 +354,8 @@ pub trait AuthZTableInfo: Send + Sync {
     fn namespace_ident(&self) -> &NamespaceIdent {
         self.table_ident().namespace()
     }
+    fn is_protected(&self) -> bool;
+    fn properties(&self) -> &HashMap<String, String>;
 }
 pub trait AuthZViewInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
@@ -363,6 +365,8 @@ pub trait AuthZViewInfo: Send + Sync {
     fn namespace_ident(&self) -> &NamespaceIdent {
         self.view_ident().namespace()
     }
+    fn is_protected(&self) -> bool;
+    fn properties(&self) -> &HashMap<String, String>;
 }
 
 impl AuthZTableInfo for TableInfo {
@@ -377,6 +381,12 @@ impl AuthZTableInfo for TableInfo {
     }
     fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
+    }
+    fn is_protected(&self) -> bool {
+        self.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.properties
     }
 }
 
@@ -393,6 +403,12 @@ impl AuthZTableInfo for TableDeletionInfo {
     fn namespace_id(&self) -> NamespaceId {
         self.tabular.namespace_id
     }
+    fn is_protected(&self) -> bool {
+        self.tabular.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.tabular.properties
+    }
 }
 
 impl AuthZViewInfo for ViewInfo {
@@ -408,6 +424,12 @@ impl AuthZViewInfo for ViewInfo {
     fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
+    fn is_protected(&self) -> bool {
+        self.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.properties
+    }
 }
 
 impl AuthZViewInfo for ViewDeletionInfo {
@@ -422,6 +444,12 @@ impl AuthZViewInfo for ViewDeletionInfo {
     }
     fn namespace_id(&self) -> NamespaceId {
         self.tabular.namespace_id
+    }
+    fn is_protected(&self) -> bool {
+        self.tabular.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.tabular.properties
     }
 }
 

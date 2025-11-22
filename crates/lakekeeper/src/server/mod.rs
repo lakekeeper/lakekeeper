@@ -83,7 +83,7 @@ impl_metadata_properties!(TableMetadata, ViewMetadata);
 
 #[derive(Clone, Debug)]
 
-pub struct CatalogServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
+pub struct CatalogServer<C: CatalogStore, A: Authorizer, S: SecretStore> {
     auth_handler: PhantomData<A>,
     catalog_backend: PhantomData<C>,
     secret_store: PhantomData<S>,

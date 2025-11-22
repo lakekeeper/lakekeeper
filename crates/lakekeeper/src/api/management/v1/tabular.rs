@@ -42,9 +42,10 @@ where
         let [authz_can_use, authz_list_all] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
-                    (&warehouse, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::Use),
+                    (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
             .await?
@@ -76,8 +77,8 @@ where
                 Ok::<_, ErrorModel>((
                     require_namespace_for_tabular(&namespaces, t)?,
                     t.tabular.as_action_request(
-                        CatalogViewAction::CanIncludeInList,
-                        CatalogTableAction::CanIncludeInList,
+                        CatalogViewAction::IncludeInList,
+                        CatalogTableAction::IncludeInList,
                     ),
                 ))
             })
@@ -89,6 +90,7 @@ where
             authorizer
                 .are_allowed_tabular_actions_vec(
                     &request_metadata,
+                    None,
                     &warehouse,
                     &namespaces,
                     &actions,

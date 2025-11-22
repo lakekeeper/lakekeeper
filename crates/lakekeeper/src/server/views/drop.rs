@@ -45,7 +45,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            CatalogViewAction::CanDrop,
+            CatalogViewAction::Drop,
             state.v1_state.catalog.clone(),
         )
         .await?;

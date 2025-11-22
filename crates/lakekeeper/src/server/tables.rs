@@ -121,7 +121,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 provided_namespace,
                 namespace,
-                CatalogNamespaceAction::CanListTables,
+                CatalogNamespaceAction::ListTables,
             )
             .await?;
 
@@ -202,7 +202,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 provided_ns,
                 namespace,
-                CatalogNamespaceAction::CanCreateTable,
+                CatalogNamespaceAction::CreateTable,
             )
             .await?;
 
@@ -252,7 +252,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             &namespace,
                             table_ident.clone(),
                             previous_table_info,
-                            CatalogTableAction::CanDrop,
+                            CatalogTableAction::Drop,
                         )
                         .await?,
                 );
@@ -518,7 +518,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &namespace,
                 table.clone(),
                 table_info,
-                CatalogTableAction::CanDrop,
+                CatalogTableAction::Drop,
             )
             .await?;
         let table_id = table_info.tabular_id;
@@ -664,7 +664,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &namespace,
                 table,
                 table_info,
-                CatalogTableAction::CanGetMetadata,
+                CatalogTableAction::GetMetadata,
             )
             .await?;
 
@@ -728,7 +728,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 user_provided_namespace,
                 destination_namespace,
-                CatalogNamespaceAction::CanCreateTable,
+                CatalogNamespaceAction::CreateTable,
             ),
             // Check 2)
             authorizer.require_table_action(
@@ -737,7 +737,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &source_namespace,
                 source.clone(),
                 source_table_info,
-                CatalogTableAction::CanRename,
+                CatalogTableAction::Rename,
             )
         );
 
@@ -833,13 +833,14 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     let [can_get_metadata, can_read, can_write] = authorizer
         .are_allowed_table_actions_arr(
             request_metadata,
+            None,
             &warehouse,
             &namespace,
             &table_info,
             &[
-                CatalogTableAction::CanGetMetadata,
-                CatalogTableAction::CanReadData,
-                CatalogTableAction::CanWriteData,
+                CatalogTableAction::GetMetadata,
+                CatalogTableAction::ReadData,
+                CatalogTableAction::WriteData,
             ],
         )
         .await?
@@ -1086,7 +1087,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
                     Ok::<_, ErrorModel>((
                         require_namespace_for_tabular(&namespaces, ti)?,
                         ti,
-                        CatalogTableAction::CanCommit,
+                        CatalogTableAction::Commit,
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -3876,7 +3877,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to rename the source table
-        authz.block_action(format!("table:{}", CatalogTableAction::CanRename).as_str());
+        authz.block_action(format!("table:{}", CatalogTableAction::Rename).as_str());
         let rename_table_request = RenameTableRequest {
             source: TableIdent {
                 namespace: ns_params.namespace.clone(),
@@ -3900,7 +3901,7 @@ pub(crate) mod test {
 
         // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
         // thus, we should get a 404 instead.
-        authz.block_action(format!("table:{}", CatalogTableAction::CanGetMetadata).as_str());
+        authz.block_action(format!("table:{}", CatalogTableAction::GetMetadata).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             rename_table_request,
@@ -3958,8 +3959,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz
-            .block_action(format!("namespace:{}", CatalogNamespaceAction::CanCreateTable).as_str());
+        authz.block_action(format!("namespace:{}", CatalogNamespaceAction::CreateTable).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {

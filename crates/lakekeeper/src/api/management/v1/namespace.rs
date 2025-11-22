@@ -36,7 +36,7 @@ where
                 &request_metadata,
                 warehouse_id,
                 namespace_id,
-                CatalogNamespaceAction::CanSetProtection,
+                CatalogNamespaceAction::SetProtection,
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
@@ -85,7 +85,7 @@ where
                 &request_metadata,
                 warehouse_id,
                 namespace_id,
-                CatalogNamespaceAction::CanGetMetadata,
+                CatalogNamespaceAction::GetMetadata,
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )

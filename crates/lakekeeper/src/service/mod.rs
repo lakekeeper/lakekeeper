@@ -15,6 +15,7 @@ pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 #[allow(unused_imports)]
 pub(crate) use identifier::tabular::TabularIdentBorrowed;
 pub use identifier::tabular::{TabularId, TabularIdentOwned};
+pub use lakekeeper_io::Location;
 pub use secrets::{SecretId, SecretStore};
 use tasks::RegisteredTaskQueues;
 
