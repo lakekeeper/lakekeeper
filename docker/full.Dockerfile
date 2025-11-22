@@ -9,7 +9,7 @@ ENV NVM_DIR=/root/.nvm
 # We only pay the installation cost once, 
 # it will be cached from the second build onwards
 RUN apt-get update -qq && \
-  DEBIAN_FRONTEND=noninteractive apt-get install -yqq cmake curl build-essential libpq-dev pkg-config make perl wget zip unzip --no-install-recommends && \
+  DEBIAN_FRONTEND=noninteractive apt-get install -yqq libclang-dev cmake curl build-essential libpq-dev pkg-config make perl wget zip unzip --no-install-recommends && \
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
   . "$NVM_DIR/nvm.sh" && nvm install ${NODE_VERSION}  && \
   . "$NVM_DIR/nvm.sh" && nvm use v${NODE_VERSION}  && \
