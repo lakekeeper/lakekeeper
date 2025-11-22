@@ -517,7 +517,7 @@ pub mod v1 {
             .map(|role| (StatusCode::OK, Json(role)))
     }
 
-    /// Set the external ID of a role
+    /// Set the source system for a role
     #[cfg_attr(feature = "open-api", utoipa::path(
         put,
         tag = "role",

@@ -596,7 +596,7 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
     path = "/management/v1/permissions/project/{project_id}/access",
     params(
         GetAccessQuery,
-        ("project_id" = Uuid, Path, description = PROJECT_ID_HEADER_DESCRIPTION),
+        ("project_id" = Option<String>, Path, description = PROJECT_ID_HEADER_DESCRIPTION),
     ),
     responses(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
@@ -1222,7 +1222,7 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
     path = "/management/v1/permissions/project/{project_id}/assignments",
     params(
         GetProjectAssignmentsQuery,
-        ("project_id" = Uuid, Path, description = PROJECT_ID_HEADER_DESCRIPTION),
+        ("project_id" = Option<String>, Path, description = PROJECT_ID_HEADER_DESCRIPTION),
     ),
     responses(
             (status = 200, body = GetProjectAssignmentsResponse),
@@ -1458,7 +1458,7 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
     path = "/management/v1/permissions/project/{project_id}/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     params(
-        ("project_id" = Uuid, Path, description = PROJECT_ID_HEADER_DESCRIPTION),
+        ("project_id" = Option<String>, Path, description = PROJECT_ID_HEADER_DESCRIPTION),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),

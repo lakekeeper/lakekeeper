@@ -480,8 +480,9 @@ paths:
           description: Project ID (optional; falls back to the default project if not provided)
           required: true
           schema:
-            type: string
-            format: uuid
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Server Relations
@@ -511,8 +512,9 @@ paths:
           description: Project ID (optional; falls back to the default project if not provided)
           required: true
           schema:
-            type: string
-            format: uuid
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -532,8 +534,9 @@ paths:
           description: Project ID (optional; falls back to the default project if not provided)
           required: true
           schema:
-            type: string
-            format: uuid
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1791,7 +1794,7 @@ paths:
     put:
       tags:
         - role
-      summary: Set the external ID of a role
+      summary: Set the source system for a role
       operationId: update_role_source_system
       parameters:
         - name: role_id
