@@ -1,3 +1,5 @@
+use std::string::ToString;
+
 use async_trait::async_trait;
 use axum::{
     extract::{Path, Query, State},
@@ -455,7 +457,7 @@ impl DataAccess {
 fn parse_etags(etags: &str) -> Vec<String> {
     let etags = etags.trim().trim_matches('"');
     etags
-        .split(",")
+        .split(',')
         .map(|s| {
             s.trim()
                 .trim_matches('"')
@@ -463,7 +465,7 @@ fn parse_etags(etags: &str) -> Vec<String> {
                 .trim_matches('"')
         })
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect()
 }
 
@@ -788,7 +790,7 @@ mod test {
                 assert_eq!(body_result, body_expected);
             }
             (Err(e), _) | (_, Err(e)) => {
-                panic!("Failed to extract body: {}", e);
+                panic!("Failed to extract body: {e}");
             }
         }
     }
@@ -828,7 +830,7 @@ mod test {
             .unwrap();
         builder = builder.add_sort_order(sort_order).unwrap();
         builder = builder
-            .set_default_sort_order(TableMetadataBuilder::LAST_ADDED as i64)
+            .set_default_sort_order(i64::from(TableMetadataBuilder::LAST_ADDED))
             .unwrap();
 
         let build_result: TableMetadata = builder.build().unwrap().into();
@@ -891,6 +893,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_parse_if_none_match_returns_multiple_values() {
         let etag1 = "W/\"abcdefghi123456789\"".to_string();
         let etag2 = "\"123456789abcdefghi\"".to_string();
@@ -907,6 +910,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_parse_if_none_match_returns_multiple_values_with_spaces_inbetween() {
         let etag1 = "W/\"abcdefghi123456789\"".to_string();
         let etag2 = "\"123456789abcdefghi\"".to_string();
@@ -923,6 +927,8 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
+    #[allow(clippy::needless_raw_string_hashes)]
     fn test_parse_if_none_match_returns_multiple_values_with_mixed_styles() {
         let etag1 = r#"etag-without-quote"#.to_string();
         let etag2 = r#""etag-with-normal-quote""#.to_string();
@@ -968,7 +974,7 @@ mod test {
 
     #[test]
     fn test_parse_if_none_match_returns_with_empty_header() {
-        let etag = "".to_string();
+        let etag = String::new();
 
         let mut headers = HeaderMap::new();
         headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());

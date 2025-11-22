@@ -28,11 +28,11 @@ fn get_etag(table_info: &TabularInfo<TableId>) -> Option<String> {
     table_info
         .metadata_location
         .as_ref()
-        .map(|loc| loc.as_str())
+        .map(lakekeeper_io::Location::as_str)
         .map(create_etag)
 }
 
-fn etag_already_present(etags: &Vec<String>, etag: Option<&String>) -> bool {
+fn etag_already_present(etags: &[String], etag: Option<&String>) -> bool {
     if etags.contains(&"*".to_string()) {
         return true;
     }
@@ -240,6 +240,7 @@ mod tests {
     use iceberg_ext::catalog::rest::{CreateTableRequest, LoadTableResult};
     use sqlx::PgPool;
 
+    use super::{create_etag, load_table};
     use crate::{
         api::{
             iceberg::v1::{
@@ -258,8 +259,6 @@ mod tests {
         service::{authz::AllowAllAuthorizer, State},
         tests::random_request_metadata,
     };
-
-    use super::{create_etag, load_table};
 
     fn create_test_schema() -> Schema {
         Schema::builder()

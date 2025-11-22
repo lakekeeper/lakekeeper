@@ -13,7 +13,8 @@ use crate::{
             v1::{
                 namespace::NamespaceService,
                 tables::{LoadTableFilters, TablesService},
-                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters, LoadTableResultOrNotModified
+                DataAccessMode, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                NamespaceParameters, TableParameters,
             },
         },
         management::v1::{

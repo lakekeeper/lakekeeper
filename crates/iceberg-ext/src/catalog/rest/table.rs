@@ -1,5 +1,8 @@
 #[cfg(feature = "axum")]
-use axum::{http::header::{self, HeaderMap}, response::IntoResponse};
+use axum::{
+    http::header::{self, HeaderMap},
+    response::IntoResponse,
+};
 use iceberg::spec::TableMetadataRef;
 use typed_builder::TypedBuilder;
 use xxhash_rust::xxh3::xxh3_64;
@@ -102,16 +105,17 @@ pub struct CommitTransactionRequest {
     pub table_changes: Vec<CommitTableRequest>,
 }
 
+#[must_use]
 pub fn create_etag(text: &str) -> String {
-   let hash = xxh3_64(text.as_bytes());
-    format!("\"{:x}\"", hash)
+    let hash = xxh3_64(text.as_bytes());
+    format!("\"{hash:x}\"")
 }
 
 #[cfg(feature = "axum")]
 impl IntoResponse for LoadTableResult {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
         // self.metadata_location
-        let metadata_location = self.metadata_location.clone().unwrap_or("".to_string());
+        let metadata_location = self.metadata_location.clone().unwrap_or_default();
         let etag = create_etag(&metadata_location);
 
         let mut header = HeaderMap::new();
@@ -132,10 +136,9 @@ impl_into_response!(LoadCredentialsResponse);
 #[cfg(test)]
 #[cfg(feature = "axum")]
 mod tests {
-    use iceberg::spec::{FormatVersion, TableMetadata, TableMetadataBuilder, Schema};
-    
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
+
+    use iceberg::spec::{FormatVersion, Schema, TableMetadata, TableMetadataBuilder};
 
     use super::*;
 
@@ -145,7 +148,7 @@ mod tests {
         let etag = create_etag("Hello World");
         assert_eq!(etag, "\"e34615aade2e6333\"");
     }
-    
+
     #[test]
     #[cfg(feature = "axum")]
     fn test_load_table_result_into_response() {
@@ -168,10 +171,7 @@ mod tests {
     }
 
     fn create_table_metadata_mock() -> Arc<TableMetadata> {
-        let schema = Schema::builder()
-            .with_schema_id(0)
-            .build()
-            .unwrap();
+        let schema = Schema::builder().with_schema_id(0).build().unwrap();
 
         let unbound_spec = UnboundPartitionSpec::default();
 
@@ -189,13 +189,18 @@ mod tests {
             "memory://dummy".to_string(),
             FormatVersion::V2,
             props,
-        ).unwrap();
+        )
+        .unwrap();
         builder = builder.add_schema(schema.clone()).unwrap();
         builder = builder.set_current_schema(0).unwrap();
         builder = builder.add_partition_spec(unbound_spec).unwrap();
-        builder = builder.set_default_partition_spec(TableMetadataBuilder::LAST_ADDED).unwrap();
+        builder = builder
+            .set_default_partition_spec(TableMetadataBuilder::LAST_ADDED)
+            .unwrap();
         builder = builder.add_sort_order(sort_order).unwrap();
-        builder = builder.set_default_sort_order(TableMetadataBuilder::LAST_ADDED as i64).unwrap();
+        builder = builder
+            .set_default_sort_order(i64::from(TableMetadataBuilder::LAST_ADDED))
+            .unwrap();
 
         let build_result: TableMetadata = builder.build().unwrap().into();
         build_result.into()

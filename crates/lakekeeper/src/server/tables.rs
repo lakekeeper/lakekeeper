@@ -39,8 +39,8 @@ use crate::{
                 tables::{DataAccessMode, LoadTableFilters},
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest,
-                RenameTableRequest, Result, TableIdent, TableParameters, LoadTableResultOrNotModified,
+                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
@@ -369,7 +369,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
         etags: Vec<String>,
     ) -> Result<LoadTableResultOrNotModified> {
-        load_table::load_table(parameters, data_access, filters, state, request_metadata, etags).await
+        load_table::load_table(
+            parameters,
+            data_access,
+            filters,
+            state,
+            request_metadata,
+            etags,
+        )
+        .await
     }
 
     async fn load_table_credentials(
@@ -1743,7 +1751,8 @@ pub(crate) mod test {
                 types::{PageToken, Prefix},
                 v1::{
                     tables::{LoadTableFilters, TablesService as _},
-                    DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters, LoadTableResultOrNotModified
+                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                    NamespaceParameters, TableParameters,
                 },
             },
             management::v1::{
