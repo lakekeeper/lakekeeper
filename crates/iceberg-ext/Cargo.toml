@@ -32,7 +32,7 @@ serde_with = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["valuable"] }
 typed-builder = { workspace = true }
 url = { workspace = true }
 utoipa = { workspace = true }
