@@ -73,7 +73,7 @@ pub mod v1 {
             management::v1::{
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::UpdateRoleExternalIdRequest,
+                role::UpdateRoleSourceSystemRequest,
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
                     ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
@@ -518,21 +518,21 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
         put,
         tag = "role",
-        path = ManagementV1Endpoint::UpdateRoleExternalId.path(),
+        path = ManagementV1Endpoint::UpdateRoleSourceSystem.path(),
         params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = "Project ID")),
-        request_body = UpdateRoleExternalIdRequest,
+        request_body = UpdateRoleSourceSystemRequest,
         responses(
-            (status = 200, description = "Role External ID set successfully", body = Role),
+            (status = 200, description = "Role Source System updated successfully", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
-    async fn set_role_external_id<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    async fn update_role_source_system<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-        Json(request): Json<UpdateRoleExternalIdRequest>,
+        Json(request): Json<UpdateRoleSourceSystemRequest>,
     ) -> Result<(StatusCode, Json<Arc<Role>>)> {
-        ApiServer::<C, A, S>::update_role_external_id(api_context, metadata, role_id, request)
+        ApiServer::<C, A, S>::update_role_source_system(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
     }
@@ -1791,8 +1791,8 @@ pub mod v1 {
                     get(get_role).post(update_role).delete(delete_role),
                 )
                 .route(
-                    ManagementV1Endpoint::UpdateRoleExternalId.path_in_management_v1(),
-                    put(set_role_external_id),
+                    ManagementV1Endpoint::UpdateRoleSourceSystem.path_in_management_v1(),
+                    put(update_role_source_system),
                 )
                 .route("/search/role", post(search_role))
                 .route(

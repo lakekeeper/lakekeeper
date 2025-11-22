@@ -20,7 +20,7 @@ use crate::{
         },
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse},
+            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{
@@ -133,6 +133,16 @@ where
     async fn rollback(self) -> Result<()>;
 
     fn transaction(&mut self) -> Self::Transaction<'_>;
+}
+
+#[derive(Debug, typed_builder::TypedBuilder)]
+pub struct CatalogCreateRoleRequest<'a> {
+    pub role_id: RoleId,
+    pub role_name: &'a str,
+    #[builder(default)]
+    pub description: Option<&'a str>,
+    #[builder(default)]
+    pub source_id: Option<&'a str>,
 }
 
 #[async_trait::async_trait]
@@ -478,14 +488,11 @@ where
     ) -> std::result::Result<ViewInfo, CommitViewError>;
 
     // ---------------- Role Management API ----------------
-    async fn create_role_impl<'a>(
-        role_id: RoleId,
+    async fn create_roles_impl<'a>(
         project_id: &ProjectId,
-        role_name: &str,
-        description: Option<&str>,
-        external_id: Option<&str>,
+        roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role, CreateRoleError>;
+    ) -> Result<Vec<Role>, CreateRoleError>;
 
     /// If description is None, the description must be removed.
     /// If `external_id` is None, the `external_id` remains unchanged.
@@ -497,26 +504,27 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Role, UpdateRoleError>;
 
-    async fn set_role_external_id_impl<'a>(
+    async fn set_role_source_system_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
-        external_id: Option<&str>,
+        request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Role, UpdateRoleError>;
 
-    async fn list_roles_impl<'a>(
-        filter_project_id: Option<ProjectId>,
-        filter_role_id: Option<Vec<RoleId>>,
-        filter_name: Option<String>,
+    async fn list_roles_impl(
+        project_id: &ProjectId,
+        filter: CatalogListRolesFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;
 
-    async fn delete_role_impl<'a>(
+    /// Returns the list of deleted role ids.
+    async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
-        role_id: RoleId,
+        role_id_filter: Option<&[RoleId]>,
+        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<(), DeleteRoleError>;
+    ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
     async fn search_role_impl(
         project_id: &ProjectId,

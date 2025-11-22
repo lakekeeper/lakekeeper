@@ -1523,14 +1523,6 @@ paths:
       description: Returns all roles in the project that the current user has access to view.
       operationId: list_roles
       parameters:
-        - name: name
-          in: query
-          description: Search for a specific role name
-          required: false
-          schema:
-            type:
-              - string
-              - 'null'
         - name: pageToken
           in: query
           description: Next page token
@@ -1555,6 +1547,14 @@ paths:
           description: |-
             Project ID from which roles should be listed
             Deprecated: Please use the `x-project-id` header instead.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: sourceSystem
+          in: query
+          description: Filter by source system
           required: false
           schema:
             type:
@@ -1774,12 +1774,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/role/{role_id}/external-id:
+  /management/v1/role/{role_id}/source-system:
     put:
       tags:
         - role
       summary: Set the external ID of a role
-      operationId: set_role_external_id
+      operationId: update_role_source_system
       parameters:
         - name: role_id
           in: path
@@ -1800,11 +1800,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateRoleExternalIdRequest'
+              $ref: '#/components/schemas/UpdateRoleSourceSystemRequest'
         required: true
       responses:
         '200':
-          description: Role External ID set successfully
+          description: Role Source System updated successfully
           content:
             application/json:
               schema:
@@ -3601,13 +3601,6 @@ components:
             - string
             - 'null'
           description: Description of the role
-        external-id:
-          type:
-            - string
-            - 'null'
-          description: |-
-            External ID of the role.
-            External IDs must be unique within a project.
         name:
           type: string
           description: Name of the role to create
@@ -3618,6 +3611,20 @@ components:
           description: |-
             Project ID in which the role is created.
             Deprecated: Please use the `x-project-id` header instead.
+        source-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Identifier of the role in an external system (source of truth).
+            `source-id` must be unique within the `source-system` in a project.
+        source-system:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Identifier of the role in an external system (source of truth).
+            Defaults to `lakekeeper` if not provided.
     CreateUserRequest:
       type: object
       properties:
@@ -5023,6 +5030,7 @@ components:
         - id
         - name
         - project-id
+        - source-system
         - created-at
       properties:
         created-at:
@@ -5034,13 +5042,6 @@ components:
             - string
             - 'null'
           description: Description of the role
-        external-id:
-          type:
-            - string
-            - 'null'
-          description: |-
-            External ID of the role.
-            Must be unique within a project.
         id:
           type: string
           format: uuid
@@ -5051,6 +5052,16 @@ components:
         project-id:
           type: string
           description: Project ID in which the role is created.
+        source-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Identifier of the role in an external system (source of truth).
+            `source-id` is guranteed to be unique within the `source-system` in a project.
+        source-system:
+          type: string
+          description: Identifier of the role in an external system (source of truth).
         updated-at:
           type:
             - string
@@ -6178,14 +6189,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RoleAssignment'
-    UpdateRoleExternalIdRequest:
-      type: object
-      properties:
-        external-id:
-          type:
-            - string
-            - 'null'
-          description: New External ID of the role.
     UpdateRoleRequest:
       type: object
       required:
@@ -6199,6 +6202,18 @@ components:
         name:
           type: string
           description: Name of the role to create
+    UpdateRoleSourceSystemRequest:
+      type: object
+      required:
+        - source-id
+        - source-system
+      properties:
+        source-id:
+          type: string
+          description: New Source ID of the role.
+        source-system:
+          type: string
+          description: New Source System of the role.
     UpdateServerAssignmentsRequest:
       type: object
       properties:

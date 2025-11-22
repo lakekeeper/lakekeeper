@@ -191,7 +191,7 @@ generate_endpoints! {
         DeleteRole(DELETE, "/management/v1/role/{role_id}"),
         GetRole(GET, "/management/v1/role/{role_id}"),
         UpdateRole(POST, "/management/v1/role/{role_id}"),
-        UpdateRoleExternalId(PUT, "/management/v1/role/{role_id}/external-id"),
+        UpdateRoleSourceSystem(PUT, "/management/v1/role/{role_id}/source-system"),
         GetRoleActions(GET, "/management/v1/role/{role_id}/actions"),
         CreateWarehouse(POST, "/management/v1/warehouse"),
         ListProjects(GET, "/management/v1/project-list"),

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            description,\n            project_id,\n            external_id,\n            created_at,\n            updated_at\n        FROM role r\n        WHERE ($1 OR project_id = $2)\n            AND ($3 OR id = any($4))\n            AND ($5 OR name ILIKE ('%' || $6 || '%'))\n            --- PAGINATION\n            AND ((r.created_at > $7 OR $7 IS NULL) OR (r.created_at = $7 AND r.id > $8))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $9\n        ",
+  "query": "\n        SELECT\n            id,\n            name,\n            description,\n            project_id,\n            source_id,\n            created_at,\n            updated_at\n        FROM role r\n        WHERE project_id = $1\n            AND ($2 OR id = any($3))\n            AND ($4 OR source_id = any($5))\n            --- PAGINATION\n            AND ((r.created_at > $6 OR $6 IS NULL) OR (r.created_at = $6 AND r.id > $7))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $8\n        ",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "external_id",
+        "name": "source_id",
         "type_info": "Text"
       },
       {
@@ -41,12 +41,11 @@
     ],
     "parameters": {
       "Left": [
-        "Bool",
         "Text",
         "Bool",
         "UuidArray",
         "Bool",
-        "Text",
+        "TextArray",
         "Timestamptz",
         "Uuid",
         "Int8"
@@ -62,5 +61,5 @@
       true
     ]
   },
-  "hash": "bff2d949e924e4e4e45e582f8d306f57907f23eda7b5bce25facf92d63b0fd1e"
+  "hash": "78199cbd718e4deee3e1ff17979dba537e044e4f1dfb1fdade11550e092ab4a4"
 }

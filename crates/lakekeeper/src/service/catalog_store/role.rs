@@ -6,12 +6,14 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::{
         iceberg::v1::PaginationQuery,
-        management::v1::role::{ListRolesResponse, Role, SearchRoleResponse},
+        management::v1::role::{
+            ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest,
+        },
     },
     service::{
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
-        CatalogBackendError, CatalogStore, InvalidPaginationToken, ProjectIdNotFoundError, RoleId,
-        Transaction,
+        CatalogBackendError, CatalogCreateRoleRequest, CatalogStore, InvalidPaginationToken,
+        ProjectIdNotFoundError, ResultCountMismatch, RoleId, Transaction,
     },
     ProjectId,
 };
@@ -55,25 +57,20 @@ define_transparent_error! {
         RoleNameAlreadyExists,
         CatalogBackendError,
         ProjectIdNotFoundError,
-        RoleExternalIdAlreadyExists,
+        RoleSourceIdConflict,
+        ResultCountMismatch
     ]
 }
 
-#[derive(thiserror::Error, PartialEq, Debug)]
-#[error("A role with name '{role_name}' already exists in project with id '{project_id}'")]
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("A role with the specified name already exists in the specified project")]
 pub struct RoleNameAlreadyExists {
-    pub role_name: String,
-    pub project_id: ProjectId,
     pub stack: Vec<String>,
 }
 impl RoleNameAlreadyExists {
     #[must_use]
-    pub fn new(role_name: impl Into<String>, project_id: ProjectId) -> Self {
-        Self {
-            role_name: role_name.into(),
-            project_id,
-            stack: Vec::new(),
-        }
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
     }
 }
 impl_error_stack_methods!(RoleNameAlreadyExists);
@@ -89,28 +86,22 @@ impl From<RoleNameAlreadyExists> for ErrorModel {
     }
 }
 
-#[derive(thiserror::Error, PartialEq, Debug)]
-#[error("A role with external ID '{external_id}' already exists in project with id '{project_id}'")]
-pub struct RoleExternalIdAlreadyExists {
-    pub external_id: String,
-    pub project_id: ProjectId,
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("A role with the specified combination of (project_id, source_id) already exists")]
+pub struct RoleSourceIdConflict {
     pub stack: Vec<String>,
 }
-impl RoleExternalIdAlreadyExists {
+impl RoleSourceIdConflict {
     #[must_use]
-    pub fn new(external_id: impl Into<String>, project_id: ProjectId) -> Self {
-        Self {
-            external_id: external_id.into(),
-            project_id,
-            stack: Vec::new(),
-        }
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
     }
 }
-impl_error_stack_methods!(RoleExternalIdAlreadyExists);
-impl From<RoleExternalIdAlreadyExists> for ErrorModel {
-    fn from(err: RoleExternalIdAlreadyExists) -> Self {
+impl_error_stack_methods!(RoleSourceIdConflict);
+impl From<RoleSourceIdConflict> for ErrorModel {
+    fn from(err: RoleSourceIdConflict) -> Self {
         ErrorModel {
-            r#type: "RoleExternalIdAlreadyExists".to_string(),
+            r#type: "RoleSourceIdConflict".to_string(),
             code: StatusCode::CONFLICT.as_u16(),
             message: err.to_string(),
             stack: err.stack,
@@ -165,7 +156,7 @@ define_transparent_error! {
     stack_message: "Error updating role in catalog",
     variants: [
         CatalogBackendError,
-        RoleExternalIdAlreadyExists,
+        RoleSourceIdConflict,
         RoleNameAlreadyExists,
         RoleIdNotFound,
     ]
@@ -176,8 +167,16 @@ define_transparent_error! {
     pub enum SearchRolesError,
     stack_message: "Error searching Roles catalog",
     variants: [
-        CatalogBackendError,
+        CatalogBackendError
     ]
+}
+
+#[derive(Debug, PartialEq, typed_builder::TypedBuilder)]
+pub struct CatalogListRolesFilter<'a> {
+    #[builder(default)]
+    pub role_ids: Option<&'a [RoleId]>,
+    #[builder(default)]
+    pub source_ids: Option<&'a [&'a str]>,
 }
 
 #[async_trait::async_trait]
@@ -186,24 +185,31 @@ where
     Self: CatalogStore,
 {
     async fn create_role<'a>(
-        role_id: RoleId,
         project_id: &ProjectId,
-        role_name: &str,
-        description: Option<&str>,
-        external_id: Option<&str>,
+        role_to_create: CatalogCreateRoleRequest<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<Role>, CreateRoleError> {
-        let role = Self::create_role_impl(
-            role_id,
-            project_id,
-            role_name,
-            description,
-            external_id,
-            transaction,
-        )
-        .await?;
-        let role_ref = Arc::new(role);
+        let role = Self::create_roles(project_id, vec![role_to_create], transaction).await?;
+        let n_roles = role.len();
+        let role_ref = role
+            .into_iter()
+            .next()
+            .ok_or_else(|| ResultCountMismatch::new(1, n_roles, "Create Role"))?;
+
         Ok(role_ref)
+    }
+
+    async fn create_roles<'a>(
+        project_id: &ProjectId,
+        roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<Arc<Role>>, CreateRoleError> {
+        let roles = Self::create_roles_impl(project_id, roles_to_create, transaction)
+            .await?
+            .into_iter()
+            .map(Arc::new)
+            .collect::<Vec<_>>();
+        Ok(roles)
     }
 
     async fn delete_role<'a>(
@@ -211,7 +217,13 @@ where
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), DeleteRoleError> {
-        Self::delete_role_impl(project_id, role_id, transaction).await
+        let deleted_roles =
+            Self::delete_roles_impl(project_id, Some(&[role_id]), None, transaction).await?;
+        if deleted_roles.is_empty() {
+            Err(RoleIdNotFound::new(role_id, project_id.clone()).into())
+        } else {
+            Ok(())
+        }
     }
 
     /// If description is None, the description must be removed.
@@ -228,32 +240,24 @@ where
     }
 
     /// Update the external ID of the role.
-    async fn set_role_external_id<'a>(
+    async fn set_role_source_system<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
-        external_id: Option<&str>,
+        request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<Role>, UpdateRoleError> {
-        Self::set_role_external_id_impl(project_id, role_id, external_id, transaction)
+        Self::set_role_source_system_impl(project_id, role_id, request, transaction)
             .await
             .map(Arc::new)
     }
 
-    async fn list_roles<'a>(
-        filter_project_id: Option<ProjectId>,
-        filter_role_id: Option<Vec<RoleId>>,
-        filter_name: Option<String>,
+    async fn list_roles(
+        project_id: &ProjectId,
+        filter: CatalogListRolesFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError> {
-        Self::list_roles_impl(
-            filter_project_id,
-            filter_role_id,
-            filter_name,
-            pagination,
-            catalog_state,
-        )
-        .await
+        Self::list_roles_impl(project_id, filter, pagination, catalog_state).await
     }
 
     async fn get_role_by_id(
@@ -261,10 +265,11 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleError> {
-        let roles = Self::list_roles_impl(
-            Some(project_id.clone()),
-            Some(vec![role_id]),
-            None,
+        let roles = Self::list_roles(
+            project_id,
+            CatalogListRolesFilter::builder()
+                .role_ids(Some(&[role_id]))
+                .build(),
             PaginationQuery::new_with_page_size(1),
             catalog_state,
         )

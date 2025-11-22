@@ -15,12 +15,13 @@ use crate::{
         authz::{
             AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction, CatalogRoleAction,
         },
-        CatalogRoleOps, CatalogStore, Result, RoleId, SecretStore, State, Transaction,
+        CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps, CatalogStore, Result,
+        RoleId, SecretStore, State, Transaction,
     },
     ProjectId,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateRoleRequest {
@@ -28,16 +29,19 @@ pub struct CreateRoleRequest {
     pub name: String,
     /// Description of the role
     #[serde(default)]
+    #[builder(default)]
     pub description: Option<String>,
     /// Project ID in which the role is created.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
+    #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
-    /// External ID of the role.
-    /// External IDs must be unique within a project.
+    /// Identifier of the role in an external system (source of truth).
+    /// `source-id` must be unique within a project.
     #[serde(default)]
-    pub external_id: Option<String>,
+    #[builder(default)]
+    pub source_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,12 +55,12 @@ pub struct Role {
     pub name: String,
     /// Description of the role
     pub description: Option<String>,
-    /// External ID of the role.
-    /// Must be unique within a project.
-    pub external_id: Option<String>,
     /// Project ID in which the role is created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
+    /// Identifier of the role in an external system (source of truth).
+    /// `source-id` is guranteed to be unique within the a project.
+    pub source_id: Option<String>,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the role was last updated
@@ -72,7 +76,7 @@ impl Role {
             id: role_id,
             name: format!("role-{role_id}"),
             description: Some("A randomly generated role".to_string()),
-            external_id: None,
+            source_id: None,
             project_id: ProjectId::new_random(),
             created_at: chrono::Utc::now(),
             updated_at: None,
@@ -101,9 +105,9 @@ pub struct UpdateRoleRequest {
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-pub struct UpdateRoleExternalIdRequest {
-    /// New External ID of the role.
-    pub external_id: Option<String>,
+pub struct UpdateRoleSourceSystemRequest {
+    /// New Source ID / External ID of the role.
+    pub source_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,9 +143,6 @@ pub struct SearchRoleRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListRolesQuery {
-    /// Search for a specific role name
-    #[serde(default)]
-    pub name: Option<String>,
     /// Next page token
     #[serde(default)]
     pub page_token: Option<String>,
@@ -152,8 +153,15 @@ pub struct ListRolesQuery {
     /// Project ID from which roles should be listed
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(value_type=Option::<String>))]
+    #[cfg_attr(feature = "open-api", param(value_type=Option<String>))]
     pub project_id: Option<ProjectId>,
+    /// Filter by role IDs
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", param(value_type=Option<Vec<uuid::Uuid>>))]
+    pub role_ids: Option<Vec<RoleId>>,
+    /// Filter by source IDs
+    #[serde(default)]
+    pub source_ids: Option<Vec<String>>,
 }
 
 impl ListRolesQuery {
@@ -214,15 +222,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let role_id = RoleId::new_random();
         let mut t: <C as CatalogStore>::Transaction =
             C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let user = C::create_role(
+        let catalog_create_role_request = CatalogCreateRoleRequest {
             role_id,
-            &project_id,
-            &request.name,
-            description.as_deref(),
-            request.external_id.as_deref(),
-            t.transaction(),
-        )
-        .await?;
+            role_name: &request.name,
+            description: description.as_deref(),
+            source_id: request.source_id.as_deref(),
+        };
+        let user =
+            C::create_role(&project_id, catalog_create_role_request, t.transaction()).await?;
         authorizer
             .create_role(&request_metadata, role_id, project_id)
             .await?;
@@ -236,7 +243,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<ListRolesResponse> {
         // -------------------- VALIDATIONS --------------------
-        let project_id = request_metadata.require_project_id(query.project_id.clone())?;
+        let pagination_query = query.pagination_query();
+        let ListRolesQuery {
+            role_ids,
+            source_ids,
+            page_token: _,
+            page_size: _,
+            project_id,
+        } = query;
+
+        let project_id = request_metadata.require_project_id(project_id)?;
 
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
@@ -249,12 +265,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // -------------------- Business Logic --------------------
-        let filter_role_id = None;
-        let pagination_query = query.pagination_query();
         C::list_roles(
-            Some(project_id),
-            filter_role_id,
-            query.name,
+            &project_id,
+            CatalogListRolesFilter::builder()
+                .role_ids(role_ids.as_deref())
+                .source_ids(
+                    source_ids
+                        .as_ref()
+                        .map(|ids| ids.iter().map(String::as_str).collect::<Vec<_>>())
+                        .as_deref(),
+                )
+                .build(),
             pagination_query,
             context.v1_state.catalog,
         )
@@ -263,6 +284,27 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 
     async fn get_role(
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        role_id: RoleId,
+    ) -> Result<Arc<Role>> {
+        let authorizer = context.v1_state.authz;
+
+        let role = C::get_role_by_id(
+            &request_metadata.require_project_id(None)?,
+            role_id,
+            context.v1_state.catalog,
+        )
+        .await;
+
+        let role = authorizer
+            .require_role_action(&request_metadata, role, CatalogRoleAction::Read)
+            .await?;
+
+        Ok(role)
+    }
+
+    async fn get_role_by_source(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         role_id: RoleId,
@@ -375,11 +417,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Ok(role)
     }
 
-    async fn update_role_external_id(
+    async fn update_role_source_system(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         role_id: RoleId,
-        request: UpdateRoleExternalIdRequest,
+        request: UpdateRoleSourceSystemRequest,
     ) -> Result<Arc<Role>> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
@@ -393,13 +435,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // -------------------- Business Logic --------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let role = C::set_role_external_id(
-            &project_id,
-            role_id,
-            request.external_id.as_deref(),
-            t.transaction(),
-        )
-        .await?;
+        let role =
+            C::set_role_source_system(&project_id, role_id, &request, t.transaction()).await?;
         t.commit().await?;
         Ok(role)
     }
