@@ -125,15 +125,6 @@ jobs:
         with:
           node-version: 23
 
-      # Required for xxx
-      - name: Install libclang-dev
-        if: matrix.docker-build == false
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update
-            sudo apt-get install -y libclang-dev
-          fi
-
       - name: Build [Cargo]
         if: matrix.docker-build == false
         run: cargo build --all-features --release --locked --target ${{ matrix.target }}
