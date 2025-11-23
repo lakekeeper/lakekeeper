@@ -151,7 +151,7 @@ tower-http = { version = "^0.6", features = [
     "trace",
     "normalize-path",
 ] }
-tracing = { version = "^0.1", features = ["attributes"] }
+tracing = { version = "^0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.22.0"
@@ -169,6 +169,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 veil = "0.2.0"
 tracing-test = "0.2.5"
+valuable = "0.1.1"
 
 [profile.dev.build-override]
 debug-assertions = true
