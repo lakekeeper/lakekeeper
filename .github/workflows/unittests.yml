@@ -13,8 +13,8 @@ env:
   RUST_TOOLCHAIN: 1.88
 
 permissions:
-  contents: read  # Needed to checkout code
-  checks: write   # Needed for test reporting
+  contents: read # Needed to checkout code
+  checks: write # Needed for test reporting
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -82,6 +82,7 @@ jobs:
       - name: Cargo clippy
         run: just check-clippy
         env:
+          RUSTFLAGS: --cfg tracing_unstable -D warnings
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
   check-generated-openapi-matches:
@@ -147,7 +148,7 @@ jobs:
             -e "MINIO_ROOT_USER=minio-root-user" \
             -e "MINIO_ROOT_PASSWORD=minio-root-password" \
             minio/minio:RELEASE.2025-07-23T15-54-02Z server --console-address ":9001" /data
-      
+
       - name: Wait for Minio to be healthy
         shell: bash
         run: |
