@@ -1214,8 +1214,8 @@ impl OpenFGAAuthorizer {
             .iter()
             .map(|o| (o, &suffixes))
             .map(|(o, s)| async move {
-                let mut continuation_token = None;
                 for suffix in s {
+                    let mut continuation_token = None;
                     let user = format!("{fga_user_str}{suffix}");
                     while continuation_token != Some(String::new()) {
                         let response = self
