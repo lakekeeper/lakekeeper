@@ -342,7 +342,9 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
         } = error;
         let error_id = uuid::Uuid::now_v7();
         let source = source.map(|e| error_chain_vec(&*e)).unwrap_or_default();
-        let mut response = if code >= 500 || [401, 403, 424].contains(&code) {
+        // Hide stack from user for 5xx errors, only log internally.
+        // Log at error level for 5xx errors
+        let mut response = if code >= 500 {
             tracing::error!(%error_id, stack=stack.as_value(), %message, %r#type, code, source=source.as_value(), "Internal server error response");
             axum::Json(IcebergErrorResponse {
                 error: ErrorModel {
@@ -356,7 +358,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             .into_response()
         } else {
             // Log at info level for 4xx errors
-            tracing::info!(%error_id, stack=stack.as_value(), %message, %r#type, code, source=source.as_value(), "Internal server error response");
+            tracing::info!(%error_id, stack=stack.as_value(), %message, %r#type, code, source=source.as_value(), "Error response");
 
             let mut stack = stack;
             stack.push(format!("Error ID: {error_id}"));
