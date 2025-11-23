@@ -2,7 +2,7 @@
 FROM rust:alpine
 
 RUN apk update && apk upgrade
-RUN apk add --no-cache clang-dev ca-certificates gcc build-base curl perl nodejs npm git bash cmake pkgconf python3 linux-headers
+RUN apk add --no-cache llvm20 clang-dev ca-certificates gcc build-base curl perl nodejs npm git bash cmake pkgconf python3 linux-headers
 
 # ENV RUSTUP_HOME=/usr/local/rustup \
 #   CARGO_HOME=/usr/local/cargo \
