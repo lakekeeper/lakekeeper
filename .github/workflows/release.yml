@@ -14,7 +14,6 @@ on:
 env:
   RUST_BACKTRACE: short
   RUSTUP_MAX_RETRIES: 10
-  RUSTFLAGS: --cfg tracing_unstable -D warnings
   # Publish the build output as CI artifact to inspect
   preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'lakekeeper/lakekeeper' }}
 
@@ -102,7 +101,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     env:
-      RUSTFLAGS: ${{ matrix.rustflags || '' }}
+      RUSTFLAGS: --cfg tracing_unstable -D warnings
 
     steps:
       - name: Checkout
