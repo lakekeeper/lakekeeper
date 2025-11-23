@@ -125,6 +125,7 @@ jobs:
         with:
           node-version: 23
 
+      # Required for xxx
       - name: Install libclang-dev
         if: matrix.docker-build == false
         run: |
