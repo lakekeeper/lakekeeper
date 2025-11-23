@@ -20,7 +20,7 @@ use crate::{
         },
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse},
+            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{
@@ -62,6 +62,8 @@ mod view;
 pub use view::*;
 mod table;
 pub use table::*;
+mod role;
+pub use role::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -131,6 +133,16 @@ where
     async fn rollback(self) -> Result<()>;
 
     fn transaction(&mut self) -> Self::Transaction<'_>;
+}
+
+#[derive(Debug, typed_builder::TypedBuilder)]
+pub struct CatalogCreateRoleRequest<'a> {
+    pub role_id: RoleId,
+    pub role_name: &'a str,
+    #[builder(default)]
+    pub description: Option<&'a str>,
+    #[builder(default)]
+    pub source_id: Option<&'a str>,
 }
 
 #[async_trait::async_trait]
@@ -476,41 +488,48 @@ where
     ) -> std::result::Result<ViewInfo, CommitViewError>;
 
     // ---------------- Role Management API ----------------
-    async fn create_role<'a>(
-        role_id: RoleId,
+    async fn create_roles_impl<'a>(
         project_id: &ProjectId,
-        role_name: &str,
-        description: Option<&str>,
+        roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role>;
+    ) -> Result<Vec<Role>, CreateRoleError>;
 
-    /// Return Ok(None) if the role does not exist.
-    async fn update_role<'a>(
+    /// If description is None, the description must be removed.
+    async fn update_role_impl<'a>(
+        project_id: &ProjectId,
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<Role>>;
+    ) -> Result<Role, UpdateRoleError>;
 
-    async fn list_roles<'a>(
-        filter_project_id: Option<ProjectId>,
-        filter_role_id: Option<Vec<RoleId>>,
-        filter_name: Option<String>,
+    async fn set_role_source_system_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        request: &UpdateRoleSourceSystemRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Role, UpdateRoleError>;
+
+    async fn list_roles_impl(
+        project_id: &ProjectId,
+        filter: CatalogListRolesFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRolesResponse>;
+    ) -> Result<ListRolesResponse, ListRolesError>;
 
-    /// Return Ok(None) if the role does not exist.
-    async fn delete_role<'a>(
-        role_id: RoleId,
+    /// Returns the list of deleted role ids.
+    async fn delete_roles_impl<'a>(
+        project_id: &ProjectId,
+        role_id_filter: Option<&[RoleId]>,
+        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<()>>;
+    ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
-    async fn search_role(
+    async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
         catalog_state: Self::State,
-    ) -> Result<SearchRoleResponse>;
+    ) -> Result<SearchRoleResponse, SearchRolesError>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(

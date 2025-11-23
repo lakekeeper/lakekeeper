@@ -6,7 +6,7 @@ use std::{
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
-use crate::service::{error_chain_fmt, impl_error_stack_methods, Actor};
+use crate::service::{error_chain_fmt, impl_error_stack_methods, Actor, InternalErrorMessage};
 
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum BackendUnavailableOrCountMismatch {
@@ -68,13 +68,12 @@ impl From<AuthorizationCountMismatch> for ErrorModel {
             type_name,
         } = err;
 
-        tracing::error!("Authorization count mismatch for {type_name} batch check: expected {expected_authorizations}, got {actual_authorizations}.");
-
         ErrorModel {
             r#type: "AuthorizationCountMismatch".to_string(),
             code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             message: "Authorization service returned invalid response".to_string(),
-            source: None,
+            source: Some(Box::new(
+                InternalErrorMessage(format!("Authorization count mismatch for {type_name} batch check: expected {expected_authorizations}, got {actual_authorizations}.")))),
             stack: vec![],
         }
     }
@@ -189,14 +188,12 @@ impl From<AuthorizationBackendUnavailable> for ErrorModel {
     fn from(err: AuthorizationBackendUnavailable) -> Self {
         let AuthorizationBackendUnavailable { stack, source } = err;
 
-        tracing::error!("Authorization backend error: {source}");
-
         ErrorModel {
             r#type: "AuthorizationBackendError".to_string(),
             code: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
             message: "Authorization service is unavailable".to_string(),
             stack,
-            source: None,
+            source: Some(source),
         }
     }
 }

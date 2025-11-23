@@ -477,11 +477,12 @@ paths:
             format: uuid
         - name: project_id
           in: path
-          description: Project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: true
           schema:
-            type: string
-            format: uuid
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Server Relations
@@ -508,11 +509,12 @@ paths:
               $ref: '#/components/schemas/ProjectRelation'
         - name: project_id
           in: path
-          description: Project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: true
           schema:
-            type: string
-            format: uuid
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -529,11 +531,12 @@ paths:
       parameters:
         - name: project_id
           in: path
-          description: Project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: true
           schema:
-            type: string
-            format: uuid
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1276,7 +1279,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: false
           schema:
             type:
@@ -1328,7 +1331,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: false
           schema:
             type:
@@ -1389,7 +1392,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: false
           schema:
             type:
@@ -1417,7 +1420,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID (optional; falls back to the default project if not provided)
           required: false
           schema:
             type:
@@ -1523,14 +1526,6 @@ paths:
       description: Returns all roles in the project that the current user has access to view.
       operationId: list_roles
       parameters:
-        - name: name
-          in: query
-          description: Search for a specific role name
-          required: false
-          schema:
-            type:
-              - string
-              - 'null'
         - name: pageToken
           in: query
           description: Next page token
@@ -1560,6 +1555,35 @@ paths:
             type:
               - string
               - 'null'
+        - name: roleIds
+          in: query
+          description: Filter by role IDs
+          required: false
+          schema:
+            type:
+              - array
+              - 'null'
+            items:
+              type: string
+              format: uuid
+        - name: sourceIds
+          in: query
+          description: Filter by source IDs
+          required: false
+          schema:
+            type:
+              - array
+              - 'null'
+            items:
+              type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: List of roles
@@ -1579,6 +1603,15 @@ paths:
       summary: Create Role
       description: Creates a role with the specified name, description, and permissions.
       operationId: create_role
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1613,6 +1646,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Role details
@@ -1639,6 +1680,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1672,6 +1721,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '204':
           description: Role deleted successfully
@@ -1712,6 +1769,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -1725,6 +1790,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/source-system:
+    put:
+      tags:
+        - role
+      summary: Set the source system for a role
+      operationId: update_role_source_system
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleSourceSystemRequest'
+        required: true
+      responses:
+        '200':
+          description: Role Source System updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/search/role:
     post:
       tags:
@@ -1732,6 +1838,15 @@ paths:
       summary: Search Role
       description: Performs a fuzzy search for roles based on the provided criteria.
       operationId: search_role
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1740,7 +1855,7 @@ paths:
         required: true
       responses:
         '200':
-          description: List of users
+          description: List of roles
           content:
             application/json:
               schema:
@@ -3512,6 +3627,13 @@ components:
           description: |-
             Project ID in which the role is created.
             Deprecated: Please use the `x-project-id` header instead.
+        source-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Identifier of the role in an external system (source of truth).
+            `source-id` must be unique within a project.
     CreateUserRequest:
       type: object
       properties:
@@ -4938,6 +5060,13 @@ components:
         project-id:
           type: string
           description: Project ID in which the role is created.
+        source-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Identifier of the role in an external system (source of truth).
+            `source-id` is guaranteed to be unique within a project.
         updated-at:
           type:
             - string
@@ -5224,7 +5353,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
-          description: List of users matching the search criteria
+          description: List of roles matching the search criteria
     SearchTabular:
       type: object
       required:
@@ -6078,6 +6207,14 @@ components:
         name:
           type: string
           description: Name of the role to create
+    UpdateRoleSourceSystemRequest:
+      type: object
+      required:
+        - source-id
+      properties:
+        source-id:
+          type: string
+          description: New Source ID / External ID of the role.
     UpdateServerAssignmentsRequest:
       type: object
       properties:

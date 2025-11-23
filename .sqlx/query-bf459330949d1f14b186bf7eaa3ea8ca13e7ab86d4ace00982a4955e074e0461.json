@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            description,\n            project_id,\n            created_at,\n            updated_at\n        FROM role r\n        WHERE ($1 OR project_id = $2)\n            AND ($3 OR id = any($4))\n            AND ($5 OR name ILIKE ('%' || $6 || '%'))\n            --- PAGINATION\n            AND ((r.created_at > $7 OR $7 IS NULL) OR (r.created_at = $7 AND r.id > $8))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $9\n        ",
+  "query": "\n        UPDATE role\n        SET name = $2, description = $3\n        WHERE id = $1 AND project_id = $4\n        RETURNING id, name, description, project_id, source_id, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -25,26 +25,26 @@
       },
       {
         "ordinal": 4,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Bool",
-        "Text",
-        "Bool",
-        "UuidArray",
-        "Bool",
-        "Text",
-        "Timestamptz",
         "Uuid",
-        "Int8"
+        "Text",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -52,9 +52,10 @@
       false,
       true,
       false,
+      true,
       false,
       true
     ]
   },
-  "hash": "9b8c642f39d9cf777c68cebd580739ec10af1030ef3a315eedcd3abe30bfca4a"
+  "hash": "bf459330949d1f14b186bf7eaa3ea8ca13e7ab86d4ace00982a4955e074e0461"
 }

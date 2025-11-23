@@ -10,7 +10,7 @@ use super::{
     ViewId, WarehouseId,
 };
 use crate::{
-    api::iceberg::v1::Result,
+    api::{iceberg::v1::Result, management::v1::role::Role},
     request_metadata::RequestMetadata,
     service::{
         Actor, AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy, NamespaceWithParent,
@@ -477,7 +477,7 @@ where
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        roles_with_actions: &[(RoleId, Self::RoleAction)],
+        roles_with_actions: &[(&Role, Self::RoleAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     async fn are_allowed_server_actions_impl(
@@ -654,7 +654,10 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::service::{health::Health, Namespace};
+    use crate::{
+        api::management::v1::role::Role,
+        service::{health::Health, Namespace},
+    };
 
     #[derive(Clone, Debug)]
     /// A mock of the [`Authorizer`] that allows to hide objects.
@@ -805,15 +808,15 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
-            roles_with_actions: &[(RoleId, Self::RoleAction)],
+            roles_with_actions: &[(&Role, Self::RoleAction)],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
             let results: Vec<bool> = roles_with_actions
                 .iter()
-                .map(|(role_id, action)| {
+                .map(|(role, action)| {
                     if self.action_is_blocked(format!("role:{action}").as_str()) {
                         return false;
                     }
-                    self.check_available(format!("role:{role_id}").as_str())
+                    self.check_available(format!("role:{}", role.id).as_str())
                 })
                 .collect();
             Ok(results)
@@ -1067,7 +1070,7 @@ pub(crate) mod tests {
             }
         };
     }
-    test_block_action!(role, CatalogRoleAction::Delete, RoleId::new_random());
+    test_block_action!(role, CatalogRoleAction::Delete, &Role::new_random());
     test_block_action!(
         project,
         CatalogProjectAction::Rename,

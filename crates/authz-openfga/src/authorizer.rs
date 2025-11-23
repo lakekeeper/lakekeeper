@@ -5,7 +5,7 @@ use std::{
 
 use futures::future::try_join_all;
 use lakekeeper::{
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
+    api::{management::v1::role::Role, ApiContext, IcebergErrorResponse, RequestMetadata},
     async_trait,
     axum::Router,
     service::{
@@ -189,7 +189,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        roles_with_actions: &[(RoleId, Self::RoleAction)],
+        roles_with_actions: &[(&Role, Self::RoleAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         // Every authenticated user can read role metadata.
         // This does not include assignments to the role.
@@ -210,7 +210,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 batch_items.push(CheckRequestTupleKey {
                     user: user.clone(),
                     relation: action.to_string(),
-                    object: role.to_openfga(),
+                    object: role.id.to_openfga(),
                 });
             }
         }
@@ -222,7 +222,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 let unique_roles: HashSet<_> = roles_with_actions
                     .iter()
                     .filter(|(_, action)| *action != RoleRelation::CanRead)
-                    .map(|(role, _)| role.to_openfga())
+                    .map(|(role, _)| role.id.to_openfga())
                     .collect();
 
                 unique_roles

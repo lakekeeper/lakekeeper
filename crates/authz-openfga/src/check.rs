@@ -678,11 +678,9 @@ mod tests {
             let operator_metadata = RequestMetadata::test_user(operator_id.clone());
 
             let role_id = ApiServer::create_role(
-                CreateRoleRequest {
-                    name: "test_role".to_string(),
-                    description: None,
-                    project_id: None,
-                },
+                CreateRoleRequest::builder()
+                    .name("test_role".to_string())
+                    .build(),
                 ctx.clone(),
                 operator_metadata.clone(),
             )
