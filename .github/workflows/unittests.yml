@@ -11,6 +11,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.88
+  RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
   contents: read # Needed to checkout code
@@ -82,7 +83,6 @@ jobs:
       - name: Cargo clippy
         run: just check-clippy
         env:
-          RUSTFLAGS: --cfg tracing_unstable -D warnings
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
   check-generated-openapi-matches:
