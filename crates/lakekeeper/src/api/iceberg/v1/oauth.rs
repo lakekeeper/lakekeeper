@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use axum::{extract::State, routing::post, Extension, Form, Router};
+use axum::{Extension, Form, Router, extract::State, routing::post};
 use iceberg_ext::catalog::rest::{OAuthTokenRequest, OAuthTokenResponse};
 
 use crate::{

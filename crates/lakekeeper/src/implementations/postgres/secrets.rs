@@ -5,12 +5,12 @@ use sqlx::PgPool;
 
 use super::ReadWrite;
 use crate::{
+    CONFIG,
     api::{ErrorModel, Result},
     service::{
         health::{Health, HealthExt},
         secrets::{Secret, SecretId, SecretStore},
     },
-    CONFIG,
 };
 
 #[derive(Debug, Clone)]
@@ -175,7 +175,7 @@ impl SecretStore for SecretsState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::storage::{s3::S3AccessKeyCredential, S3Credential, StorageCredential};
+    use crate::service::storage::{S3Credential, StorageCredential, s3::S3AccessKeyCredential};
 
     #[sqlx::test]
     async fn test_write_read_secret(pool: sqlx::PgPool) {

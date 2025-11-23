@@ -6,19 +6,21 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    storage::StorageProfile, NamespaceId, ProjectId, RoleId, TableId, ViewId, WarehouseId,
+    NamespaceId, ProjectId, RoleId, TableId, ViewId, WarehouseId, storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
     TableIdent, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
 use crate::{
+    SecretId,
     api::{
         iceberg::v1::{
-            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
-            PaginationQuery,
+            PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags,
+            tables::LoadTableFilters,
         },
         management::v1::{
+            DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
@@ -27,18 +29,16 @@ use crate::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
                 WarehouseStatisticsResponse,
             },
-            DeleteWarehouseQuery, TabularType,
         },
     },
     service::{
+        TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
         },
-        TabularId, TabularIdentBorrowed,
     },
-    SecretId,
 };
 mod namespace;
 pub use namespace::*;
@@ -150,13 +150,13 @@ pub trait CatalogStore
 where
     Self: std::fmt::Debug + Clone + Send + Sync + 'static,
     Self::State: for<'a> StateOrTransaction<
-        Self::State,
-        <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    >,
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
     for<'a> <Self::Transaction as Transaction<Self::State>>::Transaction<'a>: StateOrTransaction<
-        Self::State,
-        <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    >,
+            Self::State,
+            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        >,
 {
     type Transaction: Transaction<Self::State>;
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
@@ -318,9 +318,9 @@ where
     ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
     where
         SOT: StateOrTransaction<
-            Self::State,
-            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+            >,
         'a: 'b;
 
     // Return the specified namespaces and all parents
@@ -331,9 +331,9 @@ where
     ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
     where
         SOT: StateOrTransaction<
-            Self::State,
-            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+            >,
         'a: 'b;
 
     async fn drop_namespace_impl<'a>(

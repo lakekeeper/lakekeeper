@@ -5,12 +5,12 @@ pub use postgres::CatalogState;
 #[cfg(feature = "sqlx-postgres")]
 use crate::implementations::postgres::{get_reader_pool, get_writer_pool};
 use crate::{
+    SecretId,
     service::{
+        SecretStore,
         health::{Health, HealthExt},
         secrets::{Secret, SecretInStorage},
-        SecretStore,
     },
-    SecretId,
 };
 
 #[cfg(feature = "sqlx-postgres")]

@@ -3,14 +3,14 @@ use std::{fmt::Formatter, sync::Arc};
 use anyhow::Context;
 use async_trait::async_trait;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::{sync::RwLock, time::Sleep};
 use uuid::Uuid;
 use vaultrs::{
     client::{Client, VaultClient},
     error::ClientError,
 };
-use vaultrs_login::{engines::userpass::UserpassLogin, LoginMethod};
+use vaultrs_login::{LoginMethod, engines::userpass::UserpassLogin};
 
 use crate::{
     api::{ErrorModel, Result},
@@ -268,8 +268,8 @@ mod tests {
     mod kv2_integration_tests {
         use super::super::*;
         use crate::{
-            service::storage::{s3::S3AccessKeyCredential, S3Credential, StorageCredential},
             CONFIG,
+            service::storage::{S3Credential, StorageCredential, s3::S3AccessKeyCredential},
         };
 
         #[tokio::test]

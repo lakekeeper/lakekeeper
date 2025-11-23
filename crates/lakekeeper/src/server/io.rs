@@ -211,32 +211,39 @@ mod tests {
         // Assert that one of the items contains file1
         assert!(list_f1.iter().any(|entry| entry.as_str().contains("file1")));
         // Assert that "folder-2" is nowhere in the list
-        assert!(!list_f1
-            .iter()
-            .any(|entry| entry.as_str().contains("folder-2")));
+        assert!(
+            !list_f1
+                .iter()
+                .any(|entry| entry.as_str().contains("folder-2"))
+        );
 
         // List full location - we should see both folders
         let list = list_simple(&io, &location).await;
-        assert!(list
-            .iter()
-            .any(|entry| entry.as_str().contains("folder/file1")));
-        assert!(list
-            .iter()
-            .any(|entry| entry.as_str().contains("folder-2/file2")));
+        assert!(
+            list.iter()
+                .any(|entry| entry.as_str().contains("folder/file1"))
+        );
+        assert!(
+            list.iter()
+                .any(|entry| entry.as_str().contains("folder-2/file2"))
+        );
 
         // Remove folder 1 - file 2 should still be here:
         remove_all(&io, &folder_1).await.unwrap();
-        assert!(read_file(&io, &file_2, CompressionCodec::Gzip)
-            .await
-            .is_ok());
+        assert!(
+            read_file(&io, &file_2, CompressionCodec::Gzip)
+                .await
+                .is_ok()
+        );
 
         let list = list_simple(&io, &location).await;
         // Assert that "folder/" / file1 is gone
         assert!(!list.iter().any(|entry| entry.as_str().contains("file1")));
         // and that "folder-2/" / file2 is still here
-        assert!(list
-            .iter()
-            .any(|entry| entry.as_str().contains("folder-2/file2")));
+        assert!(
+            list.iter()
+                .any(|entry| entry.as_str().contains("folder-2/file2"))
+        );
 
         // Listing location 1 should return an empty list
         let folder_1_list = list_simple(&io, &folder_1).await;
@@ -252,7 +259,7 @@ mod tests {
     pub(crate) mod aws_integration_tests {
         use super::*;
         use crate::service::storage::{
-            s3::test::aws_integration_tests::get_storage_profile, StorageCredential, StorageProfile,
+            StorageCredential, StorageProfile, s3::test::aws_integration_tests::get_storage_profile,
         };
 
         #[tokio::test]
@@ -268,8 +275,8 @@ mod tests {
     pub(crate) mod azure_integration_tests {
         use super::*;
         use crate::service::storage::{
-            az::test::azure_integration_tests::{azure_profile, client_creds},
             StorageCredential, StorageProfile,
+            az::test::azure_integration_tests::{azure_profile, client_creds},
         };
 
         #[tokio::test]
@@ -284,8 +291,8 @@ mod tests {
     pub(crate) mod gcs_integration_tests {
         use super::*;
         use crate::service::storage::{
-            gcs::test::gcs_integration_tests::get_storage_profile, StorageCredential,
-            StorageProfile,
+            StorageCredential, StorageProfile,
+            gcs::test::gcs_integration_tests::get_storage_profile,
         };
 
         #[tokio::test]

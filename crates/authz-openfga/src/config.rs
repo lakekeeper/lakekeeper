@@ -40,14 +40,12 @@ fn get_config() -> DynAppConfig {
         config = config.merge(env);
     }
 
-    let config = match config.extract::<DynAppConfig>() {
+    match config.extract::<DynAppConfig>() {
         Ok(c) => c,
         Err(e) => {
             panic!("Failed to extract OpenFGA config: {e}");
         }
-    };
-
-    config
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]

@@ -1,23 +1,23 @@
 use crate::{
     api::{
-        management::v1::{
-            server::{BootstrapRequest, Service as _, APACHE_LICENSE_STATUS},
-            warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
-            ApiServer,
-        },
         RequestMetadata,
+        management::v1::{
+            ApiServer,
+            server::{APACHE_LICENSE_STATUS, BootstrapRequest, Service as _},
+            warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
+        },
     },
     implementations::{
-        postgres::{migrations::migrate, PostgresBackend, SecretsState},
         CatalogState,
+        postgres::{PostgresBackend, SecretsState, migrations::migrate},
     },
     service::{
+        UserId,
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         namespace_cache::NamespaceCacheEndpointHook,
         storage::{StorageCredential, StorageProfile},
         warehouse_cache::WarehouseCacheEndpointHook,
-        UserId,
     },
 };
 
@@ -38,9 +38,9 @@ mod tasks;
 #[cfg(test)]
 mod warehouse_ops;
 use crate::{
+    CONFIG, WarehouseId,
     api::ApiContext,
-    service::{authz::Authorizer, tasks::TaskQueueRegistry, State},
-    WarehouseId, CONFIG,
+    service::{State, authz::Authorizer, tasks::TaskQueueRegistry},
 };
 
 #[cfg(test)]

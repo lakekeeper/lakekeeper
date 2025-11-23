@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, fmt::Debug};
 
-use super::{impl_properties, ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr};
+use super::{ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr, impl_properties};
 
 impl_properties!(TableProperties, TableProperty);
 

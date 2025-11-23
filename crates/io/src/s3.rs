@@ -4,8 +4,8 @@ use std::{
 };
 
 use aws_config::{
-    retry::RetryConfig, sts::AssumeRoleProvider, timeout::TimeoutConfig, AppName, BehaviorVersion,
-    SdkConfig,
+    AppName, BehaviorVersion, SdkConfig, retry::RetryConfig, sts::AssumeRoleProvider,
+    timeout::TimeoutConfig,
 };
 use aws_sdk_s3::config::{
     IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
@@ -20,7 +20,7 @@ use veil::Redact;
 mod s3_error;
 mod s3_location;
 mod s3_storage;
-pub use s3_location::{validate_bucket_name, InvalidBucketName, S3Location};
+pub use s3_location::{InvalidBucketName, S3Location, validate_bucket_name};
 pub use s3_storage::S3Storage;
 
 static IDENTITY_CACHE: LazyLock<SharedIdentityCache> =

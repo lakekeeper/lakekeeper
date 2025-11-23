@@ -6,18 +6,17 @@ use sqlx::PgPool;
 
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceService, NamespaceParameters},
-        management::v1::{namespace::NamespaceManagementService as _, ApiServer},
         RequestMetadata,
+        iceberg::v1::{NamespaceParameters, namespace::NamespaceService},
+        management::v1::{ApiServer, namespace::NamespaceManagementService as _},
     },
     implementations::postgres::PostgresBackend,
     server::CatalogServer,
     service::{
-        authz::AllowAllAuthorizer, namespace_cache::NAMESPACE_CACHE, CachePolicy,
-        CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest, NamespaceId, NamespaceVersion,
-        Transaction,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest, NamespaceId,
+        NamespaceVersion, Transaction, authz::AllowAllAuthorizer, namespace_cache::NAMESPACE_CACHE,
     },
-    tests::{memory_io_profile, random_request_metadata, SetupTestCatalog},
+    tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
 
 /// Test basic namespace creation
@@ -1261,10 +1260,12 @@ async fn test_cache_eviction_invalidates_mapping(pool: PgPool) {
         .into_iter()
         .map(unicase::UniCase::new)
         .collect();
-    assert!(IDENT_TO_ID_CACHE
-        .get(&(warehouse_id, cache_key.clone()))
-        .await
-        .is_some());
+    assert!(
+        IDENT_TO_ID_CACHE
+            .get(&(warehouse_id, cache_key.clone()))
+            .await
+            .is_some()
+    );
 
     // Invalidate main cache entry
     NAMESPACE_CACHE.invalidate(&id).await;

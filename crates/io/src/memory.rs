@@ -5,8 +5,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    error::ErrorKind, DeleteBatchError, DeleteError, IOError, InvalidLocationError,
-    LakekeeperStorage, Location, ReadError, WriteError,
+    DeleteBatchError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
+    ReadError, WriteError, error::ErrorKind,
 };
 
 /// In-memory storage implementation for testing and development purposes.
@@ -276,7 +276,7 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
 
-    use crate::{memory::MemoryStorage, LakekeeperStorage};
+    use crate::{LakekeeperStorage, memory::MemoryStorage};
 
     #[tokio::test]
     async fn test_memory_storage_basic_operations() {

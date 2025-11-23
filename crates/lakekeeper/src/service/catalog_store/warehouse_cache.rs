@@ -7,19 +7,19 @@ use axum_prometheus::metrics;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
+use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
 #[cfg(feature = "router")]
 use crate::{
+    SecretId,
     api::{
+        RequestMetadata,
         management::v1::warehouse::{
             RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
             UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
         },
-        RequestMetadata,
     },
     service::endpoint_hooks::EndpointHook,
-    SecretId,
 };
-use crate::{service::ResolvedWarehouse, ProjectId, WarehouseId, CONFIG};
 
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
 const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
@@ -659,15 +659,21 @@ mod tests {
         assert!(warehouse_cache_get_by_id(warehouse3_id).await.is_some());
 
         // Verify all are cached by name
-        assert!(warehouse_cache_get_by_name("warehouse1", &project_id)
-            .await
-            .is_some());
-        assert!(warehouse_cache_get_by_name("warehouse2", &project_id)
-            .await
-            .is_some());
-        assert!(warehouse_cache_get_by_name("warehouse3", &project_id)
-            .await
-            .is_some());
+        assert!(
+            warehouse_cache_get_by_name("warehouse1", &project_id)
+                .await
+                .is_some()
+        );
+        assert!(
+            warehouse_cache_get_by_name("warehouse2", &project_id)
+                .await
+                .is_some()
+        );
+        assert!(
+            warehouse_cache_get_by_name("warehouse3", &project_id)
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]

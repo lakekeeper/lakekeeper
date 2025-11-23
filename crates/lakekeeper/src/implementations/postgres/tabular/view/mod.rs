@@ -11,16 +11,16 @@ use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
+    WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler as _,
-        tabular::{create_tabular, CreateTabular, TabularType},
+        tabular::{CreateTabular, TabularType, create_tabular},
     },
     service::{
         CatalogBackendError, ConversionError, CreateViewError, CreateViewVersionError,
         InternalParseLocationError, NamespaceId, SerializationError, UnexpectedTabularInResponse,
         ViewInfo,
     },
-    WarehouseId,
 };
 
 pub(crate) async fn create_view(
@@ -399,8 +399,8 @@ impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
 #[cfg(test)]
 pub(crate) mod tests {
     use iceberg::{
-        spec::{ViewMetadata, ViewMetadataBuilder},
         NamespaceIdent, TableIdent,
+        spec::{ViewMetadata, ViewMetadataBuilder},
     };
     use iceberg_ext::configs::ParseFromStr;
     use lakekeeper_io::Location;
@@ -409,22 +409,22 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use crate::{
+        WarehouseId,
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
-            namespace::tests::initialize_namespace,
-            tabular::{mark_tabular_as_deleted, view::load_view, TabularType},
-            warehouse::test::initialize_warehouse,
             CatalogState, PostgresBackend,
+            namespace::tests::initialize_namespace,
+            tabular::{TabularType, mark_tabular_as_deleted, view::load_view},
+            warehouse::test::initialize_warehouse,
         },
         service::{
-            tasks::{
-                tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
-                EntityId, TaskMetadata,
-            },
             CreateViewError, DropTabularError, LoadViewError, TabularId, TabularIdentBorrowed,
             TabularListFlags, ViewId,
+            tasks::{
+                EntityId, TaskMetadata,
+                tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            },
         },
-        WarehouseId,
     };
 
     pub(crate) fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {

@@ -1,10 +1,10 @@
 use std::{future::Future, pin::Pin};
 
 use axum_prometheus::{
-    metrics,
-    metrics_exporter_prometheus::{Matcher, PrometheusBuilder},
-    utils, PrometheusMetricLayer, PrometheusMetricLayerBuilder,
     AXUM_HTTP_REQUESTS_DURATION_SECONDS, PREFIXED_HTTP_REQUESTS_DURATION_SECONDS,
+    PrometheusMetricLayer, PrometheusMetricLayerBuilder, metrics,
+    metrics_exporter_prometheus::{Matcher, PrometheusBuilder},
+    utils,
 };
 
 use crate::CONFIG;

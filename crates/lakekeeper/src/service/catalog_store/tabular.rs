@@ -6,18 +6,18 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{Location, LocationParseError};
 
 use crate::{
+    WarehouseId,
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::TabularType,
     },
     service::{
-        authz::ActionOnTableOrView, define_simple_error, define_transparent_error,
-        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId, CatalogBackendError,
-        CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken, NamespaceId,
-        NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed, TabularIdentOwned,
-        Transaction, ViewId, WarehouseVersion,
+        CatalogBackendError, CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken,
+        NamespaceId, NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed,
+        TabularIdentOwned, Transaction, ViewId, WarehouseVersion, authz::ActionOnTableOrView,
+        define_simple_error, define_transparent_error, impl_error_stack_methods,
+        impl_from_with_detail, tasks::TaskId,
     },
-    WarehouseId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -758,11 +758,7 @@ impl TabularIdentOrId {
 
     #[must_use]
     pub fn type_str(&self) -> &'static str {
-        if self.is_table() {
-            "table"
-        } else {
-            "view"
-        }
+        if self.is_table() { "table" } else { "view" }
     }
 }
 impl std::fmt::Display for TabularIdentOrId {

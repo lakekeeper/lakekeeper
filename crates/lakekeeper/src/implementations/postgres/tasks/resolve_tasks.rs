@@ -3,13 +3,13 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
+    WarehouseId,
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
+        InvalidTabularIdentifier, ResolvedTask, TableNamed, ViewNamed,
         build_tabular_ident_from_vec,
         tasks::{TaskId, TaskQueueName},
-        InvalidTabularIdentifier, ResolvedTask, TableNamed, ViewNamed,
     },
-    WarehouseId,
 };
 
 /// Resolve tasks among all known active and historical tasks.
@@ -125,18 +125,18 @@ mod tests {
 
     use super::*;
     use crate::{
+        WarehouseId,
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success,
             test::{setup_two_warehouses, setup_warehouse},
         },
         service::{
-            tasks::{
-                EntityId, TaskEntityNamed, TaskInput, TaskMetadata, TaskQueueName,
-                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
-            },
             TableId,
+            tasks::{
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskEntityNamed, TaskInput,
+                TaskMetadata, TaskQueueName,
+            },
         },
-        WarehouseId,
     };
 
     async fn queue_task_helper(

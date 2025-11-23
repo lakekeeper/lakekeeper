@@ -3,16 +3,16 @@ use std::sync::Arc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
-    api::{management::v1::role::Role, RequestMetadata},
+    ProjectId,
+    api::{RequestMetadata, management::v1::role::Role},
     service::{
+        Actor, CatalogBackendError, GetRoleError, InvalidPaginationToken, RoleId, RoleIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogRoleAction,
             MustUse, UserOrRole,
         },
-        Actor, CatalogBackendError, GetRoleError, InvalidPaginationToken, RoleId, RoleIdNotFound,
     },
-    ProjectId,
 };
 
 pub trait RoleAction

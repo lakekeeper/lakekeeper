@@ -4,25 +4,25 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crate::service::{
+    WarehouseStatus,
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
         S3Profile, StorageCredential, StorageProfile,
     },
-    WarehouseStatus,
 };
 use crate::{
-    api::{management::v1::ApiServer, ApiContext, Result},
+    ProjectId, WarehouseId,
+    api::{ApiContext, Result, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
+        CatalogStore, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
-        CatalogStore, CatalogWarehouseOps, State, Transaction,
     },
-    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,11 +235,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .zip(decisions.into_inner())
                 .filter_map(
                     |(project, is_allowed)| {
-                        if is_allowed {
-                            Some(project)
-                        } else {
-                            None
-                        }
+                        if is_allowed { Some(project) } else { None }
                     },
                 )
                 .collect()

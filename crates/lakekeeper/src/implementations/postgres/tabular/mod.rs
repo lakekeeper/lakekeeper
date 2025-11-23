@@ -14,22 +14,22 @@ use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
+    CONFIG, WarehouseId,
     api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     implementations::postgres::{
         namespace::parse_namespace_identifier_from_vec,
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{
-        storage::join_location, CatalogSearchTabularInfo, CatalogSearchTabularResponse,
-        ClearTabularDeletedAtError, ConcurrentUpdateError, CreateTabularError, DropTabularError,
-        ExpirationTaskInfo, GetTabularInfoError, InternalParseLocationError,
-        InvalidNamespaceIdentifier, ListTabularsError, LocationAlreadyTaken,
-        MarkTabularAsDeletedError, NamespaceId, ProtectedTabularDeletionWithoutForce,
-        RenameTabularError, SearchTabularError, SerializationError, TableDeletionInfo, TableIdent,
-        TableInfo, TabularAlreadyExists, TabularId, TabularIdentBorrowed, TabularNotFound,
-        ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        CatalogSearchTabularInfo, CatalogSearchTabularResponse, ClearTabularDeletedAtError,
+        ConcurrentUpdateError, CreateTabularError, DropTabularError, ExpirationTaskInfo,
+        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
+        ListTabularsError, LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
+        ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
+        SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
+        TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
+        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location,
     },
-    WarehouseId, CONFIG,
 };
 
 #[derive(Debug, sqlx::Type, Copy, Clone, strum::Display)]
@@ -1624,10 +1624,10 @@ pub(crate) async fn drop_tabular(
         return Err(ProtectedTabularDeletionWithoutForce::new(warehouse_id, tabular_id).into());
     }
 
-    if let Some(required_metadata_location) = required_metadata_location {
-        if location.metadata_location != Some(required_metadata_location.to_string()) {
-            return Err(ConcurrentUpdateError::new(warehouse_id, tabular_id).into());
-        }
+    if let Some(required_metadata_location) = required_metadata_location
+        && location.metadata_location != Some(required_metadata_location.to_string())
+    {
+        return Err(ConcurrentUpdateError::new(warehouse_id, tabular_id).into());
     }
 
     debug_assert!(
@@ -1687,8 +1687,8 @@ mod tests {
     use super::*;
     use crate::{
         implementations::postgres::{
-            namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
-            CatalogState,
+            CatalogState, namespace::tests::initialize_namespace,
+            warehouse::test::initialize_warehouse,
         },
         service::AuthZTableInfo,
     };

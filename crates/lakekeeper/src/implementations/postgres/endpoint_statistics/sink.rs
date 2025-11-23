@@ -6,10 +6,10 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
+    ProjectId,
     api::endpoints::EndpointFlat,
     implementations::postgres::dbutils::DBErrorHandler,
     service::endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
-    ProjectId,
 };
 
 #[async_trait::async_trait]
@@ -147,7 +147,9 @@ impl PostgresStatisticsSink {
             counts.push(count);
         }
 
-        tracing::debug!("Inserting '{final_count}' aggregated stats records (reduced from '{endpoint_calls_total}' raw datapoints)");
+        tracing::debug!(
+            "Inserting '{final_count}' aggregated stats records (reduced from '{endpoint_calls_total}' raw datapoints)"
+        );
 
         sqlx::query!(r#"INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count, timestamp)
                         SELECT

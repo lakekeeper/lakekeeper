@@ -1,8 +1,8 @@
 #![allow(clippy::needless_for_each)]
 
 use utoipa::{
-    openapi::{security::SecurityScheme, KnownFormat, RefOr},
     OpenApi, PartialSchema, ToSchema,
+    openapi::{KnownFormat, RefOr, security::SecurityScheme},
 };
 
 use crate::{
@@ -183,7 +183,9 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                         .properties
                         .insert("queue-config".to_string(), queue_config_type_ref.clone());
                     if ins.is_none() {
-                        unreachable!("The schema for SetTaskQueueConfigRequest should have a 'queue-config' property.");
+                        unreachable!(
+                            "The schema for SetTaskQueueConfigRequest should have a 'queue-config' property."
+                        );
                     }
                 }
                 _ => {
@@ -203,7 +205,9 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                         .properties
                         .insert("queue-config".to_string(), queue_config_type_ref.clone());
                     if ins.is_none() {
-                        unreachable!("The schema for GetTaskQueueConfigResponse should have a 'queue-config' property.");
+                        unreachable!(
+                            "The schema for GetTaskQueueConfigResponse should have a 'queue-config' property."
+                        );
                     }
                 }
                 _ => {

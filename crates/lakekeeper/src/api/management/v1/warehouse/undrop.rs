@@ -4,12 +4,13 @@ use crate::{
     api::{self, management::v1::warehouse::UndropTabularsRequest},
     request_metadata::RequestMetadata,
     service::{
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, ResolvedWarehouse, TabularId,
+        TabularListFlags, ViewOrTableInfo,
         authz::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZTableOps, Authorizer, CatalogTableAction,
             CatalogViewAction, RequireTableActionError,
         },
-        require_namespace_for_tabular, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo,
+        require_namespace_for_tabular,
     },
 };
 

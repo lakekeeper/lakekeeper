@@ -403,9 +403,7 @@ impl From<ResultCountMismatch> for ErrorModel {
             r#type: "ResultCountMismatch".to_string(),
             code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             message,
-            source: Some(Box::new(
-                InternalErrorMessage(
-                format!(
+            source: Some(Box::new(InternalErrorMessage(format!(
                 "Result count mismatch for {type_name} batch operation: expected {expected_results}, got {actual_results}."
             )))),
             stack,

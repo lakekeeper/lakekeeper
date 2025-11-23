@@ -3,10 +3,10 @@ use std::{
     io::{Read as _, Write},
 };
 
-use flate2::{write::GzEncoder, Compression};
+use flate2::{Compression, write::GzEncoder};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
-use super::{io::IOErrorExt, MetadataProperties};
+use super::{MetadataProperties, io::IOErrorExt};
 
 pub(crate) const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
 

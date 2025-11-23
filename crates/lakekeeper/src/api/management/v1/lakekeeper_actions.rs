@@ -3,23 +3,23 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::{
+    ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata},
     service::{
-        authz::{
-            fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeNamespace, AuthZCannotSeeRole,
-            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId,
-            AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
-            AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogUserAction,
-            CatalogViewAction, CatalogWarehouseAction, UserOrRole,
-        },
         CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogWarehouseOps,
         NamespaceId, Result, RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewId,
         WarehouseStatus,
+        authz::{
+            AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps,
+            AuthZServerOps, AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, UserOrRole,
+            fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
+            refresh_warehouse_and_namespace_if_needed,
+        },
     },
-    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Deserialize)]
@@ -61,7 +61,7 @@ impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
                     "Cannot specify both user and role in GetAccessQuery".to_string(),
                     "InvalidGetAccessQuery",
                     None,
-                ))
+                ));
             }
             (None, None) => None,
         };
@@ -115,11 +115,7 @@ pub(super) async fn get_allowed_server_actions(
         .zip(actions)
         .filter_map(
             |(allowed, action)| {
-                if *allowed {
-                    Some(*action)
-                } else {
-                    None
-                }
+                if *allowed { Some(*action) } else { None }
             },
         )
         .collect();

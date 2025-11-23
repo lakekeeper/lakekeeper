@@ -1,15 +1,15 @@
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
-use sqlx::{postgres::types::PgInterval, PgConnection, PgPool};
+use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
 use uuid::Uuid;
 
 use crate::{
+    WarehouseId,
     api::management::v1::warehouse::{
         GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
     },
     implementations::postgres::dbutils::DBErrorHandler,
     service::tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
-    WarehouseId,
 };
 
 mod get_task_details;
@@ -1009,6 +1009,7 @@ mod test {
 
     use super::*;
     use crate::{
+        WarehouseId,
         api::management::v1::{
             tasks::TaskStatus as ApiTaskStatus,
             warehouse::{QueueConfig, TabularDeleteProfile},
@@ -1016,10 +1017,9 @@ mod test {
         service::{
             authz::AllowAllAuthorizer,
             tasks::{
-                EntityId, TaskId, TaskInput, TaskStatus, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskId, TaskInput, TaskStatus,
             },
         },
-        WarehouseId,
     };
 
     async fn queue_task(
@@ -1073,18 +1073,20 @@ mod test {
         .await
         .unwrap();
 
-        assert!(queue_task(
-            &mut conn,
-            &tq_name,
-            None,
-            entity_id,
-            warehouse_id,
-            None,
-            None
-        )
-        .await
-        .unwrap()
-        .is_none());
+        assert!(
+            queue_task(
+                &mut conn,
+                &tq_name,
+                None,
+                entity_id,
+                warehouse_id,
+                None,
+                None
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
 
         let id3 = queue_task(
             &mut conn,
@@ -1781,10 +1783,12 @@ mod test {
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
-        assert!(get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let config = SetTaskQueueConfigRequest {
             queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
@@ -1980,10 +1984,12 @@ mod test {
         let error = result.unwrap_err();
         assert_eq!(error.error.code, 409);
         assert_eq!(error.error.r#type, "TaskAttemptAlreadyCompleted");
-        assert!(error
-            .error
-            .message
-            .contains("has already been recorded as completed"));
+        assert!(
+            error
+                .error
+                .message
+                .contains("has already been recorded as completed")
+        );
     }
 
     #[sqlx::test]
@@ -2171,9 +2177,11 @@ mod test {
         // Verify it's a conflict error, not a not found error
         let iceberg_error = error.error;
         assert_eq!(iceberg_error.r#type, "TaskAttemptAlreadyFailed");
-        assert!(iceberg_error
-            .message
-            .contains("has already been recorded as failed"));
+        assert!(
+            iceberg_error
+                .message
+                .contains("has already been recorded as failed")
+        );
 
         // Verify the task is still active and can be processed
         let still_active = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
@@ -2200,9 +2208,11 @@ mod test {
 
         let iceberg_error2 = error2.error;
         assert_eq!(iceberg_error2.r#type, "TaskAttemptAlreadyFailed");
-        assert!(iceberg_error2
-            .message
-            .contains("has already been recorded as failed"));
+        assert!(
+            iceberg_error2
+                .message
+                .contains("has already been recorded as failed")
+        );
     }
 
     #[sqlx::test]

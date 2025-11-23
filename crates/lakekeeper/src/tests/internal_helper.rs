@@ -1,8 +1,8 @@
 use std::{future::Future, sync::LazyLock};
 
 use iceberg::{
-    spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec},
     NamespaceIdent, TableIdent,
+    spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec},
 };
 use iceberg_ext::catalog::rest::{
     CreateNamespaceRequest, CreateNamespaceResponse, CreateTableRequest, CreateViewRequest,
@@ -13,20 +13,20 @@ use tokio::runtime::Runtime;
 
 use crate::{
     api::{
+        ApiContext,
         iceberg::{
             types::Prefix,
             v1::{
+                DataAccess, DropParams, NamespaceParameters, TableParameters,
                 namespace::{NamespaceDropFlags, NamespaceService as _},
                 tables::TablesService,
                 views::ViewService,
-                DataAccess, DropParams, NamespaceParameters, TableParameters,
             },
         },
-        ApiContext,
     },
     implementations::postgres::{PostgresBackend, SecretsState},
     server::CatalogServer,
-    service::{authz::Authorizer, CatalogStore, SecretStore, State},
+    service::{CatalogStore, SecretStore, State, authz::Authorizer},
     tests::random_request_metadata,
 };
 

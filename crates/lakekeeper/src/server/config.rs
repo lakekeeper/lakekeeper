@@ -2,23 +2,23 @@ use std::str::FromStr;
 
 use super::CatalogServer;
 use crate::{
+    CONFIG,
     api::{
         iceberg::v1::{
-            config::GetConfigQueryParams, ApiContext, CatalogConfig, ErrorModel, PageToken,
-            PaginationQuery, Result,
+            ApiContext, CatalogConfig, ErrorModel, PageToken, PaginationQuery, Result,
+            config::GetConfigQueryParams,
         },
-        management::v1::user::{parse_create_user_request, UserLastUpdatedWith},
+        management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
     request_metadata::RequestMetadata,
     service::{
+        CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
+        WarehouseNameNotFound, WarehouseStatus,
         authz::{
             AuthZProjectOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogWarehouseAction,
         },
-        CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
-        WarehouseNameNotFound, WarehouseStatus,
     },
-    CONFIG,
 };
 
 #[async_trait::async_trait]

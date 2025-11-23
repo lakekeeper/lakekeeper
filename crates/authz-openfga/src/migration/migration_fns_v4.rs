@@ -17,10 +17,10 @@ use serde::Serialize;
 use strum::IntoEnumIterator;
 
 use crate::{
+    MAX_TUPLES_PER_WRITE,
     relations::{
         NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
     },
-    MAX_TUPLES_PER_WRITE,
 };
 
 #[derive(Clone, Debug)]
@@ -486,10 +486,10 @@ mod openfga_integration_tests {
     use std::time::Instant;
 
     use lakekeeper::{
-        api::RequestMetadata,
-        service::{authz::Authorizer, NamespaceId, ServerId, TableId, UserId, ViewId},
-        tokio::task::JoinSet,
         ProjectId, WarehouseId,
+        api::RequestMetadata,
+        service::{NamespaceId, ServerId, TableId, UserId, ViewId, authz::Authorizer},
+        tokio::task::JoinSet,
     };
     use openfga_client::{
         client::{CheckRequestTupleKey, TupleKey},
@@ -499,11 +499,11 @@ mod openfga_integration_tests {
 
     use super::*;
     use crate::{
+        AUTH_CONFIG, OpenFGAAuthorizer,
         client::new_client_from_default_config,
         entities::OpenFgaEntity,
-        migration::{add_model_v3, add_model_v4_0, V3_MODEL_VERSION, V4_0_MODEL_VERSION},
+        migration::{V3_MODEL_VERSION, V4_0_MODEL_VERSION, add_model_v3, add_model_v4_0},
         relations::ServerRelation,
-        OpenFGAAuthorizer, AUTH_CONFIG,
     };
     // Tests must write tuples according to v3 model manually.
     // Writing through methods like `authorizer.create_*` may create tuples different from

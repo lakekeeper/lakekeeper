@@ -6,8 +6,8 @@ use strum::{EnumIter, IntoEnumIterator, VariantArray};
 use strum_macros::EnumString;
 
 use super::{
-    health::HealthExt, CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
-    ViewId, WarehouseId,
+    CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId, WarehouseId,
+    health::HealthExt,
 };
 use crate::{
     api::{iceberg::v1::Result, management::v1::role::Role},
@@ -656,7 +656,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         api::management::v1::role::Role,
-        service::{health::Health, Namespace},
+        service::{Namespace, health::Health},
     };
 
     #[derive(Clone, Debug)]

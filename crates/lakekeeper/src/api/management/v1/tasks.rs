@@ -1,14 +1,18 @@
 use std::{collections::HashSet, sync::Arc};
 
-use axum::{response::IntoResponse, Json};
+use axum::{Json, response::IntoResponse};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{management::v1::ApiServer, ApiContext},
+    WarehouseId,
+    api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
+        TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
         authz::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableOps as _,
             AuthZViewOps as _, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -17,15 +21,11 @@ use crate::{
         },
         require_namespace_for_tabular,
         tasks::{
-            tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME, TaskEntity,
-            TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
-            TaskStatus as TQTaskStatus,
+            TaskEntity, TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome,
+            TaskQueueName, TaskStatus as TQTaskStatus,
+            tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
         },
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
-        TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
     },
-    WarehouseId,
 };
 
 const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::GetTasks;

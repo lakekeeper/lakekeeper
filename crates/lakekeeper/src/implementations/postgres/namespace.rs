@@ -7,24 +7,24 @@ use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler;
 use crate::{
-    api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
+    CONFIG, WarehouseId,
+    api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     implementations::postgres::{
         pagination::{PaginateToken, V1PaginateToken},
         tabular::TabularType,
     },
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        storage::join_location, tasks::TaskId, CatalogCreateNamespaceError,
-        CatalogGetNamespaceError, CatalogListNamespaceError, CatalogNamespaceDropError,
-        CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
-        ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
-        InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
-        NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
-        NamespaceHierarchy, NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
-        NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
-        SerializationError, TabularId, WarehouseIdNotFound,
+        CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
+        CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
+        CatalogUpdateNamespacePropertiesError, ChildNamespaceProtected, ChildTabularProtected,
+        CreateNamespaceRequest, InternalParseLocationError, InvalidNamespaceIdentifier,
+        ListNamespacesQuery, Namespace, NamespaceAlreadyExists, NamespaceDropInfo,
+        NamespaceHasRunningTabularExpirations, NamespaceHierarchy, NamespaceId, NamespaceIdent,
+        NamespaceNotEmpty, NamespaceNotFound, NamespacePropertiesSerializationError,
+        NamespaceProtected, NamespaceWithParent, Result, SerializationError, TabularId,
+        WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
-    WarehouseId, CONFIG,
 };
 
 #[derive(Debug)]
@@ -636,13 +636,13 @@ pub(crate) async fn create_namespace(
     })?;
 
     // Check if parent was expected but not found
-    if let Some(parent) = parent {
-        if row.parent_namespace_id.is_none() {
-            return Err(CatalogCreateNamespaceError::from(NamespaceNotFound::new(
-                warehouse_id,
-                parent,
-            )));
-        }
+    if let Some(parent) = parent
+        && row.parent_namespace_id.is_none()
+    {
+        return Err(CatalogCreateNamespaceError::from(NamespaceNotFound::new(
+            warehouse_id,
+            parent,
+        )));
     }
 
     row.into_namespace_with_parent_version(warehouse_id)
@@ -1005,17 +1005,17 @@ pub(crate) async fn update_namespace_properties(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        super::{warehouse::test::initialize_warehouse, PostgresBackend},
+        super::{PostgresBackend, warehouse::test::initialize_warehouse},
         *,
     };
     use crate::{
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         implementations::postgres::{
+            CatalogState, PostgresTransaction,
             tabular::{
                 set_tabular_protected,
                 table::{load_tables, tests::initialize_table},
             },
-            CatalogState, PostgresTransaction,
         },
         service::{CachePolicy, CatalogNamespaceOps, Transaction as _},
     };

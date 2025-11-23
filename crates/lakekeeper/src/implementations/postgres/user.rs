@@ -1,5 +1,6 @@
 use super::dbutils::DBErrorHandler;
 use crate::{
+    CONFIG,
     api::{
         iceberg::v1::PaginationQuery,
         management::v1::user::{
@@ -8,7 +9,6 @@ use crate::{
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{CreateOrUpdateUserResponse, Result, UserId},
-    CONFIG,
 };
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]

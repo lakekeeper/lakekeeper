@@ -9,11 +9,11 @@
 // text
 
 use cloudevents::{
+    Event,
     event::SpecVersion,
     message::{
         BinaryDeserializer, BinarySerializer, MessageAttributeValue, Result, StructuredSerializer,
     },
-    Event,
 };
 use rdkafka::{
     message::{Header, OwnedHeaders, ToBytes},
@@ -21,8 +21,8 @@ use rdkafka::{
 };
 
 use crate::service::event_publisher::kafka::vendor::cloudevents::binding::{
-    kafka::{header_prefix, SPEC_VERSION_HEADER},
     CLOUDEVENTS_JSON_HEADER, CONTENT_TYPE,
+    kafka::{SPEC_VERSION_HEADER, header_prefix},
 };
 
 /// This struct contains a serialized `CloudEvent` message in the Kafka shape.

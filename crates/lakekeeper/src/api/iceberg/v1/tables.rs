@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use axum::{
+    Extension, Json, Router,
     extract::{Path, Query, State},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
 };
 use http::{HeaderMap, HeaderName, StatusCode};
 use iceberg::TableIdent;
@@ -12,13 +12,13 @@ use iceberg_ext::catalog::rest::LoadCredentialsResponse;
 use super::{PageToken, PaginationQuery};
 use crate::{
     api::{
+        ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
+        CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
+        RenameTableRequest, Result,
         iceberg::{
             types::{DropParams, Prefix},
             v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
         },
-        ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
-        CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
-        RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
 };

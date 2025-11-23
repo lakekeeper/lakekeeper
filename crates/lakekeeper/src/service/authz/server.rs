@@ -3,12 +3,12 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::RequestMetadata,
     service::{
+        Actor, ServerId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
             MustUse, UserOrRole,
         },
-        Actor, ServerId,
     },
 };
 pub trait ServerAction

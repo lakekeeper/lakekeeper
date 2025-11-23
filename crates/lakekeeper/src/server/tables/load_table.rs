@@ -4,9 +4,10 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::StorageCredential;
 
 use crate::{
+    WarehouseId,
     api::iceberg::v1::{
-        tables::{DataAccessMode, LoadTableFilters},
         ApiContext, LoadTableResult, Result, TableIdent, TableParameters,
+        tables::{DataAccessMode, LoadTableFilters},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -14,13 +15,12 @@ use crate::{
         tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
     },
     service::{
-        authz::{Authorizer, AuthzWarehouseOps},
-        secrets::SecretStore,
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        authz::{Authorizer, AuthzWarehouseOps},
+        secrets::SecretStore,
     },
-    WarehouseId,
 };
 
 /// Load a table from the catalog
@@ -197,28 +197,28 @@ mod tests {
     use std::collections::HashMap;
 
     use iceberg::{
-        spec::{
-            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-            SnapshotRetention, Summary, Type, UnboundPartitionSpec, MAIN_BRANCH,
-        },
         NamespaceIdent, TableIdent, TableUpdate,
+        spec::{
+            MAIN_BRANCH, NestedField, Operation, PrimitiveType, Schema, Snapshot,
+            SnapshotReference, SnapshotRetention, Summary, Type, UnboundPartitionSpec,
+        },
     };
     use iceberg_ext::catalog::rest::{CreateTableRequest, LoadTableResult};
     use sqlx::PgPool;
 
     use crate::{
         api::{
+            ApiContext,
             iceberg::v1::{
+                NamespaceParameters, TableParameters,
                 namespace::NamespaceService as _,
                 tables::{DataAccess, LoadTableFilters, SnapshotsQuery, TablesService as _},
-                NamespaceParameters, TableParameters,
             },
             management::v1::warehouse::TabularDeleteProfile,
-            ApiContext,
         },
         implementations::postgres::{PostgresBackend, SecretsState},
-        server::{test::setup, CatalogServer},
-        service::{authz::AllowAllAuthorizer, State},
+        server::{CatalogServer, test::setup},
+        service::{State, authz::AllowAllAuthorizer},
         tests::random_request_metadata,
     };
 
