@@ -1,5 +1,5 @@
 # FROM alpine:3.21
-FROM rust:alpine
+FROM rust:1.90-alpine3.21
 
 RUN apk update && apk upgrade
 RUN apk add --no-cache musl-dev gcompat llvm20 clang-dev ca-certificates gcc build-base curl perl nodejs npm git bash cmake pkgconf python3 linux-headers
