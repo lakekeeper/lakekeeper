@@ -7,14 +7,17 @@ use crate::{
     service::{
         authz::{
             fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZProjectOps, AuthZRoleOps, AuthZServerOps, AuthZTableOps, AuthZUserOps,
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, UserOrRole,
+            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeNamespace, AuthZCannotSeeRole,
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId,
+            AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
+            AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogUserAction,
+            CatalogViewAction, CatalogWarehouseAction, UserOrRole,
         },
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceId, Result,
-        RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewId, WarehouseStatus,
+        CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogWarehouseOps,
+        NamespaceId, Result, RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewId,
+        WarehouseStatus,
     },
     ProjectId, WarehouseId,
 };
@@ -162,18 +165,32 @@ pub(super) async fn get_allowed_user_actions(
         })
         .collect();
 
+    if !can_see {
+        return Err(AuthZUserActionForbidden::new(
+            object,
+            can_see_permission,
+            request_metadata.actor().clone(),
+        )
+        .into());
+    }
+
     Ok(allowed_actions)
 }
 
-pub(super) async fn get_allowed_role_actions(
-    authorizer: impl Authorizer,
+pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+    context: ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
     query: GetAccessQuery,
-    object: RoleId,
+    role_id: RoleId,
 ) -> Result<Vec<CatalogRoleAction>> {
+    let authorizer = context.v1_state.authz;
     let for_user = query.try_parse()?.principal;
     let actions = CatalogRoleAction::VARIANTS;
     let can_see_permission = CatalogRoleAction::Read;
+    let project_id = request_metadata.require_project_id(None)?;
+
+    let role = C::get_role_by_id(&project_id, role_id, context.v1_state.catalog).await;
+    let role = authorizer.require_role_presence(role)?;
 
     let results = authorizer
         .are_allowed_role_actions_vec(
@@ -181,7 +198,7 @@ pub(super) async fn get_allowed_role_actions(
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (object, *action))
+                .map(|action| (&*role, *action))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -202,6 +219,10 @@ pub(super) async fn get_allowed_role_actions(
             }
         })
         .collect();
+
+    if !can_see {
+        return Err(AuthZCannotSeeRole::new(project_id, role_id).into());
+    }
 
     Ok(allowed_actions)
 }
@@ -243,6 +264,15 @@ pub(super) async fn get_allowed_project_actions(
             }
         })
         .collect();
+
+    if !can_see {
+        return Err(AuthZProjectActionForbidden::new(
+            object.clone(),
+            can_see_permission,
+            request_metadata.actor().clone(),
+        )
+        .into());
+    }
 
     Ok(allowed_actions)
 }
@@ -298,6 +328,10 @@ pub(super) async fn get_allowed_warehouse_actions<
             }
         })
         .collect();
+
+    if !can_see {
+        return Err(AuthZCannotUseWarehouseId::new(object).into());
+    }
 
     Ok(allowed_actions)
 }
@@ -359,6 +393,10 @@ pub(super) async fn get_allowed_namespace_actions<
             }
         })
         .collect();
+
+    if !can_see {
+        return Err(AuthZCannotSeeNamespace::new(warehouse_id, provided_namespace_id).into());
+    }
 
     Ok(allowed_actions)
 }
@@ -432,6 +470,10 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
         })
         .collect();
 
+    if !can_see {
+        return Err(AuthZCannotSeeTable::new(warehouse_id, table_id).into());
+    }
+
     Ok(allowed_actions)
 }
 
@@ -503,6 +545,10 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
             }
         })
         .collect();
+
+    if !can_see {
+        return Err(AuthZCannotSeeView::new(warehouse_id, view_id).into());
+    }
 
     Ok(allowed_actions)
 }

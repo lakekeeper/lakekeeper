@@ -368,3 +368,56 @@ impl From<InvalidPaginationToken> for IcebergErrorResponse {
         ErrorModel::from(err).into()
     }
 }
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("Database service returned invalid response")]
+pub struct ResultCountMismatch {
+    pub expected_results: usize,
+    pub actual_results: usize,
+    pub type_name: String,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(ResultCountMismatch);
+impl ResultCountMismatch {
+    #[must_use]
+    pub fn new(expected_results: usize, actual_results: usize, type_name: &str) -> Self {
+        Self {
+            expected_results,
+            actual_results,
+            type_name: type_name.to_string(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl From<ResultCountMismatch> for ErrorModel {
+    fn from(err: ResultCountMismatch) -> Self {
+        let message = err.to_string();
+        let ResultCountMismatch {
+            expected_results,
+            actual_results,
+            type_name,
+            stack,
+        } = err;
+
+        ErrorModel {
+            r#type: "ResultCountMismatch".to_string(),
+            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            message,
+            source: Some(Box::new(
+                InternalErrorMessage(
+                format!(
+                "Result count mismatch for {type_name} batch operation: expected {expected_results}, got {actual_results}."
+            )))),
+            stack,
+        }
+    }
+}
+impl From<ResultCountMismatch> for IcebergErrorResponse {
+    fn from(err: ResultCountMismatch) -> Self {
+        ErrorModel::from(err).into()
+    }
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("{0}")]
+pub struct InternalErrorMessage(pub String);

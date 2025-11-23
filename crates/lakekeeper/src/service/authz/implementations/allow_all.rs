@@ -8,7 +8,7 @@ use axum::Router;
 use utoipa::OpenApi;
 
 use crate::{
-    api::{iceberg::v1::Result, ApiContext},
+    api::{iceberg::v1::Result, management::v1::role::Role, ApiContext},
     request_metadata::RequestMetadata,
     service::{
         authn::UserId,
@@ -125,7 +125,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        roles_with_actions: &[(RoleId, Self::RoleAction)],
+        roles_with_actions: &[(&Role, Self::RoleAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; roles_with_actions.len()])
     }

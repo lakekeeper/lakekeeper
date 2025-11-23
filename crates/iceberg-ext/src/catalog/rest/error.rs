@@ -327,12 +327,12 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             message,
             r#type,
             code,
-            source: _,
+            source,
             stack: details,
         } = error;
         let error_id = uuid::Uuid::now_v7();
-        let mut response = if code >= 500 || [401, 403, 424].contains(&code) {
-            tracing::error!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
+        let mut response = if code >= 500 {
+            tracing::error!(%error_id, %stack_s, ?details, %message, %r#type, %code, ?source, "Error response");
             axum::Json(IcebergErrorResponse {
                 error: ErrorModel {
                     message,
@@ -345,7 +345,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             .into_response()
         } else {
             // Log at info level for 4xx errors
-            tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
+            tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, ?source, "Error response");
 
             let mut details = details;
             details.push(format!("Error ID: {error_id}"));
