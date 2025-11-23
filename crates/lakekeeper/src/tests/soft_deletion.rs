@@ -11,24 +11,23 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
+                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
                 namespace::NamespaceService,
                 tables::{LoadTableFilters, TablesService},
-                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
+            ApiServer,
             tasks::{ListTasksRequest, Service as _, TaskStatus},
             warehouse::{
                 ListDeletedTabularsQuery, Service, TabularDeleteProfile, UndropTabularsRequest,
             },
-            ApiServer,
         },
     },
     server::{CatalogServer, NAMESPACE_ID_PROPERTY},
     service::{
-        authz::AllowAllAuthorizer,
-        tasks::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME, NamespaceId,
-        TabularId,
+        NamespaceId, TabularId, authz::AllowAllAuthorizer,
+        tasks::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME,
     },
     tests::random_request_metadata,
 };

@@ -1,8 +1,8 @@
 use crate::{
     server::tables::parse_location,
     service::{
-        storage::{StorageLocations as _, StorageProfile},
         Namespace, TabularId,
+        storage::{StorageLocations as _, StorageProfile},
     },
 };
 
@@ -52,7 +52,7 @@ macro_rules! list_entities {
 
             use crate::{
                 server::UnfilteredPage,
-                service::{require_namespace_for_tabular, BasicTabularInfo, TabularListFlags},
+                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular},
             };
 
             // let namespace = $namespace.clone();

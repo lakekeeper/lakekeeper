@@ -1,12 +1,12 @@
 use super::{ApiServer, ProtectionResponse};
 use crate::{
+    WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         CatalogStore, CatalogTabularOps, SecretStore, State, TabularId, TabularListFlags,
         Transaction, ViewId,
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
     },
-    WarehouseId,
 };
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> ViewManagementService<C, A, S>

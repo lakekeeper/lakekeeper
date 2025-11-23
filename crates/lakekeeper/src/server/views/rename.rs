@@ -3,18 +3,18 @@ use std::sync::Arc;
 use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
-    api::{iceberg::types::Prefix, ApiContext},
+    api::{ApiContext, iceberg::types::Prefix},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeView, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogViewAction, RequireViewActionError,
-        },
-        contract_verification::ContractVerification,
         AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
+        authz::{
+            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
+            refresh_warehouse_and_namespace_if_needed,
+        },
+        contract_verification::ContractVerification,
     },
 };
 

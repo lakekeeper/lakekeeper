@@ -3,8 +3,8 @@ use std::{fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 use iceberg::{
-    spec::{TableMetadata, ViewMetadata},
     TableIdent, TableUpdate,
+    spec::{TableMetadata, ViewMetadata},
 };
 use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
 

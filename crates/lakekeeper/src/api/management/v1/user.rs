@@ -1,17 +1,17 @@
-use axum::{response::IntoResponse, Json};
+use axum::{Json, response::IntoResponse};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
+        ApiContext,
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::ApiServer,
-        ApiContext,
     },
     request_metadata::RequestMetadata,
     service::{
-        authz::{AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction},
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
+        authz::{AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction},
     },
 };
 

@@ -1,23 +1,25 @@
 use http::StatusCode;
 use lakekeeper::{
+    ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata},
-    axum::{extract::State as AxumState, Extension, Json},
+    axum::{Extension, Json, extract::State as AxumState},
     iceberg::{NamespaceIdent, TableIdent},
     service::{
+        AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
+        TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
         authz::{
             AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
             RequireTableActionError, RequireViewActionError, UserOrRole,
         },
-        AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
-        TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
     },
-    tokio, ProjectId, WarehouseId,
+    tokio,
 };
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
 
 use super::{
+    OpenFGAAuthorizer, OpenFGAError,
     relations::{
         APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction, APIProjectAction,
         APIServerAction as ServerAction, APIServerAction, APITableAction as TableAction,
@@ -26,7 +28,6 @@ use super::{
         ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
         ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
     },
-    OpenFGAAuthorizer, OpenFGAError,
 };
 use crate::entities::OpenFgaEntity;
 
@@ -616,16 +617,16 @@ mod tests {
     mod openfga_integration_tests {
         use lakekeeper::{
             api::{
-                iceberg::v1::{namespace::NamespaceService, Prefix},
-                management::v1::{
-                    role::{CreateRoleRequest, Service as RoleService},
-                    ApiServer,
-                },
                 CreateNamespaceRequest,
+                iceberg::v1::{Prefix, namespace::NamespaceService},
+                management::v1::{
+                    ApiServer,
+                    role::{CreateRoleRequest, Service as RoleService},
+                },
             },
             implementations::postgres::{PostgresBackend, SecretsState},
             server::{CatalogServer, NAMESPACE_ID_PROPERTY},
-            service::{authn::UserId, authz::RoleAssignee, CreateNamespaceResponse},
+            service::{CreateNamespaceResponse, authn::UserId, authz::RoleAssignee},
             sqlx,
             tests::{SetupTestCatalog, TestWarehouseResponse},
         };

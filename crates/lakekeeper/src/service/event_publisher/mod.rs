@@ -7,8 +7,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cloudevents::Event;
 use iceberg::{
-    spec::{TableMetadata, ViewMetadata},
     TableIdent,
+    spec::{TableMetadata, ViewMetadata},
 };
 use iceberg_ext::catalog::rest::{
     CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
@@ -19,20 +19,20 @@ use uuid::Uuid;
 
 use super::{TableId, ViewId, WarehouseId};
 use crate::{
+    CONFIG,
     api::{
+        RequestMetadata,
         iceberg::{
             types::{DropParams, Prefix},
             v1::{DataAccessMode, NamespaceParameters, TableParameters, ViewParameters},
         },
         management::v1::warehouse::UndropTabularsRequest,
-        RequestMetadata,
     },
-    server::tables::{maybe_body_to_json, CommitContext},
+    server::tables::{CommitContext, maybe_body_to_json},
     service::{
-        endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
         TabularId, ViewOrTableInfo,
+        endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
     },
-    CONFIG,
 };
 
 #[cfg(feature = "kafka")]
@@ -45,8 +45,8 @@ pub mod nats;
 /// # Errors
 /// If the publisher cannot be built from the configuration.
 #[allow(clippy::unused_async)]
-pub async fn get_default_cloud_event_backends_from_config(
-) -> anyhow::Result<Vec<Arc<dyn CloudEventBackend + Sync + Send>>> {
+pub async fn get_default_cloud_event_backends_from_config()
+-> anyhow::Result<Vec<Arc<dyn CloudEventBackend + Sync + Send>>> {
     let mut cloud_event_sinks = vec![];
 
     #[cfg(feature = "nats")]
@@ -90,11 +90,11 @@ impl EndpointHook for CloudEventsPublisher {
         let mut events = Vec::with_capacity(estimated);
         let mut event_table_ids: Vec<(TableIdent, TableId)> = Vec::with_capacity(estimated);
         for commit_table_request in &request.table_changes {
-            if let Some(id) = &commit_table_request.identifier {
-                if let Some(uuid) = table_ident_to_id_fn(id) {
-                    events.push(maybe_body_to_json(commit_table_request));
-                    event_table_ids.push((id.clone(), uuid));
-                }
+            if let Some(id) = &commit_table_request.identifier
+                && let Some(uuid) = table_ident_to_id_fn(id)
+            {
+                events.push(maybe_body_to_json(commit_table_request));
+                event_table_ids.push((id.clone(), uuid));
             }
         }
         let number_of_events = events.len();

@@ -2,9 +2,9 @@ use google_cloud_auth::credentials::CredentialsFile;
 use lakekeeper_io::Location;
 use serde::{Deserialize, Serialize};
 
-use super::{TokenSource, HTTP_CLIENT, STS_URL};
+use super::{HTTP_CLIENT, STS_URL, TokenSource};
 use crate::service::storage::{
-    error::TableConfigError, gcs::GcsServiceKey, ShortTermCredentialsRequest, StoragePermissions,
+    ShortTermCredentialsRequest, StoragePermissions, error::TableConfigError, gcs::GcsServiceKey,
 };
 
 pub(crate) async fn downscope(

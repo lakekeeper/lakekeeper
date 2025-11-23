@@ -6,22 +6,22 @@ use std::{
 };
 
 use azure_storage::{
+    CloudLocation,
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
-        service_sas::{BlobSharedAccessSignature, SasKey},
         SasToken,
+        service_sas::{BlobSharedAccessSignature, SasKey},
     },
-    CloudLocation,
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::ADLS_AUTHORITY_HOST;
-use iceberg_ext::configs::table::{custom, TableProperties};
+use iceberg_ext::configs::table::{TableProperties, custom};
 use lakekeeper_io::{
-    adls::{
-        normalize_host, validate_account_name, validate_filesystem_name, AdlsLocation, AdlsStorage,
-        AzureAuth, AzureClientCredentialsAuth, AzureSettings, AzureSharedAccessKeyAuth,
-    },
     InvalidLocationError, Location,
+    adls::{
+        AdlsLocation, AdlsStorage, AzureAuth, AzureClientCredentialsAuth, AzureSettings,
+        AzureSharedAccessKeyAuth, normalize_host, validate_account_name, validate_filesystem_name,
+    },
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -29,22 +29,22 @@ use url::Url;
 use veil::Redact;
 
 use crate::{
+    CONFIG, WarehouseId,
     api::{
-        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig, Result,
+        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
     },
     service::storage::{
+        ShortTermCredentialsRequest, StoragePermissions, TableConfig,
         cache::{
-            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
-            ShortTermCredential,
+            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+            insert_stc_into_cache,
         },
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
         },
-        ShortTermCredentialsRequest, StoragePermissions, TableConfig,
     },
-    WarehouseId, CONFIG,
 };
 
 #[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize)]
@@ -424,24 +424,24 @@ impl AdlsProfile {
             *key_prefix = key_prefix.trim_matches('/').to_string();
         }
 
-        if let Some(key_prefix) = self.key_prefix.as_ref() {
-            if key_prefix.is_empty() {
-                self.key_prefix = None;
-            }
+        if let Some(key_prefix) = self.key_prefix.as_ref()
+            && key_prefix.is_empty()
+        {
+            self.key_prefix = None;
         }
 
         // Azure supports a max of 1024 chars and we need some buffer for tables.
-        if let Some(key_prefix) = &self.key_prefix {
-            if key_prefix.len() > 512 {
-                return Err(InvalidProfileError {
-                    source: None,
+        if let Some(key_prefix) = &self.key_prefix
+            && key_prefix.len() > 512
+        {
+            return Err(InvalidProfileError {
+                source: None,
 
-                    reason: "Storage Profile `key-prefix` must be less than 512 characters."
-                        .to_string(),
-                    entity: "key-prefix".to_string(),
-                }
-                .into());
+                reason: "Storage Profile `key-prefix` must be less than 512 characters."
+                    .to_string(),
+                entity: "key-prefix".to_string(),
             }
+            .into());
         }
 
         Ok(())
@@ -611,8 +611,8 @@ impl TryFrom<AzCredential> for AzureAuth {
 pub(crate) mod test {
     use super::*;
     use crate::service::{
-        storage::{az::DEFAULT_AUTHORITY_HOST, AdlsProfile, StorageLocations, StorageProfile},
         NamespaceId, TabularId,
+        storage::{AdlsProfile, StorageLocations, StorageProfile, az::DEFAULT_AUTHORITY_HOST},
     };
 
     #[test]
@@ -748,7 +748,9 @@ pub(crate) mod test {
         let location = sp.default_tabular_location(&namespace_location, table_id);
         assert_eq!(
             location.to_string(),
-            format!("abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_id}/{table_id}")
+            format!(
+                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_id}/{table_id}"
+            )
         );
 
         let mut profile = profile.clone();

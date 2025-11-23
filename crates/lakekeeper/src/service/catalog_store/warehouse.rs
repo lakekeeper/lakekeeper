@@ -5,20 +5,20 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{CatalogStore, Transaction};
 use crate::{
-    api::management::v1::{warehouse::TabularDeleteProfile, DeleteWarehouseQuery},
+    ProjectId, SecretId, WarehouseId,
+    api::management::v1::{DeleteWarehouseQuery, warehouse::TabularDeleteProfile},
     service::{
+        DatabaseIntegrityError,
         catalog_store::{
-            define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
+            CatalogBackendError, define_transparent_error, impl_error_stack_methods,
+            impl_from_with_detail,
             warehouse_cache::{
                 warehouse_cache_get_by_id, warehouse_cache_get_by_name, warehouse_cache_insert,
             },
-            CatalogBackendError,
         },
         define_simple_error, define_version_newtype,
         storage::StorageProfile,
-        DatabaseIntegrityError,
     },
-    ProjectId, SecretId, WarehouseId,
 };
 
 /// Status of a warehouse

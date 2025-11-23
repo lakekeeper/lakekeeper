@@ -3,8 +3,8 @@ use std::str::FromStr as _;
 use url::Host;
 
 use crate::{
-    adls::{ADLS_CUSTOM_SCHEMES, DEFAULT_HOST},
     InvalidLocationError, Location,
+    adls::{ADLS_CUSTOM_SCHEMES, DEFAULT_HOST},
 };
 
 #[derive(Debug, thiserror::Error)]

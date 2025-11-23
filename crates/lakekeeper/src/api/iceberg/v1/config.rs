@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use axum::{
+    Extension, Router,
     extract::{Query, State},
     routing::get,
-    Extension, Router,
 };
 use iceberg_ext::catalog::rest::{CatalogConfig, IcebergErrorResponse};
 

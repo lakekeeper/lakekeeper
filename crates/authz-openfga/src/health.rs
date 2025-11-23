@@ -1,11 +1,11 @@
 use lakekeeper::{
+    ProjectId,
     async_trait::async_trait,
     service::health::{Health, HealthExt, HealthStatus},
-    ProjectId,
 };
 use openfga_client::client::CheckRequestTupleKey;
 
-use crate::{entities::OpenFgaEntity, relations::ServerRelation, OpenFGAAuthorizer};
+use crate::{OpenFGAAuthorizer, entities::OpenFgaEntity, relations::ServerRelation};
 
 #[async_trait]
 impl HealthExt for OpenFGAAuthorizer {

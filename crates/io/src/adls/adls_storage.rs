@@ -409,10 +409,10 @@ impl LakekeeperStorage for AdlsStorage {
             let result = result.map_err(|e| {
                 parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
             });
-            if let Err(err) = &result {
-                if err.kind() == ErrorKind::NotFound {
-                    return Ok(vec![]); // Return empty list if path does not exist
-                }
+            if let Err(err) = &result
+                && err.kind() == ErrorKind::NotFound
+            {
+                return Ok(vec![]); // Return empty list if path does not exist
             }
             result.map(|page| {
                 page.paths

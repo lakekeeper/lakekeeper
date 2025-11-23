@@ -319,9 +319,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         t_write.commit().await?;
 
         // If we need to delete the previous table from authorizer
-        if auth_needs_delete {
-            if let Some(previous_table) = &previous_table_to_drop {
-                authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
+        if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
+            authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
                     |e| {
                         tracing::warn!(
                             "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
@@ -329,7 +328,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         );
                     }
                 }).ok();
-            }
         }
 
         // If a staged table was overwritten, delete it from authorizer
@@ -1066,17 +1064,16 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .values()
         .map(|ti| ti.warehouse_version)
         .max()
+        && warehouse.version < required_version
     {
-        if warehouse.version < required_version {
-            let refreshed_warehouse = C::get_warehouse_by_id_cache_aware(
-                warehouse_id,
-                WarehouseStatus::active(),
-                CachePolicy::RequireMinimumVersion(*required_version),
-                state.v1_state.catalog.clone(),
-            )
-            .await;
-            warehouse = authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
-        }
+        let refreshed_warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::RequireMinimumVersion(*required_version),
+            state.v1_state.catalog.clone(),
+        )
+        .await;
+        warehouse = authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
     }
 
     authorizer

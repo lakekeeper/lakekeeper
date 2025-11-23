@@ -29,13 +29,13 @@ pub mod v1 {
     };
     pub use crate::{
         api::{
-            iceberg::types::*, ApiContext, CatalogConfig, CommitTableRequest, CommitTableResponse,
+            ApiContext, CatalogConfig, CommitTableRequest, CommitTableResponse,
             CommitTransactionRequest, CommitViewRequest, CreateNamespaceRequest,
             CreateNamespaceResponse, CreateTableRequest, CreateViewRequest, ErrorModel,
             GetNamespaceResponse, IcebergErrorResponse, ListNamespacesResponse, ListTablesResponse,
             LoadTableResult, LoadViewResult, OAuthTokenRequest, OAuthTokenResponse,
             RegisterTableRequest, RenameTableRequest, Result, UpdateNamespacePropertiesRequest,
-            UpdateNamespacePropertiesResponse,
+            UpdateNamespacePropertiesResponse, iceberg::types::*,
         },
         request_metadata::RequestMetadata,
     };

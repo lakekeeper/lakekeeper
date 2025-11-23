@@ -221,27 +221,27 @@ where
         }
     };
 
-    if let Some(tabular_location) = tabular_location {
-        if matches!(task.data.deletion_kind, DeleteKind::Purge) {
-            super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
-                TaskMetadata {
-                    entity_id: task.task_metadata.entity_id,
-                    warehouse_id: task.task_metadata.warehouse_id,
-                    parent_task_id: Some(task.task_id()),
-                    schedule_for: None,
-                    entity_name: task.task_metadata.entity_name.clone(),
-                },
-                TabularPurgePayload::new(tabular_location.to_string()),
-                trx.transaction(),
-            )
-            .await
-            .map_err(|e| {
-                e.append_detail(format!(
-                    "Failed to queue purge after `{QN_STR}` task with id `{}`.",
-                    task.id
-                ))
-            })?;
-        }
+    if let Some(tabular_location) = tabular_location
+        && matches!(task.data.deletion_kind, DeleteKind::Purge)
+    {
+        super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
+            TaskMetadata {
+                entity_id: task.task_metadata.entity_id,
+                warehouse_id: task.task_metadata.warehouse_id,
+                parent_task_id: Some(task.task_id()),
+                schedule_for: None,
+                entity_name: task.task_metadata.entity_name.clone(),
+            },
+            TabularPurgePayload::new(tabular_location.to_string()),
+            trx.transaction(),
+        )
+        .await
+        .map_err(|e| {
+            e.append_detail(format!(
+                "Failed to queue purge after `{QN_STR}` task with id `{}`.",
+                task.id
+            ))
+        })?;
     }
 
     // Record success within the transaction - will be rolled back if commit fails

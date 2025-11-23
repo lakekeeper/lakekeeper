@@ -6,7 +6,7 @@ use std::{
 use futures::future::try_join_all;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata, management::v1::role::Role},
     async_trait,
     axum::Router,
     service::{

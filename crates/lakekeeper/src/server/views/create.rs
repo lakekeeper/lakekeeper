@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use iceberg::{spec::ViewMetadataBuilder, TableIdent, ViewCreation};
+use iceberg::{TableIdent, ViewCreation, spec::ViewMetadataBuilder};
 use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
 
 use crate::{
     api::{
-        iceberg::v1::{DataAccessMode, NamespaceParameters},
         ApiContext,
+        iceberg::v1::{DataAccessMode, NamespaceParameters},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -18,10 +18,10 @@ use crate::{
         views::validate_view_properties,
     },
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
-        storage::{StorageLocations as _, StoragePermissions},
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
         Transaction, ViewId,
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        storage::{StorageLocations as _, StoragePermissions},
     },
 };
 

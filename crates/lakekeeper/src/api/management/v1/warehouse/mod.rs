@@ -10,24 +10,28 @@ use typed_builder::TypedBuilder;
 
 use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
+    WarehouseStatus,
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
         S3Profile, StorageCredential, StorageProfile,
     },
-    WarehouseStatus,
 };
 use crate::{
+    ProjectId, WarehouseId,
     api::{
+        ApiContext, Result,
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
             ListDeletedTabularsResponse,
         },
-        ApiContext, Result,
     },
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
+        ViewOrTableDeletionInfo,
         authz::{
             AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
             AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -36,12 +40,8 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
-        tasks::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo,
+        tasks::{TaskFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask},
     },
-    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -1456,25 +1456,25 @@ mod test {
     use sqlx::PgPool;
 
     use crate::{
+        WarehouseId,
         api::{
+            ApiContext,
             iceberg::{
                 types::Prefix,
                 v1::{
-                    views::ViewService, DataAccess, DropParams, NamespaceParameters, ViewParameters,
+                    DataAccess, DropParams, NamespaceParameters, ViewParameters, views::ViewService,
                 },
             },
             management::v1::{
-                warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
                 ApiServer,
+                warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
             },
-            ApiContext,
         },
         implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
-        server::{test::impl_pagination_tests, CatalogServer},
-        service::{authz::tests::HidingAuthorizer, State, UserId},
+        server::{CatalogServer, test::impl_pagination_tests},
+        service::{State, UserId, authz::tests::HidingAuthorizer},
         tests::create_view_request,
-        WarehouseId,
     };
 
     async fn setup_pagination_test(

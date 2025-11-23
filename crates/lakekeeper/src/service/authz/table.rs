@@ -7,8 +7,14 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools as _;
 
 use crate::{
+    WarehouseId,
     api::RequestMetadata,
     service::{
+        Actor, AuthZTableInfo, AuthZViewInfo, CatalogBackendError, GetTabularInfoByLocationError,
+        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
+        SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
+        UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -19,13 +25,7 @@ use crate::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
             CatalogWarehouseOps, TabularListFlags,
         },
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogBackendError, GetTabularInfoByLocationError,
-        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
-        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
-        SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
-        UnexpectedTabularInResponse, WarehouseStatus,
     },
-    WarehouseId,
 };
 
 const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::GetMetadata;
@@ -496,7 +496,8 @@ pub trait AuthZTableOps: Authorizer {
                 }
                 TableIdentOrId::Ident(user_ident) => {
                     debug_assert_eq!(
-                        user_ident, table.table_ident(),
+                        user_ident,
+                        table.table_ident(),
                         "Table identifier in request ({user_ident}) does not match the resolved table identifier ({})",
                         table.table_ident()
                     );
@@ -1051,11 +1052,11 @@ mod tests {
     use crate::{
         implementations::postgres::PostgresBackend,
         service::{
-            authz::{tests::HidingAuthorizer, CatalogTableAction, CatalogViewAction},
-            catalog_store::TabularListFlags,
             CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
+            authz::{CatalogTableAction, CatalogViewAction, tests::HidingAuthorizer},
+            catalog_store::TabularListFlags,
         },
-        tests::{create_ns, create_table, create_view, memory_io_profile, SetupTestCatalog},
+        tests::{SetupTestCatalog, create_ns, create_table, create_view, memory_io_profile},
     };
 
     #[sqlx::test]

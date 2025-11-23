@@ -9,21 +9,20 @@ use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel, IcebergErro
 use lakekeeper_io::Location;
 
 use crate::{
-    api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
+    WarehouseId,
+    api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     service::{
-        define_transparent_error, define_version_newtype, impl_error_stack_methods,
-        impl_from_with_detail,
+        BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
+        InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
+        SerializationError, StateOrTransaction, TableIdent, TabularId, Transaction,
+        WarehouseIdNotFound, define_transparent_error, define_version_newtype,
+        impl_error_stack_methods, impl_from_with_detail,
         namespace_cache::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
             namespace_cache_insert_multiple,
         },
         tasks::TaskId,
-        BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
-        InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
-        SerializationError, StateOrTransaction, TableIdent, TabularId, Transaction,
-        WarehouseIdNotFound,
     },
-    WarehouseId,
 };
 
 define_version_newtype!(NamespaceVersion);
@@ -786,9 +785,9 @@ where
     ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>
     where
         SOT: StateOrTransaction<
-            Self::State,
-            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+            >,
     {
         let namespace = namespace.into();
         let cached = match namespace {
@@ -818,9 +817,9 @@ where
     ) -> Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>
     where
         SOT: StateOrTransaction<
-            Self::State,
-            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+            >,
     {
         get_namespaces_with_cache::<SOT, Self, _, _>(
             warehouse_id,
@@ -845,9 +844,9 @@ where
     ) -> Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>
     where
         SOT: StateOrTransaction<
-            Self::State,
-            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+            >,
     {
         get_namespaces_with_cache::<SOT, Self, _, _>(
             warehouse_id,
@@ -874,9 +873,9 @@ where
     ) -> Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>
     where
         SOT: StateOrTransaction<
-            Self::State,
-            <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+            >,
     {
         let provided_namespace = namespace.into();
         let namespace = match cache_policy {

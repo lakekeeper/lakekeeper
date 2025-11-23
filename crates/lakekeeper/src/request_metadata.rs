@@ -14,11 +14,11 @@ use limes::Authentication;
 use uuid::Uuid;
 
 use crate::{
+    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
     service::{
-        authn::{Actor, InternalActor},
         TabularId,
+        authn::{Actor, InternalActor},
     },
-    ProjectId, WarehouseId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
 #[cfg(feature = "router")]
@@ -49,7 +49,9 @@ pub struct RequestMetadata {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("This endpoint requires a project ID to be specified, but none was provided. Please set the x-project-id header.")]
+#[error(
+    "This endpoint requires a project ID to be specified, but none was provided. Please set the x-project-id header."
+)]
 pub struct ProjectIdMissing;
 
 impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {
@@ -334,7 +336,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => {
-            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response()
+            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
         }
     };
 
@@ -420,14 +422,13 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
         base_uri.push_str(host);
 
         // Skip port if it's in the forwarded host header or it's the default port for the protocol
-        if let Some(port) = x_forwarded_port {
-            if !(host.contains(':')
+        if let Some(port) = x_forwarded_port
+            && !(host.contains(':')
                 || proto == "https" && port == "443"
                 || proto == "http" && port == "80")
-            {
-                base_uri.push(':');
-                base_uri.push_str(port);
-            }
+        {
+            base_uri.push(':');
+            base_uri.push_str(port);
         }
 
         // Append the x-forwarded prefix if present
@@ -446,7 +447,7 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
 
 #[cfg(test)]
 mod test {
-    use http::{header::HeaderValue, HeaderMap};
+    use http::{HeaderMap, header::HeaderValue};
 
     use super::*;
 
