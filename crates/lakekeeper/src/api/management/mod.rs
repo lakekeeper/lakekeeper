@@ -19,23 +19,23 @@ pub mod v1 {
     use std::{marker::PhantomData, sync::Arc};
 
     use axum::{
+        Extension, Json, Router,
         extract::{Path, Query, State as AxumState},
         response::{IntoResponse, Response},
         routing::{get, post, put},
-        Extension, Json, Router,
     };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use lakekeeper_actions::{
-        get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
-        get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
-        get_allowed_view_actions, get_allowed_warehouse_actions,
         GetLakekeeperNamespaceActionsResponse, GetLakekeeperProjectActionsResponse,
         GetLakekeeperRoleActionsResponse, GetLakekeeperServerActionsResponse,
         GetLakekeeperTableActionsResponse, GetLakekeeperUserActionsResponse,
         GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+        get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
+        get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
+        get_allowed_view_actions, get_allowed_warehouse_actions,
     };
     use namespace::NamespaceManagementService as _;
     #[cfg(feature = "open-api")]
@@ -67,7 +67,9 @@ pub mod v1 {
     };
 
     use crate::{
+        ProjectId, WarehouseId,
         api::{
+            ApiContext, Result,
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
@@ -84,15 +86,12 @@ pub mod v1 {
                     GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, UndropTabularsRequest,
                 },
             },
-            ApiContext, Result,
         },
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId, authz::Authorizer, tasks::TaskId, Actor, CatalogStore,
-            CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State, TableId,
-            TabularId, ViewId,
+            Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
+            State, TableId, TabularId, ViewId, authn::UserId, authz::Authorizer, tasks::TaskId,
         },
-        ProjectId, WarehouseId,
     };
 
     pub const PROJECT_ID_HEADER_DESCRIPTION: &str =
@@ -302,7 +301,7 @@ pub mod v1 {
                     "GetMyUserWithoutToken",
                     None,
                 )
-                .into())
+                .into());
             }
         };
 

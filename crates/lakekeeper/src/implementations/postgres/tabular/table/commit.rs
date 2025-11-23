@@ -6,14 +6,15 @@ use lakekeeper_io::Location;
 use sqlx::{FromRow, Postgres, Row, Transaction};
 
 use crate::{
+    WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::{
-            table::{
-                common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
-                DbTableFormatVersion, TableUpdateFlags, MAX_PARAMETERS,
-            },
             FromTabularRowError, TabularRow,
+            table::{
+                DbTableFormatVersion, MAX_PARAMETERS, TableUpdateFlags,
+                common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
+            },
         },
     },
     server::tables::TableMetadataDiffs,
@@ -22,7 +23,6 @@ use crate::{
         InternalParseLocationError, TableCommit, TableId, TableInfo, TabularNotFound,
         TooManyUpdatesInCommit, UnexpectedTabularInResponse, ViewOrTableInfo,
     },
-    WarehouseId,
 };
 
 impl From<FromTabularRowError> for CommitTableTransactionError {
@@ -479,11 +479,11 @@ async fn apply_metadata_changes(
     }
 
     // Must run after insert_snapshots, technically not enforced
-    if diffs.head_of_snapshot_log_changed {
-        if let Some(snap) = new_metadata.history().last() {
-            common::insert_snapshot_log([snap].into_iter(), transaction, warehouse_id, table_id)
-                .await?;
-        }
+    if diffs.head_of_snapshot_log_changed
+        && let Some(snap) = new_metadata.history().last()
+    {
+        common::insert_snapshot_log([snap].into_iter(), transaction, warehouse_id, table_id)
+            .await?;
     }
 
     // no deps technically enforced
@@ -632,12 +632,12 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use iceberg::{
+        NamespaceIdent,
         spec::{
             FormatVersion, NestedField, NullOrder, Operation, PrimitiveType, Schema, Snapshot,
             SortDirection, SortField, SortOrder, Summary, TableMetadata, TableMetadataBuilder,
             Transform, Type, UnboundPartitionSpec,
         },
-        NamespaceIdent,
     };
     use lakekeeper_io::Location;
 
@@ -645,11 +645,11 @@ mod tests {
     use crate::{
         api::iceberg::v1::tables::LoadTableFilters,
         implementations::{
-            postgres::{
-                namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
-                PostgresBackend,
-            },
             CatalogState,
+            postgres::{
+                PostgresBackend, namespace::tests::initialize_namespace,
+                warehouse::test::initialize_warehouse,
+            },
         },
         server::tables::calculate_diffs,
         service::{CatalogTableOps, TableCreation, TableInfo},

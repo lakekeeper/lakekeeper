@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use super::{ApiServer, ProtectionResponse};
 use crate::{
+    WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
     },
-    WarehouseId,
 };
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> NamespaceManagementService<C, A, S>

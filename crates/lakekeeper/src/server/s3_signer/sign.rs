@@ -1,34 +1,34 @@
 use std::{collections::HashMap, time::SystemTime, vec};
 
 use aws_sigv4::{
-    http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
+    http_request::{SignableBody, SignableRequest, SigningSettings, sign as aws_sign},
     sign::v4,
     {self},
 };
-use lakekeeper_io::{s3::S3Location, Location};
+use lakekeeper_io::{Location, s3::S3Location};
 
 use super::{super::CatalogServer, error::SignError};
 use crate::{
+    WarehouseId,
     api::{
-        iceberg::types::Prefix, ApiContext, ErrorModel, IcebergErrorResponse, Result,
-        S3SignRequest, S3SignResponse,
+        ApiContext, ErrorModel, IcebergErrorResponse, Result, S3SignRequest, S3SignResponse,
+        iceberg::types::Prefix,
     },
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
+        AuthZTableInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
+        TabularListFlags,
         authz::{
             AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogTableAction,
             CatalogWarehouseAction, RequireTableActionError,
         },
         secrets::SecretStore,
         storage::{
-            s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageProfile, ValidationError,
+            S3Credential, S3Profile, StorageProfile, ValidationError, s3::S3UrlStyleDetectionMode,
         },
-        AuthZTableInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
-        TabularListFlags,
     },
-    WarehouseId,
 };
 
 const UNSIGNED_HEADERS: &[&str] = &[
@@ -128,7 +128,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 }
                 Ok(Some(metadata_by_id)) => {
                     if validate_uri(&parsed_url, &metadata_by_id.location).is_err() {
-                        tracing::warn!("Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1", metadata_by_id.location);
+                        tracing::warn!(
+                            "Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
+                            metadata_by_id.location
+                        );
                         fallback_to_location = true;
                     }
                 }
@@ -143,7 +146,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 metadata_by_id
             }
         } else {
-            tracing::debug!("Got S3 sign request for URL {request_url} without table id. Searching for table id by location");
+            tracing::debug!(
+                "Got S3 sign request for URL {request_url} without table id. Searching for table id by location"
+            );
             get_table_info_by_location(warehouse_id, first_location, &state)
                 .await
                 .map_err(RequireTableActionError::from)
@@ -411,7 +416,7 @@ async fn get_table_info_by_location<C: CatalogStore, A: Authorizer + Clone, S: S
     first_location: &S3Location,
     state: &ApiContext<State<A, C, S>>,
 ) -> std::result::Result<Option<TableInfo>, GetTabularInfoByLocationError> {
-    let info = C::get_tabular_infos_by_s3_location(
+    C::get_tabular_infos_by_s3_location(
         warehouse_id,
         first_location.location(),
         // spark iceberg drops the table and then checks for existence of metadata files
@@ -429,9 +434,7 @@ async fn get_table_info_by_location<C: CatalogStore, A: Authorizer + Clone, S: S
             }
             info
         })
-    });
-
-    info
+    })
 }
 
 fn validate_uri(
@@ -479,7 +482,7 @@ pub(super) mod s3_utils {
     use serde::{Deserialize, Serialize};
 
     use super::{ErrorModel, Operation, Result};
-    use crate::service::storage::{s3::S3UrlStyleDetectionMode, ValidationError};
+    use crate::service::storage::{ValidationError, s3::S3UrlStyleDetectionMode};
 
     #[derive(Debug, Clone)]
     pub(super) struct ParsedSignRequest {
@@ -684,12 +687,14 @@ pub(super) mod s3_utils {
         };
         Ok(ParsedSignRequest {
             url: uri.clone(),
-            locations: vec![S3Location::new(
-                bucket,
-                &path_segments.iter().map(String::as_str).collect::<Vec<_>>(),
-                None,
-            )
-            .map_err(ValidationError::from)?],
+            locations: vec![
+                S3Location::new(
+                    bucket,
+                    &path_segments.iter().map(String::as_str).collect::<Vec<_>>(),
+                    None,
+                )
+                .map_err(ValidationError::from)?,
+            ],
             endpoint: used_endpoint.to_string(),
             port,
         })
@@ -725,16 +730,18 @@ pub(super) mod s3_utils {
 
         Ok(ParsedSignRequest {
             url: uri.clone(),
-            locations: vec![S3Location::new(
-                path_segments_borrowed[0],
-                if path_segments_borrowed.len() > 1 {
-                    &(path_segments_borrowed[1..])
-                } else {
-                    &[]
-                },
-                None,
-            )
-            .map_err(ValidationError::from)?],
+            locations: vec![
+                S3Location::new(
+                    path_segments_borrowed[0],
+                    if path_segments_borrowed.len() > 1 {
+                        &(path_segments_borrowed[1..])
+                    } else {
+                        &[]
+                    },
+                    None,
+                )
+                .map_err(ValidationError::from)?,
+            ],
             endpoint: uri
                 .host_str()
                 .ok_or_else(|| {
@@ -767,7 +774,7 @@ pub(super) mod s3_utils {
 mod test_delete_body_deserialization {
     use std::collections::HashSet;
 
-    use super::s3_utils::{parse_s3_delete_xml, DeleteObjectsRequest};
+    use super::s3_utils::{DeleteObjectsRequest, parse_s3_delete_xml};
 
     const TEST_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -787,18 +794,24 @@ mod test_delete_body_deserialization {
     fn test_parse_s3_delete_xml() {
         let keys = parse_s3_delete_xml(TEST_XML).unwrap();
         assert_eq!(keys.len(), 3);
-        assert!(keys.contains(
-            &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file1.avro"
-                .to_string()
-        ));
-        assert!(keys.contains(
-            &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file2.avro"
-                .to_string()
-        ));
-        assert!(keys.contains(
-            &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file3.avro"
-                .to_string()
-        ));
+        assert!(
+            keys.contains(
+                &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file1.avro"
+                    .to_string()
+            )
+        );
+        assert!(
+            keys.contains(
+                &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file2.avro"
+                    .to_string()
+            )
+        );
+        assert!(
+            keys.contains(
+                &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file3.avro"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
@@ -1046,19 +1059,13 @@ mod test {
             (
                 "http://examples.s3.my-host:9000/?delete",
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>a/b/c.parquet</Key></Object><Object><Key>a/b/d.parquet</Key></Object></Delete>",
-                vec![
-                    "s3://examples/a/b/c.parquet",
-                    "s3://examples/a/b/d.parquet",
-                ],
+                vec!["s3://examples/a/b/c.parquet", "s3://examples/a/b/d.parquet"],
             ),
             (
                 "http://examples.s3.my-host:9000?delete",
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>a/b/c.parquet</Key></Object><Object><Key>a/b/d.parquet</Key></Object></Delete>",
-                vec![
-                    "s3://examples/a/b/c.parquet",
-                    "s3://examples/a/b/d.parquet",
-                ],
-            )
+                vec!["s3://examples/a/b/c.parquet", "s3://examples/a/b/d.parquet"],
+            ),
         ];
 
         for (uri, body, expected) in cases {
@@ -1114,8 +1121,7 @@ mod test {
             },
             // Basic bucket-style with special characters in key
             TC {
-                request_uri:
-                    "https://bucket.s3.my-region.amazonaws.com/key/with-special-chars%20/foo",
+                request_uri: "https://bucket.s3.my-region.amazonaws.com/key/with-special-chars%20/foo",
                 table_location: "s3://bucket/key/with-special-chars%20/foo",
                 endpoint: None,
                 expected_outcome: true,
@@ -1167,8 +1173,7 @@ mod test {
             },
             // Basic path-style with special characters in key
             TC {
-                request_uri:
-                    "https://s3.my-region.amazonaws.com/bucket/key/with-special-chars%20/foo",
+                request_uri: "https://s3.my-region.amazonaws.com/bucket/key/with-special-chars%20/foo",
                 table_location: "s3://bucket/key/with-special-chars%20/foo",
                 endpoint: None,
                 expected_outcome: true,

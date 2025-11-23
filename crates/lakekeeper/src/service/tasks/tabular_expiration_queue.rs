@@ -7,15 +7,15 @@ use utoipa::{PartialSchema, ToSchema};
 
 use super::{EntityId, TaskConfig, TaskExecutionDetails, TaskMetadata};
 use crate::{
-    api::{management::v1::DeleteKind, Result},
+    CancellationToken,
+    api::{Result, management::v1::DeleteKind},
     service::{
+        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
         authz::Authorizer,
         tasks::{
-            tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData, TaskQueueName,
+            SpecializedTask, TaskData, TaskQueueName, tabular_purge_queue::TabularPurgePayload,
         },
-        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
     },
-    CancellationToken,
 };
 
 const QN_STR: &str = "tabular_expiration";
@@ -127,7 +127,7 @@ async fn instrumented_expire<C: CatalogStore, A: Authorizer>(
             )
             .await;
         }
-    };
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -200,13 +200,11 @@ where
                     );
                     None
                 }
-                Err(e) => {
-                    return Err(e
-                        .append_detail(format!(
+                Err(e) => return Err(e
+                    .append_detail(format!(
                         "Failed to drop view with id `{view_id}` from catalog for `{QN_STR}` task."
                     ))
-                        .into())
-                }
+                    .into()),
                 Ok(loc) => Some(loc),
             };
 
@@ -223,27 +221,27 @@ where
         }
     };
 
-    if let Some(tabular_location) = tabular_location {
-        if matches!(task.data.deletion_kind, DeleteKind::Purge) {
-            super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
-                TaskMetadata {
-                    entity_id: task.task_metadata.entity_id,
-                    warehouse_id: task.task_metadata.warehouse_id,
-                    parent_task_id: Some(task.task_id()),
-                    schedule_for: None,
-                    entity_name: task.task_metadata.entity_name.clone(),
-                },
-                TabularPurgePayload::new(tabular_location.to_string()),
-                trx.transaction(),
-            )
-            .await
-            .map_err(|e| {
-                e.append_detail(format!(
-                    "Failed to queue purge after `{QN_STR}` task with id `{}`.",
-                    task.id
-                ))
-            })?;
-        }
+    if let Some(tabular_location) = tabular_location
+        && matches!(task.data.deletion_kind, DeleteKind::Purge)
+    {
+        super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
+            TaskMetadata {
+                entity_id: task.task_metadata.entity_id,
+                warehouse_id: task.task_metadata.warehouse_id,
+                parent_task_id: Some(task.task_id()),
+                schedule_for: None,
+                entity_name: task.task_metadata.entity_name.clone(),
+            },
+            TabularPurgePayload::new(tabular_location.to_string()),
+            trx.transaction(),
+        )
+        .await
+        .map_err(|e| {
+            e.append_detail(format!(
+                "Failed to queue purge after `{QN_STR}` task with id `{}`.",
+                task.id
+            ))
+        })?;
     }
 
     // Record success within the transaction - will be rolled back if commit fails
@@ -270,12 +268,12 @@ mod test {
     use crate::{
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
-            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
             CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
+            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
         },
         service::{
-            authz::AllowAllAuthorizer, storage::MemoryProfile, CatalogStore, CatalogTabularOps,
-            NamedEntity, TabularListFlags, Transaction,
+            CatalogStore, CatalogTabularOps, NamedEntity, TabularListFlags, Transaction,
+            authz::AllowAllAuthorizer, storage::MemoryProfile,
         },
     };
 
@@ -428,22 +426,24 @@ mod test {
             .await
             .unwrap();
 
-        assert!(PostgresBackend::list_tabulars(
-            warehouse,
-            None,
-            TabularListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            None,
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&table.table_id.into())
-        .is_none());
+        assert!(
+            PostgresBackend::list_tabulars(
+                warehouse,
+                None,
+                TabularListFlags {
+                    include_active: false,
+                    include_staged: false,
+                    include_deleted: true,
+                },
+                trx.transaction(),
+                None,
+                PaginationQuery::empty(),
+            )
+            .await
+            .unwrap()
+            .remove(&table.table_id.into())
+            .is_none()
+        );
         trx.commit().await.unwrap();
 
         cancellation_token.cancel();

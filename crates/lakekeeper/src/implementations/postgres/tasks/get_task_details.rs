@@ -6,10 +6,10 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
+    WarehouseId,
     api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
     service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
-    WarehouseId,
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -254,21 +254,21 @@ where
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
-    use sqlx::{postgres::types::PgInterval, PgPool};
+    use sqlx::{PgPool, postgres::types::PgInterval};
     use uuid::Uuid;
 
     use super::*;
     use crate::{
+        WarehouseId,
         api::management::v1::tasks::TaskStatus as APITaskStatus,
         implementations::postgres::tasks::{
             check_and_heartbeat_task, pick_task, record_failure, record_success,
             test::setup_warehouse,
         },
         service::tasks::{
-            EntityId, TaskCheckState, TaskEntity, TaskInput, TaskMetadata, TaskOutcome,
-            TaskQueueName, TaskStatus, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskCheckState, TaskEntity, TaskInput,
+            TaskMetadata, TaskOutcome, TaskQueueName, TaskStatus,
         },
-        WarehouseId,
     };
 
     #[allow(clippy::too_many_arguments)]

@@ -33,14 +33,12 @@ fn get_config() -> DynAppConfig {
         config = config.merge(env);
     }
 
-    let config = match config.extract::<DynAppConfig>() {
+    match config.extract::<DynAppConfig>() {
         Ok(c) => c,
         Err(e) => {
             panic!("Failed to extract Lakekeeper Binary config: {e}");
         }
-    };
-
-    config
+    }
 }
 
 #[cfg(test)]

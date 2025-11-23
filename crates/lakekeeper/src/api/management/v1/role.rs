@@ -1,24 +1,24 @@
 use std::sync::Arc;
 
-use axum::{response::IntoResponse, Json};
+use axum::{Json, response::IntoResponse};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ProjectId,
     api::{
+        ApiContext,
         iceberg::{types::PageToken, v1::PaginationQuery},
         management::v1::ApiServer,
-        ApiContext,
     },
     request_metadata::RequestMetadata,
     service::{
+        CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps, CatalogStore, Result,
+        RoleId, SecretStore, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction, CatalogRoleAction,
         },
-        CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps, CatalogStore, Result,
-        RoleId, SecretStore, State, Transaction,
     },
-    ProjectId,
 };
 
 #[derive(Debug, Deserialize, typed_builder::TypedBuilder)]

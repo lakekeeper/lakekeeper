@@ -3,9 +3,9 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
+    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     implementations::postgres::{PostgresBackend, SecretsState},
-    service::{authz::AllowAllAuthorizer, State, UserId},
+    service::{State, UserId, authz::AllowAllAuthorizer},
     tests::TestWarehouseResponse,
 };
 
@@ -18,7 +18,7 @@ mod test {
     use crate::{
         api::{
             iceberg::types::PageToken,
-            management::v1::{warehouse::Service, ApiServer, GetWarehouseStatisticsQuery},
+            management::v1::{ApiServer, GetWarehouseStatisticsQuery, warehouse::Service},
         },
         tests::{random_request_metadata, spawn_build_in_queues},
     };

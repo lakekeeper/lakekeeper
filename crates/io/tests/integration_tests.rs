@@ -3,10 +3,10 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use lakekeeper_io::{execute_with_parallelism, LakekeeperStorage, StorageBackend};
+use lakekeeper_io::{LakekeeperStorage, StorageBackend, execute_with_parallelism};
 use tokio::{
     runtime::Runtime,
-    time::{sleep, Duration, Instant},
+    time::{Duration, Instant, sleep},
 };
 
 // we need to use a shared runtime since the static client is shared between tests here
@@ -22,9 +22,7 @@ static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
 
 #[track_caller]
 pub(crate) fn execute_in_common_runtime<F: Future>(f: F) -> F::Output {
-    {
-        COMMON_RUNTIME.block_on(f)
-    }
+    COMMON_RUNTIME.block_on(f)
 }
 
 #[cfg(feature = "storage-in-memory")]

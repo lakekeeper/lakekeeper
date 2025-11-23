@@ -3,16 +3,16 @@ use std::collections::HashSet;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
+    ProjectId,
     api::RequestMetadata,
     service::{
+        Actor,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogProjectAction,
             MustUse, UserOrRole,
         },
-        Actor,
     },
-    ProjectId,
 };
 pub trait ProjectAction
 where

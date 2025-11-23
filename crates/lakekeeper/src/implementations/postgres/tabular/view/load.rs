@@ -6,33 +6,33 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use iceberg::{
+    NamespaceIdent,
     spec::{
         Schema, SqlViewRepresentation, ViewMetadata, ViewMetadataParts, ViewRepresentation,
         ViewRepresentations, ViewVersion, ViewVersionId, ViewVersionLog,
     },
-    NamespaceIdent,
 };
 use itertools::izip;
 use lakekeeper_io::Location;
-use sqlx::{types::Json, FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, types::Json};
 use uuid::Uuid;
 
 use crate::{
+    WarehouseId,
     implementations::postgres::{
+        PostgresBackend, PostgresTransactionType,
         dbutils::DBErrorHandler,
         tabular::{
             prepare_properties,
             view::{ViewFormatVersion, ViewRepresentationType},
         },
-        PostgresBackend, PostgresTransactionType,
     },
     service::{
-        storage::join_location, CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps,
-        CatalogView, InternalParseLocationError, InvalidViewRepresentationsInternal, LoadViewError,
-        NamespaceId, RequiredViewComponentMissing, TabularNotFound, ViewId,
-        ViewMetadataValidationFailedInternal,
+        CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps, CatalogView,
+        InternalParseLocationError, InvalidViewRepresentationsInternal, LoadViewError, NamespaceId,
+        RequiredViewComponentMissing, TabularNotFound, ViewId,
+        ViewMetadataValidationFailedInternal, storage::join_location,
     },
-    WarehouseId,
 };
 
 pub(crate) async fn load_view(

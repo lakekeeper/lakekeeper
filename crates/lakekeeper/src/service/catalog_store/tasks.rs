@@ -8,18 +8,18 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use super::{CatalogStore, Transaction};
 use crate::{
+    WarehouseId,
     api::management::v1::{
         tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
         warehouse::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
     },
     service::{
+        Result,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
-        Result,
     },
-    WarehouseId,
 };
 
 struct TasksCacheExpiry;

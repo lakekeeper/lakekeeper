@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use axum::{
+    Extension, Json, Router,
     extract::{Path, State},
     response::IntoResponse,
     routing::post,
-    Extension, Json, Router,
 };
 use http::StatusCode;
 use iceberg_ext::TableIdent;
@@ -11,8 +11,8 @@ use iceberg_ext::TableIdent;
 use super::namespace::NamespaceIdentUrl;
 use crate::{
     api::{
-        iceberg::{types::Prefix, v1::tables::TableParameters},
         ApiContext, Result,
+        iceberg::{types::Prefix, v1::tables::TableParameters},
     },
     request_metadata::RequestMetadata,
 };

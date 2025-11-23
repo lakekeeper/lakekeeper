@@ -6,11 +6,11 @@ use std::{
 use axum_prometheus::metrics;
 
 use crate::{
-    service::storage::{
-        gcs::CachedSTSResponse, ShortTermCredentialsRequest, StorageCredentialBorrowed,
-        StorageProfileBorrowed,
-    },
     CONFIG,
+    service::storage::{
+        ShortTermCredentialsRequest, StorageCredentialBorrowed, StorageProfileBorrowed,
+        gcs::CachedSTSResponse,
+    },
 };
 
 /// Metric name for STC cache size gauge

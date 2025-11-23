@@ -3,7 +3,7 @@ use lakekeeper::{
     service::authz::{AuthorizationBackendUnavailable, IsAllowedActionError},
 };
 use openfga_client::{
-    client::{check_error::Code, CheckError},
+    client::{CheckError, check_error::Code},
     error::Error as OpenFGAClientError,
 };
 
@@ -91,7 +91,9 @@ pub enum OpenFGAError {
     CannotWriteTupleAlreadyExists(#[from] CannotWriteTupleAlreadyExists),
     #[error(transparent)]
     CannotDeleteTupleNotFound(#[from] CannotDeleteTupleNotFound),
-    #[error("Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!")]
+    #[error(
+        "Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!"
+    )]
     ActiveAuthModelNotFound(String),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
     StoreNotFound(String),
@@ -290,7 +292,7 @@ mod tests {
     // Name is important for test profile
     mod openfga_integration_tests {
         use http::StatusCode;
-        use lakekeeper::{api::ErrorModel, tokio, ProjectId};
+        use lakekeeper::{ProjectId, api::ErrorModel, tokio};
         use openfga_client::client::{TupleKey, TupleKeyWithoutCondition};
 
         use super::super::*;

@@ -489,7 +489,9 @@ mod test {
                 .map(|(method, path)| format!("{method} /{path}"))
                 .join("\n");
 
-            panic!("The following endpoints are in the OpenAPI YAML but missing from the Endpoints enum:\n{missing_formatted}");
+            panic!(
+                "The following endpoints are in the OpenAPI YAML but missing from the Endpoints enum:\n{missing_formatted}"
+            );
         }
 
         // Find extra endpoints
@@ -511,7 +513,9 @@ mod test {
                 .map(|(method, path)| format!("{method} /{path}"))
                 .join("\n");
 
-            panic!("The following endpoints are in the Endpoints enum but missing from the OpenAPI YAML:\n{extra_formatted}");
+            panic!(
+                "The following endpoints are in the Endpoints enum but missing from the OpenAPI YAML:\n{extra_formatted}"
+            );
         }
     }
 

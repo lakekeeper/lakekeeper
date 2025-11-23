@@ -3,18 +3,18 @@ use std::sync::Arc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
+    WarehouseId,
     api::RequestMetadata,
     service::{
+        Actor, CachePolicy, CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps,
+        CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier, NamespaceHierarchy,
+        NamespaceIdentOrId, NamespaceNotFound, ResolvedWarehouse, SerializationError,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
             CatalogNamespaceAction, IsAllowedActionError, MustUse, UserOrRole,
         },
-        Actor, CachePolicy, CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps,
-        CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier, NamespaceHierarchy,
-        NamespaceIdentOrId, NamespaceNotFound, ResolvedWarehouse, SerializationError,
     },
-    WarehouseId,
 };
 
 const CAN_SEE_PERMISSION: CatalogNamespaceAction = CatalogNamespaceAction::GetMetadata;

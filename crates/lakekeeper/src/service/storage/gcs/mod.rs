@@ -11,10 +11,10 @@ use google_cloud_auth::{
     token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
-use iceberg_ext::configs::table::{gcs, TableProperties};
+use iceberg_ext::configs::table::{TableProperties, gcs};
 use lakekeeper_io::{
-    gcs::{validate_bucket_name, CredentialsFile, GCSSettings, GcsAuth, GcsStorage},
     InvalidLocationError, Location,
+    gcs::{CredentialsFile, GCSSettings, GcsAuth, GcsStorage, validate_bucket_name},
 };
 use serde::{Deserialize, Serialize};
 pub(super) use sts::STSResponse;
@@ -22,22 +22,22 @@ use url::Url;
 use veil::Redact;
 
 use crate::{
+    CONFIG, WarehouseId,
     api::{
-        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig,
+        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
     },
     service::storage::{
+        ShortTermCredentialsRequest, TableConfig,
         cache::{
-            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
-            ShortTermCredential,
+            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+            insert_stc_into_cache,
         },
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
         },
-        ShortTermCredentialsRequest, TableConfig,
     },
-    WarehouseId, CONFIG,
 };
 
 mod sts;
@@ -445,23 +445,23 @@ impl GcsProfile {
             }
         }
 
-        if let Some(key_prefix) = self.key_prefix.as_ref() {
-            if key_prefix.is_empty() {
-                self.key_prefix = None;
-            }
+        if let Some(key_prefix) = self.key_prefix.as_ref()
+            && key_prefix.is_empty()
+        {
+            self.key_prefix = None;
         }
 
         // GCS supports a max of 1024 chars and we need some buffer for tables.
-        if let Some(key_prefix) = self.key_prefix.as_ref() {
-            if key_prefix.len() > 896 {
-                return Err(InvalidProfileError {
-                    source: None,
-                    reason: "Storage Profile `key_prefix` must be less than 896 characters."
-                        .to_string(),
-                    entity: "key_prefix".to_string(),
-                }
-                .into());
+        if let Some(key_prefix) = self.key_prefix.as_ref()
+            && key_prefix.len() > 896
+        {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "Storage Profile `key_prefix` must be less than 896 characters."
+                    .to_string(),
+                entity: "key_prefix".to_string(),
             }
+            .into());
         }
         Ok(())
     }
@@ -529,8 +529,8 @@ pub(crate) mod test {
         use crate::{
             api::RequestMetadata,
             service::storage::{
-                gcs::{GcsCredential, GcsProfile, GcsServiceKey},
                 StorageCredential, StorageProfile,
+                gcs::{GcsCredential, GcsProfile, GcsServiceKey},
             },
         };
 
@@ -597,8 +597,8 @@ pub(crate) mod test {
         use crate::{
             api::RequestMetadata,
             service::storage::{
-                gcs::{GcsCredential, GcsProfile, GcsServiceKey},
                 StorageCredential, StorageProfile,
+                gcs::{GcsCredential, GcsProfile, GcsServiceKey},
             },
         };
 

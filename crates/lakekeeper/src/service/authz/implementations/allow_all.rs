@@ -8,9 +8,12 @@ use axum::Router;
 use utoipa::OpenApi;
 
 use crate::{
-    api::{iceberg::v1::Result, management::v1::role::Role, ApiContext},
+    api::{ApiContext, iceberg::v1::Result, management::v1::role::Role},
     request_metadata::RequestMetadata,
     service::{
+        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId,
+        NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
+        TableId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
@@ -19,9 +22,6 @@ use crate::{
             ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
-        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, ViewId, WarehouseId,
     },
 };
 

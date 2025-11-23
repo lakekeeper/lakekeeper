@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
-use iceberg::{spec::ViewMetadata, NamespaceIdent};
+use iceberg::{NamespaceIdent, spec::ViewMetadata};
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 
 use super::{
+    CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data},
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
     role::{create_roles, delete_roles, list_roles, update_role},
@@ -16,15 +17,16 @@ use super::{
         rename_warehouse, set_warehouse_deletion_profile, set_warehouse_status,
         update_storage_profile,
     },
-    CatalogState, PostgresTransaction,
 };
 use crate::{
+    SecretId,
     api::{
         iceberg::v1::{
-            namespace::NamespaceDropFlags, tables::LoadTableFilters, PaginatedMapping,
-            PaginationQuery,
+            PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags,
+            tables::LoadTableFilters,
         },
         management::v1::{
+            DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
             tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
@@ -33,7 +35,6 @@ use crate::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
                 WarehouseStatisticsResponse,
             },
-            DeleteWarehouseQuery, TabularType,
         },
     },
     implementations::postgres::{
@@ -57,11 +58,6 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        authn::UserId,
-        storage::StorageProfile,
-        tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
-        },
         CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
         CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
@@ -81,8 +77,12 @@ use crate::{
         TabularIdentBorrowed, TabularListFlags, Transaction, UpdateRoleError,
         UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
         ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        authn::UserId,
+        storage::StorageProfile,
+        tasks::{
+            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
+        },
     },
-    SecretId,
 };
 
 #[async_trait::async_trait]
@@ -139,9 +139,9 @@ impl CatalogStore for super::PostgresBackend {
     ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
     where
         SOT: crate::service::StateOrTransaction<
-            Self::State,
-            <Self::Transaction as crate::service::Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as crate::service::Transaction<Self::State>>::Transaction<'a>,
+            >,
         'a: 'b,
     {
         use crate::service::StateOrTransactionEnum;
@@ -162,9 +162,9 @@ impl CatalogStore for super::PostgresBackend {
     ) -> std::result::Result<Vec<NamespaceWithParent>, CatalogGetNamespaceError>
     where
         SOT: crate::service::StateOrTransaction<
-            Self::State,
-            <Self::Transaction as crate::service::Transaction<Self::State>>::Transaction<'a>,
-        >,
+                Self::State,
+                <Self::Transaction as crate::service::Transaction<Self::State>>::Transaction<'a>,
+            >,
         'a: 'b,
     {
         use crate::service::StateOrTransactionEnum;

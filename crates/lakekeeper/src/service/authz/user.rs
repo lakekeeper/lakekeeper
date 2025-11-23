@@ -3,12 +3,12 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::RequestMetadata,
     service::{
+        Actor, UserId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogUserAction,
             MustUse, UserOrRole,
         },
-        Actor, UserId,
     },
 };
 

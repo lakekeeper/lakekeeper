@@ -4,16 +4,17 @@ use serde::{Deserialize, Serialize};
 
 use super::ApiServer;
 use crate::{
+    WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
+        State, TabularId,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
         },
-        require_namespace_for_tabular, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, SecretStore, State, TabularId,
+        require_namespace_for_tabular,
     },
-    WarehouseId,
 };
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> TabularManagementService<C, A, S>

@@ -8,19 +8,19 @@ use axum::{
 };
 #[cfg(feature = "router")]
 use axum_extra::{
-    headers::{authorization::Bearer, Authorization},
     TypedHeader,
+    headers::{Authorization, authorization::Bearer},
 };
 #[cfg(feature = "router")]
 use http::{HeaderMap, StatusCode};
 use iceberg_ext::catalog::rest::ErrorModel;
-use limes::{format_subject, parse_subject, AuthenticatorEnum, Subject};
+use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
 use serde::{Deserialize, Serialize};
 
 use super::RoleId;
 #[cfg(feature = "router")]
 use crate::request_metadata::RequestMetadata;
-use crate::{api, CONFIG};
+use crate::{CONFIG, api};
 
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";

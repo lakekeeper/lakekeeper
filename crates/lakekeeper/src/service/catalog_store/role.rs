@@ -4,6 +4,7 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
+    ProjectId,
     api::{
         iceberg::v1::PaginationQuery,
         management::v1::role::{
@@ -11,11 +12,10 @@ use crate::{
         },
     },
     service::{
-        define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
         CatalogBackendError, CatalogCreateRoleRequest, CatalogStore, InvalidPaginationToken,
-        ProjectIdNotFoundError, ResultCountMismatch, RoleId, Transaction,
+        ProjectIdNotFoundError, ResultCountMismatch, RoleId, Transaction, define_transparent_error,
+        impl_error_stack_methods, impl_from_with_detail,
     },
-    ProjectId,
 };
 
 #[derive(thiserror::Error, Debug, PartialEq)]

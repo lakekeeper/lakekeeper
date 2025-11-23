@@ -10,13 +10,13 @@ mod test {
     use strum::IntoEnumIterator;
 
     use crate::{
+        DEFAULT_PROJECT_ID,
         api::{
             endpoints::{Endpoint, EndpointFlat},
             management::v1::warehouse::TabularDeleteProfile,
         },
         implementations::postgres::endpoint_statistics::sink::PostgresStatisticsSink,
         service::authz::AllowAllAuthorizer,
-        DEFAULT_PROJECT_ID,
     };
 
     #[sqlx::test]

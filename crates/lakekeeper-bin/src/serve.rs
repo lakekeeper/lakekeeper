@@ -3,13 +3,13 @@ use std::{sync::Arc, vec};
 use lakekeeper::{
     implementations::{get_default_catalog_from_config, postgres::PostgresBackend},
     limes::{Authenticator, AuthenticatorEnum},
-    serve::{serve, ServeConfiguration},
+    serve::{ServeConfiguration, serve},
     service::{
-        authn::{get_default_authenticator_from_config, BuiltInAuthenticators},
+        CatalogStore, SecretStore,
+        authn::{BuiltInAuthenticators, get_default_authenticator_from_config},
         authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
         event_publisher::get_default_cloud_event_backends_from_config,
-        CatalogStore, SecretStore,
     },
     tracing,
 };

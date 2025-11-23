@@ -3,12 +3,12 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use super::user::{parse_create_user_request, CreateUserRequest, UserLastUpdatedWith, UserType};
+use super::user::{CreateUserRequest, UserLastUpdatedWith, UserType, parse_create_user_request};
 use crate::{
-    api::{management::v1::ApiServer, ApiContext},
+    CONFIG, DEFAULT_PROJECT_ID, ProjectId,
+    api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, Actor, CatalogStore, Result, SecretStore, State, Transaction},
-    ProjectId, CONFIG, DEFAULT_PROJECT_ID,
+    service::{Actor, CatalogStore, Result, SecretStore, State, Transaction, authz::Authorizer},
 };
 
 #[derive(Debug, Deserialize, TypedBuilder)]

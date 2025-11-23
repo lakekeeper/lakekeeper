@@ -233,7 +233,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use axum::{body::Body, extract::Query, http::Request, routing::get, Router};
+    use axum::{Router, body::Body, extract::Query, http::Request, routing::get};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 

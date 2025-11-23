@@ -16,26 +16,26 @@ pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::io::FileIO;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
 use lakekeeper_io::{
-    s3::S3Location, InvalidLocationError, LakekeeperStorage, Location, LocationParseError,
-    StorageBackend,
+    InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
+    s3::S3Location,
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
 
-use super::{secrets::SecretInStorage, NamespaceId, TableId};
+use super::{NamespaceId, TableId, secrets::SecretInStorage};
 use crate::{
+    CONFIG, WarehouseId,
     api::{
-        iceberg::v1::{tables::DataAccessMode, DataAccess},
-        management::v1::warehouse::TabularDeleteProfile,
         CatalogConfig,
+        iceberg::v1::{DataAccess, tables::DataAccessMode},
+        management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
     server::{compression_codec::CompressionCodec, io::list_location},
     service::{
-        storage::error::{IcebergFileIoError, UnexpectedStorageType},
         TabularId,
+        storage::error::{IcebergFileIoError, UnexpectedStorageType},
     },
-    WarehouseId, CONFIG,
 };
 
 /// Storage profile for a warehouse.
@@ -815,7 +815,9 @@ impl StorageProfile {
                 .ok()
                 .map_or(String::new(), |l| l.to_string());
             return Err(ErrorModel::bad_request(
-                format!("Provided location {other} is not a valid sublocation of the storage profile {base_location}."),
+                format!(
+                    "Provided location {other} is not a valid sublocation of the storage profile {base_location}."
+                ),
                 "InvalidLocation",
                 None,
             ));
