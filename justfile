@@ -7,7 +7,7 @@ check-format:
 	cargo +nightly fmt --all -- --check
 
 check-clippy:
-    cargo clippy --no-default-features --all-targets --workspace -- -D warnings
+    cargo clippy --locked --no-default-features --all-targets --workspace -- -D warnings
     cargo clippy --all-targets --all-features --workspace -- -D warnings
     cargo clippy -p lakekeeper --no-default-features -- -D warnings
     cargo clippy -p lakekeeper --no-default-features --features "test-utils" -- -D warnings
