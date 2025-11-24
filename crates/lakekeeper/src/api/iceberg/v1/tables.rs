@@ -8,7 +8,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use http::{HeaderMap, HeaderName, StatusCode};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadCredentialsResponse;
 
@@ -84,7 +84,12 @@ impl IntoResponse for LoadTableResultOrNotModified {
         match self {
             LoadTableResultOrNotModified::NotModifiedResponse(etag) => {
                 let mut header = HeaderMap::new();
-                header.insert(header::ETAG, etag.parse().unwrap());
+
+                let Ok(header_value) = etag.parse::<HeaderValue>() else {
+                    tracing::error!("Failed to parse etag for Not Modified response: {}", etag);
+                    return StatusCode::NOT_MODIFIED.into_response();
+                };
+                header.insert(header::ETAG, header_value);
                 (StatusCode::NOT_MODIFIED, header).into_response()
             }
             LoadTableResultOrNotModified::LoadTableResult(load_table_result) => {
