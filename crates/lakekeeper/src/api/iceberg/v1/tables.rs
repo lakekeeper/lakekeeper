@@ -473,7 +473,7 @@ pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<String> {
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
-        .flat_map(|value| value.to_str().ok())
+        .filter_map(|value| value.to_str().ok())
         .flat_map(parse_etags)
         .collect()
 }
@@ -1010,6 +1010,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_parse_if_none_match_recieves_multiple_single_headers_with_etags() {
         let etag = "\"abcdefghi123456789\"".to_string();
         let etag2 = "\"123456789abcdefghi\"".to_string();
