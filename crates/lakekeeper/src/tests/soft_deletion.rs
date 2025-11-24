@@ -11,7 +11,8 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters, LoadTableResultOrNotModified,
+                DataAccessMode, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                NamespaceParameters, TableParameters,
                 namespace::NamespaceService,
                 tables::{LoadTableFilters, TablesService},
             },

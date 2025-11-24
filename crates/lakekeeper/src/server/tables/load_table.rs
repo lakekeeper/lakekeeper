@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{create_etag, StorageCredential};
+use iceberg_ext::catalog::rest::{StorageCredential, create_etag};
 
 use crate::{
     WarehouseId,
     api::iceberg::v1::{
-        ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent, TableParameters,
+        ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
+        TableParameters,
         tables::{DataAccessMode, LoadTableFilters},
     },
     request_metadata::RequestMetadata,
@@ -246,7 +247,10 @@ mod tests {
             iceberg::v1::{
                 NamespaceParameters, TableParameters,
                 namespace::NamespaceService as _,
-                tables::{DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery, TablesService as _},
+                tables::{
+                    DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery,
+                    TablesService as _,
+                },
             },
             management::v1::warehouse::TabularDeleteProfile,
         },

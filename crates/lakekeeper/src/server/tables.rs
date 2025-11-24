@@ -40,8 +40,8 @@ use crate::{
             v1::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix, RegisterTableRequest,
-                RenameTableRequest, Result, TableIdent, TableParameters,
+                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
                 tables::{DataAccessMode, LoadTableFilters},
             },
         },
@@ -1752,7 +1752,8 @@ pub(crate) mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified, NamespaceParameters, TableParameters,
+                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                    NamespaceParameters, TableParameters,
                     tables::{LoadTableFilters, TablesService as _},
                 },
             },

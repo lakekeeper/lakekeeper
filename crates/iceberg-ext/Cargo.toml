@@ -37,8 +37,8 @@ typed-builder = { workspace = true }
 url = { workspace = true }
 utoipa = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
-xxhash-rust = { workspace = true, features = ["xxh3"] }
 valuable = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 bytes = { workspace = true }
