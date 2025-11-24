@@ -1028,4 +1028,15 @@ mod test {
 
         assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
     }
+
+    #[test]
+    fn test_load_table_result_or_not_modified_into_response_should_return_response_without_header_when_parsing_failed()
+     {
+        let result = LoadTableResultOrNotModified::NotModifiedResponse("\n".to_string());
+        let response = result.into_response();
+
+        let headers = response.headers();
+
+        assert!(headers.is_empty());
+    }
 }
