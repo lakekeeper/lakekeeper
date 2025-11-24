@@ -471,10 +471,11 @@ fn parse_etags(etags: &str) -> Vec<String> {
 
 pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<String> {
     headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .map(parse_etags)
-        .unwrap_or_default()
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .flat_map(|value| value.to_str().ok())
+        .flat_map(parse_etags)
+        .collect()
 }
 
 pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
@@ -1006,5 +1007,19 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(etags, vec!["abcdefghi123456789"]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_recieves_multiple_single_headers_with_etags() {
+        let etag = "\"abcdefghi123456789\"".to_string();
+        let etag2 = "\"123456789abcdefghi\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+        headers.append(header::IF_NONE_MATCH, etag2.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
     }
 }
