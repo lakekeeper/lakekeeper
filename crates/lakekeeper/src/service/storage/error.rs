@@ -137,7 +137,10 @@ impl From<TableConfigError> for ValidationError {
     fn from(value: TableConfigError) -> Self {
         match value {
             TableConfigError::Credentials(e) => Box::new(e).into(),
-            TableConfigError::FailedDependency(_) | TableConfigError::Misconfiguration(_) => {
+            TableConfigError::FailedDependency(_)
+            | TableConfigError::Misconfiguration(_)
+            | TableConfigError::VendedCredentialsDisabled
+            | TableConfigError::RemoteSigningDisabled => {
                 let reason = value.to_string();
                 ValidationError::InvalidProfile(Box::new(InvalidProfileError {
                     source: Some(Box::new(value)),
@@ -278,6 +281,10 @@ pub enum TableConfigError {
         String,
         #[source] Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
     ),
+    #[error("Vended credentials (STS/SAS/downscoped tokens) are disabled for this warehouse")]
+    VendedCredentialsDisabled,
+    #[error("Remote signing is disabled for this warehouse")]
+    RemoteSigningDisabled,
 }
 
 impl From<TableConfigError> for IcebergErrorResponse {
@@ -293,6 +300,16 @@ impl From<TableConfigError> for IcebergErrorResponse {
             }
             e @ TableConfigError::Internal(_, _) => {
                 ErrorModel::internal(e.to_string(), "StsError", Some(Box::new(e))).into()
+            }
+            e @ TableConfigError::VendedCredentialsDisabled => ErrorModel::forbidden(
+                e.to_string(),
+                "VendedCredentialsDisabled",
+                Some(Box::new(e)),
+            )
+            .into(),
+            e @ TableConfigError::RemoteSigningDisabled => {
+                ErrorModel::forbidden(e.to_string(), "RemoteSigningDisabled", Some(Box::new(e)))
+                    .into()
             }
         }
     }

@@ -50,7 +50,7 @@ pub(super) async fn set_warehouse_deletion_profile<
             SET tabular_expiration_seconds = $1, tabular_delete_mode = $2
             WHERE warehouse_id = $3
             AND status = 'active'
-            RETURNING 
+            RETURNING
                 project_id,
                 warehouse_id,
                 warehouse_name,
@@ -61,7 +61,9 @@ pub(super) async fn set_warehouse_deletion_profile<
                 tabular_expiration_seconds,
                 protected,
                 updated_at,
-                version
+                version,
+                sts_enabled,
+                remote_signing_enabled
             "#,
         num_secs,
         prof as _,
@@ -117,7 +119,9 @@ pub(crate) async fn create_warehouse(
                                     tabular_expiration_seconds,
                                     protected,
                                     updated_at,
-                                    version),
+                                    version,
+                                    sts_enabled,
+                                    remote_signing_enabled),
             whs AS (INSERT INTO warehouse_statistics (number_of_views,
                                                       number_of_tables,
                                                       warehouse_id)
@@ -282,6 +286,8 @@ struct WarehouseRecord {
     protected: bool,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
     version: i64,
+    sts_enabled: bool,
+    remote_signing_enabled: bool,
 }
 
 impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
@@ -304,6 +310,8 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             protected: value.protected,
             updated_at: value.updated_at,
             version: WarehouseVersion::from(value.version),
+            sts_enabled: value.sts_enabled,
+            remote_signing_enabled: value.remote_signing_enabled,
         })
     }
 }
@@ -321,7 +329,7 @@ pub(crate) async fn list_warehouses<
     let warehouses = sqlx::query_as!(
         WarehouseRecord,
         r#"
-            SELECT 
+            SELECT
                 project_id,
                 warehouse_id,
                 warehouse_name,
@@ -332,7 +340,9 @@ pub(crate) async fn list_warehouses<
                 tabular_expiration_seconds,
                 protected,
                 updated_at,
-                version
+                version,
+                sts_enabled,
+                remote_signing_enabled
             FROM warehouse
             WHERE project_id = $1
             AND status = ANY($2)
@@ -369,7 +379,9 @@ pub(super) async fn get_warehouse_by_name(
             tabular_expiration_seconds,
             protected,
             updated_at,
-            version
+            version,
+            sts_enabled,
+            remote_signing_enabled
         FROM warehouse
         WHERE warehouse_name = $1 AND project_id = $2
         "#,
@@ -398,7 +410,7 @@ pub(crate) async fn get_warehouse_by_id<
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
         r#"
-        SELECT 
+        SELECT
             project_id,
             warehouse_id,
             warehouse_name,
@@ -409,7 +421,9 @@ pub(crate) async fn get_warehouse_by_id<
             tabular_expiration_seconds,
             protected,
             updated_at,
-            version
+            version,
+            sts_enabled,
+            remote_signing_enabled
         FROM warehouse
         WHERE warehouse_id = $1
         "#,
@@ -530,7 +544,9 @@ pub(crate) async fn rename_warehouse(
             tabular_expiration_seconds,
             protected,
             updated_at,
-            version
+            version,
+            sts_enabled,
+            remote_signing_enabled
         "#,
         new_name,
         *warehouse_id
@@ -556,7 +572,7 @@ pub(crate) async fn set_warehouse_status(
         r#"UPDATE warehouse
             SET status = $1
             WHERE warehouse_id = $2
-            RETURNING                 
+            RETURNING
                 project_id,
                 warehouse_id,
                 warehouse_name,
@@ -567,7 +583,9 @@ pub(crate) async fn set_warehouse_status(
                 tabular_expiration_seconds,
                 protected,
                 updated_at,
-                version
+                version,
+                sts_enabled,
+                remote_signing_enabled
         "#,
         status as _,
         *warehouse_id
@@ -593,7 +611,7 @@ pub(crate) async fn set_warehouse_protection(
         r#"UPDATE warehouse
             SET protected = $1
             WHERE warehouse_id = $2
-            RETURNING 
+            RETURNING
                 project_id,
                 warehouse_id,
                 warehouse_name,
@@ -604,7 +622,9 @@ pub(crate) async fn set_warehouse_protection(
                 tabular_expiration_seconds,
                 protected,
                 updated_at,
-                version
+                version,
+                sts_enabled,
+                remote_signing_enabled
             "#,
         protected,
         *warehouse_id
@@ -647,7 +667,9 @@ pub(crate) async fn update_storage_profile(
                 tabular_expiration_seconds,
                 protected,
                 updated_at,
-                version
+                version,
+                sts_enabled,
+                remote_signing_enabled
         "#,
         storage_profile_ser,
         storage_secret_id.map(|id| id.into_uuid()),

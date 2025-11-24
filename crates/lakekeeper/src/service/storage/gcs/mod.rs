@@ -333,6 +333,8 @@ impl GcsProfile {
         data_access: DataAccessMode,
         credential: &GcsCredential,
         stc_request: &ShortTermCredentialsRequest,
+        warehouse_sts_enabled: bool,
+        _warehouse_remote_signing_enabled: bool,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
@@ -341,6 +343,11 @@ impl GcsProfile {
                 creds: table_properties.clone(),
                 config: table_properties,
             });
+        }
+
+        // Check warehouse-level STS flag for GCS (downscoped tokens)
+        if !warehouse_sts_enabled {
+            return Err(TableConfigError::VendedCredentialsDisabled);
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));

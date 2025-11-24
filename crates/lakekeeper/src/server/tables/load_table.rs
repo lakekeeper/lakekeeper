@@ -110,6 +110,8 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
                     &request_metadata,
                     warehouse_id,
                     table_id.into(),
+                    warehouse.sts_enabled,
+                    warehouse.remote_signing_enabled,
                 )
                 .await?,
         )

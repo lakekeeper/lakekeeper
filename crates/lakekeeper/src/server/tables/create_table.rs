@@ -260,6 +260,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &request_metadata,
             warehouse_id,
             table_id.into(),
+            warehouse.sts_enabled,
+            warehouse.remote_signing_enabled,
         )
         .await?;
 

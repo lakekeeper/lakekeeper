@@ -266,6 +266,8 @@ impl StorageProfile {
         request_metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
+        warehouse_sts_enabled: bool,
+        warehouse_remote_signing_enabled: bool,
     ) -> Result<TableConfig, TableConfigError> {
         let stc_request = ShortTermCredentialsRequest {
             table_location: table_location.clone(),
@@ -285,6 +287,8 @@ impl StorageProfile {
                             .map_err(CredentialsError::from)?,
                         stc_request,
                         request_metadata,
+                        warehouse_sts_enabled,
+                        warehouse_remote_signing_enabled,
                     )
                     .await
             }
@@ -297,6 +301,8 @@ impl StorageProfile {
                             .try_to_az()
                             .map_err(CredentialsError::from)?,
                         stc_request,
+                        warehouse_sts_enabled,
+                        warehouse_remote_signing_enabled,
                     )
                     .await
             }
@@ -312,6 +318,8 @@ impl StorageProfile {
                                 CredentialsError::MissingCredential("gcs".to_string())
                             })?,
                         &stc_request,
+                        warehouse_sts_enabled,
+                        warehouse_remote_signing_enabled,
                     )
                     .await
             }
@@ -473,6 +481,8 @@ impl StorageProfile {
                 request_metadata,
                 WarehouseId::new_random(),
                 TableId::new_random().into(),
+                true, // sts_enabled
+                true, // remote_signing_enabled
             )
             .await?;
 

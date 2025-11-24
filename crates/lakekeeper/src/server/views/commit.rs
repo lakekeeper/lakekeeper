@@ -89,6 +89,8 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
                 storage_secret_id,
                 request: request.as_ref(),
                 data_access,
+                sts_enabled: warehouse.sts_enabled,
+                remote_signing_enabled: warehouse.remote_signing_enabled,
             },
             &state,
             &request_metadata,
@@ -140,6 +142,8 @@ struct CommitViewContext<'a> {
     storage_secret_id: Option<SecretId>,
     request: &'a CommitViewRequest,
     data_access: DataAccessMode,
+    sts_enabled: bool,
+    remote_signing_enabled: bool,
 }
 
 // Core commit logic that may be retried
@@ -252,6 +256,8 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             request_metadata,
             ctx.view_info.warehouse_id,
             ctx.view_info.tabular_id.into(),
+            ctx.sts_enabled,
+            ctx.remote_signing_enabled,
         )
         .await?;
 

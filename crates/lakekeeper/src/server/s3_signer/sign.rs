@@ -76,6 +76,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
+        // Check if remote signing is enabled for this warehouse
+        if !warehouse.remote_signing_enabled {
+            return Err(ErrorModel::forbidden(
+                "Remote signing is disabled for this warehouse",
+                "RemoteSigningDisabled",
+                None,
+            )
+            .into());
+        }
+
         let S3SignRequest {
             region: request_region,
             uri: request_url,

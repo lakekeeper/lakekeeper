@@ -93,6 +93,12 @@ pub struct ResolvedWarehouse {
     /// Version of the warehouse entity.
     /// Increments on each update to the warehouse.
     pub version: WarehouseVersion,
+    /// Whether STS (vended credentials) is enabled for this warehouse.
+    /// When false, disables all forms of vended credentials (STS for S3, SAS tokens for ADLS, downscoped tokens for GCS).
+    pub sts_enabled: bool,
+    /// Whether remote signing is enabled for this warehouse.
+    /// When false, disables remote signing for all storage providers.
+    pub remote_signing_enabled: bool,
 }
 
 impl ResolvedWarehouse {
@@ -114,6 +120,8 @@ impl ResolvedWarehouse {
             protected: false,
             updated_at: None,
             version: WarehouseVersion(0),
+            sts_enabled: true,
+            remote_signing_enabled: true,
         }
     }
 
@@ -134,6 +142,8 @@ impl ResolvedWarehouse {
             protected: false,
             updated_at: None,
             version: WarehouseVersion(0),
+            sts_enabled: true,
+            remote_signing_enabled: true,
         }
     }
 }

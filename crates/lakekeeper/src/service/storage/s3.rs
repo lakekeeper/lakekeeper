@@ -407,6 +407,8 @@ impl S3Profile {
         s3_credential: Option<&S3Credential>,
         stc_request: super::ShortTermCredentialsRequest,
         request_metadata: &RequestMetadata,
+        warehouse_sts_enabled: bool,
+        warehouse_remote_signing_enabled: bool,
     ) -> Result<TableConfig, TableConfigError> {
         let (remote_signing, vended_credentials) = match data_access {
             DataAccessMode::ServerDelegated(DataAccess {
@@ -441,8 +443,12 @@ impl S3Profile {
             config.insert(&s3::Endpoint(endpoint.clone()));
         }
 
+        // Check warehouse-level STS flag first, then profile-level
+        let sts_allowed = warehouse_sts_enabled
+            && (self.sts_enabled || matches!(s3_credential, Some(S3Credential::CloudflareR2(..))));
+
         if vended_credentials {
-            if self.sts_enabled || matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
+            if sts_allowed {
                 let cache_key = STCCacheKey::new(
                     stc_request.clone(),
                     self.into(),
@@ -467,16 +473,22 @@ impl S3Profile {
                 creds.insert(&s3::AccessKeyId(access_key_id));
                 creds.insert(&s3::SecretAccessKey(secret_access_key));
                 creds.insert(&s3::SessionToken(session_token));
-            } else {
+            } else if warehouse_remote_signing_enabled {
                 tracing::debug!(
-                    "Falling back to remote signing: vended_credentials requested but STS is disabled for this Warehouse and the credential type is not Cloudflare R2."
+                    "Falling back to remote signing: vended_credentials requested but STS is disabled for this Warehouse."
                 );
                 push_fsspec_fileio_with_s3v4restsigner(&mut config);
                 remote_signing = true;
+            } else {
+                return Err(TableConfigError::VendedCredentialsDisabled);
             }
         }
 
+        // Check warehouse-level remote signing flag
         if remote_signing {
+            if !warehouse_remote_signing_enabled {
+                return Err(TableConfigError::RemoteSigningDisabled);
+            }
             let warehouse_id = stc_request.warehouse_id;
             let tabular_id = stc_request.tabular_id;
             config.insert(&s3::RemoteSigningEnabled(true));

@@ -248,12 +248,19 @@ impl AdlsProfile {
         data_access: DataAccessMode,
         credential: &AzCredential,
         stc_request: ShortTermCredentialsRequest,
+        warehouse_sts_enabled: bool,
+        _warehouse_remote_signing_enabled: bool,
     ) -> Result<TableConfig, TableConfigError> {
         if !data_access.provide_credentials() {
             return Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
             });
+        }
+
+        // Check warehouse-level STS flag for ADLS (SAS tokens)
+        if !warehouse_sts_enabled {
+            return Err(TableConfigError::VendedCredentialsDisabled);
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));

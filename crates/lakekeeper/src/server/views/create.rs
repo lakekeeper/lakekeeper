@@ -160,6 +160,8 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             ViewId::from(metadata_build_result.metadata.uuid()).into(),
+            warehouse.sts_enabled,
+            warehouse.remote_signing_enabled,
         )
         .await?;
 

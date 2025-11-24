@@ -295,6 +295,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 tabular_id.into(),
+                warehouse.sts_enabled,
+                warehouse.remote_signing_enabled,
             )
             .await?;
 
@@ -413,6 +415,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 tabular_details.table_id().into(),
+                warehouse.sts_enabled,
+                warehouse.remote_signing_enabled,
             )
             .await?;
 
