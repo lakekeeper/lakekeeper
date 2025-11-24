@@ -8,8 +8,8 @@
 #![allow(clippy::module_name_repetitions, clippy::similar_names)]
 
 use clap::{Parser, Subcommand};
-use lakekeeper::{tokio, tracing, CONFIG};
-use tracing_subscriber::{filter::LevelFilter, EnvFilter};
+use lakekeeper::{CONFIG, tokio, tracing};
+use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 mod authorizer;
 mod config;
@@ -153,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "open-api")]
         Some(Commands::ManagementOpenapi {}) => {
             use lakekeeper::{
-                api::management::v1::api_doc, service::authz::AllowAllAuthorizer, AuthZBackend,
+                AuthZBackend, api::management::v1::api_doc, service::authz::AllowAllAuthorizer,
             };
             use lakekeeper_authz_openfga::OpenFGAAuthorizer;
 

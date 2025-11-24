@@ -19,21 +19,21 @@ use async_trait::async_trait;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
 pub use secrets::SecretsState;
 use sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions},
     ConnectOptions, Executor, PgPool,
+    postgres::{PgConnectOptions, PgPoolOptions},
 };
 pub use tabular::DeletionKind;
 use tokio::sync::RwLock;
 
 use self::dbutils::DBErrorHandler;
 use crate::{
+    CONFIG,
     api::Result,
     config::{DynAppConfig, PgSslMode},
     service::{
-        health::{Health, HealthExt, HealthStatus},
         StateOrTransaction, StateOrTransactionEnum,
+        health::{Health, HealthExt, HealthStatus},
     },
-    CONFIG,
 };
 
 /// # Errors

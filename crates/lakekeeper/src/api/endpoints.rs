@@ -191,6 +191,7 @@ generate_endpoints! {
         DeleteRole(DELETE, "/management/v1/role/{role_id}"),
         GetRole(GET, "/management/v1/role/{role_id}"),
         UpdateRole(POST, "/management/v1/role/{role_id}"),
+        UpdateRoleSourceSystem(PUT, "/management/v1/role/{role_id}/source-system"),
         GetRoleActions(GET, "/management/v1/role/{role_id}/actions"),
         CreateWarehouse(POST, "/management/v1/warehouse"),
         ListProjects(GET, "/management/v1/project-list"),
@@ -488,7 +489,9 @@ mod test {
                 .map(|(method, path)| format!("{method} /{path}"))
                 .join("\n");
 
-            panic!("The following endpoints are in the OpenAPI YAML but missing from the Endpoints enum:\n{missing_formatted}");
+            panic!(
+                "The following endpoints are in the OpenAPI YAML but missing from the Endpoints enum:\n{missing_formatted}"
+            );
         }
 
         // Find extra endpoints
@@ -510,7 +513,9 @@ mod test {
                 .map(|(method, path)| format!("{method} /{path}"))
                 .join("\n");
 
-            panic!("The following endpoints are in the Endpoints enum but missing from the OpenAPI YAML:\n{extra_formatted}");
+            panic!(
+                "The following endpoints are in the Endpoints enum but missing from the OpenAPI YAML:\n{extra_formatted}"
+            );
         }
     }
 

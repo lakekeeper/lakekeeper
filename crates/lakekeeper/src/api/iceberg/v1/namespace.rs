@@ -2,10 +2,10 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use axum::{
+    Extension, Json, Router,
     extract::{Path, Query, State},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
 };
 use http::StatusCode;
 use iceberg::NamespaceIdent;
@@ -18,8 +18,8 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     api::{
-        iceberg::types::{PageToken, Prefix},
         ApiContext, Result,
+        iceberg::types::{PageToken, Prefix},
     },
     request_metadata::RequestMetadata,
 };
@@ -327,6 +327,14 @@ impl PaginationQuery {
         PaginationQuery {
             page_token,
             page_size,
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_page_size(page_size: i64) -> Self {
+        PaginationQuery {
+            page_token: PageToken::Empty,
+            page_size: Some(page_size),
         }
     }
 }

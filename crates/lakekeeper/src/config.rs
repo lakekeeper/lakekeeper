@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -73,7 +73,9 @@ fn get_config() -> DynAppConfig {
     if config.secret_backend == SecretBackend::Postgres
         && config.pg_encryption_key == DEFAULT_ENCRYPTION_KEY
     {
-        tracing::warn!("THIS IS UNSAFE! Using default encryption key for secrets in postgres, please set a proper key using ICEBERG_REST__PG_ENCRYPTION_KEY environment variable.");
+        tracing::warn!(
+            "THIS IS UNSAFE! Using default encryption key for secrets in postgres, please set a proper key using ICEBERG_REST__PG_ENCRYPTION_KEY environment variable."
+        );
     }
 
     config

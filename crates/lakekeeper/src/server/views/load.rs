@@ -5,20 +5,20 @@ use lakekeeper_io::Location;
 
 use crate::{
     api::{
-        iceberg::v1::{DataAccessMode, ViewParameters},
         ApiContext,
+        iceberg::v1::{DataAccessMode, ViewParameters},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeView, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
-        },
-        storage::StoragePermissions,
         AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
         CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State,
         TabularListFlags, Transaction,
+        authz::{
+            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogViewAction, refresh_warehouse_and_namespace_if_needed,
+        },
+        storage::StoragePermissions,
     },
 };
 
@@ -73,13 +73,11 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
             &request_metadata,
+            None,
             &warehouse,
             &namespace,
             &view_info,
-            &[
-                CatalogViewAction::CanGetMetadata,
-                CatalogViewAction::CanCommit,
-            ],
+            &[CatalogViewAction::GetMetadata, CatalogViewAction::Commit],
         )
         .await?
         .into_inner();
@@ -146,15 +144,15 @@ pub(crate) mod test {
 
     use crate::{
         api::{
-            iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
             ApiContext,
+            iceberg::v1::{DataAccess, Prefix, ViewParameters, views},
         },
-        implementations::postgres::{secrets::SecretsState, PostgresBackend},
+        implementations::postgres::{PostgresBackend, secrets::SecretsState},
         server::{
-            views::{create::test::create_view, test::setup},
             CatalogServer,
+            views::{create::test::create_view, test::setup},
         },
-        service::{authz::AllowAllAuthorizer, State},
+        service::{State, authz::AllowAllAuthorizer},
         tests::create_view_request,
     };
 

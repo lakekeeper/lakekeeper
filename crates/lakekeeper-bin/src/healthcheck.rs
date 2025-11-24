@@ -1,8 +1,9 @@
 use anyhow::Context;
 use lakekeeper::{
-    implementations::postgres::{get_reader_pool, get_writer_pool, ReadWrite},
+    CONFIG,
+    implementations::postgres::{ReadWrite, get_reader_pool, get_writer_pool},
     service::health::{HealthExt, HealthState, HealthStatus},
-    tracing, CONFIG,
+    tracing,
 };
 
 pub(crate) async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {

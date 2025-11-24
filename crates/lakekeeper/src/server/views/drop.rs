@@ -2,22 +2,22 @@ use std::sync::Arc;
 
 use crate::{
     api::{
-        iceberg::{types::DropParams, v1::ViewParameters},
-        management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
         ApiContext,
+        iceberg::{types::DropParams, v1::ViewParameters},
+        management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
+        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
+        State, TabularId, TabularListFlags, Transaction,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         tasks::{
+            EntityId, TaskMetadata,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
-            EntityId, TaskMetadata,
         },
-        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
-        State, TabularId, TabularListFlags, Transaction,
     },
 };
 
@@ -45,7 +45,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            CatalogViewAction::CanDrop,
+            CatalogViewAction::Drop,
             state.v1_state.catalog.clone(),
         )
         .await?;
@@ -155,15 +155,16 @@ mod test {
     use sqlx::PgPool;
 
     use crate::{
+        WarehouseId,
         api::{
             iceberg::{
                 types::{DropParams, Prefix},
                 v1::ViewParameters,
             },
             management::v1::{
+                ApiServer as ManagementApiServer,
                 tasks::{ListTasksRequest, Service},
                 view::ViewManagementService,
-                ApiServer as ManagementApiServer,
             },
         },
         request_metadata::RequestMetadata,
@@ -172,7 +173,6 @@ mod test {
         },
         service::tasks::TaskEntity,
         tests::{create_view_request, random_request_metadata},
-        WarehouseId,
     };
 
     #[sqlx::test]

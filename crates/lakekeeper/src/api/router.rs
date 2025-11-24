@@ -1,45 +1,45 @@
 use std::fmt::Debug;
 
-use axum::{response::IntoResponse, routing::get, Json, Router};
+use axum::{Json, Router, response::IntoResponse, routing::get};
 use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
-use http::{header, HeaderName, HeaderValue, Method};
+use http::{HeaderName, HeaderValue, Method, header};
 use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
+    ServiceBuilderExt,
     catch_panic::CatchPanicLayer,
     compression::CompressionLayer,
     cors::AllowOrigin,
     sensitive_headers::SetSensitiveHeadersLayer,
     timeout::TimeoutLayer,
     trace::{self, TraceLayer},
-    ServiceBuilderExt,
 };
 
 #[cfg(feature = "open-api")]
 use crate::api::management::v1::api_doc as v1_api_doc;
 use crate::{
+    CONFIG, CancellationToken,
     api::{
+        ApiContext,
         iceberg::v1::{
             new_v1_full_router,
             tables::{DATA_ACCESS_HEADER_NAME, ETAG_HEADER_NAME, IF_NONE_MATCH_HEADER_NAME},
         },
         management::v1::ApiServer,
-        ApiContext,
     },
     request_metadata::{
-        create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER_NAME,
-        X_REQUEST_ID_HEADER_NAME,
+        X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
+        create_request_metadata_with_trace_and_project_fn,
     },
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
     service::{
-        authn::{auth_middleware_fn, AuthMiddlewareState},
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
+        authn::{AuthMiddlewareState, auth_middleware_fn},
         authz::Authorizer,
         health::ServiceHealthProvider,
         tasks::QueueApiConfig,
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
     },
-    CancellationToken, CONFIG,
 };
 
 pub const X_USER_AGENT_HEADER_NAME: HeaderName = HeaderName::from_static("x-user-agent");
@@ -137,6 +137,7 @@ pub async fn new_full_router<
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
         ))
         .layer(maybe_auth_layer)
+        // Add health later so that it is not authenticated
         .route(
             "/health",
             get(|| async move {

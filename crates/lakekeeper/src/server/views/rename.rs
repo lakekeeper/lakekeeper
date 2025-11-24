@@ -3,18 +3,18 @@ use std::sync::Arc;
 use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
-    api::{iceberg::types::Prefix, ApiContext},
+    api::{ApiContext, iceberg::types::Prefix},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeView, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogViewAction, RequireViewActionError,
-        },
-        contract_verification::ContractVerification,
         AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
+        authz::{
+            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
+            refresh_warehouse_and_namespace_if_needed,
+        },
+        contract_verification::ContractVerification,
     },
 };
 
@@ -84,7 +84,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &warehouse,
             &destination.namespace,
             destination_namespace,
-            CatalogNamespaceAction::CanCreateView,
+            CatalogNamespaceAction::CreateView,
         ),
         // Check 2)
         authorizer.require_view_action(
@@ -93,7 +93,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &source_namespace,
             source.clone(),
             Ok::<_, RequireViewActionError>(Some(source_view_info)),
-            CatalogViewAction::CanRename,
+            CatalogViewAction::Rename,
         )
     );
     let source_view_info = source_view_info?;

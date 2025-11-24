@@ -1,4 +1,4 @@
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::Postgres;
 

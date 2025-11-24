@@ -5,14 +5,14 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
+    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     implementations::postgres::{
-        endpoint_statistics::sink::PostgresStatisticsSink, PostgresBackend, SecretsState,
+        PostgresBackend, SecretsState, endpoint_statistics::sink::PostgresStatisticsSink,
     },
     service::{
+        EndpointStatisticsTrackerTx, State, UserId,
         authz::AllowAllAuthorizer,
         endpoint_statistics::{EndpointStatisticsTracker, FlushMode},
-        EndpointStatisticsTrackerTx, State, UserId,
     },
     tests::TestWarehouseResponse,
 };
@@ -32,24 +32,24 @@ mod test {
     use strum::IntoEnumIterator;
 
     use crate::{
+        DEFAULT_PROJECT_ID, ProjectId,
         api::{
             endpoints::{CatalogV1Endpoint, Endpoint},
             management::v1::{
+                ApiServer, DeleteWarehouseQuery,
                 project::{
                     GetEndpointStatisticsRequest, Service as OtherService, TimeWindowSelector,
                     WarehouseFilter,
                 },
                 warehouse::Service,
-                ApiServer, DeleteWarehouseQuery,
             },
         },
         request_metadata::RequestMetadata,
         service::{
-            endpoint_statistics::{EndpointStatisticsMessage, FlushMode},
             Actor,
+            endpoint_statistics::{EndpointStatisticsMessage, FlushMode},
         },
         tests::endpoint_stats::StatsSetup,
-        ProjectId, DEFAULT_PROJECT_ID,
     };
 
     #[sqlx::test]

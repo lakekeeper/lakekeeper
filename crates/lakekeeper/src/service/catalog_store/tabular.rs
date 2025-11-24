@@ -6,18 +6,18 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{Location, LocationParseError};
 
 use crate::{
+    WarehouseId,
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::TabularType,
     },
     service::{
-        authz::ActionOnTableOrView, define_simple_error, define_transparent_error,
-        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId, CatalogBackendError,
-        CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken, NamespaceId,
-        NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed, TabularIdentOwned,
-        Transaction, ViewId, WarehouseVersion,
+        CatalogBackendError, CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken,
+        NamespaceId, NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed,
+        TabularIdentOwned, Transaction, ViewId, WarehouseVersion, authz::ActionOnTableOrView,
+        define_simple_error, define_transparent_error, impl_error_stack_methods,
+        impl_from_with_detail, tasks::TaskId,
     },
-    WarehouseId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -278,7 +278,7 @@ impl ViewOrTableInfo {
 
 #[cfg(test)]
 impl TableInfo {
-    pub(crate) fn new_random() -> Self {
+    pub(crate) fn new_random(warehouse_id: WarehouseId) -> Self {
         use std::str::FromStr;
 
         let table_id = TableId::new_random();
@@ -289,7 +289,7 @@ impl TableInfo {
         let location =
             Location::from_str(&format!("s3://bucket/path/to/table_{table_id}")).unwrap();
         TableInfo {
-            warehouse_id: WarehouseId::new_random(),
+            warehouse_id,
             namespace_id: NamespaceId::new_random(),
             namespace_version: 0.into(),
             warehouse_version: 0.into(),
@@ -308,7 +308,7 @@ impl TableInfo {
 
 #[cfg(test)]
 impl ViewInfo {
-    pub(crate) fn new_random() -> Self {
+    pub(crate) fn new_random(warehouse_id: WarehouseId) -> Self {
         use std::str::FromStr;
 
         let view_id = ViewId::new_random();
@@ -318,7 +318,7 @@ impl ViewInfo {
         );
         let location = Location::from_str(&format!("s3://bucket/path/to/view_{view_id}")).unwrap();
         ViewInfo {
-            warehouse_id: WarehouseId::new_random(),
+            warehouse_id,
             namespace_id: NamespaceId::new_random(),
             namespace_version: 0.into(),
             warehouse_version: 0.into(),
@@ -758,11 +758,7 @@ impl TabularIdentOrId {
 
     #[must_use]
     pub fn type_str(&self) -> &'static str {
-        if self.is_table() {
-            "table"
-        } else {
-            "view"
-        }
+        if self.is_table() { "table" } else { "view" }
     }
 }
 impl std::fmt::Display for TabularIdentOrId {

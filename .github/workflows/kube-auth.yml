@@ -27,7 +27,7 @@ jobs:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: engineerd/setup-kind@v0.6.2
         with:
           version: "v0.24.0"

@@ -2,23 +2,23 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
+    ProjectId, SecretId, WarehouseId,
     api::{
+        RequestMetadata,
         management::v1::{
+            ApiServer,
             warehouse::{
                 RenameWarehouseRequest, Service, TabularDeleteProfile,
                 UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
             },
-            ApiServer,
         },
-        RequestMetadata,
     },
     implementations::postgres::PostgresBackend,
     service::{
-        authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE, CachePolicy, CatalogStore,
-        CatalogWarehouseOps, Transaction, WarehouseStatus,
+        CachePolicy, CatalogStore, CatalogWarehouseOps, Transaction, WarehouseStatus,
+        authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE,
     },
-    tests::{memory_io_profile, random_request_metadata, SetupTestCatalog},
-    ProjectId, SecretId, WarehouseId,
+    tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
 
 /// Test basic warehouse creation
@@ -322,9 +322,11 @@ async fn test_list_warehouses(pool: PgPool) {
     }
 
     // Verify main warehouse is in the list
-    assert!(warehouses
-        .iter()
-        .any(|w| w.warehouse_id == warehouse_resp.warehouse_id));
+    assert!(
+        warehouses
+            .iter()
+            .any(|w| w.warehouse_id == warehouse_resp.warehouse_id)
+    );
 }
 
 #[sqlx::test]
@@ -362,9 +364,11 @@ async fn test_list_warehouses_include_inactive(pool: PgPool) {
             .unwrap();
 
     assert_eq!(active_warehouses.len(), 1);
-    assert!(active_warehouses
-        .iter()
-        .all(|w| w.status == WarehouseStatus::Active));
+    assert!(
+        active_warehouses
+            .iter()
+            .all(|w| w.status == WarehouseStatus::Active)
+    );
 
     // List all warehouses (active and inactive)
     let all_warehouses = PostgresBackend::list_warehouses(
@@ -1135,10 +1139,12 @@ async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
     let old_name = warehouse_before.name.clone();
 
     // Verify cache is populated
-    assert!(WAREHOUSE_CACHE
-        .get(&warehouse_resp.warehouse_id)
-        .await
-        .is_some());
+    assert!(
+        WAREHOUSE_CACHE
+            .get(&warehouse_resp.warehouse_id)
+            .await
+            .is_some()
+    );
 
     // Rename via ApiServer (this triggers hooks)
     let new_name = format!("renamed-{}", Uuid::now_v7());

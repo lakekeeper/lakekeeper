@@ -1,39 +1,40 @@
 use http::StatusCode;
 use lakekeeper::{
+    ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata},
-    axum::{extract::State as AxumState, Extension, Json},
+    axum::{Extension, Json, extract::State as AxumState},
     iceberg::{NamespaceIdent, TableIdent},
     service::{
-        authz::{
-            AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
-            RequireTableActionError, RequireViewActionError,
-        },
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
         TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
+        authz::{
+            AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
+            RequireTableActionError, RequireViewActionError, UserOrRole,
+        },
     },
-    tokio, ProjectId, WarehouseId,
+    tokio,
 };
 use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
 
 use super::{
+    OpenFGAAuthorizer, OpenFGAError,
     relations::{
         APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction, APIProjectAction,
         APIServerAction as ServerAction, APIServerAction, APITableAction as TableAction,
         APIViewAction as ViewAction, APIWarehouseAction as WarehouseAction, APIWarehouseAction,
         NamespaceRelation as AllNamespaceRelations, ProjectRelation as AllProjectRelations,
         ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
-        UserOrRole, ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
+        ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
     },
-    OpenFGAAuthorizer, OpenFGAError,
 };
-use crate::{entities::OpenFgaEntity, relations::ActorExt};
+use crate::entities::OpenFgaEntity;
 
 /// Check if a specific action is allowed on the given object
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
-    tag = "permissions",
+    tag = "permissions-openfga",
     path = "/management/v1/permissions/check",
     request_body = CheckRequest,
     responses(
@@ -616,16 +617,16 @@ mod tests {
     mod openfga_integration_tests {
         use lakekeeper::{
             api::{
-                iceberg::v1::{namespace::NamespaceService, Prefix},
-                management::v1::{
-                    role::{CreateRoleRequest, Service as RoleService},
-                    ApiServer,
-                },
                 CreateNamespaceRequest,
+                iceberg::v1::{Prefix, namespace::NamespaceService},
+                management::v1::{
+                    ApiServer,
+                    role::{CreateRoleRequest, Service as RoleService},
+                },
             },
             implementations::postgres::{PostgresBackend, SecretsState},
             server::{CatalogServer, NAMESPACE_ID_PROPERTY},
-            service::{authn::UserId, CreateNamespaceResponse},
+            service::{CreateNamespaceResponse, authn::UserId, authz::RoleAssignee},
             sqlx,
             tests::{SetupTestCatalog, TestWarehouseResponse},
         };
@@ -633,8 +634,8 @@ mod tests {
         use strum::IntoEnumIterator;
         use uuid::Uuid;
 
-        use super::super::{super::relations::*, *};
-        use crate::{migration::tests::authorizer_for_empty_store, models::RoleAssignee};
+        use super::super::*;
+        use crate::migration::tests::authorizer_for_empty_store;
 
         async fn setup(
             operator_id: UserId,
@@ -678,11 +679,9 @@ mod tests {
             let operator_metadata = RequestMetadata::test_user(operator_id.clone());
 
             let role_id = ApiServer::create_role(
-                CreateRoleRequest {
-                    name: "test_role".to_string(),
-                    description: None,
-                    project_id: None,
-                },
+                CreateRoleRequest::builder()
+                    .name("test_role".to_string())
+                    .build(),
                 ctx.clone(),
                 operator_metadata.clone(),
             )

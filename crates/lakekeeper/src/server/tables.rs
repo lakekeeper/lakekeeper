@@ -8,11 +8,11 @@ use futures::FutureExt;
 use fxhash::FxHashSet;
 use http::StatusCode;
 use iceberg::{
-    spec::{
-        MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataRef,
-        PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
-    },
     NamespaceIdent, TableUpdate,
+    spec::{
+        MetadataLog, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX, SchemaId, TableMetadata,
+        TableMetadataBuildResult, TableMetadataRef,
+    },
 };
 use iceberg_ext::{
     catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
@@ -25,25 +25,27 @@ use uuid::Uuid;
 pub(crate) mod create_table;
 mod load_table;
 use super::{
+    CatalogServer,
     commit_tables::apply_commit,
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer,
+    require_warehouse_id,
 };
 use crate::{
+    WarehouseId,
     api::{
         iceberg::{
             types::DropParams,
             v1::{
-                tables::{DataAccessMode, LoadTableFilters},
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
-                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
+                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix, RegisterTableRequest,
+                RenameTableRequest, Result, TableIdent, TableParameters,
+                tables::{DataAccessMode, LoadTableFilters},
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, DeleteKind},
+        management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -52,26 +54,25 @@ use crate::{
         tabular::list_entities,
     },
     service::{
+        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
+        CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
+        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
+        TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
-            refresh_warehouse_and_namespace_if_needed, AuthZCannotSeeTable, AuthZTableOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogTableAction, RequireTableActionError,
+            AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
+            refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
         tasks::{
+            EntityId, TaskMetadata,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
-            EntityId, TaskMetadata,
         },
-        AuthZTableInfo as _, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
-        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
-        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularListFlags,
-        TabularNotFound, Transaction, WarehouseStatus, CONCURRENT_UPDATE_ERROR_TYPE,
     },
-    WarehouseId,
 };
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
@@ -121,7 +122,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 provided_namespace,
                 namespace,
-                CatalogNamespaceAction::CanListTables,
+                CatalogNamespaceAction::ListTables,
             )
             .await?;
 
@@ -202,7 +203,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 provided_ns,
                 namespace,
-                CatalogNamespaceAction::CanCreateTable,
+                CatalogNamespaceAction::CreateTable,
             )
             .await?;
 
@@ -241,7 +242,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             if let Ok(Some(_)) = &previous_table_info {
                 tracing::debug!(
                     "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' for overwrite operation",
-                    table_ident.name, table_ident.namespace, warehouse.name
+                    table_ident.name,
+                    table_ident.namespace,
+                    warehouse.name
                 );
                 // Verify authorization to drop the table first
                 previous_table_to_drop = Some(
@@ -252,7 +255,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             &namespace,
                             table_ident.clone(),
                             previous_table_info,
-                            CatalogTableAction::CanDrop,
+                            CatalogTableAction::Drop,
                         )
                         .await?,
                 );
@@ -316,9 +319,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         t_write.commit().await?;
 
         // If we need to delete the previous table from authorizer
-        if auth_needs_delete {
-            if let Some(previous_table) = &previous_table_to_drop {
-                authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
+        if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
+            authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
                     |e| {
                         tracing::warn!(
                             "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
@@ -326,7 +328,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         );
                     }
                 }).ok();
-            }
         }
 
         // If a staged table was overwritten, delete it from authorizer
@@ -527,7 +528,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &namespace,
                 table.clone(),
                 table_info,
-                CatalogTableAction::CanDrop,
+                CatalogTableAction::Drop,
             )
             .await?;
         let table_id = table_info.tabular_id;
@@ -673,7 +674,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &namespace,
                 table,
                 table_info,
-                CatalogTableAction::CanGetMetadata,
+                CatalogTableAction::GetMetadata,
             )
             .await?;
 
@@ -737,7 +738,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 user_provided_namespace,
                 destination_namespace,
-                CatalogNamespaceAction::CanCreateTable,
+                CatalogNamespaceAction::CreateTable,
             ),
             // Check 2)
             authorizer.require_table_action(
@@ -746,7 +747,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &source_namespace,
                 source.clone(),
                 source_table_info,
-                CatalogTableAction::CanRename,
+                CatalogTableAction::Rename,
             )
         );
 
@@ -842,13 +843,14 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     let [can_get_metadata, can_read, can_write] = authorizer
         .are_allowed_table_actions_arr(
             request_metadata,
+            None,
             &warehouse,
             &namespace,
             &table_info,
             &[
-                CatalogTableAction::CanGetMetadata,
-                CatalogTableAction::CanReadData,
-                CatalogTableAction::CanWriteData,
+                CatalogTableAction::GetMetadata,
+                CatalogTableAction::ReadData,
+                CatalogTableAction::WriteData,
             ],
         )
         .await?
@@ -1071,17 +1073,16 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .values()
         .map(|ti| ti.warehouse_version)
         .max()
+        && warehouse.version < required_version
     {
-        if warehouse.version < required_version {
-            let refreshed_warehouse = C::get_warehouse_by_id_cache_aware(
-                warehouse_id,
-                WarehouseStatus::active(),
-                CachePolicy::RequireMinimumVersion(*required_version),
-                state.v1_state.catalog.clone(),
-            )
-            .await;
-            warehouse = authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
-        }
+        let refreshed_warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active(),
+            CachePolicy::RequireMinimumVersion(*required_version),
+            state.v1_state.catalog.clone(),
+        )
+        .await;
+        warehouse = authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
     }
 
     authorizer
@@ -1095,7 +1096,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
                     Ok::<_, ErrorModel>((
                         require_namespace_for_tabular(&namespaces, ti)?,
                         ti,
-                        CatalogTableAction::CanCommit,
+                        CatalogTableAction::Commit,
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -1691,10 +1692,7 @@ where
 }
 
 pub(crate) fn validate_table_or_view_ident(table: &TableIdent) -> Result<()> {
-    let TableIdent {
-        ref namespace,
-        ref name,
-    } = &table;
+    let TableIdent { namespace, name } = &table;
     validate_namespace_ident(namespace)?;
 
     if name.is_empty() {
@@ -1717,7 +1715,9 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
     if let Ok(body) = serde_json::to_value(&request) {
         body
     } else {
-        tracing::warn!("Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event.");
+        tracing::warn!(
+            "Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event."
+        );
         serde_json::Value::Null
     }
 }
@@ -1728,13 +1728,13 @@ pub(crate) mod test {
 
     use http::StatusCode;
     use iceberg::{
-        spec::{
-            EncryptedKey, FormatVersion, NestedField, Operation, PrimitiveType, Schema, Snapshot,
-            SnapshotReference, SnapshotRetention, Summary, TableMetadata, Transform, Type,
-            UnboundPartitionField, UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_FORMAT_VERSION,
-            PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
-        },
         NamespaceIdent, TableIdent, TableUpdate,
+        spec::{
+            EncryptedKey, FormatVersion, MAIN_BRANCH, NestedField, Operation,
+            PROPERTY_FORMAT_VERSION, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX, PrimitiveType,
+            Schema, Snapshot, SnapshotReference, SnapshotRetention, Summary, TableMetadata,
+            Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
+        },
     };
     use iceberg_ext::catalog::rest::{
         CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
@@ -1746,39 +1746,38 @@ pub(crate) mod test {
     use uuid::Uuid;
 
     use crate::{
+        WarehouseId,
         api::{
+            ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
+                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified, NamespaceParameters, TableParameters,
                     tables::{LoadTableFilters, TablesService as _},
-                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
-                    NamespaceParameters, TableParameters,
                 },
             },
             management::v1::{
-                table::TableManagementService, warehouse::TabularDeleteProfile,
-                ApiServer as ManagementApiServer,
+                ApiServer as ManagementApiServer, table::TableManagementService,
+                warehouse::TabularDeleteProfile,
             },
-            ApiContext,
         },
         implementations::postgres::{
-            tabular::table::tests::initialize_table, PostgresBackend, SecretsState,
+            PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
         },
         request_metadata::RequestMetadata,
         server::{
+            CatalogServer, CatalogStore,
             tables::validate_table_properties,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
-            CatalogServer, CatalogStore,
         },
         service::{
-            authz::{
-                tests::HidingAuthorizer, AllowAllAuthorizer, CatalogNamespaceAction,
-                CatalogTableAction,
-            },
             CatalogTabularOps as _, SecretStore, State, TableId, TabularListFlags, UserId,
+            authz::{
+                AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
+                tests::HidingAuthorizer,
+            },
         },
         tests::{create_table_request as create_request, random_request_metadata},
-        WarehouseId,
     };
 
     #[test]
@@ -3969,7 +3968,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to rename the source table
-        authz.block_action(format!("table:{}", CatalogTableAction::CanRename).as_str());
+        authz.block_action(format!("table:{}", CatalogTableAction::Rename).as_str());
         let rename_table_request = RenameTableRequest {
             source: TableIdent {
                 namespace: ns_params.namespace.clone(),
@@ -3993,7 +3992,7 @@ pub(crate) mod test {
 
         // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
         // thus, we should get a 404 instead.
-        authz.block_action(format!("table:{}", CatalogTableAction::CanGetMetadata).as_str());
+        authz.block_action(format!("table:{}", CatalogTableAction::GetMetadata).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             rename_table_request,
@@ -4051,8 +4050,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz
-            .block_action(format!("namespace:{}", CatalogNamespaceAction::CanCreateTable).as_str());
+        authz.block_action(format!("namespace:{}", CatalogNamespaceAction::CreateTable).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {

@@ -9,11 +9,11 @@ members = [
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 version = "0.10.3"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
-rust-version = "1.87.0"
+rust-version = "1.88.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -24,12 +24,15 @@ async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 async-nats = "0.44.0"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
-aws-config = { version = "1.8.5", features = ["behavior-version-latest"] }
+aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
 aws-sdk-sts = "1.82.0"
 aws-smithy-async = { version = "1.2.5" }
 aws-smithy-http = "0.62.3"
 aws-smithy-http-client = { version = "1.0.6" }
 aws-smithy-runtime-api = { version = "1.8.7" }
+aws-credential-types = { version = "1.2" }
+aws-sdk-s3 = { version = "1.65" }
+aws-sigv4 = { version = "1.2" }
 axum = { version = "0.8.1" }
 axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.5.0" }
@@ -66,8 +69,11 @@ google-cloud-auth = { package = "gcloud-auth", version = "1.1", features = [
     "rustls-tls",
     "external-account",
 ], default-features = false }
-google-cloud-storage = { package = "gcloud-storage", version = "1.1" }
 google-cloud-token = { package = "token-source", version = "1.0" }
+google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-features = false, features = [
+    "rustls-tls",
+    "auth",
+] }
 headers = { version = "^0.4" }
 heck = "0.5.0"
 hostname = "0.4.0"
@@ -103,7 +109,7 @@ rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd3
     "libz-static",
     "cmake-build",
 ] }
-reqwest = { version = "^0.12", default-features = false, features = [
+reqwest = { version = "0.12.23", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
@@ -144,7 +150,7 @@ tower-http = { version = "^0.6", features = [
     "trace",
     "normalize-path",
 ] }
-tracing = { version = "^0.1", features = ["attributes"] }
+tracing = { version = "^0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tracing-test = "0.2.5"
 tryhard = { version = "0.5.1" }
@@ -158,11 +164,13 @@ utoipa = { version = "5.4.0", features = [
     "url",
     "uuid",
     "yaml",
+    "rc_schema",
 ] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 veil = "0.2.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
+valuable = "0.1.1"
 
 [profile.dev.build-override]
 debug-assertions = true

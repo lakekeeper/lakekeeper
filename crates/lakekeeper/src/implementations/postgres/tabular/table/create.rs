@@ -1,20 +1,21 @@
 use std::str::FromStr;
 
-use iceberg::{spec::TableMetadata, TableIdent};
+use iceberg::{TableIdent, spec::TableMetadata};
 use lakekeeper_io::Location;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
+    WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::{
-            create_tabular,
+            CreateTabular, TabularType, create_tabular,
             table::{
+                DbTableFormatVersion,
                 common::{self},
-                next_row_id_as_i64, DbTableFormatVersion,
+                next_row_id_as_i64,
             },
-            CreateTabular, TabularType,
         },
     },
     service::{
@@ -22,7 +23,6 @@ use crate::{
         InternalParseLocationError, NamespaceId, StagedTableId, TableCreation, TableId, TableInfo,
         UnexpectedTabularInResponse,
     },
-    WarehouseId,
 };
 
 #[allow(clippy::too_many_lines)]

@@ -16,26 +16,26 @@ pub mod v1 {
     #[cfg(feature = "open-api")]
     pub mod openapi;
 
-    use std::marker::PhantomData;
+    use std::{marker::PhantomData, sync::Arc};
 
     use axum::{
+        Extension, Json, Router,
         extract::{Path, Query, State as AxumState},
         response::{IntoResponse, Response},
-        routing::{get, post},
-        Extension, Json, Router,
+        routing::{get, post, put},
     };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use lakekeeper_actions::{
-        get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
-        get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
-        get_allowed_view_actions, get_allowed_warehouse_actions,
         GetLakekeeperNamespaceActionsResponse, GetLakekeeperProjectActionsResponse,
         GetLakekeeperRoleActionsResponse, GetLakekeeperServerActionsResponse,
         GetLakekeeperTableActionsResponse, GetLakekeeperUserActionsResponse,
         GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+        get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
+        get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
+        get_allowed_view_actions, get_allowed_warehouse_actions,
     };
     use namespace::NamespaceManagementService as _;
     #[cfg(feature = "open-api")]
@@ -67,11 +67,15 @@ pub mod v1 {
     };
 
     use crate::{
+        ProjectId, WarehouseId,
         api::{
+            ApiContext, Result,
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
+                lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
+                role::UpdateRoleSourceSystemRequest,
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
                     ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
@@ -82,16 +86,16 @@ pub mod v1 {
                     GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, UndropTabularsRequest,
                 },
             },
-            ApiContext, Result,
         },
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId, authz::Authorizer, tasks::TaskId, Actor, CatalogStore,
-            CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State, TableId,
-            TabularId, ViewId,
+            Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
+            State, TableId, TabularId, ViewId, authn::UserId, authz::Authorizer, tasks::TaskId,
         },
-        ProjectId, WarehouseId,
     };
+
+    pub const PROJECT_ID_HEADER_DESCRIPTION: &str =
+        "Project ID (optional; falls back to the default project if not provided)";
 
     #[derive(Clone, Debug)]
     pub struct ApiServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
@@ -127,6 +131,7 @@ pub mod v1 {
     get,
     tag = "server",
     path = ManagementV1Endpoint::GetServerActions.path(),
+    params(GetAccessQuery),
     responses(
         (status = 200, body = GetLakekeeperServerActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -135,9 +140,10 @@ pub mod v1 {
     async fn get_server_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperServerActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_server_actions(authorizer, &metadata).await?;
+        let relations = get_allowed_server_actions(authorizer, &metadata, query).await?;
 
         Ok((
             StatusCode::OK,
@@ -248,7 +254,7 @@ pub mod v1 {
         get,
         tag = "user",
         path = ManagementV1Endpoint::GetUserActions.path(),
-        params(("user_id" = String,)),
+        params(GetAccessQuery, ("user_id" = String,)),
         responses(
             (status = 200, body = GetLakekeeperUserActionsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -258,9 +264,10 @@ pub mod v1 {
         Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperUserActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_user_actions(authorizer, &metadata, user_id).await?;
+        let relations = get_allowed_user_actions(authorizer, &metadata, query, user_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -294,7 +301,7 @@ pub mod v1 {
                     "GetMyUserWithoutToken",
                     None,
                 )
-                .into())
+                .into());
             }
         };
 
@@ -379,6 +386,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::CreateRole.path(),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         request_body = CreateRoleRequest,
         responses(
             (status = 201, description = "Role successfully created", body = Role),
@@ -403,9 +411,10 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::SearchRole.path(),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         request_body = SearchRoleRequest,
         responses(
-            (status = 200, description = "List of users", body = SearchRoleResponse),
+            (status = 200, description = "List of roles", body = SearchRoleResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -424,7 +433,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::ListRole.path(),
-        params(ListRolesQuery),
+        params(ListRolesQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "List of roles", body = ListRolesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -445,7 +454,7 @@ pub mod v1 {
         delete,
         tag = "role",
         path = ManagementV1Endpoint::DeleteRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"),),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -468,7 +477,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::GetRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"),),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Role details", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
@@ -478,7 +487,7 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<Role>)> {
+    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
         ApiServer::<C, A, S>::get_role(api_context, metadata, role_id)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -489,7 +498,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::UpdateRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"),),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = Role),
@@ -501,8 +510,31 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleRequest>,
-    ) -> Result<(StatusCode, Json<Role>)> {
+    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
         ApiServer::<C, A, S>::update_role(api_context, metadata, role_id, request)
+            .await
+            .map(|role| (StatusCode::OK, Json(role)))
+    }
+
+    /// Set the source system for a role
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "role",
+        path = ManagementV1Endpoint::UpdateRoleSourceSystem.path(),
+        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = UpdateRoleSourceSystemRequest,
+        responses(
+            (status = 200, description = "Role Source System updated successfully", body = Role),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn update_role_source_system<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateRoleSourceSystemRequest>,
+    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+        ApiServer::<C, A, S>::update_role_source_system(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
     }
@@ -512,7 +544,7 @@ pub mod v1 {
     get,
     tag = "role",
     path = ManagementV1Endpoint::GetRoleActions.path(),
-    params(("role_id" = Uuid, Path, description = "Role ID"),),
+    params(GetAccessQuery, ("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
     responses(
         (status = 200, body = GetLakekeeperRoleActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -522,9 +554,9 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperRoleActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_role_actions(authorizer, &metadata, role_id).await?;
+        let relations = get_allowed_role_actions(api_context, &metadata, query, role_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -603,7 +635,7 @@ pub mod v1 {
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -613,6 +645,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
+        // project_id header is parsed by RequestMetadata and used from there.
         ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 
@@ -644,7 +677,7 @@ pub mod v1 {
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -691,7 +724,7 @@ pub mod v1 {
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameProject.path(),
-        params(("x-project-id" = String, Header, description = "Optional project ID"),),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -735,7 +768,7 @@ pub mod v1 {
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
     tag = "project",
-    params(("x-project-id" = String, Header, description = "Optional project ID"),),
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
     path = ManagementV1Endpoint::GetProjectActions.path(),
     responses(
         (status = 200, body = GetLakekeeperProjectActionsResponse),
@@ -745,11 +778,13 @@ pub mod v1 {
     async fn get_project_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperProjectActionsResponse>)> {
         let authorizer = api_context.v1_state.authz;
         let project_id = metadata.require_project_id(None)?;
 
-        let actions = get_allowed_project_actions(authorizer, &metadata, &project_id).await?;
+        let actions =
+            get_allowed_project_actions(authorizer, &metadata, query, &project_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -943,7 +978,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetWarehouseActions.path(),
-    params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"),),
+    params(GetAccessQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),),
     responses(
         (status = 200, body = GetLakekeeperWarehouseActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -953,9 +988,11 @@ pub mod v1 {
         Path(warehouse_id): Path<WarehouseId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperWarehouseActionsResponse>)> {
         let relations =
-            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, warehouse_id).await?;
+            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, query, warehouse_id)
+                .await?;
 
         Ok((
             StatusCode::OK,
@@ -1313,7 +1350,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetTableActions.path(),
-    params(("warehouse_id" = Uuid,),("table_id" = Uuid,)),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("table_id" = Uuid,)),
     responses(
         (status = 200, body = GetLakekeeperTableActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -1323,10 +1360,16 @@ pub mod v1 {
         Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperTableActionsResponse>)> {
-        let relations =
-            get_allowed_table_actions::<A, C, S>(api_context, &metadata, warehouse_id, table_id)
-                .await?;
+        let relations = get_allowed_table_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            table_id,
+        )
+        .await?;
 
         Ok((
             StatusCode::OK,
@@ -1397,7 +1440,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetViewActions.path(),
-    params(("warehouse_id" = Uuid,),("view_id" = Uuid,)),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("view_id" = Uuid,)),
     responses(
         (status = 200, body = GetLakekeeperViewActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -1407,10 +1450,16 @@ pub mod v1 {
         Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperViewActionsResponse>)> {
-        let relations =
-            get_allowed_view_actions::<A, C, S>(api_context, &metadata, warehouse_id, view_id)
-                .await?;
+        let relations = get_allowed_view_actions::<A, C, S>(
+            api_context,
+            &metadata,
+            query,
+            warehouse_id,
+            view_id,
+        )
+        .await?;
 
         Ok((
             StatusCode::OK,
@@ -1481,7 +1530,7 @@ pub mod v1 {
     get,
     tag = "warehouse",
     path = ManagementV1Endpoint::GetNamespaceActions.path(),
-    params(("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
     responses(
         (status = 200, body = GetLakekeeperNamespaceActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -1491,10 +1540,12 @@ pub mod v1 {
         Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperNamespaceActionsResponse>)> {
         let relations = get_allowed_namespace_actions::<A, C, S>(
             api_context,
             &metadata,
+            query,
             warehouse_id,
             namespace_id,
         )
@@ -1740,6 +1791,10 @@ pub mod v1 {
                 .route(
                     "/role/{role_id}",
                     get(get_role).post(update_role).delete(delete_role),
+                )
+                .route(
+                    ManagementV1Endpoint::UpdateRoleSourceSystem.path_in_management_v1(),
+                    put(update_role_source_system),
                 )
                 .route("/search/role", post(search_role))
                 .route(

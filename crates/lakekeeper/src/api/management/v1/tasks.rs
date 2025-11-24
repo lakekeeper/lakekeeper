@@ -1,14 +1,18 @@
 use std::{collections::HashSet, sync::Arc};
 
-use axum::{response::IntoResponse, Json};
+use axum::{Json, response::IntoResponse};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{management::v1::ApiServer, ApiContext},
+    WarehouseId,
+    api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
+        TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
         authz::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableOps as _,
             AuthZViewOps as _, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -17,25 +21,21 @@ use crate::{
         },
         require_namespace_for_tabular,
         tasks::{
-            tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME, TaskEntity,
-            TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome, TaskQueueName,
-            TaskStatus as TQTaskStatus,
+            TaskEntity, TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome,
+            TaskQueueName, TaskStatus as TQTaskStatus,
+            tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
         },
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
-        TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
     },
-    WarehouseId,
 };
 
-const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanGetTasks;
-const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanGetTasks;
-const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::CanControlTasks;
-const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::CanControlTasks;
+const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::GetTasks;
+const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::GetTasks;
+const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::ControlTasks;
+const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
-    CatalogWarehouseAction::CanControlAllTasks;
+    CatalogWarehouseAction::ControlAllTasks;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
-    CatalogWarehouseAction::CanGetAllTasks;
+    CatalogWarehouseAction::GetAllTasks;
 const DEFAULT_ATTEMPTS: u16 = 5;
 
 // -------------------- REQUEST/RESPONSE TYPES --------------------
@@ -371,8 +371,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let [authz_can_use, authz_get_all_warehouse] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CatalogWarehouseAction::Use),
                     (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
                 ],
             )
@@ -453,8 +454,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let [authz_can_use, authz_control_all] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
+                    (&warehouse, CatalogWarehouseAction::Use),
                     (&warehouse, CONTROL_TASK_WAREHOUSE_PERMISSION),
                 ],
             )
@@ -546,9 +548,10 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     let [can_use, can_list_everything] = authorizer
         .are_allowed_warehouse_actions_arr(
             request_metadata,
+            None,
             &[
-                (warehouse, CatalogWarehouseAction::CanUse),
-                (warehouse, CatalogWarehouseAction::CanListEverything),
+                (warehouse, CatalogWarehouseAction::Use),
+                (warehouse, CatalogWarehouseAction::ListEverything),
             ],
         )
         .await?

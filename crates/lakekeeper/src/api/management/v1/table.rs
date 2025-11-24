@@ -1,12 +1,12 @@
 use super::{ApiServer, ProtectionResponse};
 use crate::{
+    WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        authz::{AuthZTableOps, Authorizer, CatalogTableAction},
         CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularId, TabularListFlags,
         Transaction,
+        authz::{AuthZTableOps, Authorizer, CatalogTableAction},
     },
-    WarehouseId,
 };
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> TableManagementService<C, A, S>
@@ -36,7 +36,7 @@ where
                 warehouse_id,
                 table_id,
                 TabularListFlags::all(),
-                CatalogTableAction::CanSetProtection,
+                CatalogTableAction::SetProtection,
                 state_catalog.clone(),
             )
             .await?;
@@ -71,7 +71,7 @@ where
                 warehouse_id,
                 table_id,
                 TabularListFlags::all(),
-                CatalogTableAction::CanGetMetadata,
+                CatalogTableAction::GetMetadata,
                 state.v1_state.catalog,
             )
             .await?;

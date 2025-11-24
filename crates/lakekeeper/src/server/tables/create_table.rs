@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use iceberg::spec::{
-    FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, UnboundPartitionSpec,
-    PROPERTY_FORMAT_VERSION,
+    FormatVersion, PROPERTY_FORMAT_VERSION, SortOrder, TableMetadata, TableMetadataBuilder,
+    UnboundPartitionSpec,
 };
 use iceberg_ext::catalog::rest::StorageCredential;
 use lakekeeper_io::{InvalidLocationError, LakekeeperStorage as _, Location, StorageBackend};
@@ -13,20 +13,20 @@ use super::{
     validate_table_or_view_ident, validate_table_properties,
 };
 use crate::{
+    WarehouseId,
     api::iceberg::v1::{
-        tables::DataAccessMode, ApiContext, CreateTableRequest, ErrorModel, LoadTableResult,
-        NamespaceParameters, Result, TableIdent,
+        ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters, Result,
+        TableIdent, tables::DataAccessMode,
     },
     request_metadata::RequestMetadata,
     server::{compression_codec::CompressionCodec, tabular::determine_tabular_location},
     service::{
+        CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
+        Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, ValidationError},
-        CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
-        Transaction,
     },
-    WarehouseId,
 };
 
 /// Guard to ensure cleanup of resources if table creation fails
@@ -71,22 +71,25 @@ impl<A: Authorizer> TableCreationGuard<A> {
     }
 
     async fn cleanup(&mut self) {
-        if self.authorizer_created {
-            if let Err(e) = self
+        if self.authorizer_created
+            && let Err(e) = self
                 .authorizer
                 .delete_table(self.warehouse_id, self.table_id)
                 .await
-            {
-                tracing::warn!("Failed to cleanup authorizer table {} in warehouse {} after failed transaction: {e}", self.table_id, self.warehouse_id);
-            }
+        {
+            tracing::warn!(
+                "Failed to cleanup authorizer table {} in warehouse {} after failed transaction: {e}",
+                self.table_id,
+                self.warehouse_id
+            );
         }
 
-        if let Some((io, metadata_location)) = self.metadata_location.take() {
-            if let Err(e) = io.delete(&metadata_location).await {
-                tracing::warn!(
-                    "Failed to cleanup metadata file at {metadata_location} after failed transaction: {e}",
-                );
-            }
+        if let Some((io, metadata_location)) = self.metadata_location.take()
+            && let Err(e) = io.delete(&metadata_location).await
+        {
+            tracing::warn!(
+                "Failed to cleanup metadata file at {metadata_location} after failed transaction: {e}",
+            );
         }
     }
 }
@@ -157,7 +160,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &request_metadata,
             warehouse_id,
             provided_ns,
-            CatalogNamespaceAction::CanCreateTable,
+            CatalogNamespaceAction::CreateTable,
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )

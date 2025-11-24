@@ -13,43 +13,43 @@ use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{
-        table::{client, custom, s3, TableProperties},
         ConfigProperty,
+        table::{TableProperties, client, custom, s3},
     },
 };
 use lakekeeper_io::{
-    s3::{
-        validate_bucket_name, S3AccessKeyAuth, S3Auth, S3AwsSystemIdentityAuth, S3Location,
-        S3Settings, S3Storage,
-    },
     InvalidLocationError, Location,
+    s3::{
+        S3AccessKeyAuth, S3Auth, S3AwsSystemIdentityAuth, S3Location, S3Settings, S3Storage,
+        validate_bucket_name,
+    },
 };
 use serde::{Deserialize, Serialize};
 use veil::Redact;
 
 use super::ShortTermCredentialsRequest;
 use crate::{
+    CONFIG, WarehouseId,
     api::{
+        CatalogConfig,
         iceberg::{
             supported_endpoints,
-            v1::{tables::DataAccessMode, DataAccess},
+            v1::{DataAccess, tables::DataAccessMode},
         },
         management::v1::warehouse::TabularDeleteProfile,
-        CatalogConfig,
     },
     request_metadata::RequestMetadata,
     service::storage::{
+        StoragePermissions, TableConfig,
         cache::{
-            get_stc_from_cache, insert_stc_into_cache, STCCacheKey, STCCacheValue,
-            ShortTermCredential,
+            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+            insert_stc_into_cache,
         },
         error::{
             CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
             UpdateError, ValidationError,
         },
-        StoragePermissions, TableConfig,
     },
-    WarehouseId, CONFIG,
 };
 
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
@@ -96,7 +96,7 @@ pub struct S3Profile {
     /// Optional session tags for STS assume role operations.
     #[serde(default)]
     #[builder(default)]
-    pub sts_session_tags: BTreeMap<String, String>,
+    pub sts_session_tags: BTreeMap<String, String>, // HashMap is not Hash
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -306,6 +306,7 @@ impl S3Profile {
             entity: "bucket".to_string(),
         })?;
         validate_region(&self.region)?;
+        self.validate_session_tags()?;
         self.normalize_key_prefix()?;
         self.normalize_endpoint()?;
         self.normalize_assume_role_arn();
@@ -918,28 +919,48 @@ impl S3Profile {
         .replace(' ', ""))
     }
 
+    fn validate_session_tags(&self) -> Result<(), ValidationError> {
+        self.sts_session_tags
+            .iter()
+            .map(|(key, value)| {
+                Tag::builder().key(key).value(value).build().map_err(|e| {
+                    let msg = e.to_string();
+                    ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+                        source: Some(Box::new(e)),
+                        reason: format!(
+                            "Invalid STS session tag `{key}` with value {value}. {msg}"
+                        ),
+                        entity: "sts_session_tags".to_string(),
+                    }))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(())
+    }
+
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {
         if let Some(key_prefix) = self.key_prefix.as_mut() {
             *key_prefix = key_prefix.trim().trim_matches('/').to_string();
         }
 
-        if let Some(key_prefix) = self.key_prefix.as_ref() {
-            if key_prefix.is_empty() {
-                self.key_prefix = None;
-            }
+        if let Some(key_prefix) = self.key_prefix.as_ref()
+            && key_prefix.is_empty()
+        {
+            self.key_prefix = None;
         }
 
         // Aws supports a max of 1024 chars and we need some buffer for tables.
-        if let Some(key_prefix) = self.key_prefix.as_ref() {
-            if key_prefix.len() > 896 {
-                return Err(InvalidProfileError {
-                    source: None,
-                    reason: "Storage Profile `key_prefix` must be less than 896 characters."
-                        .to_string(),
-                    entity: "key_prefix".to_string(),
-                }
-                .into());
+        if let Some(key_prefix) = self.key_prefix.as_ref()
+            && key_prefix.len() > 896
+        {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "Storage Profile `key_prefix` must be less than 896 characters."
+                    .to_string(),
+                entity: "key_prefix".to_string(),
             }
+            .into());
         }
         Ok(())
     }
@@ -1048,6 +1069,7 @@ fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
         path_style_access: profile.path_style_access,
         assume_role_arn: profile.assume_role_arn.clone(),
         aws_kms_key_arn: profile.aws_kms_key_arn.clone(),
+        sts_session_tags: profile.sts_session_tags.clone(),
     }
 }
 
@@ -1170,8 +1192,8 @@ pub(crate) mod test {
 
     use super::*;
     use crate::service::{
-        storage::{StorageLocations as _, StorageProfile},
         NamespaceId, TabularId,
+        storage::{StorageLocations as _, StorageProfile},
     };
 
     #[test]
@@ -1389,8 +1411,8 @@ pub(crate) mod test {
         use crate::{
             api::RequestMetadata,
             service::storage::{
-                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-                StorageProfile,
+                S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
+                s3::S3AccessKeyCredential,
             },
         };
 

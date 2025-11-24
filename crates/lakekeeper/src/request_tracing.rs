@@ -7,8 +7,8 @@ use tracing::{Level, Span};
 use uuid::Uuid;
 
 use crate::{
-    api::X_REQUEST_ID_HEADER, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
-    X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
+    X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER,
+    X_FORWARDED_PROTO_HEADER, api::X_REQUEST_ID_HEADER,
 };
 
 /// A `MakeSpan` implementation that attaches the `request_id` to the span.

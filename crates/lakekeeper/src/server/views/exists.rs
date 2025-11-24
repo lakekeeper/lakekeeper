@@ -1,10 +1,10 @@
 use crate::{
-    api::{iceberg::v1::ViewParameters, ApiContext},
+    api::{ApiContext, iceberg::v1::ViewParameters},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         CatalogStore, Result, SecretStore, State, TabularListFlags,
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
     },
 };
 
@@ -27,7 +27,7 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            CatalogViewAction::CanGetMetadata,
+            CatalogViewAction::GetMetadata,
             state.v1_state.catalog.clone(),
         )
         .await?;

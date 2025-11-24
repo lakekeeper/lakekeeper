@@ -2,23 +2,23 @@ use std::str::FromStr;
 
 use super::CatalogServer;
 use crate::{
+    CONFIG,
     api::{
         iceberg::v1::{
-            config::GetConfigQueryParams, ApiContext, CatalogConfig, ErrorModel, PageToken,
-            PaginationQuery, Result,
+            ApiContext, CatalogConfig, ErrorModel, PageToken, PaginationQuery, Result,
+            config::GetConfigQueryParams,
         },
-        management::v1::user::{parse_create_user_request, UserLastUpdatedWith},
+        management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
     request_metadata::RequestMetadata,
     service::{
+        CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
+        WarehouseNameNotFound, WarehouseStatus,
         authz::{
             AuthZProjectOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogWarehouseAction,
         },
-        CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
-        WarehouseNameNotFound, WarehouseStatus,
     },
-    CONFIG,
 };
 
 #[async_trait::async_trait]
@@ -42,7 +42,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 .require_project_action(
                     &request_metadata,
                     &project_id,
-                    CatalogProjectAction::CanListWarehouses,
+                    CatalogProjectAction::ListWarehouses,
                 )
                 .await?;
             C::get_warehouse_by_name(
@@ -62,7 +62,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 &request_metadata,
                 warehouse.warehouse_id,
                 Ok(Some(warehouse)),
-                CatalogWarehouseAction::CanGetConfig,
+                CatalogWarehouseAction::GetConfig,
             )
             .await?;
 

@@ -3,37 +3,37 @@ use std::{collections::HashMap, ops::Deref, sync::Arc};
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _};
+use iceberg_ext::configs::{ConfigProperty as _, namespace::NamespaceProperties};
 use itertools::Itertools;
 use lakekeeper_io::Location;
 
-use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
+use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
 use crate::{
+    CONFIG,
     api::{
         iceberg::v1::{
-            namespace::{GetNamespacePropertiesQuery, NamespaceDropFlags},
             ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel,
             GetNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters,
             Prefix, Result, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
+            namespace::{GetNamespacePropertiesQuery, NamespaceDropFlags},
         },
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
     server,
     service::{
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
+        NamedEntity, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
         authz::{
             AuthZCannotListNamespaces, AuthZCannotUseWarehouseId, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent,
         },
         secrets::SecretStore,
         tasks::{
-            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskFilter, TaskMetadata,
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
-        NamedEntity, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
     },
-    CONFIG,
 };
 
 pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
@@ -77,10 +77,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let [can_use_warehouse, can_list_namespaces, can_list_everything] = authorizer
             .are_allowed_warehouse_actions_arr(
                 &request_metadata,
+                None,
                 &[
-                    (&warehouse, CatalogWarehouseAction::CanUse),
-                    (&warehouse, CatalogWarehouseAction::CanListNamespaces),
-                    (&warehouse, CatalogWarehouseAction::CanListEverything),
+                    (&warehouse, CatalogWarehouseAction::Use),
+                    (&warehouse, CatalogWarehouseAction::ListNamespaces),
+                    (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
             .await?
@@ -104,7 +105,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &warehouse,
                     parent_ident,
                     parent_namespace,
-                    CatalogNamespaceAction::CanListNamespaces,
+                    CatalogNamespaceAction::ListNamespaces,
                 )
                 .await?;
             // Rely on short-circuit of `||` to query `namespace:can_list_everything` only if not
@@ -113,9 +114,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 || authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
+                        None,
                         &warehouse,
                         &parent_namespace,
-                        CatalogNamespaceAction::CanListEverything,
+                        CatalogNamespaceAction::ListEverything,
                     )
                     .await?
                     .into_inner();
@@ -156,10 +158,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         authorizer
                             .are_allowed_namespace_actions_vec(
                                 &request_metadata,
+                                None,
                                 &warehouse,
                                 &responses
                                     .iter()
-                                    .map(|id| (id, CatalogNamespaceAction::CanIncludeInList))
+                                    .map(|id| (id, CatalogNamespaceAction::IncludeInList))
                                     .collect::<Vec<_>>(),
                             )
                             .await?
@@ -262,7 +265,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &warehouse,
                     namespace_parent,
                     parent_namespace,
-                    CatalogNamespaceAction::CanCreateNamespace,
+                    CatalogNamespaceAction::CreateNamespace,
                 )
                 .await?;
             (warehouse, Some(parent_namespace.namespace_id()))
@@ -272,7 +275,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &request_metadata,
                     warehouse_id,
                     Ok(Some(warehouse)),
-                    CatalogWarehouseAction::CanCreateNamespace,
+                    CatalogWarehouseAction::CreateNamespace,
                 )
                 .await?;
             (warehouse, None)
@@ -336,7 +339,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanGetMetadata,
+                CatalogNamespaceAction::GetMetadata,
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
@@ -367,7 +370,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanGetMetadata,
+                CatalogNamespaceAction::GetMetadata,
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
@@ -406,7 +409,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanDelete,
+                CatalogNamespaceAction::Delete,
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
@@ -479,7 +482,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::CanUpdateProperties,
+                CatalogNamespaceAction::UpdateProperties,
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
@@ -819,25 +822,25 @@ mod tests {
 
     use crate::{
         api::{
+            ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    namespace::{NamespaceDropFlags, NamespaceService},
                     NamespaceParameters,
+                    namespace::{NamespaceDropFlags, NamespaceService},
                 },
             },
             management::v1::{
-                namespace::NamespaceManagementService, warehouse::TabularDeleteProfile,
-                ApiServer as ManagementApiServer,
+                ApiServer as ManagementApiServer, namespace::NamespaceManagementService,
+                warehouse::TabularDeleteProfile,
             },
-            ApiContext,
         },
         implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
-        server::{test::impl_pagination_tests, CatalogServer, NAMESPACE_ID_PROPERTY},
+        server::{CatalogServer, NAMESPACE_ID_PROPERTY, test::impl_pagination_tests},
         service::{
-            authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
             ListNamespacesQuery, NamespaceId, State, UserId,
+            authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
         },
     };
 

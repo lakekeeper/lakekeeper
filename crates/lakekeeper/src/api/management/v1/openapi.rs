@@ -1,8 +1,8 @@
 #![allow(clippy::needless_for_each)]
 
 use utoipa::{
-    openapi::{security::SecurityScheme, KnownFormat, RefOr},
     OpenApi, PartialSchema, ToSchema,
+    openapi::{KnownFormat, RefOr, security::SecurityScheme},
 };
 
 use crate::{
@@ -18,6 +18,17 @@ use crate::{
     info(
         title = "Lakekeeper Management API",
         description = "Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).",
+    ),
+    servers(
+        (
+            url = "{scheme}://{host}{basePath}",
+            description = "Lakekeeper Management API",
+            variables(
+                ("scheme" = (default = "https", description = "The scheme of the URI, either http or https")),
+                ("host" = (default = "localhost", description = "The host (and optional port) for the specified server")),
+                ("basePath" = (default = "", description = "Optional path prefix (starting with '/') to be prepended to all routes"))
+            )
+        )
     ),
     tags(
         (name = "server", description = "Manage Server"),
@@ -39,50 +50,51 @@ use crate::{
         super::create_user,
         super::create_warehouse,
         super::deactivate_warehouse,
-        super::delete_project,
         super::delete_project_by_id_deprecated,
+        super::delete_project,
         super::delete_role,
         super::delete_user,
         super::delete_warehouse,
-        super::get_project,
         super::get_endpoint_statistics,
-        super::get_project_by_id_deprecated,
-        super::get_role,
-        super::get_server_info,
-        super::get_task_details,
-        super::get_user,
-        super::get_warehouse,
-        super::get_warehouse_statistics,
         super::get_namespace_actions,
+        super::get_namespace_protection,
         super::get_project_actions,
+        super::get_project_by_id_deprecated,
+        super::get_project,
         super::get_role_actions,
+        super::get_role,
         super::get_server_actions,
+        super::get_server_info,
         super::get_table_actions,
+        super::get_table_protection,
+        super::get_task_details,
+        super::get_task_queue_config,
         super::get_user_actions,
+        super::get_user,
         super::get_view_actions,
+        super::get_view_protection,
         super::get_warehouse_actions,
+        super::get_warehouse_statistics,
+        super::get_warehouse,
         super::list_deleted_tabulars,
         super::list_projects,
         super::list_roles,
         super::list_tasks,
         super::list_user,
         super::list_warehouses,
-        super::rename_project,
         super::rename_project_by_id_deprecated,
+        super::rename_project,
         super::rename_warehouse,
         super::search_role,
-        super::search_user,
         super::search_tabular,
+        super::search_user,
         super::set_namespace_protection,
         super::set_table_protection,
         super::set_task_queue_config,
-        super::get_task_queue_config,
         super::set_view_protection,
         super::set_warehouse_protection,
-        super::get_namespace_protection,
-        super::get_table_protection,
-        super::get_view_protection,
         super::undrop_tabulars,
+        super::update_role_source_system,
         super::update_role,
         super::update_storage_credential,
         super::update_storage_profile,
@@ -171,7 +183,9 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                         .properties
                         .insert("queue-config".to_string(), queue_config_type_ref.clone());
                     if ins.is_none() {
-                        unreachable!("The schema for SetTaskQueueConfigRequest should have a 'queue-config' property.");
+                        unreachable!(
+                            "The schema for SetTaskQueueConfigRequest should have a 'queue-config' property."
+                        );
                     }
                 }
                 _ => {
@@ -191,7 +205,9 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                         .properties
                         .insert("queue-config".to_string(), queue_config_type_ref.clone());
                     if ins.is_none() {
-                        unreachable!("The schema for GetTaskQueueConfigResponse should have a 'queue-config' property.");
+                        unreachable!(
+                            "The schema for GetTaskQueueConfigResponse should have a 'queue-config' property."
+                        );
                     }
                 }
                 _ => {

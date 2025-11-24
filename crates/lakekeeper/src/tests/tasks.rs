@@ -3,9 +3,9 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
+    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     implementations::postgres::{PostgresBackend, SecretsState},
-    service::{authz::AllowAllAuthorizer, State, UserId},
+    service::{State, UserId, authz::AllowAllAuthorizer},
     tests::TestWarehouseResponse,
 };
 
@@ -20,12 +20,12 @@ mod test {
         api::management::v1::warehouse::{QueueConfig, SetTaskQueueConfigRequest},
         implementations::postgres::PostgresBackend,
         service::{
+            CatalogStore, CatalogTaskOps, Transaction,
             tasks::{
                 EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
                 TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
                 TaskQueueRegistry,
             },
-            CatalogStore, CatalogTaskOps, Transaction,
         },
     };
 

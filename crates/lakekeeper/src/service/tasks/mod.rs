@@ -2,7 +2,7 @@ use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
 use chrono::Utc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use strum::EnumIter;
 use uuid::Uuid;
 
@@ -501,6 +501,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Cancel scheduled tasks matching the filter.
     ///
     /// If `cancel_running_and_should_stop` is true, also cancel tasks in the `running` and `should-stop` states.
+    ///
+    /// # Errors
+    /// Returns an error on DB errors
     #[tracing::instrument(level = "info", skip(transaction), fields(queue_name = %Self::queue_name(), filter = ?filter, cancel_running_and_should_stop))]
     pub async fn cancel_scheduled_tasks<C: CatalogStore>(
         filter: TaskFilter,
@@ -864,7 +867,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 "Failed to commit transaction for recording deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
                 Q::queue_name()
             );
-        };
+        }
     }
 
     async fn record_status_for_state<C: CatalogStore>(

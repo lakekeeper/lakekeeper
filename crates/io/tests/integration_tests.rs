@@ -3,10 +3,10 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use lakekeeper_io::{execute_with_parallelism, LakekeeperStorage, StorageBackend};
+use lakekeeper_io::{LakekeeperStorage, StorageBackend, execute_with_parallelism};
 use tokio::{
     runtime::Runtime,
-    time::{sleep, Duration, Instant},
+    time::{Duration, Instant, sleep},
 };
 
 // we need to use a shared runtime since the static client is shared between tests here
@@ -22,9 +22,7 @@ static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
 
 #[track_caller]
 pub(crate) fn execute_in_common_runtime<F: Future>(f: F) -> F::Output {
-    {
-        COMMON_RUNTIME.block_on(f)
-    }
+    COMMON_RUNTIME.block_on(f)
 }
 
 #[cfg(feature = "storage-in-memory")]
@@ -49,16 +47,16 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
         .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_SECRET_KEY not set"))?;
     let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").ok();
 
-    let s3_settings = lakekeeper_io::s3::S3Settings {
-        assume_role_arn: None,
-        endpoint: endpoint
-            .map(|e| e.parse())
-            .transpose()
-            .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {e}"))?,
-        region,
-        path_style_access: Some(true),
-        aws_kms_key_arn: None,
-    };
+    let s3_settings = lakekeeper_io::s3::S3Settings::builder()
+        .endpoint(
+            endpoint
+                .map(|e| e.parse())
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {e}"))?,
+        )
+        .region(region)
+        .path_style_access(Some(true))
+        .build();
     let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(lakekeeper_io::s3::S3AccessKeyAuth {
         aws_access_key_id: access_key,
         aws_secret_access_key: secret_key,

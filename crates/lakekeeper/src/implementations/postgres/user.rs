@@ -1,5 +1,6 @@
 use super::dbutils::DBErrorHandler;
 use crate::{
+    CONFIG,
     api::{
         iceberg::v1::PaginationQuery,
         management::v1::user::{
@@ -8,7 +9,6 @@ use crate::{
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{CreateOrUpdateUserResponse, Result, UserId},
-    CONFIG,
 };
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
@@ -249,7 +249,12 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         r#"
         SELECT id, name, email, (name || ' ' || email) <-> $1 AS dist, user_type as "user_type: DbUserType"
         FROM users
-        ORDER BY dist ASC
+        ORDER BY 
+            CASE 
+                WHEN id = $1 THEN 1
+                ELSE 2
+            END,
+            dist ASC
         LIMIT 10
         "#,
         search_term,

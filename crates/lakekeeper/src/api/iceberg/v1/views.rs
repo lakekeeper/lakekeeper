@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use axum::{
+    Extension, Json, Router,
     extract::{Path, Query, State},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
 };
 use http::{HeaderMap, StatusCode};
 use iceberg::TableIdent;
@@ -11,6 +11,8 @@ use iceberg::TableIdent;
 use super::ListTablesQuery;
 use crate::{
     api::{
+        ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
+        RenameTableRequest, Result,
         iceberg::{
             types::{DropParams, Prefix},
             v1::{
@@ -18,8 +20,6 @@ use crate::{
                 tables::DataAccessMode,
             },
         },
-        ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
-        RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
 };

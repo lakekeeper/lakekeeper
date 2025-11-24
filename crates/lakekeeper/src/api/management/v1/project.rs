@@ -4,25 +4,25 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crate::service::{
+    WarehouseStatus,
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
         S3Profile, StorageCredential, StorageProfile,
     },
-    WarehouseStatus,
 };
 use crate::{
-    api::{management::v1::ApiServer, ApiContext, Result},
+    ProjectId, WarehouseId,
+    api::{ApiContext, Result, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
+        CatalogStore, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
-        CatalogStore, CatalogWarehouseOps, State, Transaction,
     },
-    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,7 +97,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_server_action(&request_metadata, CatalogServerAction::CanCreateProject)
+            .require_server_action(&request_metadata, None, CatalogServerAction::CreateProject)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -127,11 +127,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::CanRename,
-            )
+            .require_project_action(&request_metadata, &project_id, CatalogProjectAction::Rename)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -155,7 +151,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::CanGetMetadata,
+                CatalogProjectAction::GetMetadata,
             )
             .await?;
 
@@ -186,11 +182,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::CanDelete,
-            )
+            .require_project_action(&request_metadata, &project_id, CatalogProjectAction::Delete)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -231,9 +223,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             let decisions = authorizer
                 .are_allowed_project_actions_vec(
                     &request_metadata,
+                    None,
                     &projects
                         .iter()
-                        .map(|p| (&p.project_id, CatalogProjectAction::CanGetMetadata))
+                        .map(|p| (&p.project_id, CatalogProjectAction::GetMetadata))
                         .collect::<Vec<_>>(),
                 )
                 .await?;
@@ -242,11 +235,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .zip(decisions.into_inner())
                 .filter_map(
                     |(project, is_allowed)| {
-                        if is_allowed {
-                            Some(project)
-                        } else {
-                            None
-                        }
+                        if is_allowed { Some(project) } else { None }
                     },
                 )
                 .collect()
@@ -286,7 +275,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         &request_metadata,
                         id.into(),
                         warehouse,
-                        CatalogWarehouseAction::CanGetEndpointStatistics,
+                        CatalogWarehouseAction::GetEndpointStatistics,
                     )
                     .await?;
             }
@@ -295,7 +284,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_project_action(
                         &request_metadata,
                         &project_id,
-                        CatalogProjectAction::CanGetEndpointStatistics,
+                        CatalogProjectAction::GetEndpointStatistics,
                     )
                     .await?;
             }

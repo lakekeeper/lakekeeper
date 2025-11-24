@@ -10,11 +10,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.87
+  RUST_TOOLCHAIN: 1.88
+  RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
-  contents: read  # Needed to checkout code
-  checks: write   # Needed for test reporting
+  contents: read # Needed to checkout code
+  checks: write # Needed for test reporting
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -35,7 +36,7 @@ jobs:
   sqlx-check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Cargo sqlx-check
         run: |
           export DEBIAN_FRONTEND=noninteractive 
@@ -47,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: sudo snap install --edge --classic just
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -69,7 +70,7 @@ jobs:
       - run: |
           sudo snap install --edge --classic just
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -89,7 +90,7 @@ jobs:
     steps:
       - run: |
           sudo snap install --edge --classic just
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -139,7 +140,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Start Minio Docker Container
         run: |
@@ -147,7 +148,7 @@ jobs:
             -e "MINIO_ROOT_USER=minio-root-user" \
             -e "MINIO_ROOT_PASSWORD=minio-root-password" \
             minio/minio:RELEASE.2025-07-23T15-54-02Z server --console-address ":9001" /data
-      
+
       - name: Wait for Minio to be healthy
         shell: bash
         run: |

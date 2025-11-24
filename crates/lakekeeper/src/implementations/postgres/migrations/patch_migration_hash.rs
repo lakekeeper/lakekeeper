@@ -25,7 +25,9 @@ pub(crate) async fn patch(
     .execute(&mut **trx)
     .await?;
     if q.rows_affected() > 1 {
-        tracing::error!("More than one row was updated in _sqlx_migrations by the fix_sequence_metadata_hash migration, this is a bug please report it to the Lakekeeper developers.");
+        tracing::error!(
+            "More than one row was updated in _sqlx_migrations by the fix_sequence_metadata_hash migration, this is a bug please report it to the Lakekeeper developers."
+        );
         return Err(anyhow::anyhow!(
             "More than one row was updated in _sqlx_migrations by the fix_sequence_metadata_hash migration, this is a bug please report it to the Lakekeeper developers."
         ));

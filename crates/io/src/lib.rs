@@ -15,12 +15,12 @@ pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{stream::BoxStream, StreamExt as _};
+use futures::{StreamExt as _, stream::BoxStream};
 pub use location::{Location, LocationParseError};
 pub use tokio;
 use tokio::task::JoinSet;
 pub use tryhard;
-use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
+use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
 
 #[cfg(feature = "storage-adls")]
 pub mod adls;
@@ -520,7 +520,9 @@ async fn abort_unfinished_batch_delete_futures(
             Ok(Ok(())) => {}
             Err(e) => {
                 if !e.is_cancelled() {
-                    tracing::debug!("Unexpected error while awaiting batch deletion future of an aborted task: {e}");
+                    tracing::debug!(
+                        "Unexpected error while awaiting batch deletion future of an aborted task: {e}"
+                    );
                 }
             }
             Ok(Err(e)) => {
@@ -682,8 +684,8 @@ mod tests {
     async fn test_execute_with_parallelism() {
         use std::{
             sync::{
-                atomic::{AtomicUsize, Ordering},
                 Arc,
+                atomic::{AtomicUsize, Ordering},
             },
             time::Duration,
         };

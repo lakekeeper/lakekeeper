@@ -1,6 +1,6 @@
 use std::str::FromStr as _;
 
-use iceberg::{spec::TableMetadata, TableRequirement, TableUpdate};
+use iceberg::{TableRequirement, TableUpdate, spec::TableMetadata};
 use iceberg_ext::spec::{TableMetadataBuildResult, TableMetadataBuilder};
 use lakekeeper_io::Location;
 

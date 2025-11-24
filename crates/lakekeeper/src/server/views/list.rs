@@ -4,18 +4,18 @@ use itertools::Itertools;
 
 use crate::{
     api::{
-        iceberg::v1::{ListTablesQuery, NamespaceParameters},
         ApiContext, Result,
+        iceberg::v1::{ListTablesQuery, NamespaceParameters},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tabular::list_entities},
     service::{
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
+        State, Transaction,
         authz::{
             AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogViewAction,
         },
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
-        State, Transaction,
     },
 };
 
@@ -52,7 +52,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
             &warehouse,
             provided_namespace,
             namespace,
-            CatalogNamespaceAction::CanListViews,
+            CatalogNamespaceAction::ListViews,
         )
         .await?;
 
@@ -98,17 +98,17 @@ mod test {
 
     use crate::{
         api::{
+            ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
-                v1::{views::ViewService, DataAccess, ListTablesQuery, NamespaceParameters},
+                v1::{DataAccess, ListTablesQuery, NamespaceParameters, views::ViewService},
             },
             management::v1::warehouse::TabularDeleteProfile,
-            ApiContext,
         },
         implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
-        server::{test::impl_pagination_tests, CatalogServer},
-        service::{authz::tests::HidingAuthorizer, State, UserId},
+        server::{CatalogServer, test::impl_pagination_tests},
+        service::{State, UserId, authz::tests::HidingAuthorizer},
         tests::create_view_request,
     };
 

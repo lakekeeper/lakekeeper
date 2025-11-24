@@ -7,24 +7,24 @@ use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync
 pub(crate) use commit::commit_table_transaction;
 pub(crate) use create::create_table;
 use iceberg::{
-    spec::{
-        BlobMetadata, EncryptedKey, FormatVersion, PartitionSpec, Schema, SchemaId,
-        SnapshotRetention, SortOrder, Summary, MAIN_BRANCH,
-    },
     TableUpdate,
+    spec::{
+        BlobMetadata, EncryptedKey, FormatVersion, MAIN_BRANCH, PartitionSpec, Schema, SchemaId,
+        SnapshotRetention, SortOrder, Summary,
+    },
 };
 use iceberg_ext::spec::TableMetadata;
 use sqlx::types::Json;
 use uuid::Uuid;
 
 use crate::{
+    WarehouseId,
     api::iceberg::v1::tables::{LoadTableFilters, SnapshotsQuery},
     service::{
-        storage::join_location, ConversionError, InternalParseLocationError,
-        InternalTableMetadataBuildFailed, LoadTableError, LoadTableResponse,
-        RequiredTableComponentMissing, TableId,
+        ConversionError, InternalParseLocationError, InternalTableMetadataBuildFailed,
+        LoadTableError, LoadTableResponse, RequiredTableComponentMissing, TableId,
+        storage::join_location,
     },
-    WarehouseId,
 };
 
 const MAX_PARAMETERS: usize = 30000;
@@ -726,11 +726,11 @@ pub(crate) mod tests {
     use std::{default::Default, time::SystemTime};
 
     use iceberg::{
+        NamespaceIdent, TableIdent,
         spec::{
             NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
             UnboundPartitionSpec,
         },
-        NamespaceIdent, TableIdent,
     };
     use iceberg_ext::catalog::rest::CreateTableRequest;
     use lakekeeper_io::Location;
@@ -741,12 +741,14 @@ pub(crate) mod tests {
         api::{
             iceberg::{
                 types::PageToken,
-                v1::{tables::LoadTableFilters, PaginationQuery},
+                v1::{PaginationQuery, tables::LoadTableFilters},
             },
-            management::v1::{warehouse::WarehouseStatus, DeleteKind},
+            management::v1::{DeleteKind, warehouse::WarehouseStatus},
         },
         implementations::{
+            CatalogState,
             postgres::{
+                PostgresBackend,
                 namespace::tests::initialize_namespace,
                 tabular::{
                     drop_tabular, get_tabular_infos_by_idents, get_tabular_infos_by_ids,
@@ -754,18 +756,16 @@ pub(crate) mod tests {
                     rename_tabular, table::create::create_table,
                 },
                 warehouse::{set_warehouse_status, test::initialize_warehouse},
-                PostgresBackend,
             },
-            CatalogState,
         },
         server::tables::create_table::create_table_request_into_table_metadata,
         service::{
-            tasks::{
-                tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
-                EntityId, TaskMetadata,
-            },
             CreateTableError, NamedEntity, NamespaceId, RenameTabularError, TableCreation,
             TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
+            tasks::{
+                EntityId, TaskMetadata,
+                tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            },
         },
     };
 

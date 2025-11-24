@@ -19,12 +19,12 @@ use itertools::{FoldWhile, Itertools};
 pub use namespace::{MAX_NAMESPACE_DEPTH, NAMESPACE_ID_PROPERTY, UNSUPPORTED_NAMESPACE_PROPERTIES};
 
 use crate::{
+    CONFIG, WarehouseId,
     api::{
-        iceberg::v1::{PageToken, Prefix},
         ErrorModel, Result,
+        iceberg::v1::{PageToken, Prefix},
     },
-    service::{authz::Authorizer, secrets::SecretStore, storage::StorageCredential, CatalogStore},
-    WarehouseId, CONFIG,
+    service::{CatalogStore, authz::Authorizer, secrets::SecretStore, storage::StorageCredential},
 };
 
 pub trait MetadataProperties {
@@ -83,7 +83,7 @@ impl_metadata_properties!(TableMetadata, ViewMetadata);
 
 #[derive(Clone, Debug)]
 
-pub struct CatalogServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
+pub struct CatalogServer<C: CatalogStore, A: Authorizer, S: SecretStore> {
     auth_handler: PhantomData<A>,
     catalog_backend: PhantomData<C>,
     secret_store: PhantomData<S>,
@@ -287,29 +287,29 @@ pub(crate) mod test {
 
     pub(crate) use crate::tests::memory_io_profile;
     use crate::{
+        WarehouseId,
         api::{
+            ApiContext,
             iceberg::{
                 types::Prefix,
-                v1::{namespace::NamespaceService, NamespaceParameters},
+                v1::{NamespaceParameters, namespace::NamespaceService},
             },
             management::v1::warehouse::TabularDeleteProfile,
-            ApiContext,
         },
         implementations::{
-            postgres::{PostgresBackend, SecretsState},
             CatalogState,
+            postgres::{PostgresBackend, SecretsState},
         },
         request_metadata::RequestMetadata,
         server::CatalogServer,
         service::{
+            CatalogNamespaceOps, CreateNamespaceResponse, NamespaceWithParent, State, UserId,
             authz::{AllowAllAuthorizer, Authorizer},
             storage::{
-                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-                StorageProfile,
+                S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
+                s3::S3AccessKeyCredential,
             },
-            CatalogNamespaceOps, CreateNamespaceResponse, NamespaceWithParent, State, UserId,
         },
-        WarehouseId,
     };
 
     #[allow(dead_code)]

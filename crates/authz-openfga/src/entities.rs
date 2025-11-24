@@ -1,14 +1,14 @@
 use std::str::FromStr;
 
 use lakekeeper::service::{
-    authn::{Actor, UserId},
     NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
+    authn::{Actor, UserId},
+    authz::RoleAssignee,
 };
 
 use crate::{
-    error::{OpenFGAError, OpenFGAResult},
-    models::RoleAssignee,
     FgaType,
+    error::{OpenFGAError, OpenFGAResult},
 };
 
 pub(crate) trait ParseOpenFgaEntity: Sized {

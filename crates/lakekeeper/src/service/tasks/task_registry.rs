@@ -3,15 +3,15 @@ use std::{collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
 use crate::{
+    CONFIG, CancellationToken,
     service::{
+        CatalogStore, SecretStore,
         authz::Authorizer,
         tasks::{
-            task_queues_runner::QueueWorkerConfig, TaskConfig, TaskQueueName, TaskQueueWorkerFn,
-            TaskQueuesRunner,
+            TaskConfig, TaskQueueName, TaskQueueWorkerFn, TaskQueuesRunner,
+            task_queues_runner::QueueWorkerConfig,
         },
-        CatalogStore, SecretStore,
     },
-    CancellationToken, CONFIG,
 };
 
 pub type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
@@ -405,23 +405,31 @@ mod test {
         assert_eq!(later_api_config[0].queue_name, &*FIRST_QUEUE_NAME);
 
         // Both should have access to the validator function
-        assert!(initial_queues
-            .validate_config_fn(&FIRST_QUEUE_NAME)
-            .await
-            .is_some());
-        assert!(later_queues
-            .validate_config_fn(&FIRST_QUEUE_NAME)
-            .await
-            .is_some());
+        assert!(
+            initial_queues
+                .validate_config_fn(&FIRST_QUEUE_NAME)
+                .await
+                .is_some()
+        );
+        assert!(
+            later_queues
+                .validate_config_fn(&FIRST_QUEUE_NAME)
+                .await
+                .is_some()
+        );
         let non_existent_queue = TaskQueueName::from("non-existent");
-        assert!(initial_queues
-            .validate_config_fn(&non_existent_queue)
-            .await
-            .is_none());
-        assert!(later_queues
-            .validate_config_fn(&non_existent_queue)
-            .await
-            .is_none());
+        assert!(
+            initial_queues
+                .validate_config_fn(&non_existent_queue)
+                .await
+                .is_none()
+        );
+        assert!(
+            later_queues
+                .validate_config_fn(&non_existent_queue)
+                .await
+                .is_none()
+        );
 
         registry
             .register_queue::<SecondTestQueueConfig>(super::QueueRegistration {
@@ -445,22 +453,30 @@ mod test {
         assert_eq!(later_api_config.len(), 2);
 
         // Check that both queues are accessible from both instances
-        assert!(initial_queues
-            .validate_config_fn(&FIRST_QUEUE_NAME)
-            .await
-            .is_some());
-        assert!(initial_queues
-            .validate_config_fn(&SECOND_QUEUE_NAME)
-            .await
-            .is_some());
-        assert!(later_queues
-            .validate_config_fn(&FIRST_QUEUE_NAME)
-            .await
-            .is_some());
-        assert!(later_queues
-            .validate_config_fn(&SECOND_QUEUE_NAME)
-            .await
-            .is_some());
+        assert!(
+            initial_queues
+                .validate_config_fn(&FIRST_QUEUE_NAME)
+                .await
+                .is_some()
+        );
+        assert!(
+            initial_queues
+                .validate_config_fn(&SECOND_QUEUE_NAME)
+                .await
+                .is_some()
+        );
+        assert!(
+            later_queues
+                .validate_config_fn(&FIRST_QUEUE_NAME)
+                .await
+                .is_some()
+        );
+        assert!(
+            later_queues
+                .validate_config_fn(&SECOND_QUEUE_NAME)
+                .await
+                .is_some()
+        );
 
         // Verify that the queue names are correctly registered in both instances
         let mut initial_queue_names = initial_api_config

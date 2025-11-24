@@ -4,10 +4,10 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::{create_etag, StorageCredential};
 
 use crate::{
+    WarehouseId,
     api::iceberg::v1::{
+        ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent, TableParameters,
         tables::{DataAccessMode, LoadTableFilters},
-        ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
-        TableParameters,
     },
     request_metadata::RequestMetadata,
     server::{
@@ -15,13 +15,12 @@ use crate::{
         tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
     },
     service::{
-        authz::{Authorizer, AuthzWarehouseOps},
-        secrets::SecretStore,
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId, TabularInfo,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        authz::{Authorizer, AuthzWarehouseOps},
+        secrets::SecretStore,
     },
-    WarehouseId,
 };
 
 fn get_etag(table_info: &TabularInfo<TableId>) -> Option<String> {
@@ -231,11 +230,11 @@ mod tests {
     use std::collections::HashMap;
 
     use iceberg::{
-        spec::{
-            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-            SnapshotRetention, Summary, Type, UnboundPartitionSpec, MAIN_BRANCH,
-        },
         NamespaceIdent, TableIdent, TableUpdate,
+        spec::{
+            MAIN_BRANCH, NestedField, Operation, PrimitiveType, Schema, Snapshot,
+            SnapshotReference, SnapshotRetention, Summary, Type, UnboundPartitionSpec,
+        },
     };
     use iceberg_ext::catalog::rest::{CreateTableRequest, LoadTableResult};
     use sqlx::PgPool;
@@ -243,20 +242,17 @@ mod tests {
     use super::{create_etag, load_table};
     use crate::{
         api::{
+            ApiContext,
             iceberg::v1::{
-                namespace::NamespaceService as _,
-                tables::{
-                    DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery,
-                    TablesService as _,
-                },
                 NamespaceParameters, TableParameters,
+                namespace::NamespaceService as _,
+                tables::{DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery, TablesService as _},
             },
             management::v1::warehouse::TabularDeleteProfile,
-            ApiContext,
         },
         implementations::postgres::{PostgresBackend, SecretsState},
-        server::{test::setup, CatalogServer},
-        service::{authz::AllowAllAuthorizer, State},
+        server::{CatalogServer, test::setup},
+        service::{State, authz::AllowAllAuthorizer},
         tests::random_request_metadata,
     };
 

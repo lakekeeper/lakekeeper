@@ -6,12 +6,15 @@ use limes::{Authenticator, AuthenticatorEnum};
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::{
+    CONFIG, CancellationToken,
     api::{
-        management::v1::server::{LicenseStatus, APACHE_LICENSE_STATUS},
-        router::{new_full_router, serve as service_serve, RouterArgs},
-        shutdown_signal, ApiContext,
+        ApiContext,
+        management::v1::server::{APACHE_LICENSE_STATUS, LicenseStatus},
+        router::{RouterArgs, new_full_router, serve as service_serve},
+        shutdown_signal,
     },
     service::{
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
@@ -24,9 +27,7 @@ use crate::{
         },
         health::ServiceHealthProvider,
         tasks::TaskQueueRegistry,
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
     },
-    CancellationToken, CONFIG,
 };
 
 /// Type alias for a function that registers additional background services.
@@ -71,7 +72,9 @@ fn log_service_completion<H: ::std::hash::BuildHasher>(
                         tracing::info!("{msg}");
                         msg
                     } else {
-                        let msg = format!("Service '{task_name}' finished successfully but was supposed to run indefinitely");
+                        let msg = format!(
+                            "Service '{task_name}' finished successfully but was supposed to run indefinitely"
+                        );
                         tracing::info!("{msg}");
                         msg
                     }
@@ -221,7 +224,10 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     let report_interval_secs = 5;
     let start_time = std::time::Instant::now();
 
-    tracing::info!("Waiting up to {shutdown_timeout_secs} seconds for {} background services to finish gracefully", service_ids.len());
+    tracing::info!(
+        "Waiting up to {shutdown_timeout_secs} seconds for {} background services to finish gracefully",
+        service_ids.len()
+    );
 
     let timeout = tokio::time::timeout(
         std::time::Duration::from_secs(shutdown_timeout_secs),
@@ -239,12 +245,12 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
 
                     if !running_services.is_empty() {
                         tracing::info!(
-                        "Shutdown progress: {} seconds elapsed, {} seconds remaining. Still waiting for {} services: {:?}",
-                        elapsed,
-                        remaining,
-                        running_services.len(),
-                        running_services
-                    );
+                            "Shutdown progress: {} seconds elapsed, {} seconds remaining. Still waiting for {} services: {:?}",
+                            elapsed,
+                            remaining,
+                            running_services.len(),
+                            running_services
+                        );
                     }
                     last_report = std::time::Instant::now();
                 }
@@ -523,7 +529,9 @@ async fn serve_inner<
 
 fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
     if server_info.is_open_for_bootstrap() {
-        tracing::info!("The catalog is open for bootstrap. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly.");
+        tracing::info!(
+            "The catalog is open for bootstrap. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly."
+        );
     } else {
         tracing::info!("The catalog is not open for bootstrap.");
         if !server_info.terms_accepted() {

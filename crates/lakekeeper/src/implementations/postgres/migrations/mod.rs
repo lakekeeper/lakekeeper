@@ -7,14 +7,14 @@ use std::{
 use anyhow::anyhow;
 use futures::future::BoxFuture;
 use sqlx::{
-    migrate::{AppliedMigration, Migrate, MigrateError, Migrator},
     Error, Postgres,
+    migrate::{AppliedMigration, Migrate, MigrateError, Migrator},
 };
 
 use crate::{
     implementations::postgres::{
-        bootstrap::get_or_set_server_id, migrations::split_table_metadata::SplitTableMetadataHook,
-        CatalogState, PostgresTransaction,
+        CatalogState, PostgresTransaction, bootstrap::get_or_set_server_id,
+        migrations::split_table_metadata::SplitTableMetadataHook,
     },
     service::{ServerId, Transaction},
 };
@@ -132,15 +132,18 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
     let applied_migrations = match conn.list_applied_migrations().await {
         Ok(migrations) => migrations,
         Err(e) => {
-            if let MigrateError::Execute(Error::Database(db)) = &e {
-                if db.code().as_deref() == Some("42P01") {
-                    tracing::debug!(?db, "No migrations have been applied.");
-                    return Ok(MigrationState::NoMigrationsTable);
-                }
+            if let MigrateError::Execute(Error::Database(db)) = &e
+                && db.code().as_deref() == Some("42P01")
+            {
+                tracing::debug!(?db, "No migrations have been applied.");
+                return Ok(MigrationState::NoMigrationsTable);
             }
             // we discard the error here since sqlx prefixes db errors with "while executing
             // migrations" which is not what we are doing here.
-            tracing::debug!(?e, "Error listing applied migrations, even though the error may say different things, we are not applying migrations here.");
+            tracing::debug!(
+                ?e,
+                "Error listing applied migrations, even though the error may say different things, we are not applying migrations here."
+            );
             return Err(anyhow!("Error listing applied migrations"));
         }
     };

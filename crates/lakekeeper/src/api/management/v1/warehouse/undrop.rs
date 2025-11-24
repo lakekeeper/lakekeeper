@@ -4,12 +4,13 @@ use crate::{
     api::{self, management::v1::warehouse::UndropTabularsRequest},
     request_metadata::RequestMetadata,
     service::{
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, ResolvedWarehouse, TabularId,
+        TabularListFlags, ViewOrTableInfo,
         authz::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZTableOps, Authorizer, CatalogTableAction,
             CatalogViewAction, RequireTableActionError,
         },
-        require_namespace_for_tabular, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo,
+        require_namespace_for_tabular,
     },
 };
 
@@ -70,7 +71,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, ErrorModel>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(CatalogViewAction::CanUndrop, CatalogTableAction::CanUndrop),
+                t.as_action_request(CatalogViewAction::Undrop, CatalogTableAction::Undrop),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
