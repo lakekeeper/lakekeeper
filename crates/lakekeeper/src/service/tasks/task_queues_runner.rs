@@ -58,7 +58,8 @@ impl TaskQueuesRunner {
                 let task_fn = Arc::clone(&queue.worker_fn);
                 let cancellation_token_clone = self.cancellation_token.clone();
                 tracing::debug!(
-                    "Starting `{queue_name}` worker {worker_id}/{}",
+                    "Starting `{queue_name}` worker {}/{}",
+                    worker_id + 1,
                     queue.num_workers
                 );
                 workers.push(WorkerInfo {

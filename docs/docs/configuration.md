@@ -213,9 +213,13 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
+| Variable                                 | Example    | Description          |
+|------------------------------------------|------------|----------------------|
+| <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall` | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
+
+##### OpenFGA
 | Variable                                                 | Example                                                                    | Description |
 |----------------------------------------------------------|----------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__AUTHZ_BACKEND`                              | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
 | <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>             | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
 | `LAKEKEEPER__OPENFGA__STORE_NAME`                        | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
 | `LAKEKEEPER__OPENFGA__API_KEY`                           | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
@@ -226,6 +230,17 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`        | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
 | `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION`       | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
 | <nobr>`LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE`</nobr> | `50`                                                                       | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
+
+
+##### Cedar
+
+| Variable                                                 | Example                                               | Description |
+|----------------------------------------------------------|-------------------------------------------------------|-----|
+| `LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`         | `[/path/to/policies1.cedar,/path/to/policies2.cedar]` | List of local file paths containing Cedar policies in Cedar format (not JSON). |
+| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__LOCAL_FILES`    | `[/path/to/entities1.json,/path/to/entities2.json]`   | List of local JSON file paths containing additional Cedar entities (typically roles). |
+| <nobr>`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`</nobr> | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
+| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM`         | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
+| `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`               | `5`                                                   | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization.md#authorization-with-cedar) for more information. |
 
 ### UI
 
@@ -302,11 +317,11 @@ If the cache is enabled, changes to namespace properties may take up to the conf
 
 Caches storage secrets to reduce load on the secret store. Since Lakekeeper never updates secrets, long TTLs can significantly increase resilience against secret store outages, especially when the secret store is external to the main database backend.
 
-| Configuration Key                                             | Type    | Default | Description |
-|---------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__SECRETS__ENABLED`<nobr>            | boolean | `true`  | Enable/disable secrets caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__SECRETS__CAPACITY`<nobr>           | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
-| <nobr>`LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS`<nobr>  | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
+| Configuration Key                                           | Type    | Default | Description |
+|-------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable secrets caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__CAPACITY`<nobr>          | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
+| <nobr>`LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS`<nobr> | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
 
 *Metrics*: The Secrets cache exposes Prometheus metrics for monitoring:
 
