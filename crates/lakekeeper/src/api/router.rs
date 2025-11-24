@@ -230,7 +230,13 @@ async fn buffer_request_body(
 
 fn get_cors_layer(
     cors_origins: Option<&'static [HeaderValue]>,
-) -> axum_extra::either::Either<tower_http::cors::CorsLayer, tower::layer::util::Identity> {
+) -> axum_extra::either::Either<
+    (
+        axum::middleware::ResponseAxumBodyLayer,
+        tower_http::cors::CorsLayer,
+    ),
+    tower::layer::util::Identity,
+> {
     tracing::info!("Configuring CORS layer for origins: {:?}", cors_origins);
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
