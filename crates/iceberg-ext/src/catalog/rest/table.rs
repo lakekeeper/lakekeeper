@@ -1,6 +1,6 @@
 #[cfg(feature = "axum")]
 use axum::{
-    http::header::{self, HeaderMap},
+    http::header::{self, HeaderMap, HeaderValue},
     response::IntoResponse,
 };
 use iceberg::spec::TableMetadataRef;
@@ -114,13 +114,24 @@ pub fn create_etag(text: &str) -> String {
 #[cfg(feature = "axum")]
 impl IntoResponse for LoadTableResult {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
-        // self.metadata_location
-        let metadata_location = self.metadata_location.clone().unwrap_or_default();
-        let etag = create_etag(&metadata_location);
+        let mut headers = HeaderMap::new();
+        let body = axum::Json(&self);
 
-        let mut header = HeaderMap::new();
-        header.insert(header::ETAG, etag.parse().unwrap());
-        (header, axum::Json(self)).into_response()
+        let Some(ref metadata_location) = self.metadata_location else {
+            return (headers, body).into_response();
+        };
+        let etag = create_etag(metadata_location);
+
+        let Ok(header_value) = etag.parse::<HeaderValue>() else {
+            tracing::error!(
+                "Failed to create valid ETAG header from etag string: {}",
+                etag
+            );
+            return (headers, body).into_response();
+        };
+
+        headers.insert(header::ETAG, header_value);
+        (headers, body).into_response()
     }
 }
 
@@ -151,7 +162,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "axum")]
-    fn test_load_table_result_into_response() {
+    fn test_load_table_result_into_response_adds_etag_for_existing_tables() {
         let table_metadata = create_table_metadata_mock();
 
         let load_table_result = LoadTableResult {
@@ -168,6 +179,46 @@ mod tests {
             headers.get(header::ETAG).unwrap(),
             &create_etag("s3://bucket/table/metadata.json")
         );
+    }
+
+    #[test]
+    #[cfg(feature = "axum")]
+    fn test_load_table_result_into_response_returns_no_etag_when_returning_staged_table() {
+        let table_metadata = create_table_metadata_mock();
+
+        let load_table_result = LoadTableResult {
+            metadata_location: None,
+            metadata: table_metadata,
+            config: None,
+            storage_credentials: None,
+        };
+
+        let response = load_table_result.into_response();
+        let headers = response.headers();
+
+        assert!(!headers.contains_key(header::ETAG));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "axum")]
+    async fn test_load_table_result_into_response_returns_load_table_result_as_json_body() {
+        let table_metadata = create_table_metadata_mock();
+
+        let load_table_result = LoadTableResult {
+            metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
+            metadata: table_metadata.clone(),
+            config: None,
+            storage_credentials: None,
+        };
+
+        let response = load_table_result.clone().into_response();
+        let body = response.into_body();
+
+        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let deserialized: LoadTableResult =
+            serde_json::from_slice(&body_bytes).expect("Failed to deserialize body");
+
+        assert_eq!(deserialized, load_table_result);
     }
 
     fn create_table_metadata_mock() -> Arc<TableMetadata> {
