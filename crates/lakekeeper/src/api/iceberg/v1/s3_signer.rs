@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use axum::{
+    Extension, Json, Router,
     extract::{Path, State},
     routing::post,
-    Extension, Json, Router,
 };
 use iceberg_ext::catalog::rest::{S3SignRequest, S3SignResponse};
 
@@ -39,9 +39,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                 |State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<S3SignRequest>| {
-                    {
-                        I::sign(None, None, request, api_context, metadata)
-                    }
+                    I::sign(None, None, request, api_context, metadata)
                 },
             ),
         )
@@ -52,9 +50,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<S3SignRequest>| {
-                    {
-                        I::sign(Some(prefix), None, request, api_context, metadata)
-                    }
+                    I::sign(Some(prefix), None, request, api_context, metadata)
                 },
             ),
         )

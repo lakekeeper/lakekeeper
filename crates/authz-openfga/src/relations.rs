@@ -12,8 +12,8 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::{
-    entities::{OpenFgaEntity, ParseOpenFgaEntity},
     FgaType, OpenFGAError, OpenFGAResult,
+    entities::{OpenFgaEntity, ParseOpenFgaEntity},
 };
 
 pub(super) trait Assignment: Sized {

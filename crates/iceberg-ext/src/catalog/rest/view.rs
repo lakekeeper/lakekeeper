@@ -3,7 +3,7 @@ use iceberg::spec::ViewMetadataRef;
 #[cfg(feature = "axum")]
 use crate::catalog::rest::impl_into_response;
 use crate::{
-    catalog::{rest::ViewUpdate, TableIdent, ViewRequirement},
+    catalog::{TableIdent, ViewRequirement, rest::ViewUpdate},
     spec::{Schema, ViewVersion},
 };
 

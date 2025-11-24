@@ -3,37 +3,37 @@ use std::{collections::HashMap, ops::Deref, sync::Arc};
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _};
+use iceberg_ext::configs::{ConfigProperty as _, namespace::NamespaceProperties};
 use itertools::Itertools;
 use lakekeeper_io::Location;
 
-use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
+use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
 use crate::{
+    CONFIG,
     api::{
         iceberg::v1::{
-            namespace::{GetNamespacePropertiesQuery, NamespaceDropFlags},
             ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel,
             GetNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters,
             Prefix, Result, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
+            namespace::{GetNamespacePropertiesQuery, NamespaceDropFlags},
         },
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
     server,
     service::{
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
+        NamedEntity, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
         authz::{
             AuthZCannotListNamespaces, AuthZCannotUseWarehouseId, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent,
         },
         secrets::SecretStore,
         tasks::{
-            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
             EntityId, TaskFilter, TaskMetadata,
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
-        NamedEntity, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
     },
-    CONFIG,
 };
 
 pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
@@ -822,25 +822,25 @@ mod tests {
 
     use crate::{
         api::{
+            ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    namespace::{NamespaceDropFlags, NamespaceService},
                     NamespaceParameters,
+                    namespace::{NamespaceDropFlags, NamespaceService},
                 },
             },
             management::v1::{
-                namespace::NamespaceManagementService, warehouse::TabularDeleteProfile,
-                ApiServer as ManagementApiServer,
+                ApiServer as ManagementApiServer, namespace::NamespaceManagementService,
+                warehouse::TabularDeleteProfile,
             },
-            ApiContext,
         },
         implementations::postgres::{PostgresBackend, SecretsState},
         request_metadata::RequestMetadata,
-        server::{test::impl_pagination_tests, CatalogServer, NAMESPACE_ID_PROPERTY},
+        server::{CatalogServer, NAMESPACE_ID_PROPERTY, test::impl_pagination_tests},
         service::{
-            authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
             ListNamespacesQuery, NamespaceId, State, UserId,
+            authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
         },
     };
 

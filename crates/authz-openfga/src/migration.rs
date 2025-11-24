@@ -6,7 +6,7 @@ use openfga_client::{
     migration::{AuthorizationModelVersion, MigrationFn, TupleModelManager},
 };
 
-use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use super::{AUTH_CONFIG, OpenFGAError, OpenFGAResult};
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| *V4_CURRENT_MODEL_VERSION); // <- Change this for every change in the model
@@ -22,7 +22,7 @@ pub(super) static V3_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(3, 4));
 
 mod migration_fns_v4;
-use migration_fns_v4::{v4_push_down_warehouse_id, MigrationState};
+use migration_fns_v4::{MigrationState, v4_push_down_warehouse_id};
 
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
@@ -145,7 +145,9 @@ pub async fn migrate(
     server_id: ServerId,
 ) -> OpenFGAResult<()> {
     if let Some(configured_model) = *super::CONFIGURED_MODEL_VERSION {
-        tracing::info!("Skipping OpenFGA Migration because a model version is explicitly configured. Version: {configured_model}");
+        tracing::info!(
+            "Skipping OpenFGA Migration because a model version is explicitly configured. Version: {configured_model}"
+        );
         return Ok(());
     }
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
@@ -165,12 +167,12 @@ pub(crate) mod tests {
     use openfga_client::client::ConsistencyPreference;
 
     use super::{
-        super::{client::new_authorizer, OpenFGAAuthorizer},
+        super::{OpenFGAAuthorizer, client::new_authorizer},
         *,
     };
     use crate::client::new_client_from_default_config;
-    pub(crate) async fn authorizer_for_empty_store(
-    ) -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
+    pub(crate) async fn authorizer_for_empty_store()
+    -> (BasicOpenFgaServiceClient, OpenFGAAuthorizer) {
         let client = new_client_from_default_config().await.unwrap();
 
         let server_id = ServerId::new_random();

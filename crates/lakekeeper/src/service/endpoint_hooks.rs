@@ -6,8 +6,8 @@ use std::{
 
 use futures::TryFutureExt;
 use iceberg::{
-    spec::{TableMetadata, TableMetadataRef, ViewMetadata, ViewMetadataRef},
     TableIdent,
+    spec::{TableMetadata, TableMetadataRef, ViewMetadata, ViewMetadataRef},
 };
 use iceberg_ext::catalog::rest::{
     CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
@@ -16,7 +16,9 @@ use iceberg_ext::catalog::rest::{
 use lakekeeper_io::Location;
 
 use crate::{
+    SecretId, WarehouseId,
     api::{
+        RequestMetadata,
         iceberg::{
             types::DropParams,
             v1::{DataAccessMode, NamespaceParameters, TableParameters, ViewParameters},
@@ -25,14 +27,12 @@ use crate::{
             RenameWarehouseRequest, UndropTabularsRequest, UpdateWarehouseCredentialRequest,
             UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
         },
-        RequestMetadata,
     },
     server::tables::CommitContext,
     service::{
         NamespaceId, NamespaceWithParent, ResolvedWarehouse, TableId, TableInfo, ViewId,
         ViewOrTableInfo,
     },
-    SecretId, WarehouseId,
 };
 
 #[derive(Clone)]

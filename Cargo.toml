@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 version = "0.10.3"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
@@ -71,7 +71,10 @@ google-cloud-auth = { package = "gcloud-auth", version = "1.1", features = [
     "external-account",
 ], default-features = false }
 google-cloud-token = { package = "token-source", version = "1.0" }
-google-cloud-storage = { package = "gcloud-storage", version = "1.1" }
+google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-features = false, features = [
+    "rustls-tls",
+    "auth",
+] }
 headers = { version = "^0.4" }
 heck = "0.5.0"
 hostname = "0.4.0"
@@ -148,7 +151,7 @@ tower-http = { version = "^0.6", features = [
     "trace",
     "normalize-path",
 ] }
-tracing = { version = "^0.1", features = ["attributes"] }
+tracing = { version = "^0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.23.0"
@@ -166,6 +169,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 veil = "0.2.0"
 tracing-test = "0.2.5"
+valuable = "0.1.1"
 
 [profile.dev.build-override]
 debug-assertions = true

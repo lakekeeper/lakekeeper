@@ -1,11 +1,12 @@
 use std::{str::FromStr as _, sync::Arc};
 
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
-use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
+use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
 use lakekeeper_io::Location;
 use uuid::Uuid;
 
 use crate::{
+    SecretId,
     api::iceberg::v1::{
         ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
@@ -16,21 +17,20 @@ use crate::{
         io::{remove_all, write_file},
         require_warehouse_id,
         tables::{
-            determine_table_ident, extract_count_from_metadata_location,
-            validate_table_or_view_ident, MAX_RETRIES_ON_CONCURRENT_UPDATE,
+            MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
+            extract_count_from_metadata_location, validate_table_or_view_ident,
         },
         views::validate_view_updates,
     },
     service::{
+        AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogStore, CatalogView, CatalogViewOps,
+        InternalParseLocationError, State, TabularListFlags, Transaction, ViewCommit, ViewId,
+        ViewInfo,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        AuthZViewInfo, CatalogStore, CatalogView, CatalogViewOps, InternalParseLocationError,
-        State, TabularListFlags, Transaction, ViewCommit, ViewId, ViewInfo,
-        CONCURRENT_UPDATE_ERROR_TYPE,
     },
-    SecretId,
 };
 
 /// Commit updates to a view
@@ -394,10 +394,10 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
+        WarehouseId,
+        api::iceberg::v1::{DataAccess, Prefix, ViewParameters, views},
         server::views::{create::test::create_view, test::setup},
         tests::create_view_request,
-        WarehouseId,
     };
 
     #[sqlx::test]

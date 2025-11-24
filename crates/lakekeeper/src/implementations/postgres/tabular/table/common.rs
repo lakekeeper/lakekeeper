@@ -7,6 +7,7 @@ use iceberg::spec::{
 use sqlx::{PgConnection, Postgres, Transaction};
 
 use crate::{
+    WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::table::{assigned_rows_as_i64, first_row_id_as_i64},
@@ -14,7 +15,6 @@ use crate::{
     service::{
         CatalogBackendError, ConversionError, InternalBackendErrors, SerializationError, TableId,
     },
-    WarehouseId,
 };
 
 pub(super) async fn remove_schemas(

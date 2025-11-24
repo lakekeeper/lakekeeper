@@ -8,7 +8,7 @@ mod rename;
 
 use iceberg_ext::catalog::rest::ViewUpdate;
 
-use super::{tables::validate_table_properties, CatalogServer};
+use super::{CatalogServer, tables::validate_table_properties};
 use crate::{
     api::iceberg::{
         types::DropParams,
@@ -19,7 +19,7 @@ use crate::{
         },
     },
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, CatalogStore, SecretStore, State},
+    service::{CatalogStore, SecretStore, State, authz::Authorizer},
 };
 
 #[async_trait::async_trait]
@@ -128,26 +128,26 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
+        WarehouseId,
         api::{
-            iceberg::v1::{views::ViewService, DropParams, PaginationQuery, ViewParameters},
-            management::v1::warehouse::TabularDeleteProfile,
             ApiContext, RequestMetadata,
+            iceberg::v1::{DropParams, PaginationQuery, ViewParameters, views::ViewService},
+            management::v1::warehouse::TabularDeleteProfile,
         },
         implementations::postgres::{
-            namespace::tests::initialize_namespace, tabular::view::tests::view_request,
-            warehouse::test::initialize_warehouse, PostgresBackend, SecretsState,
+            PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
+            tabular::view::tests::view_request, warehouse::test::initialize_warehouse,
         },
         server::{
-            test::tabular_test_multi_warehouse_setup, views::validate_view_properties,
-            CatalogServer,
+            CatalogServer, test::tabular_test_multi_warehouse_setup,
+            views::validate_view_properties,
         },
         service::{
-            authz::AllowAllAuthorizer,
-            storage::{MemoryProfile, StorageProfile},
             CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State, TabularListFlags,
             ViewId,
+            authz::AllowAllAuthorizer,
+            storage::{MemoryProfile, StorageProfile},
         },
-        WarehouseId,
     };
 
     pub(crate) async fn setup(

@@ -115,7 +115,7 @@ mod test {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::implementations::postgres::{migrations::migrate, CatalogState};
+    use crate::implementations::postgres::{CatalogState, migrations::migrate};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {

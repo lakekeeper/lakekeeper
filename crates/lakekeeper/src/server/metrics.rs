@@ -2,7 +2,7 @@ use super::CatalogServer;
 use crate::{
     api::iceberg::v1::{ApiContext, Result, TableParameters},
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, secrets::SecretStore, CatalogStore, State},
+    service::{CatalogStore, State, authz::Authorizer, secrets::SecretStore},
 };
 
 #[async_trait::async_trait]

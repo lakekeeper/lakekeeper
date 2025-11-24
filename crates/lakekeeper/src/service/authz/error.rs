@@ -6,7 +6,7 @@ use std::{
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
-use crate::service::{error_chain_fmt, impl_error_stack_methods, Actor, InternalErrorMessage};
+use crate::service::{Actor, InternalErrorMessage, error_chain_fmt, impl_error_stack_methods};
 
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum BackendUnavailableOrCountMismatch {
@@ -72,8 +72,9 @@ impl From<AuthorizationCountMismatch> for ErrorModel {
             r#type: "AuthorizationCountMismatch".to_string(),
             code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             message: "Authorization service returned invalid response".to_string(),
-            source: Some(Box::new(
-                InternalErrorMessage(format!("Authorization count mismatch for {type_name} batch check: expected {expected_authorizations}, got {actual_authorizations}.")))),
+            source: Some(Box::new(InternalErrorMessage(format!(
+                "Authorization count mismatch for {type_name} batch check: expected {expected_authorizations}, got {actual_authorizations}."
+            )))),
             stack: vec![],
         }
     }

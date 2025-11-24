@@ -5,7 +5,7 @@ use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference,
 };
 
-use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use super::{AUTH_CONFIG, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult};
 use crate::{config::OpenFGAAuth, migration::get_active_auth_model_id};
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
@@ -31,7 +31,9 @@ pub async fn new_client_from_default_config() -> OpenFGAResult<BasicOpenFgaServi
             } else {
                 vec![]
             };
-            tracing::info!("Building OpenFGA Client with Client Credential Authorization. Token Endpoint: {token_endpoint}, Client ID: {client_id}, Scopes: {scopes:?}");
+            tracing::info!(
+                "Building OpenFGA Client with Client Credential Authorization. Token Endpoint: {token_endpoint}, Client ID: {client_id}, Scopes: {scopes:?}"
+            );
             BasicOpenFgaServiceClient::new_with_client_credentials(
                 endpoint,
                 client_id,

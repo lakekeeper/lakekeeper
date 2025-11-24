@@ -12,8 +12,8 @@ use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
     service::{
-        tasks::TaskQueueName, CatalogStore, CatalogWarehouseOps, SecretStore, WarehouseIdNotFound,
-        WarehouseStatus,
+        CatalogStore, CatalogWarehouseOps, SecretStore, WarehouseIdNotFound, WarehouseStatus,
+        tasks::TaskQueueName,
     },
 };
 
@@ -126,7 +126,7 @@ async fn instrumented_purge<S: SecretStore, C: CatalogStore>(
             )
             .await;
         }
-    };
+    }
 }
 
 async fn purge<C, S>(

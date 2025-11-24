@@ -1,32 +1,32 @@
 use std::{collections::HashSet, ops::Deref};
 
-use sqlx::{types::Json, PgPool};
+use sqlx::{PgPool, types::Json};
 
 use super::CatalogState;
 use crate::{
+    CONFIG, ProjectId, SecretId, WarehouseId,
     api::{
+        ErrorModel,
         iceberg::v1::PaginationQuery,
         management::v1::{
-            warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
             DeleteWarehouseQuery,
+            warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
         },
-        ErrorModel,
     },
     implementations::postgres::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{
-        storage::StorageProfile, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
-        CatalogRenameWarehouseError, DatabaseIntegrityError, GetProjectResponse,
-        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
-        UpdateWarehouseStorageProfileError, WarehouseAlreadyExists, WarehouseHasUnfinishedTasks,
-        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
-        WarehouseVersion,
+        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError,
+        CatalogGetWarehouseByNameError, CatalogListWarehousesError, CatalogRenameWarehouseError,
+        DatabaseIntegrityError, GetProjectResponse, ProjectIdNotFoundError, ResolvedWarehouse,
+        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
+        WarehouseAlreadyExists, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
+        WarehouseNotEmpty, WarehouseProtected, WarehouseStatus, WarehouseVersion,
+        storage::StorageProfile,
     },
-    ProjectId, SecretId, WarehouseId, CONFIG,
 };
 
 pub(super) async fn set_warehouse_deletion_profile<
@@ -785,8 +785,8 @@ pub(crate) mod test {
         api::iceberg::types::PageToken,
         implementations::postgres::{PostgresBackend, PostgresTransaction},
         service::{
-            storage::{S3Flavor, S3Profile},
             CatalogStore as _, CatalogWarehouseOps as _, Transaction,
+            storage::{S3Flavor, S3Profile},
         },
     };
 

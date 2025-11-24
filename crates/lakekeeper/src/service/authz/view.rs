@@ -3,24 +3,24 @@ use std::{collections::HashMap, sync::Arc};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
+    WarehouseId,
     api::RequestMetadata,
     service::{
+        Actor, AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
+        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
+        ViewId, ViewIdentOrId, ViewInfo,
         authz::{
-            refresh_warehouse_and_namespace_if_needed, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogViewAction,
-            MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogViewAction, MustUse, UserOrRole,
+            refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
             CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
             TabularListFlags,
         },
-        Actor, AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
-        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
-        ViewId, ViewIdentOrId, ViewInfo,
     },
-    WarehouseId,
 };
 
 const CAN_SEE_PERMISSION: CatalogViewAction = CatalogViewAction::GetMetadata;
@@ -214,7 +214,8 @@ pub trait AuthZViewOps: Authorizer {
                 }
                 ViewIdentOrId::Ident(user_ident) => {
                     debug_assert_eq!(
-                        user_ident, view.view_ident(),
+                        user_ident,
+                        view.view_ident(),
                         "View identifier in request ({user_ident}) does not match the resolved view identifier ({})",
                         view.view_ident()
                     );

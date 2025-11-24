@@ -4,6 +4,7 @@ use itertools::Itertools;
 use uuid::Uuid;
 
 use crate::{
+    CONFIG, ProjectId,
     api::{
         iceberg::v1::PaginationQuery,
         management::v1::role::{
@@ -19,7 +20,6 @@ use crate::{
         ListRolesError, ProjectIdNotFoundError, Result, RoleId, RoleIdNotFound,
         RoleNameAlreadyExists, RoleSourceIdConflict, SearchRolesError, UpdateRoleError,
     },
-    ProjectId, CONFIG,
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -379,11 +379,13 @@ mod test {
 
         let err = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -405,12 +407,14 @@ mod test {
 
         let roles = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .source_id(Some("source-id"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .source_id(Some("source-id"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -426,11 +430,13 @@ mod test {
         let new_role_id = RoleId::new_random();
         let err = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(new_role_id)
-                .role_name(&role_name.to_lowercase())
-                .description(Some("Role 1 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(new_role_id)
+                    .role_name(&role_name.to_lowercase())
+                    .description(Some("Role 1 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -460,11 +466,13 @@ mod test {
 
         let roles = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -516,12 +524,14 @@ mod test {
 
         create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .source_id(Some("external-1"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .source_id(Some("external-1"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -529,12 +539,14 @@ mod test {
 
         let roles = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(RoleId::new_random())
-                .role_name(role_name_2)
-                .description(Some("Role 2 description"))
-                .source_id(Some("external-2"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(RoleId::new_random())
+                    .role_name(role_name_2)
+                    .description(Some("Role 2 description"))
+                    .source_id(Some("external-2"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -579,11 +591,13 @@ mod test {
 
         let roles = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -617,12 +631,14 @@ mod test {
         let new_role_id = RoleId::new_random();
         let err = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(new_role_id)
-                .role_name("Role 2")
-                .description(Some("Role 2 description"))
-                .source_id(Some("external-2"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(new_role_id)
+                    .role_name("Role 2")
+                    .description(Some("Role 2 description"))
+                    .source_id(Some("external-2"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -633,12 +649,14 @@ mod test {
         let another_role_id = RoleId::new_random();
         create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(another_role_id)
-                .role_name("Role 3")
-                .description(Some("Role 3 description"))
-                .source_id(Some("external-3"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(another_role_id)
+                    .role_name("Role 3")
+                    .description(Some("Role 3 description"))
+                    .source_id(Some("external-3"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -689,11 +707,13 @@ mod test {
 
         create_roles(
             &project1_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role1_id)
-                .role_name("Role 1")
-                .description(None)
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role1_id)
+                    .role_name("Role 1")
+                    .description(None)
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -701,11 +721,13 @@ mod test {
 
         create_roles(
             &project2_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role2_id)
-                .role_name("Role 2")
-                .description(Some("Role 2 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role2_id)
+                    .role_name("Role 2")
+                    .description(Some("Role 2 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -762,11 +784,13 @@ mod test {
         for i in 0..10 {
             create_roles(
                 &project1_id,
-                vec![CatalogCreateRoleRequest::builder()
-                    .role_id(RoleId::new_random())
-                    .role_name(&format!("Role-{i}"))
-                    .description(Some(&format!("Role-{i} description")))
-                    .build()],
+                vec![
+                    CatalogCreateRoleRequest::builder()
+                        .role_id(RoleId::new_random())
+                        .role_name(&format!("Role-{i}"))
+                        .description(Some(&format!("Role-{i} description")))
+                        .build(),
+                ],
                 &state.write_pool(),
             )
             .await
@@ -858,11 +882,13 @@ mod test {
 
         create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -1049,10 +1075,12 @@ mod test {
         // Create roles in both projects with same source system
         create_roles(
             &project1_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(RoleId::new_random())
-                .role_name("Role 1")
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(RoleId::new_random())
+                    .role_name("Role 1")
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -1060,10 +1088,12 @@ mod test {
 
         create_roles(
             &project2_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(RoleId::new_random())
-                .role_name("Role 2")
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(RoleId::new_random())
+                    .role_name("Role 2")
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -1151,14 +1181,18 @@ mod test {
         .unwrap();
 
         assert_eq!(roles.roles.len(), 2);
-        assert!(roles
-            .roles
-            .iter()
-            .any(|r| r.name == "Role 1" && r.source_id == Some("external-1".to_string())));
-        assert!(roles
-            .roles
-            .iter()
-            .any(|r| r.name == "Role 3" && r.source_id == Some("external-3".to_string())));
+        assert!(
+            roles
+                .roles
+                .iter()
+                .any(|r| r.name == "Role 1" && r.source_id == Some("external-1".to_string()))
+        );
+        assert!(
+            roles
+                .roles
+                .iter()
+                .any(|r| r.name == "Role 3" && r.source_id == Some("external-3".to_string()))
+        );
 
         // Filter by single source ID
         let roles = list_roles(
@@ -1305,11 +1339,13 @@ mod test {
 
         create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(role_id)
-                .role_name(role_name)
-                .description(Some("Role 1 description"))
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name(role_name)
+                    .description(Some("Role 1 description"))
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await
@@ -1542,10 +1578,12 @@ mod test {
         // Batch create with single role (edge case)
         let roles = create_roles(
             &project_id,
-            vec![CatalogCreateRoleRequest::builder()
-                .role_id(RoleId::new_random())
-                .role_name("SingleRole")
-                .build()],
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(RoleId::new_random())
+                    .role_name("SingleRole")
+                    .build(),
+            ],
             &state.write_pool(),
         )
         .await

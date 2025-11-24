@@ -4,16 +4,16 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{stream, StreamExt as _};
+use futures::{StreamExt as _, stream};
 use google_cloud_storage::{
     client::Client,
     http::{
         objects::{
+            Object,
             delete::DeleteObjectRequest,
             download::Range,
             list::ListObjectsRequest,
             upload::{Media, UploadObjectRequest, UploadType},
-            Object,
         },
         resumable_upload_client::{ChunkSize, UploadStatus},
     },
@@ -21,10 +21,11 @@ use google_cloud_storage::{
 use tokio;
 
 use crate::{
-    calculate_ranges, delete_not_found_is_ok, execute_with_parallelism,
-    gcs::{gcs_error::parse_error, GcsLocation},
-    safe_usize_to_i32, safe_usize_to_i64, validate_file_size, DeleteBatchError, DeleteError,
-    ErrorKind, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
+    DeleteBatchError, DeleteError, ErrorKind, IOError, InvalidLocationError, LakekeeperStorage,
+    Location, ReadError, WriteError, calculate_ranges, delete_not_found_is_ok,
+    execute_with_parallelism,
+    gcs::{GcsLocation, gcs_error::parse_error},
+    safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
 };
 
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
@@ -251,12 +252,12 @@ impl LakekeeperStorage for GcsStorage {
                 UploadStatus::Ok(_) => {}
                 UploadStatus::ResumeIncomplete(i) => {
                     return Err(WriteError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!(
-                                "Multipart upload should be completed, but returned status is `ResumeIncomplete` with uploaded range {i:?}"
-                            ),
-                            location.as_str().to_string(),
-                        )));
+                        ErrorKind::Unexpected,
+                        format!(
+                            "Multipart upload should be completed, but returned status is `ResumeIncomplete` with uploaded range {i:?}"
+                        ),
+                        location.as_str().to_string(),
+                    )));
                 }
                 UploadStatus::NotStarted => {
                     return Err(WriteError::IOError(IOError::new(

@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 use lakekeeper_io::Location;
 
-use super::{impl_properties, ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr};
+use super::{ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr, impl_properties};
 
 impl_properties!(NamespaceProperties, NamespaceProperty);
 

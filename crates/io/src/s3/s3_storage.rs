@@ -2,22 +2,22 @@ use std::{collections::HashMap, str::FromStr};
 
 use aws_sdk_s3::types::{ObjectIdentifier, ServerSideEncryption};
 use bytes::Bytes;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 
 use crate::{
+    DeleteBatchError, DeleteError, IOError, LakekeeperStorage, Location, ReadError, WriteError,
     error::{ErrorKind, InvalidLocationError, RetryableError},
     execute_with_parallelism,
     s3::{
+        S3Location,
         s3_error::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
             parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
             parse_upload_part_error,
         },
-        S3Location,
     },
-    safe_usize_to_i32, validate_file_size, DeleteBatchError, DeleteError, IOError,
-    LakekeeperStorage, Location, ReadError, WriteError,
+    safe_usize_to_i32, validate_file_size,
 };
 
 // Convert MB constants to bytes - these will always be safe conversions from u16
@@ -504,7 +504,7 @@ fn create_delete_futures(
                 AWSBatchDeleteError,
             >,
         > + Send
-                   + 'static,
+               + 'static,
     >,
     InvalidLocationError,
 > {
@@ -570,7 +570,7 @@ async fn process_delete_results(
                 AWSBatchDeleteError,
             >,
         > + Send
-                   + 'static,
+               + 'static,
     >,
     key_to_path_mapping: HashMap<String, String>,
 ) -> Result<(), IOError> {

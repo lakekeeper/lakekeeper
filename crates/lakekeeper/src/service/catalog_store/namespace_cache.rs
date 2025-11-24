@@ -5,14 +5,14 @@ use iceberg::NamespaceIdent;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
+use crate::{
+    CONFIG, WarehouseId,
+    service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
+};
 #[cfg(feature = "router")]
 use crate::{
     api::{RequestMetadata, UpdateNamespacePropertiesResponse},
     service::endpoint_hooks::EndpointHook,
-};
-use crate::{
-    service::{catalog_store::namespace::NamespaceHierarchy, NamespaceId, NamespaceWithParent},
-    WarehouseId, CONFIG,
 };
 
 const METRIC_NAMESPACE_CACHE_SIZE: &str = "lakekeeper_namespace_cache_size";
@@ -329,7 +329,7 @@ mod tests {
     use iceberg::NamespaceIdent;
 
     use super::*;
-    use crate::{service::catalog_store::namespace::Namespace, WarehouseId};
+    use crate::{WarehouseId, service::catalog_store::namespace::Namespace};
 
     /// Helper function to create a test namespace
     fn test_namespace(

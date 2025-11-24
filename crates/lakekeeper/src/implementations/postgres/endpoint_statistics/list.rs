@@ -1,10 +1,11 @@
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
-use itertools::{izip, Itertools};
+use itertools::{Itertools, izip};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
+    ProjectId,
     api::{
         endpoints::{Endpoint, EndpointFlat},
         management::v1::project::{
@@ -16,7 +17,6 @@ use crate::{
         pagination::{PaginateToken, V1PaginateToken},
     },
     utils::time_conversion::iso_8601_duration_to_chrono,
-    ProjectId,
 };
 
 #[allow(clippy::too_many_lines)]

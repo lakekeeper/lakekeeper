@@ -75,15 +75,10 @@ jobs:
             name: lakekeeper-x86_64-unknown-linux-gnu.tar.gz
             docker-build: false
 
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
-            name: lakekeeper-x86_64-unknown-linux-musl.tar.gz
-            docker-build: true
-
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-            name: lakekeeper-aarch64-unknown-linux-musl.tar.gz
-            docker-build: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            name: lakekeeper-aarch64-unknown-linux-gnu.tar.gz
+            docker-build: false
 
           - target: aarch64-apple-darwin
             os: macos-14
@@ -106,7 +101,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     env:
-      RUSTFLAGS: ${{ matrix.rustflags || '' }}
+      RUSTFLAGS: --cfg tracing_unstable -D warnings
 
     steps:
       - name: Checkout
@@ -202,8 +197,8 @@ jobs:
           cd bin-lakekeeper-x86_64-unknown-linux-gnu.tar.gz
           tar xzvf lakekeeper-x86_64-unknown-linux-gnu.tar.gz
           cd -
-          cd bin-lakekeeper-aarch64-unknown-linux-musl.tar.gz
-          tar xzvf lakekeeper-aarch64-unknown-linux-musl.tar.gz
+          cd bin-lakekeeper-aarch64-unknown-linux-gnu.tar.gz
+          tar xzvf lakekeeper-aarch64-unknown-linux-gnu.tar.gz
           ls -Rlh
 
       - name: Set up QEMU
@@ -228,7 +223,7 @@ jobs:
             -f docker/bin.Dockerfile \
             --build-arg "ARCH=arm64" \
             --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
-            --build-arg "BIN=bin-lakekeeper-aarch64-unknown-linux-musl.tar.gz/lakekeeper" .
+            --build-arg "BIN=bin-lakekeeper-aarch64-unknown-linux-gnu.tar.gz/lakekeeper" .
           docker save -o /tmp/docker-lakekeeper-arm64.tar localhost/lakekeeper-local:arm64
 
       - name: Save Docker

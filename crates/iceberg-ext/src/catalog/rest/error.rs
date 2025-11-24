@@ -7,6 +7,7 @@ use std::{
 use http::StatusCode;
 pub use iceberg::Error;
 use serde::{Deserialize, Serialize};
+use valuable::Valuable;
 
 #[cfg(feature = "axum")]
 macro_rules! impl_into_response {
@@ -55,6 +56,16 @@ fn error_chain_fmt(e: impl std::error::Error, f: &mut std::fmt::Formatter<'_>) -
         current = cause.source();
     }
     Ok(())
+}
+
+fn error_chain_vec(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Vec<String> {
+    let mut details = Vec::new();
+    let mut current = Some(e as &(dyn std::error::Error + 'static));
+    while let Some(cause) = current {
+        details.push(format!("{cause}"));
+        current = cause.source();
+    }
+    details
 }
 
 impl From<ErrorModel> for IcebergErrorResponse {
@@ -322,17 +333,19 @@ impl IcebergErrorResponse {
 impl axum::response::IntoResponse for IcebergErrorResponse {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
         let Self { error } = self;
-        let stack_s = error.to_string();
         let ErrorModel {
             message,
             r#type,
             code,
             source,
-            stack: details,
+            stack,
         } = error;
         let error_id = uuid::Uuid::now_v7();
+        let source = source.map(|e| error_chain_vec(&*e)).unwrap_or_default();
+        // Hide stack from user for 5xx errors, only log internally.
+        // Log at error level for 5xx errors
         let mut response = if code >= 500 {
-            tracing::error!(%error_id, %stack_s, ?details, %message, %r#type, %code, ?source, "Error response");
+            tracing::error!(%error_id, stack = tracing::field::valuable(&stack.as_value()), %message, %r#type, code, source = tracing::field::valuable(&source.as_value()), "Internal server error response");
             axum::Json(IcebergErrorResponse {
                 error: ErrorModel {
                     message,
@@ -345,10 +358,10 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             .into_response()
         } else {
             // Log at info level for 4xx errors
-            tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, ?source, "Error response");
+            tracing::info!(%error_id, stack = tracing::field::valuable(&stack.as_value()), %message, %r#type, code, source = tracing::field::valuable(&source.as_value()), "Error response");
 
-            let mut details = details;
-            details.push(format!("Error ID: {error_id}"));
+            let mut stack = stack;
+            stack.push(format!("Error ID: {error_id}"));
 
             axum::Json(IcebergErrorResponse {
                 error: ErrorModel {
@@ -356,7 +369,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
                     r#type,
                     code,
                     source: None,
-                    stack: details,
+                    stack,
                 },
             })
             .into_response()
@@ -368,7 +381,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "axum"))]
 mod tests {
     use futures_util::stream::StreamExt;
 

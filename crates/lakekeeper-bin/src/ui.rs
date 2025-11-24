@@ -1,25 +1,25 @@
 use std::{default::Default, env::VarError, sync::LazyLock};
 
 use lakekeeper::{
-    axum,
+    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER, axum,
     axum::{
-        http::{header, HeaderMap, StatusCode, Uri},
+        Router,
+        http::{HeaderMap, StatusCode, Uri, header},
         response::{IntoResponse, Response},
         routing::get,
-        Router,
     },
     determine_base_uri,
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
     tower,
     tower_http::{
+        ServiceBuilderExt,
         catch_panic::CatchPanicLayer,
         compression::CompressionLayer,
         sensitive_headers::SetSensitiveHeadersLayer,
         timeout::TimeoutLayer,
         trace::{self, TraceLayer},
-        ServiceBuilderExt,
     },
-    tracing, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
+    tracing,
 };
 use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
 
@@ -53,7 +53,7 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
             }
             Ok(v) => {
                 tracing::warn!(
-                    "Unknown value `{v}` for LAKEKEEPER__UI__OPENID_TOKEN_TYPE, defaulting to AccessToken. Expected values are 'id_token' or 'access_token'.", 
+                    "Unknown value `{v}` for LAKEKEEPER__UI__OPENID_TOKEN_TYPE, defaulting to AccessToken. Expected values are 'id_token' or 'access_token'.",
                 );
                 lakekeeper_console::IdpTokenType::AccessToken
             }

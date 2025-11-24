@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
+    CONFIG, WarehouseId,
     api::management::v1::tasks::{
         ListTasksRequest, ListTasksResponse, Task as APITask, TaskStatus as APITaskStatus,
     },
@@ -16,7 +17,6 @@ use crate::{
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
-    WarehouseId, CONFIG,
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -282,15 +282,15 @@ mod tests {
 
     use super::*;
     use crate::{
+        WarehouseId,
         api::management::v1::tasks::{ListTasksRequest, TaskStatus as APITaskStatus},
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success, test::setup_warehouse,
         },
         service::tasks::{
-            EntityId, TaskEntity, TaskInput, TaskMetadata, TaskOutcome, TaskQueueName, TaskStatus,
-            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskEntity, TaskInput, TaskMetadata,
+            TaskOutcome, TaskQueueName, TaskStatus,
         },
-        WarehouseId,
     };
 
     #[test]

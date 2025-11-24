@@ -1,22 +1,22 @@
 use http::StatusCode;
 use iceberg::{
-    spec::{ViewMetadata, ViewMetadataRef},
     TableIdent,
+    spec::{ViewMetadata, ViewMetadataRef},
 };
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::Location;
 
 use crate::{
+    WarehouseId,
     service::{
-        define_simple_tabular_err, define_transparent_error, impl_error_stack_methods,
-        impl_from_with_detail, CatalogBackendError, CatalogGetNamespaceError, CatalogStore,
-        ConcurrentUpdateError, ConversionError, CreateTabularError, DropTabularError,
-        InternalParseLocationError, InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId,
+        CatalogBackendError, CatalogGetNamespaceError, CatalogStore, ConcurrentUpdateError,
+        ConversionError, CreateTabularError, DropTabularError, InternalParseLocationError,
+        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId,
         ProtectedTabularDeletionWithoutForce, SerializationError, TabularAlreadyExists,
         TabularNotFound, Transaction, UnexpectedTabularInResponse, ViewId, ViewInfo,
-        WarehouseVersion,
+        WarehouseVersion, define_simple_tabular_err, define_transparent_error,
+        impl_error_stack_methods, impl_from_with_detail,
     },
-    WarehouseId,
 };
 
 #[derive(Debug, Clone)]

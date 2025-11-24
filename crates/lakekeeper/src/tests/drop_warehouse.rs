@@ -8,13 +8,13 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::{NamespaceDropFlags, NamespaceService},
                 NamespaceParameters,
+                namespace::{NamespaceDropFlags, NamespaceService},
             },
         },
         management::v1::{
-            warehouse::{CreateWarehouseRequest, Service, TabularDeleteProfile},
             ApiServer, DeleteWarehouseQuery,
+            warehouse::{CreateWarehouseRequest, Service, TabularDeleteProfile},
         },
     },
     server::CatalogServer,

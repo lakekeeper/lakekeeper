@@ -2,24 +2,24 @@ use std::sync::Arc;
 
 use http::StatusCode;
 use iceberg::{
-    spec::{TableMetadata, TableMetadataRef},
     TableIdent, TableUpdate,
+    spec::{TableMetadata, TableMetadataRef},
 };
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::Location;
 
 use crate::{
+    WarehouseId,
     api::iceberg::v1::tables::LoadTableFilters,
     server::tables::TableMetadataDiffs,
     service::{
-        define_simple_error, define_simple_tabular_err, define_transparent_error,
-        impl_error_stack_methods, impl_from_with_detail, CatalogBackendError, CatalogStore,
-        ConversionError, CreateTabularError, InternalBackendErrors, InternalParseLocationError,
-        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, SerializationError, TableId,
-        TableInfo, TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
-        WarehouseVersion,
+        CatalogBackendError, CatalogStore, ConversionError, CreateTabularError,
+        InternalBackendErrors, InternalParseLocationError, InvalidNamespaceIdentifier,
+        LocationAlreadyTaken, NamespaceId, SerializationError, TableId, TableInfo,
+        TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
+        WarehouseVersion, define_simple_error, define_simple_tabular_err, define_transparent_error,
+        impl_error_stack_methods, impl_from_with_detail,
     },
-    WarehouseId,
 };
 
 #[derive(Debug, PartialEq, Eq)]

@@ -11,9 +11,9 @@ use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    CONFIG,
     api::Result,
     service::{health::HealthExt, storage::StorageCredential},
-    CONFIG,
 };
 
 const METRIC_SECRETS_CACHE_SIZE: &str = "lakekeeper_secrets_cache_size";

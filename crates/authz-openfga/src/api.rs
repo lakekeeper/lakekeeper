@@ -7,20 +7,20 @@ use http::StatusCode;
 #[cfg(feature = "open-api")]
 use lakekeeper::api::management::v1::PROJECT_ID_HEADER_DESCRIPTION;
 use lakekeeper::{
+    ProjectId, WarehouseId,
     api::{
-        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
         ApiContext, RequestMetadata,
+        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
     },
     axum::{
+        Extension, Json, Router,
         extract::{Path, Query, State as AxumState},
         routing::{get, post},
-        Extension, Json, Router,
     },
     service::{
-        authz::UserOrRole, Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State,
-        TableId, ViewId,
+        Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
+        authz::UserOrRole,
     },
-    ProjectId, WarehouseId,
 };
 use openfga_client::client::{
     CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
@@ -52,12 +52,12 @@ use super::{
 #[cfg(feature = "open-api")]
 use crate::check::__path_check;
 use crate::{
+    OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
     entities::OpenFgaEntity,
     relations::{
         OpenFGANamespaceAction, OpenFGAProjectAction, OpenFGARoleAction, OpenFGAServerAction,
         OpenFGATableAction, OpenFGAViewAction, OpenFGAWarehouseAction,
     },
-    OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -1711,8 +1711,8 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
 pub(crate) struct ApiDoc;
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>(
-) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
+pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>()
+-> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
         .route(
             "/permissions/role/{role_id}/access",
@@ -2064,9 +2064,9 @@ mod tests {
     mod openfga_integration_tests {
         use lakekeeper::{
             service::{
+                ResolvedWarehouse,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
-                ResolvedWarehouse,
             },
             tokio,
         };
@@ -2866,7 +2866,10 @@ mod tests {
             )
             .await;
 
-            assert!(result.is_err(), "User A should NOT be able to grant select when warehouse has managed access enabled");
+            assert!(
+                result.is_err(),
+                "User A should NOT be able to grant select when warehouse has managed access enabled"
+            );
         }
 
         #[tokio::test]
@@ -2935,7 +2938,10 @@ mod tests {
                 &namespace_id.to_openfga(),
             )
             .await;
-            assert!(result.is_err(), "User A should NOT be able to grant select when warehouse has managed access enabled");
+            assert!(
+                result.is_err(),
+                "User A should NOT be able to grant select when warehouse has managed access enabled"
+            );
             let result = checked_write(
                 authorizer.clone(),
                 &actor,
@@ -2946,7 +2952,10 @@ mod tests {
                 &namespace_id.to_openfga(),
             )
             .await;
-            assert!(result.is_err(), "User A with assumed role should NOT be able to grant select when warehouse has managed access enabled");
+            assert!(
+                result.is_err(),
+                "User A with assumed role should NOT be able to grant select when warehouse has managed access enabled"
+            );
         }
     }
 }

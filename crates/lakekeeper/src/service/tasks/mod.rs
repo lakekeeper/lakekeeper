@@ -2,7 +2,7 @@ use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
 use chrono::Utc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use strum::EnumIter;
 use uuid::Uuid;
 
@@ -867,7 +867,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 "Failed to commit transaction for recording deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
                 Q::queue_name()
             );
-        };
+        }
     }
 
     async fn record_status_for_state<C: CatalogStore>(

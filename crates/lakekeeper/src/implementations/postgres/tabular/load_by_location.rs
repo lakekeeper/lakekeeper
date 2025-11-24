@@ -5,20 +5,20 @@ use lakekeeper_io::Location;
 use sqlx::types::Json;
 
 use crate::{
+    WarehouseId,
     implementations::{
+        CatalogState,
         postgres::{
             dbutils::DBErrorHandler,
             namespace::parse_namespace_identifier_from_vec,
-            tabular::{get_partial_fs_locations, prepare_properties, TabularType},
+            tabular::{TabularType, get_partial_fs_locations, prepare_properties},
         },
-        CatalogState,
     },
     service::{
-        storage::{join_location, StorageProfile},
         GetTabularInfoByLocationError, InternalParseLocationError, TableInfo, ViewInfo,
         ViewOrTableInfo,
+        storage::{StorageProfile, join_location},
     },
-    WarehouseId,
 };
 
 #[allow(clippy::too_many_lines)]

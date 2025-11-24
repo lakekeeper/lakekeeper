@@ -1,6 +1,6 @@
-use lakekeeper::service::{authz::AllowAllAuthorizer, ServerId};
+use lakekeeper::service::{ServerId, authz::AllowAllAuthorizer};
 use lakekeeper_authz_openfga::{
-    migrate as openfga_migrate, OpenFGAAuthorizer, CONFIG as OPENFGA_CONFIG,
+    CONFIG as OPENFGA_CONFIG, OpenFGAAuthorizer, migrate as openfga_migrate,
 };
 
 #[derive(Debug)]

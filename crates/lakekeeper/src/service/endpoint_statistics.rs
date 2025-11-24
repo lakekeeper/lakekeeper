@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
-    sync::{atomic::AtomicI64, Arc},
+    sync::{Arc, atomic::AtomicI64},
     time::Duration,
 };
 
@@ -17,7 +17,7 @@ use http::StatusCode;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::{api::endpoints::Endpoint, request_metadata::RequestMetadata, ProjectId, WarehouseId};
+use crate::{ProjectId, WarehouseId, api::endpoints::Endpoint, request_metadata::RequestMetadata};
 
 #[cfg(feature = "router")]
 /// Middleware for tracking endpoint statistics.
@@ -47,7 +47,7 @@ pub(crate) async fn endpoint_statistics_middleware_fn(
             .await
         {
             tracing::error!("Failed to send endpoint statistics message: {}", e);
-        };
+        }
     } else {
         tracing::error!(?path_params, "No request metadata found.");
     }
@@ -247,7 +247,7 @@ impl EndpointStatisticsTracker {
                     sink.sink_id(),
                     e.error
                 );
-            };
+            }
         }
     }
 
@@ -269,10 +269,10 @@ impl EndpointStatisticsTracker {
             Endpoint::from_method_and_matched_path(request_metadata.request_method(), matched_path)
         else {
             tracing::error!(
-                            "Could not parse endpoint from matched path: '{} {}'. This is likely a bug which will affect the statistics collection.",
-                            request_metadata.request_method(),
-                            matched_path
-                        );
+                "Could not parse endpoint from matched path: '{} {}'. This is likely a bug which will affect the statistics collection.",
+                request_metadata.request_method(),
+                matched_path
+            );
             return;
         };
         let Some(project) = request_metadata.preferred_project_id() else {

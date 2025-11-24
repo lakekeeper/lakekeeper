@@ -1,6 +1,7 @@
 use lakekeeper::{
+    CONFIG,
     implementations::postgres::{get_reader_pool, migrations::MigrationState},
-    tokio, tracing, CONFIG,
+    tokio, tracing,
 };
 
 use crate::healthcheck::db_health_check;
@@ -24,9 +25,10 @@ pub(crate) async fn wait_for_db(
                 tracing::error!("DB is not up.");
                 anyhow::bail!("DB is not up.");
             }
-            tracing::info!(?details,
-                        "DB not up yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",
-                    );
+            tracing::info!(
+                ?details,
+                "DB not up yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",
+            );
             tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
         }
     }
@@ -56,12 +58,16 @@ pub(crate) async fn wait_for_db(
 
             counter += 1;
             if counter > retries {
-                tracing::error!("Database is not up to date with binary, make sure to run the migrate command before starting the server.");
-                anyhow::bail!("Database is not up to date with binary, make sure to run the migrate command before starting the server.");
+                tracing::error!(
+                    "Database is not up to date with binary, make sure to run the migrate command before starting the server."
+                );
+                anyhow::bail!(
+                    "Database is not up to date with binary, make sure to run the migrate command before starting the server."
+                );
             }
             tracing::info!(
-                        "DB not up to date with binary yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",
-                    );
+                "DB not up to date with binary yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",
+            );
             tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
         }
     }

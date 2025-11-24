@@ -1,11 +1,11 @@
 use super::TabularType;
 use crate::{
+    WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::{FromTabularRowError, TabularRow},
     },
     service::{SetTabularProtectionError, TabularId, TabularNotFound, ViewOrTableInfo},
-    WarehouseId,
 };
 
 impl From<FromTabularRowError> for SetTabularProtectionError {

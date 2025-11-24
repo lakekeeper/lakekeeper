@@ -4,16 +4,16 @@ use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
 use cloudevents::Event;
-use rdkafka::producer::{future_producer::Delivery, FutureProducer, FutureRecord};
+use rdkafka::producer::{FutureProducer, FutureRecord, future_producer::Delivery};
 use serde::{Deserialize, Serialize};
 use veil::Redact;
 
 use super::CloudEventBackend;
 use crate::{
+    CONFIG,
     service::event_publisher::kafka::vendor::cloudevents::binding::rdkafka::{
         FutureRecordExt, MessageRecord,
     },
-    CONFIG,
 };
 
 /// Creates a Kafka publisher from the crates configuration.
@@ -30,7 +30,9 @@ pub fn build_kafka_publisher_from_config() -> anyhow::Result<Option<KafkaBackend
     if !(config.conf.contains_key("bootstrap.servers")
         || config.conf.contains_key("metadata.broker.list"))
     {
-        tracing::info!("Kafka config does not contain `bootstrap.servers` or `metadata.broker.list`. Events are not published to Kafka.");
+        tracing::info!(
+            "Kafka config does not contain `bootstrap.servers` or `metadata.broker.list`. Events are not published to Kafka."
+        );
         return Ok(None);
     }
 
