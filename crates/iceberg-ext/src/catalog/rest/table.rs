@@ -135,8 +135,6 @@ impl IntoResponse for LoadTableResult {
     }
 }
 
-// #[cfg(feature = "axum")]
-// impl_into_response!(LoadTableResult);
 #[cfg(feature = "axum")]
 impl_into_response!(ListTablesResponse);
 #[cfg(feature = "axum")]
