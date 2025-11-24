@@ -302,6 +302,8 @@ mod tests {
             protected: false,
             updated_at,
             version: version.into(),
+            sts_enabled: true,
+            remote_signing_enabled: true,
         })
     }
 

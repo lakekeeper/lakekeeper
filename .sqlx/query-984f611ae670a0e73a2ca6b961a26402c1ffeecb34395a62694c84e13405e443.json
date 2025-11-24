@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE warehouse\n            SET warehouse_name = $1\n            WHERE warehouse_id = $2\n            AND status = 'active'\n        RETURNING\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at,\n            version\n        ",
+  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at,\n            version,\n            sts_enabled,\n            remote_signing_enabled\n        FROM warehouse\n        WHERE warehouse_id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -77,11 +77,20 @@
         "ordinal": 10,
         "name": "version",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "sts_enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "remote_signing_enabled",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
         "Uuid"
       ]
     },
@@ -96,8 +105,10 @@
       true,
       false,
       true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "abdbc91a03d5a5564ba259916c20563103fe2adb2daa6b50eafceec4f8afab99"
+  "hash": "984f611ae670a0e73a2ca6b961a26402c1ffeecb34395a62694c84e13405e443"
 }

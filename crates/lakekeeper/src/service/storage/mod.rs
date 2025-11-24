@@ -1465,6 +1465,8 @@ mod tests {
                 &RequestMetadata::new_unauthenticated(),
                 WarehouseId::new_random(),
                 TableId::new_random().into(),
+                true,
+                true,
             )
             .await
             .unwrap();
@@ -1482,6 +1484,8 @@ mod tests {
                 &RequestMetadata::new_unauthenticated(),
                 WarehouseId::new_random(),
                 TableId::new_random().into(),
+                true,
+                true,
             )
             .await
             .unwrap();
