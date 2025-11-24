@@ -17,7 +17,6 @@ rust-version = "1.87.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-unicase = "2.8.1"
 anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }
@@ -67,8 +66,8 @@ google-cloud-auth = { package = "gcloud-auth", version = "1.1", features = [
     "rustls-tls",
     "external-account",
 ], default-features = false }
-google-cloud-token = { package = "token-source", version = "1.0" }
 google-cloud-storage = { package = "gcloud-storage", version = "1.1" }
+google-cloud-token = { package = "token-source", version = "1.0" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
 hostname = "0.4.0"
@@ -147,8 +146,10 @@ tower-http = { version = "^0.6", features = [
 ] }
 tracing = { version = "^0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+tracing-test = "0.2.5"
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.22.0"
+unicase = "2.8.1"
 url = { version = "^2.5", features = ["serde"] }
 urlencoding = "^2.1"
 utoipa = { version = "5.4.0", features = [
@@ -161,7 +162,6 @@ utoipa = { version = "5.4.0", features = [
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 veil = "0.2.0"
-tracing-test = "0.2.5"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
 [profile.dev.build-override]
