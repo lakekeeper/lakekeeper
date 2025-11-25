@@ -122,15 +122,17 @@ impl IntoResponse for LoadTableResult {
         };
         let etag = create_etag(metadata_location);
 
-        let Ok(header_value) = etag.parse::<HeaderValue>() else {
-            tracing::error!(
-                "Failed to create valid ETAG header from etag string: {}",
-                etag
-            );
-            return (headers, body).into_response();
-        };
+        match etag.parse::<HeaderValue>() {
+            Ok(header_value) => {
+                headers.insert(header::ETAG, header_value);
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create valid ETAG header from metadata location: {metadata_location}, error: {e}"
+                );
+            }
+        }
 
-        headers.insert(header::ETAG, header_value);
         (headers, body).into_response()
     }
 }
