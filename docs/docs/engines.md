@@ -11,7 +11,7 @@ For query engines shared by multiple users, Lakekeeper supports two architecture
 
 Shared query engines must use the same Identity Provider as Lakekeeper in both scenarios unless user-ids are mapped, for example in OPA.
 
-We are tracking open issues and missing features in query engines in a [Tracking Issue on Github](https://github.com/lakekeeper/lakekeeper/issues/399).
+We are tracking open issues and missing features in query engines in a [Tracking Issue on GitHub](https://github.com/lakekeeper/lakekeeper/issues/399).
 
 ## Generic Iceberg REST Clients
 

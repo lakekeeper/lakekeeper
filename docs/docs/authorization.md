@@ -20,7 +20,7 @@ Lakekeeper can use [OpenFGA](https://openfga.dev) to store and evaluate permissi
 Check the [Authorization Configuration](./configuration.md#authorization) for setup details.
 
 ### Grants
-The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on Github](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/). The following grants are available:
+The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on GitHub](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/). The following grants are available:
 
 | Entity    | Grant                                                            |
 |-----------|------------------------------------------------------------------|
@@ -46,7 +46,7 @@ The `operator` has unrestricted access to all objects in Lakekeeper. It is desig
 A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. However, they cannot modify or access the content of any object, except for listing and browsing purposes.
 
 ##### Project: Data Admin
-A `data_admin` in a project can manage all data-related aspects, including creating, modifying, and deleting objects within the project. However, they cannot grant privileges or manage ownership.
+A `data_admin` in a project can manage all data-related aspects, including creating, modifying, and deleting objects within the project. They can delegate the `data_admin` role they already hold (for example to team members), but they do not have general grant or ownership administration capabilities.
 
 ##### Project: Admin
 A `project_admin` in a project has the combined responsibilities of both `security_admin` and `data_admin`. They can manage all security-related aspects, including grants and ownership, as well as all data-related aspects, including creating, modifying, and deleting objects within the project.
@@ -74,7 +74,7 @@ The `manage_grants` grant allows a user to manage all grants on an object, inclu
 
 ### Inheritance
 
-* **To-Down-Inheritance**: Permissions in higher up entities are inherited to their children. For example if the `modify` privilege is granted on a `warehouse` for a principal, this principal is also able to `modify` any namespaces, including nesting ones, tables and views within it.
+* **Top-Down-Inheritance**: Permissions in higher up entities are inherited to their children. For example if the `modify` privilege is granted on a `warehouse` for a principal, this principal is also able to `modify` any namespaces, including nesting ones, tables and views within it.
 * **Bottom-Up-Inheritance**: Permissions on lower entities, for example tables, inherit basic navigational privileges to all higher layer principals. For example, if a user is granted the `select` privilege on table `ns1.ns2.table_1`, that user is implicitly granted limited list privileges on `ns1` and `ns2`. Only items in the direct path are presented to users. If `ns1.ns3` would exist as well, a list on `ns1` would only show `ns1.ns2`.
 
 ### Managed Access
@@ -127,7 +127,7 @@ When a user queries table `ns1.ns2.table1` in warehouse `wh-1` within project `m
 
 This hierarchical context allows policies to reference any level in the path. For example, you can write policies that grant access based on the warehouse name, namespace hierarchy, or specific table properties.
 
-The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All loaded entities and policies are validated against this schema on startup and refresh. You can download the schema here: [lakekeeper.cedarschema](api/lakekeeper.cedarschema) or find it on [Github](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
+The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All loaded entities and policies are validated against this schema on startup and refresh. You can download the schema here: [lakekeeper.cedarschema](api/lakekeeper.cedarschema) or find it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
 
 **Important**: Lakekeeper does not provide Roles as built-in entities. Roles must be defined as custom entities in your entity JSON files.
 
