@@ -73,18 +73,34 @@ impl From<ListTablesQuery> for PaginationQuery {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ETag(String);
+
+impl From<&str> for ETag {
+    fn from(value: &str) -> Self {
+        ETag(value.to_string())
+    }
+}
+
+impl From<String> for ETag {
+    fn from(value: String) -> Self {
+        ETag(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoadTableResultOrNotModified {
     LoadTableResult(LoadTableResult),
-    NotModifiedResponse(String),
+    NotModifiedResponse(ETag),
 }
 
 impl IntoResponse for LoadTableResultOrNotModified {
     fn into_response(self) -> axum::response::Response {
         match self {
-            LoadTableResultOrNotModified::NotModifiedResponse(etag) => {
+            LoadTableResultOrNotModified::NotModifiedResponse(ETag(etag)) => {
                 let mut header = HeaderMap::new();
 
+                // TODO: use match to add error to log
                 let Ok(header_value) = etag.parse::<HeaderValue>() else {
                     tracing::error!("Failed to parse etag for Not Modified response: {}", etag);
                     return StatusCode::NOT_MODIFIED.into_response();
@@ -765,7 +781,7 @@ mod test {
     fn test_load_table_result_or_not_modified_from_not_modified_response() {
         let etag = "\"abcdef1234567890\"".to_string();
         let not_modified_response =
-            LoadTableResultOrNotModified::NotModifiedResponse(etag.clone()).into_response();
+            LoadTableResultOrNotModified::NotModifiedResponse(etag.clone().into()).into_response();
         assert_eq!(not_modified_response.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(
             not_modified_response.headers().get(header::ETAG).unwrap(),
@@ -1032,7 +1048,7 @@ mod test {
     #[test]
     fn test_load_table_result_or_not_modified_into_response_should_return_response_without_header_when_parsing_failed()
      {
-        let result = LoadTableResultOrNotModified::NotModifiedResponse("\n".to_string());
+        let result = LoadTableResultOrNotModified::NotModifiedResponse("\n".into());
         let response = result.into_response();
 
         let headers = response.headers();

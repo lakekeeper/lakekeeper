@@ -25,7 +25,7 @@ pub mod v1 {
     pub use self::{
         namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery},
         tables::{
-            DataAccess, DataAccessMode, ListTablesQuery, LoadTableResultOrNotModified,
+            DataAccess, DataAccessMode, ETag, ListTablesQuery, LoadTableResultOrNotModified,
             TableParameters,
         },
         views::ViewParameters,

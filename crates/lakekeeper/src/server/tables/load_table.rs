@@ -76,10 +76,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     )
     .await?;
 
+    // ------------------- ETAG CHECK -------------------
+    // TODO: Add handling for staged tables
     let etag = get_etag(&table_info);
     if etag_already_present(&etags, etag.as_ref().map(|e| e.trim_matches('"'))) {
         return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
-            etag.unwrap_or_default(),
+            etag.unwrap_or_default().into(),
         ));
     }
 
@@ -938,7 +940,7 @@ mod tests {
         };
         assert_eq!(
             result,
-            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+            LoadTableResultOrNotModified::NotModifiedResponse(etag.into())
         );
     }
 
@@ -978,7 +980,7 @@ mod tests {
         };
         assert_eq!(
             result,
-            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+            LoadTableResultOrNotModified::NotModifiedResponse(etag.into())
         );
     }
 
@@ -1012,7 +1014,7 @@ mod tests {
         };
         assert_eq!(
             result,
-            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+            LoadTableResultOrNotModified::NotModifiedResponse(etag.into())
         );
     }
 }
