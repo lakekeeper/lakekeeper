@@ -100,12 +100,16 @@ impl IntoResponse for LoadTableResultOrNotModified {
             LoadTableResultOrNotModified::NotModifiedResponse(ETag(etag)) => {
                 let mut header = HeaderMap::new();
 
-                // TODO: use match to add error to log
-                let Ok(header_value) = etag.parse::<HeaderValue>() else {
-                    tracing::error!("Failed to parse etag for Not Modified response: {}", etag);
-                    return StatusCode::NOT_MODIFIED.into_response();
-                };
-                header.insert(header::ETAG, header_value);
+                match etag.parse::<HeaderValue>() {
+                    Ok(header_value) => {
+                        header.insert(header::ETAG, header_value);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to create valid ETAG header from String {etag}, error: {e}"
+                        );
+                    }
+                }
                 (StatusCode::NOT_MODIFIED, header).into_response()
             }
             LoadTableResultOrNotModified::LoadTableResult(load_table_result) => {
