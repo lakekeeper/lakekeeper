@@ -101,7 +101,7 @@ paste = "1.0.15"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
 quick-xml = { version = "0.38.3", features = ["serialize"] }
-rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd38d", default-features = false, features = [
+rdkafka = { version = "0.38.0", default-features = false, features = [
     "tokio",
     "zstd",
     "gssapi-vendored",
