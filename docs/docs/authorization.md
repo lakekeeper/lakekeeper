@@ -10,7 +10,7 @@ Lakekeeper currently supports the following Authorizers:
 
 * **AllowAll**: A simple authorizer that allows all requests. This is mainly intended for development and testing purposes.
 * **OpenFGA**: A fine-grained authorization system based on the CNCF project [OpenFGA](https://openfga.dev). Please find more information in the [Authorization with OpenFGA](#authorization-with-openfga) section. OpenFGA requires an additional OpenFGA service to be deployed (this is included in our self-contained examples and our helm charts).
-* **Cedar**<span class="lkp"></span>: An enterprise-grade policy-based authorization system based on [Cedar](https://cedarpolicy.com). The cedar authorizer is built into Lakekeeper and requires no additional external services.
+* **Cedar**<span class="lkp"></span>: An enterprise-grade policy-based authorization system based on [Cedar](https://cedarpolicy.com). The cedar authorizer is built into Lakekeeper and requires no additional external services. Please find more information in the [Authorization with Cedar](#authorization-with-cedar) section.
 * **Custom**: Lakekeeper supports custom authorizers via the `Authorizer` trait.
 
 ## Authorization with OpenFGA
