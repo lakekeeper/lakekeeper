@@ -12,7 +12,7 @@
 
     ---
 
-    Open Feature Requests and report Issues on Github.
+    Open Feature Requests and report Issues on GitHub.
 
 -   :material-webhook: &nbsp; __[Enterprise Support](https://vakamo.com)__
 
