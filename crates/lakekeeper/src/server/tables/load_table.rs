@@ -923,8 +923,6 @@ mod tests {
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
-        // Load table once to get the metadata location for ETag
-        // TODO: Use newly loaded table's metadata location for ETag
         let etags = vec![etag.trim_matches('"').to_string().clone()];
         let load_table_result = load_table(
             parameters,
