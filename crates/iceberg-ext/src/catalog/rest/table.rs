@@ -109,6 +109,7 @@ pub struct CommitTransactionRequest {
 pub struct ETag(String);
 
 impl ETag {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -197,10 +198,7 @@ mod tests {
         let headers = response.headers();
 
         let ETag(etag_expected) = create_etag("s3://bucket/table/metadata.json");
-        assert_eq!(
-            headers.get(header::ETAG).unwrap(),
-            &etag_expected
-        );
+        assert_eq!(headers.get(header::ETAG).unwrap(), &etag_expected);
     }
 
     #[test]

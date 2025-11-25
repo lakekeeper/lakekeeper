@@ -917,7 +917,10 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]);
+        assert_eq!(
+            etags,
+            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+        );
     }
 
     #[test]
@@ -934,7 +937,10 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]);
+        assert_eq!(
+            etags,
+            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+        );
     }
 
     #[test]
@@ -1031,7 +1037,10 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]);
+        assert_eq!(
+            etags,
+            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+        );
     }
 
     #[test]

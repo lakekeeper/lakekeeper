@@ -15,7 +15,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential, ETag},
+    catalog::rest::{ETag, IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
