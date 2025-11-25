@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{StorageCredential, create_etag};
+use iceberg_ext::catalog::rest::{ETag, StorageCredential, create_etag};
 
 use crate::{
     WarehouseId,
@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-fn get_etag(table_info: &TabularInfo<TableId>) -> Option<String> {
+fn get_etag(table_info: &TabularInfo<TableId>) -> Option<ETag> {
     table_info
         .metadata_location
         .as_ref()
@@ -32,9 +32,9 @@ fn get_etag(table_info: &TabularInfo<TableId>) -> Option<String> {
         .map(create_etag)
 }
 
-fn etag_already_present(etags: &[String], etag: Option<&str>) -> bool {
+fn etag_already_present(etags: &[ETag], etag: Option<&ETag>) -> bool {
     match etag {
-        Some(etag) => etags.iter().any(|e| e == etag || e == "*"),
+        Some(etag) => etags.iter().any(|e| e == etag || e == &ETag::from("*")),
         None => false,
     }
 }
@@ -47,7 +47,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     filters: LoadTableFilters,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-    etags: Vec<String>,
+    etags: Vec<ETag>,
 ) -> Result<LoadTableResultOrNotModified> {
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
@@ -79,10 +79,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     // ------------------- ETAG CHECK -------------------
     // TODO: Add handling for staged tables
     let etag = get_etag(&table_info);
-    if etag_already_present(&etags, etag.as_ref().map(|e| e.trim_matches('"'))) {
-        return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
-            etag.unwrap_or_default().into(),
-        ));
+    if let Some(etag_value) = etag.as_ref().map(|e| e.as_str().trim_matches('"')) {
+        if etag_already_present(&etags, Some(&etag_value.into())) {
+            return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
+                etag.unwrap(),
+            ));
+        }
     }
 
     // ------------------- BUSINESS LOGIC -------------------
@@ -923,7 +925,7 @@ mod tests {
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
-        let etags = vec![etag.trim_matches('"').to_string().clone()];
+        let etags = vec![etag.as_str().trim_matches('"').into()];
         let load_table_result = load_table(
             parameters,
             data_access,
@@ -960,9 +962,9 @@ mod tests {
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec![
-            "a4b2f6c1dd87".to_string(),
-            etag.trim_matches('"').to_string().clone(),
-            "b6f8c2d4a45f".to_string(),
+            "a4b2f6c1dd87".into(),
+            etag.as_str().trim_matches('"').into(),
+            "b6f8c2d4a45f".into(),
         ];
         let load_table_result = load_table(
             parameters,
@@ -997,7 +999,7 @@ mod tests {
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
-        let etags = vec!["*".to_string()];
+        let etags = vec!["*".into()];
         let load_table_result = load_table(
             parameters,
             data_access,

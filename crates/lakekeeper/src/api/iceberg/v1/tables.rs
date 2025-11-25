@@ -1,5 +1,3 @@
-use std::string::ToString;
-
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
@@ -10,7 +8,7 @@ use axum::{
 };
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::LoadCredentialsResponse;
+use iceberg_ext::catalog::rest::{ETag, LoadCredentialsResponse};
 
 use super::{PageToken, PaginationQuery};
 use crate::{
@@ -73,21 +71,6 @@ impl From<ListTablesQuery> for PaginationQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ETag(String);
-
-impl From<&str> for ETag {
-    fn from(value: &str) -> Self {
-        ETag(value.to_string())
-    }
-}
-
-impl From<String> for ETag {
-    fn from(value: String) -> Self {
-        ETag(value)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoadTableResultOrNotModified {
     LoadTableResult(LoadTableResult),
@@ -97,8 +80,10 @@ pub enum LoadTableResultOrNotModified {
 impl IntoResponse for LoadTableResultOrNotModified {
     fn into_response(self) -> axum::response::Response {
         match self {
-            LoadTableResultOrNotModified::NotModifiedResponse(ETag(etag)) => {
+            LoadTableResultOrNotModified::NotModifiedResponse(etag) => {
                 let mut header = HeaderMap::new();
+
+                let etag = etag.as_str();
 
                 match etag.parse::<HeaderValue>() {
                     Ok(header_value) => {
@@ -156,7 +141,7 @@ where
         filters: LoadTableFilters,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-        etags: Vec<String>,
+        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified>;
 
     /// Load a table from the catalog
@@ -479,7 +464,7 @@ impl DataAccess {
     }
 }
 
-fn parse_etags(etags: &str) -> Vec<String> {
+fn parse_etags(etags: &str) -> Vec<ETag> {
     let etags = etags.trim().trim_matches('"');
     etags
         .split(',')
@@ -490,11 +475,11 @@ fn parse_etags(etags: &str) -> Vec<String> {
                 .trim_matches('"')
         })
         .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
+        .map(ETag::from)
         .collect()
 }
 
-pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<String> {
+pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<ETag> {
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
@@ -648,7 +633,7 @@ mod test {
                 filters: super::LoadTableFilters,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-                _etags: Vec<String>,
+                _etags: Vec<ETag>,
             ) -> crate::api::Result<LoadTableResultOrNotModified> {
                 // Return the snapshots filter in the error message for testing
                 let snapshots_str = match filters.snapshots {
@@ -872,14 +857,14 @@ mod test {
 
     #[test]
     fn test_parse_if_none_match_returns_single_value() {
-        let etag = "\"abcdefghi123456789\"".to_string();
+        let etag = "\"abcdefghi123456789\"";
 
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
     }
 
     #[test]
@@ -891,7 +876,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
     }
 
     #[test]
@@ -903,7 +888,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
     }
 
     #[test]
@@ -915,7 +900,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["*"]);
+        assert_eq!(etags, vec!["*".into()]);
     }
 
     #[test]
@@ -932,7 +917,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]);
     }
 
     #[test]
@@ -949,7 +934,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]);
     }
 
     #[test]
@@ -982,18 +967,18 @@ mod test {
         assert_eq!(
             etags,
             vec![
-                "etag-without-quote",
-                "etag-with-normal-quote",
-                "etag-with-quotes-twice",
-                "weak-etag-without-quote",
-                "weak-etag-with-normal-quote",
-                "weak-etag-with-quotes-twice",
-                "weak-etag-without-inner-quote-and-outer-quote",
-                "weak-etag-without-inner-quote-and-outer-quote-twice",
-                "weak-etag-with-normal-inner-quote-and-outer-quote",
-                "weak-etag-with-normal-inner-quote-and-outer-quote-twice",
-                "weak-etag-with-inner-quote-twice-and-outer-quote",
-                "weak-etag-with-inner-quote-twice-and-outer-quote-twice",
+                "etag-without-quote".into(),
+                "etag-with-normal-quote".into(),
+                "etag-with-quotes-twice".into(),
+                "weak-etag-without-quote".into(),
+                "weak-etag-with-normal-quote".into(),
+                "weak-etag-with-quotes-twice".into(),
+                "weak-etag-without-inner-quote-and-outer-quote".into(),
+                "weak-etag-without-inner-quote-and-outer-quote-twice".into(),
+                "weak-etag-with-normal-inner-quote-and-outer-quote".into(),
+                "weak-etag-with-normal-inner-quote-and-outer-quote-twice".into(),
+                "weak-etag-with-inner-quote-twice-and-outer-quote".into(),
+                "weak-etag-with-inner-quote-twice-and-outer-quote-twice".into(),
             ]
         );
     }
@@ -1031,7 +1016,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
     }
 
     #[test]
@@ -1046,7 +1031,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789", "123456789abcdefghi"]);
+        assert_eq!(etags, vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]);
     }
 
     #[test]

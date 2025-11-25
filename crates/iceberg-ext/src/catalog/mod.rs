@@ -27,7 +27,7 @@ pub mod rest {
     mod table;
     pub use table::{
         CommitTableRequest, CommitTableResponse, CommitTransactionRequest, CreateTableRequest,
-        ListTablesResponse, LoadCredentialsResponse, LoadTableResult, RegisterTableRequest,
+        ETag, ListTablesResponse, LoadCredentialsResponse, LoadTableResult, RegisterTableRequest,
         RenameTableRequest, StorageCredential, create_etag,
     };
 

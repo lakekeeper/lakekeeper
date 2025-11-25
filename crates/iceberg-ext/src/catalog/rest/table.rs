@@ -105,10 +105,31 @@ pub struct CommitTransactionRequest {
     pub table_changes: Vec<CommitTableRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ETag(String);
+
+impl ETag {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ETag {
+    fn from(value: &str) -> Self {
+        ETag(value.to_string())
+    }
+}
+
+impl From<String> for ETag {
+    fn from(value: String) -> Self {
+        ETag(value)
+    }
+}
+
 #[must_use]
-pub fn create_etag(text: &str) -> String {
+pub fn create_etag(text: &str) -> ETag {
     let hash = xxh3_64(text.as_bytes());
-    format!("\"{hash:x}\"")
+    format!("\"{hash:x}\"").into()
 }
 
 #[cfg(feature = "axum")]
@@ -122,7 +143,7 @@ impl IntoResponse for LoadTableResult {
         };
         let etag = create_etag(metadata_location);
 
-        match etag.parse::<HeaderValue>() {
+        match etag.as_str().parse::<HeaderValue>() {
             Ok(header_value) => {
                 headers.insert(header::ETAG, header_value);
             }
@@ -156,7 +177,7 @@ mod tests {
     #[test]
     #[cfg(feature = "axum")]
     fn test_create_etag() {
-        let etag = create_etag("Hello World");
+        let ETag(etag) = create_etag("Hello World");
         assert_eq!(etag, "\"e34615aade2e6333\"");
     }
 
@@ -175,9 +196,10 @@ mod tests {
         let response = load_table_result.into_response();
         let headers = response.headers();
 
+        let ETag(etag_expected) = create_etag("s3://bucket/table/metadata.json");
         assert_eq!(
             headers.get(header::ETAG).unwrap(),
-            &create_etag("s3://bucket/table/metadata.json")
+            &etag_expected
         );
     }
 

@@ -15,7 +15,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential, ETag},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
@@ -368,7 +368,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         filters: LoadTableFilters,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-        etags: Vec<String>,
+        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified> {
         load_table::load_table(
             parameters,
