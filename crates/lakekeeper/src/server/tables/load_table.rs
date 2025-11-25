@@ -77,7 +77,6 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     .await?;
 
     // ------------------- ETAG CHECK -------------------
-    // TODO: Add handling for staged tables
     let etag = get_etag(&table_info);
     if let Some(etag_value) = etag.as_ref().map(|e| e.as_str().trim_matches('"'))
         && etag_already_present(&etags, Some(&etag_value.into()))
