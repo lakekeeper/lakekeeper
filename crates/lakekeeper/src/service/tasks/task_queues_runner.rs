@@ -36,6 +36,7 @@ pub struct TaskQueuesRunner {
 impl TaskQueuesRunner {
     /// Runs all registered task queue workers and monitors them, restarting any that exit.
     /// Accepts a cancellation token for graceful shutdown.
+    #[allow(clippy::too_many_lines)]
     pub async fn run_queue_workers(self, restart_workers: bool) {
         // Create a structure to track worker information and hold task handles
         struct WorkerInfo {
