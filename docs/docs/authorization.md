@@ -2,6 +2,8 @@
 
 ## Overview
 
+Authentication verifies *who* you are, while authorization determines *what* you can do.
+
 Authorization can only be enabled if Authentication is enabled. Please check the [Authentication Docs](./authentication.md) for more information.
 
 Lakekeeper currently supports the following Authorizers:
