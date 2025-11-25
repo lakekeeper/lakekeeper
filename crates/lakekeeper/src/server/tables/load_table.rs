@@ -32,11 +32,8 @@ fn get_etag(table_info: &TabularInfo<TableId>) -> Option<ETag> {
         .map(create_etag)
 }
 
-fn etag_already_present(etags: &[ETag], etag: Option<&ETag>) -> bool {
-    match etag {
-        Some(etag) => etags.iter().any(|e| e == etag || e == &ETag::from("*")),
-        None => false,
-    }
+fn etag_already_present(etags: &[ETag], etag: &ETag) -> bool {
+    etags.iter().any(|e| e == etag || e == &ETag::from("*"))
 }
 
 /// Load a table from the catalog
@@ -78,8 +75,11 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
 
     // ------------------- ETAG CHECK -------------------
     let etag = get_etag(&table_info);
-    if let Some(etag_value) = etag.as_ref().map(|e| e.as_str().trim_matches('"'))
-        && etag_already_present(&etags, Some(&etag_value.into()))
+    if let Some(etag_value) = etag
+        .as_ref()
+        .map(|e| e.as_str().trim_matches('"'))
+        .map(ETag::from)
+        && etag_already_present(&etags, &etag_value)
     {
         return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
             etag.unwrap(),
