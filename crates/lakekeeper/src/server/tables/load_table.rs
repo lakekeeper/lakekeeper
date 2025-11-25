@@ -32,12 +32,9 @@ fn get_etag(table_info: &TabularInfo<TableId>) -> Option<String> {
         .map(create_etag)
 }
 
-fn etag_already_present(etags: &[String], etag: Option<&String>) -> bool {
-    if etags.contains(&"*".to_string()) {
-        return true;
-    }
+fn etag_already_present(etags: &[String], etag: Option<&str>) -> bool {
     match etag {
-        Some(etag) => etags.contains(etag),
+        Some(etag) => etags.iter().any(|e| e == etag || e == "*"),
         None => false,
     }
 }
@@ -80,12 +77,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     .await?;
 
     let etag = get_etag(&table_info);
-    if etag_already_present(
-        &etags,
-        etag.clone()
-            .map(|e| e.trim_matches('"').to_string())
-            .as_ref(),
-    ) {
+    if etag_already_present(&etags, etag.as_ref().map(|e| e.trim_matches('"'))) {
         return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
             etag.unwrap_or_default(),
         ));
