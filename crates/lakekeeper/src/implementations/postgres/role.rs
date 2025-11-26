@@ -17,7 +17,7 @@ use crate::{
     },
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CreateRoleError,
-        ListRolesError, ProjectIdNotFoundError, Result, RoleId, RoleIdNotFound,
+        ListRolesError, ProjectIdNotFoundError, Result, RoleId, RoleIdNotFoundInProject,
         RoleNameAlreadyExists, RoleSourceIdConflict, SearchRolesError, UpdateRoleError,
     },
 };
@@ -145,7 +145,7 @@ pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     .await;
 
     match role {
-        Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFound::new(
+        Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFoundInProject::new(
             role_id,
             project_id.clone(),
         ))),
@@ -194,7 +194,7 @@ pub(crate) async fn update_role_source_system<
     .await;
 
     match role {
-        Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFound::new(
+        Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFoundInProject::new(
             role_id,
             project_id.clone(),
         ))),
@@ -251,7 +251,7 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 }
 
 pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
-    project_id: &ProjectId,
+    project_id: Option<&ProjectId>,
     filter: CatalogListRolesFilter<'_>,
     PaginationQuery {
         page_size,
@@ -294,7 +294,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             created_at,
             updated_at
         FROM role r
-        WHERE project_id = $1
+        WHERE ($9 or project_id = $1)
             AND ($2 OR id = any($3))
             AND ($4 OR source_id = any($5))
             --- PAGINATION
@@ -302,7 +302,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         ORDER BY r.created_at, r.id ASC
         LIMIT $8
         "#,
-        &project_id,
+        &project_id.map(|p| p.as_str()).unwrap_or_default(),
         role_id_filter.is_none(),
         &role_id_filter.unwrap_or_default(),
         source_ids.is_none(),
@@ -310,6 +310,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         token_ts,
         token_id,
         page_size,
+        project_id.is_none()
     )
     .fetch_all(connection)
     .await
@@ -734,7 +735,7 @@ mod test {
         .unwrap();
 
         let roles = list_roles(
-            &project1_id,
+            Some(&project1_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -747,7 +748,7 @@ mod test {
         assert_eq!(roles.roles.len(), 1);
 
         let roles = list_roles(
-            &project2_id,
+            Some(&project2_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -760,6 +761,132 @@ mod test {
 
         assert_eq!(roles.roles.len(), 1);
         assert_eq!(roles.roles[0].id, role2_id);
+    }
+
+    #[sqlx::test]
+    async fn test_list_roles_across_all_projects(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project1_id = ProjectId::new_random();
+        let project2_id = ProjectId::new_random();
+        let project3_id = ProjectId::new_random();
+
+        let role1_id = RoleId::new_random();
+        let role2_id = RoleId::new_random();
+        let role3_id = RoleId::new_random();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        PostgresBackend::create_project(
+            &project1_id,
+            format!("Project {project1_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+
+        PostgresBackend::create_project(
+            &project2_id,
+            format!("Project {project2_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+
+        PostgresBackend::create_project(
+            &project3_id,
+            format!("Project {project3_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+
+        t.commit().await.unwrap();
+
+        // Create roles in multiple projects
+        create_roles(
+            &project1_id,
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role1_id)
+                    .role_name("Role 1")
+                    .description(Some("Role in project 1"))
+                    .build(),
+            ],
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        create_roles(
+            &project2_id,
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role2_id)
+                    .role_name("Role 2")
+                    .description(Some("Role in project 2"))
+                    .build(),
+            ],
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        create_roles(
+            &project3_id,
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role3_id)
+                    .role_name("Role 3")
+                    .description(Some("Role in project 3"))
+                    .build(),
+            ],
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        // List all roles across all projects with project_id = None
+        let roles = list_roles(
+            None,
+            CatalogListRolesFilter::builder().build(),
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+
+        // Should return all 3 roles
+        assert_eq!(roles.roles.len(), 3);
+        let role_ids: Vec<RoleId> = roles.roles.iter().map(|r| r.id).collect();
+        assert!(role_ids.contains(&role1_id));
+        assert!(role_ids.contains(&role2_id));
+        assert!(role_ids.contains(&role3_id));
+
+        // Verify that filtering by role_ids works across projects
+        let roles = list_roles(
+            None,
+            CatalogListRolesFilter::builder()
+                .role_ids(Some(&[role1_id, role3_id]))
+                .build(),
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(roles.roles.len(), 2);
+        let role_ids: Vec<RoleId> = roles.roles.iter().map(|r| r.id).collect();
+        assert!(role_ids.contains(&role1_id));
+        assert!(role_ids.contains(&role3_id));
+        assert!(!role_ids.contains(&role2_id));
     }
 
     #[sqlx::test]
@@ -798,7 +925,7 @@ mod test {
         }
 
         let roles = list_roles(
-            &project1_id,
+            Some(&project1_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -811,7 +938,7 @@ mod test {
         assert_eq!(roles.roles.len(), 10);
 
         let roles = list_roles(
-            &project1_id,
+            Some(&project1_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(5),
@@ -829,7 +956,7 @@ mod test {
         }
 
         let roles = list_roles(
-            &project1_id,
+            Some(&project1_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(5),
@@ -846,7 +973,7 @@ mod test {
         }
 
         let roles = list_roles(
-            &project1_id,
+            Some(&project1_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(5),
@@ -899,7 +1026,7 @@ mod test {
             .unwrap();
 
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -968,7 +1095,7 @@ mod test {
 
         // Verify only role with external-2 remains
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -1032,7 +1159,7 @@ mod test {
 
         // Verify role 2 remains
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -1108,7 +1235,7 @@ mod test {
 
         // Verify project 2 role still exists
         let roles = list_roles(
-            &project2_id,
+            Some(&project2_id),
             CatalogListRolesFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
@@ -1167,7 +1294,7 @@ mod test {
 
         // Filter by specific source IDs
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder()
                 .source_ids(Some(&["external-1", "external-3"]))
                 .build(),
@@ -1196,7 +1323,7 @@ mod test {
 
         // Filter by single source ID
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder()
                 .source_ids(Some(&["external-2"]))
                 .build(),
@@ -1261,7 +1388,7 @@ mod test {
 
         // Filter by role_ids and source_system (both must match)
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder()
                 .source_ids(Some(&["id-1", "id-2"]))
                 .build(),
@@ -1280,7 +1407,7 @@ mod test {
 
         // Filter by role_ids and source_ids
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder()
                 .role_ids(Some(&[role1_id, role3_id]))
                 .source_ids(Some(&["id-1"]))
@@ -1299,7 +1426,7 @@ mod test {
 
         // Filter with all three filters
         let roles = list_roles(
-            &project_id,
+            Some(&project_id),
             CatalogListRolesFilter::builder()
                 .role_ids(Some(&[role1_id, role2_id, role3_id]))
                 .source_ids(Some(&["id-2"]))

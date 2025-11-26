@@ -203,7 +203,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let mut batch_items = Vec::new();
         let mut batch_indices = Vec::new();
         for (idx, (role, action)) in roles_with_actions.iter().enumerate() {
-            if *action == RoleRelation::CanRead {
+            if *action == RoleRelation::CanReadMetadata {
                 results.push((idx, true));
             } else {
                 batch_indices.push(idx);
@@ -221,7 +221,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 // Collect unique role objects for permission checks
                 let unique_roles: HashSet<_> = roles_with_actions
                     .iter()
-                    .filter(|(_, action)| *action != RoleRelation::CanRead)
+                    .filter(|(_, action)| *action != RoleRelation::CanReadMetadata)
                     .map(|(role, _)| role.id.to_openfga())
                     .collect();
 

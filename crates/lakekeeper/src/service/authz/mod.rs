@@ -206,6 +206,9 @@ impl CatalogAction for CatalogProjectAction {}
 #[serde(rename_all = "snake_case")]
 pub enum CatalogRoleAction {
     Read,
+    // Read high level metadata about the role (name & project_id).
+    // Meant for cross-project role listing of assignments.
+    ReadMetadata,
     Delete,
     Update,
 }

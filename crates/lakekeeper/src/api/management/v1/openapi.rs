@@ -62,6 +62,7 @@ use crate::{
         super::get_project_by_id_deprecated,
         super::get_project,
         super::get_role_actions,
+        super::get_role_metadata,
         super::get_role,
         super::get_server_actions,
         super::get_server_info,

@@ -92,6 +92,7 @@ pub enum RoleRelation {
     CanDelete,
     CanUpdate,
     CanRead,
+    CanReadMetadata,
     CanReadAssignments,
 }
 impl RoleAction for RoleRelation {}
@@ -232,6 +233,7 @@ impl ReducedRelation for CatalogRoleAction {
             CatalogRoleAction::Delete => RoleRelation::CanDelete,
             CatalogRoleAction::Update => RoleRelation::CanUpdate,
             CatalogRoleAction::Read => RoleRelation::CanRead,
+            CatalogRoleAction::ReadMetadata => RoleRelation::CanReadMetadata,
         }
     }
 }
