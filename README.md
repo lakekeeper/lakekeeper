@@ -58,7 +58,7 @@ The Iceberg Catalog REST interface has become the standard for catalogs in open 
 - **High Available & Horizontally Scalable**: There is no local state - the catalog can be scaled horizontally easily.
 - **Fine Grained Access (FGA):** Lakekeeper's default Authorization system leverages [OpenFGA](https://openfga.dev/). If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `Authorizer` trait.
 
-If you are missing something, we would love to hear about it in a [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/new).
+If you are missing something, we would love to hear about it in a [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/new).
 
 
 # Status

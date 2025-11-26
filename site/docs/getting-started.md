@@ -78,7 +78,7 @@ A community driven [Kubernetes Operator](https://github.com/lakekeeper/lakekeepe
 
 
 ### Option 4: ⚙️ Binary
-For single node deployments, you can also download the Binary for your architecture from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look like this:
+For single node deployments, you can also download the Binary for your architecture from [GitHub Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look like this:
 
 ```bash
 export LAKEKEEPER__PG_DATABASE_URL_READ="postgres://postgres_user:postgres_urlencoded_password@hostname:5432/catalog_database"
