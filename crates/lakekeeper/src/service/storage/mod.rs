@@ -384,8 +384,8 @@ impl StorageProfile {
         // Test vended-credentials access
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
-            StorageProfile::Adls(_) => true,
-            StorageProfile::Gcs(_) => true,
+            StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::Gcs(profile) => profile.sts_enabled,
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
         };
