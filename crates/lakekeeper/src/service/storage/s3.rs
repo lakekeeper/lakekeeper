@@ -149,6 +149,12 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub aws_kms_key_arn: Option<String>,
+    /// Enable remote signing for S3 requests.
+    /// When disabled, clients cannot use remote signing even if STS is disabled.
+    /// Defaults to true for backward compatibility.
+    #[serde(default = "fn_true")]
+    #[builder(default = true)]
+    pub remote_signing_enabled: bool,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -477,6 +483,9 @@ impl S3Profile {
         }
 
         if remote_signing {
+            if !self.remote_signing_enabled {
+                return Err(TableConfigError::RemoteSigningDisabled);
+            }
             let warehouse_id = stc_request.warehouse_id;
             let tabular_id = stc_request.tabular_id;
             config.insert(&s3::RemoteSigningEnabled(true));

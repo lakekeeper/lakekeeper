@@ -68,6 +68,15 @@ pub struct AdlsProfile {
     /// except for migration of old tables via the register endpoint.
     #[serde(default)]
     pub allow_alternative_protocols: bool,
+    /// Enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage.
+    /// When disabled, clients cannot use vended credentials for this storage profile.
+    /// Defaults to true for backward compatibility.
+    #[serde(default = "default_true")]
+    pub sas_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
@@ -254,6 +263,10 @@ impl AdlsProfile {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
             });
+        }
+
+        if !self.sas_enabled {
+            return Err(TableConfigError::VendedCredentialsDisabled);
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));

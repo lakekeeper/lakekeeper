@@ -59,6 +59,15 @@ pub struct GcsProfile {
     pub bucket: String,
     /// Subpath in the bucket to use.
     pub key_prefix: Option<String>,
+    /// Enable STS (Security Token Service) downscoped token generation for GCS.
+    /// When disabled, clients cannot use vended credentials for this storage profile.
+    /// Defaults to true for backward compatibility.
+    #[serde(default = "default_true")]
+    pub sts_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +350,10 @@ impl GcsProfile {
                 creds: table_properties.clone(),
                 config: table_properties,
             });
+        }
+
+        if !self.sts_enabled {
+            return Err(TableConfigError::VendedCredentialsDisabled);
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));

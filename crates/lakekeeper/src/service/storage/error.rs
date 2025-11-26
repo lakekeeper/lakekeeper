@@ -278,6 +278,10 @@ pub enum TableConfigError {
         String,
         #[source] Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
     ),
+    #[error("Vended credentials are disabled for this storage profile")]
+    VendedCredentialsDisabled,
+    #[error("Remote signing is disabled for this storage profile")]
+    RemoteSigningDisabled,
 }
 
 impl From<TableConfigError> for IcebergErrorResponse {
@@ -293,6 +297,14 @@ impl From<TableConfigError> for IcebergErrorResponse {
             }
             e @ TableConfigError::Internal(_, _) => {
                 ErrorModel::internal(e.to_string(), "StsError", Some(Box::new(e))).into()
+            }
+            e @ TableConfigError::VendedCredentialsDisabled => {
+                ErrorModel::forbidden(e.to_string(), "VendedCredentialsDisabled", Some(Box::new(e)))
+                    .into()
+            }
+            e @ TableConfigError::RemoteSigningDisabled => {
+                ErrorModel::forbidden(e.to_string(), "RemoteSigningDisabled", Some(Box::new(e)))
+                    .into()
             }
         }
     }
