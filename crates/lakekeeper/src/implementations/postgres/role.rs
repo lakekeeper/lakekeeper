@@ -302,7 +302,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         ORDER BY r.created_at, r.id ASC
         LIMIT $8
         "#,
-        &project_id.map(|p| p.as_str()).unwrap_or_default(),
+        &project_id.map(ProjectId::as_str).unwrap_or_default(),
         role_id_filter.is_none(),
         &role_id_filter.unwrap_or_default(),
         source_ids.is_none(),
