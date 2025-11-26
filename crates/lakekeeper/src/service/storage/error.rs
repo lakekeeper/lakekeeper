@@ -312,10 +312,12 @@ impl From<TableConfigError> for IcebergErrorResponse {
             e @ TableConfigError::Internal(_, _) => {
                 ErrorModel::internal(e.to_string(), "StsError", Some(Box::new(e))).into()
             }
-            e @ TableConfigError::VendedCredentialsDisabled => {
-                ErrorModel::forbidden(e.to_string(), "VendedCredentialsDisabled", Some(Box::new(e)))
-                    .into()
-            }
+            e @ TableConfigError::VendedCredentialsDisabled => ErrorModel::forbidden(
+                e.to_string(),
+                "VendedCredentialsDisabled",
+                Some(Box::new(e)),
+            )
+            .into(),
             e @ TableConfigError::RemoteSigningDisabled => {
                 ErrorModel::forbidden(e.to_string(), "RemoteSigningDisabled", Some(Box::new(e)))
                     .into()
