@@ -1231,6 +1231,7 @@ mod tests {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
+            sas_enabled: true,
         });
 
         let cases = vec![
@@ -1296,6 +1297,7 @@ mod tests {
             let mut profile: StorageProfile = GcsProfile {
                 bucket,
                 key_prefix: key_prefix.clone(),
+                sts_enabled: true,
             }
             .into();
 

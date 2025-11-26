@@ -149,6 +149,20 @@ impl From<TableConfigError> for ValidationError {
                 InternalError::new(value.to_string(), RetryableErrorKind::Permanent)
                     .with_source(value),
             )),
+            TableConfigError::VendedCredentialsDisabled => {
+                ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+                    source: Some(Box::new(value)),
+                    reason: "Vended credentials are disabled for this storage profile".to_string(),
+                    entity: "StorageProfile".to_string(),
+                }))
+            }
+            TableConfigError::RemoteSigningDisabled => {
+                ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+                    source: Some(Box::new(value)),
+                    reason: "Remote signing is disabled for this storage profile".to_string(),
+                    entity: "StorageProfile".to_string(),
+                }))
+            }
         }
     }
 }

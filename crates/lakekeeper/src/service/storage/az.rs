@@ -666,6 +666,7 @@ pub(crate) mod test {
                 host: None,
                 sas_token_validity_seconds: None,
                 allow_alternative_protocols: false,
+                sas_enabled: true,
             }
         }
 
@@ -750,6 +751,7 @@ pub(crate) mod test {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
+            sas_enabled: true,
         };
 
         let sp: StorageProfile = profile.clone().into();
@@ -789,6 +791,7 @@ pub(crate) mod test {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
+            sas_enabled: true,
         };
 
         assert!(
@@ -808,6 +811,7 @@ pub(crate) mod test {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
+            sas_enabled: true,
         };
 
         assert!(
@@ -840,6 +844,7 @@ mod is_overlapping_location_tests {
             key_prefix: key_prefix.map(ToString::to_string),
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
+            sas_enabled: true,
         }
     }
 

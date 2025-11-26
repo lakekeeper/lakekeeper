@@ -556,6 +556,7 @@ pub(crate) mod test {
             let profile = GcsProfile {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+                sts_enabled: true,
             };
             (profile, cred)
         }
@@ -625,6 +626,7 @@ pub(crate) mod test {
             let profile = GcsProfile {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+                sts_enabled: true,
             };
             (profile, cred)
         }
@@ -661,6 +663,7 @@ mod is_overlapping_location_tests {
         GcsProfile {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
+            sts_enabled: true,
         }
     }
 
