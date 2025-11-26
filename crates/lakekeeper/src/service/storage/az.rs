@@ -68,6 +68,15 @@ pub struct AdlsProfile {
     /// except for migration of old tables via the register endpoint.
     #[serde(default)]
     pub allow_alternative_protocols: bool,
+    /// Enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage.
+    /// When disabled, clients cannot use vended credentials for this storage profile.
+    /// Defaults to true for backward compatibility.
+    #[serde(default = "default_true")]
+    pub sas_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
@@ -254,6 +263,10 @@ impl AdlsProfile {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
             });
+        }
+
+        if !self.sas_enabled {
+            return Err(TableConfigError::VendedCredentialsDisabled);
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
@@ -653,6 +666,7 @@ pub(crate) mod test {
                 host: None,
                 sas_token_validity_seconds: None,
                 allow_alternative_protocols: false,
+                sas_enabled: true,
             }
         }
 
@@ -737,6 +751,7 @@ pub(crate) mod test {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
+            sas_enabled: true,
         };
 
         let sp: StorageProfile = profile.clone().into();
@@ -776,6 +791,7 @@ pub(crate) mod test {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
+            sas_enabled: true,
         };
 
         assert!(
@@ -795,6 +811,7 @@ pub(crate) mod test {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
+            sas_enabled: true,
         };
 
         assert!(
@@ -827,6 +844,7 @@ mod is_overlapping_location_tests {
             key_prefix: key_prefix.map(ToString::to_string),
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
+            sas_enabled: true,
         }
     }
 

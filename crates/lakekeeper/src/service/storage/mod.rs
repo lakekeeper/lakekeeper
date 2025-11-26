@@ -384,8 +384,8 @@ impl StorageProfile {
         // Test vended-credentials access
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
-            StorageProfile::Adls(_) => true,
-            StorageProfile::Gcs(_) => true,
+            StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::Gcs(profile) => profile.sts_enabled,
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
         };
@@ -1231,6 +1231,7 @@ mod tests {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
+            sas_enabled: true,
         });
 
         let cases = vec![
@@ -1296,6 +1297,7 @@ mod tests {
             let mut profile: StorageProfile = GcsProfile {
                 bucket,
                 key_prefix: key_prefix.clone(),
+                sts_enabled: true,
             }
             .into();
 
