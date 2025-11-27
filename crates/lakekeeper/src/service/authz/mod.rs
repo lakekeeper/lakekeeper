@@ -41,7 +41,7 @@ pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 /// Assignees to a role
 pub struct RoleAssignee(RoleId);
@@ -79,7 +79,7 @@ impl Actor {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
+#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Identifies a user or a role

@@ -402,51 +402,6 @@ pub(super) enum CheckOperation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case", untagged)]
-/// Identifier for a namespace, either a UUID or its name and warehouse ID
-pub(super) enum NamespaceIdentOrUuid {
-    #[serde(rename_all = "kebab-case")]
-    Id {
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        namespace_id: NamespaceId,
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        warehouse_id: WarehouseId,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Name {
-        #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
-        namespace: NamespaceIdent,
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        warehouse_id: WarehouseId,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case", untagged)]
-/// Identifier for a table or view, either a UUID or its name and namespace
-pub(super) enum TabularIdentOrUuid {
-    #[serde(rename_all = "kebab-case")]
-    IdInWarehouse {
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        warehouse_id: WarehouseId,
-        #[serde(alias = "view_id")]
-        table_id: uuid::Uuid,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Name {
-        #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
-        namespace: NamespaceIdent,
-        /// Name of the table or view
-        #[serde(alias = "view")]
-        table: String,
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        warehouse_id: WarehouseId,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Check if a specific action is allowed on the given object
 pub(super) struct CheckRequest {

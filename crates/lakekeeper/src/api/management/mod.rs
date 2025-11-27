@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 pub mod v1 {
+    pub mod check;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;

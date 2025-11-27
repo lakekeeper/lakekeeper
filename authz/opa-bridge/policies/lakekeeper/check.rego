@@ -12,7 +12,8 @@ lakekeeper_by_id[lakekeeper_id] := lakekeeper if {
 require_warehouse_access(lakekeeper_id, warehouse_name, user, action) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
-        "POST", "/management/v1/permissions/check", 
+        # "POST", "/management/v1/permissions/check",
+        "POST", sprintf("/management/v1/warehouse/%v/actions", [warehouse_id_for_name(lakekeeper_id, warehouse_name)])
         {
             "operation": {
                 "warehouse": {
