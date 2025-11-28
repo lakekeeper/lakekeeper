@@ -137,7 +137,7 @@ impl OpenFgaEntity for Actor {
         let fga_type = self.openfga_type().to_string();
         match self {
             Actor::Anonymous => format!("{fga_type}:*").to_string(),
-            Actor::Principal(principal) => format!("{fga_type}:{principal}"),
+            Actor::Principal(principal) => principal.to_openfga(),
             Actor::Role {
                 principal: _,
                 assumed_role,
@@ -260,6 +260,10 @@ mod test {
         assert_eq!(parsed.to_openfga(), openfga_id);
         assert_eq!(parsed.openfga_type(), FgaType::User);
         assert_eq!(parsed.to_string(), user_id);
+
+        let actor = Actor::Principal(parsed.clone());
+        assert_eq!(actor.to_openfga(), openfga_id);
+        assert_eq!(actor.openfga_type(), FgaType::User);
     }
 
     /// The `OpenFgaEntity` implementation for `ServerId` was added after `ServerId` itself.
