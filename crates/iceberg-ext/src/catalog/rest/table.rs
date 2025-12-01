@@ -1,5 +1,11 @@
+#[cfg(feature = "axum")]
+use axum::{
+    http::header::{self, HeaderMap, HeaderValue},
+    response::IntoResponse,
+};
 use iceberg::spec::TableMetadataRef;
 use typed_builder::TypedBuilder;
+use xxhash_rust::xxh3::xxh3_64;
 
 #[cfg(feature = "axum")]
 use super::impl_into_response;
@@ -99,11 +105,175 @@ pub struct CommitTransactionRequest {
     pub table_changes: Vec<CommitTableRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ETag(String);
+
+impl ETag {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ETag {
+    fn from(value: &str) -> Self {
+        ETag(value.to_string())
+    }
+}
+
+impl From<String> for ETag {
+    fn from(value: String) -> Self {
+        ETag(value)
+    }
+}
+
+#[must_use]
+pub fn create_etag(text: &str) -> ETag {
+    let hash = xxh3_64(text.as_bytes());
+    format!("\"{hash:x}\"").into()
+}
+
 #[cfg(feature = "axum")]
-impl_into_response!(LoadTableResult);
+impl IntoResponse for LoadTableResult {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        let mut headers = HeaderMap::new();
+        let body = axum::Json(&self);
+
+        let Some(ref metadata_location) = self.metadata_location else {
+            return (headers, body).into_response();
+        };
+        let etag = create_etag(metadata_location);
+
+        match etag.as_str().parse::<HeaderValue>() {
+            Ok(header_value) => {
+                headers.insert(header::ETAG, header_value);
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create valid ETAG header from metadata location: {metadata_location}, error: {e}"
+                );
+            }
+        }
+
+        (headers, body).into_response()
+    }
+}
+
 #[cfg(feature = "axum")]
 impl_into_response!(ListTablesResponse);
 #[cfg(feature = "axum")]
 impl_into_response!(CommitTableResponse);
 #[cfg(feature = "axum")]
 impl_into_response!(LoadCredentialsResponse);
+
+#[cfg(test)]
+#[cfg(feature = "axum")]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use iceberg::spec::{FormatVersion, Schema, TableMetadata, TableMetadataBuilder};
+
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "axum")]
+    fn test_create_etag() {
+        let ETag(etag) = create_etag("Hello World");
+        assert_eq!(etag, "\"e34615aade2e6333\"");
+    }
+
+    #[test]
+    #[cfg(feature = "axum")]
+    fn test_load_table_result_into_response_adds_etag_for_existing_tables() {
+        let table_metadata = create_table_metadata_mock();
+
+        let load_table_result = LoadTableResult {
+            metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
+            metadata: table_metadata,
+            config: None,
+            storage_credentials: None,
+        };
+
+        let response = load_table_result.into_response();
+        let headers = response.headers();
+
+        let ETag(etag_expected) = create_etag("s3://bucket/table/metadata.json");
+        assert_eq!(headers.get(header::ETAG).unwrap(), &etag_expected);
+    }
+
+    #[test]
+    #[cfg(feature = "axum")]
+    fn test_load_table_result_into_response_returns_no_etag_when_returning_staged_table() {
+        let table_metadata = create_table_metadata_mock();
+
+        let load_table_result = LoadTableResult {
+            metadata_location: None,
+            metadata: table_metadata,
+            config: None,
+            storage_credentials: None,
+        };
+
+        let response = load_table_result.into_response();
+        let headers = response.headers();
+
+        assert!(!headers.contains_key(header::ETAG));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "axum")]
+    async fn test_load_table_result_into_response_returns_load_table_result_as_json_body() {
+        let table_metadata = create_table_metadata_mock();
+
+        let load_table_result = LoadTableResult {
+            metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
+            metadata: table_metadata.clone(),
+            config: None,
+            storage_credentials: None,
+        };
+
+        let response = load_table_result.clone().into_response();
+        let body = response.into_body();
+
+        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let deserialized: LoadTableResult =
+            serde_json::from_slice(&body_bytes).expect("Failed to deserialize body");
+
+        assert_eq!(deserialized, load_table_result);
+    }
+
+    fn create_table_metadata_mock() -> Arc<TableMetadata> {
+        let schema = Schema::builder().with_schema_id(0).build().unwrap();
+
+        let unbound_spec = UnboundPartitionSpec::default();
+
+        let sort_order = SortOrder::builder()
+            .with_order_id(0)
+            .build(&schema)
+            .unwrap();
+
+        let props = HashMap::new();
+
+        let mut builder = TableMetadataBuilder::new(
+            schema.clone(),
+            unbound_spec.clone(),
+            sort_order.clone(),
+            "memory://dummy".to_string(),
+            FormatVersion::V2,
+            props,
+        )
+        .unwrap();
+        builder = builder.add_schema(schema.clone()).unwrap();
+        builder = builder.set_current_schema(0).unwrap();
+        builder = builder.add_partition_spec(unbound_spec).unwrap();
+        builder = builder
+            .set_default_partition_spec(TableMetadataBuilder::LAST_ADDED)
+            .unwrap();
+        builder = builder.add_sort_order(sort_order).unwrap();
+        builder = builder
+            .set_default_sort_order(i64::from(TableMetadataBuilder::LAST_ADDED))
+            .unwrap();
+
+        let build_result: TableMetadata = builder.build().unwrap().into();
+        build_result.into()
+    }
+}

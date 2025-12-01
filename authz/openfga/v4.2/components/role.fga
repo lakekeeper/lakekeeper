@@ -15,8 +15,9 @@ type role
     define can_delete: can_grant_assignee
     # Can update base attributes like name and description
     define can_update: can_grant_assignee
-    # Can get name and description of this role
-    # Overridden in implementation to always allow for cross-project get
+    # Can get name and description of this role.
+    # In the implementation a second permission can_read_metadata exists that is always allowed
+    # for cross-project gets of non-ciritical data.
     define can_read: can_list_roles from project
     # get assignments to this role
     define can_read_assignments: can_list_roles from project

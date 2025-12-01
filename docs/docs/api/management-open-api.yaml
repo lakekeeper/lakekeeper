@@ -1790,6 +1790,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/metadata:
+    get:
+      tags:
+        - role
+      summary: Get Role Metadata
+      description: |-
+        Retrieves high-level metadata about a specific role.
+        Depending on the authorizer, this method is typically allowed also for roles in
+        other projects.
+      operationId: get_role_metadata
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: High level Role Metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleMetadata'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role/{role_id}/source-system:
     put:
       tags:
@@ -4448,6 +4479,7 @@ components:
       type: string
       enum:
       - read
+      - read_metadata
       - delete
       - update
     LakekeeperServerAction:
@@ -5097,28 +5129,48 @@ components:
       - read_assignments
     RoleAssignment:
       oneOf:
-      - allOf:
-        - $ref: '#/components/schemas/UserOrRole'
-        - type: object
-          required:
-          - type
-          properties:
-            type:
-              type: string
-              enum:
-              - assignee
-        title: RoleAssignmentAssignee
-      - allOf:
-        - $ref: '#/components/schemas/UserOrRole'
-        - type: object
-          required:
-          - type
-          properties:
-            type:
-              type: string
-              enum:
-              - ownership
-        title: RoleAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - assignee
+          title: RoleAssignmentAssignee
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: RoleAssignmentOwnership
+    RoleMetadata:
+      type: object
+      description: |-
+        Metadata of a role with reduced information.
+        Returned for cross-project role references.
+      required:
+        - id
+        - name
+        - project-id
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Globally unique id of this role
+        name:
+          type: string
+          description: Name of the role
+        project-id:
+          type: string
+          description: Project ID in which the role is created.
     RoleRelation:
       type: string
       enum:

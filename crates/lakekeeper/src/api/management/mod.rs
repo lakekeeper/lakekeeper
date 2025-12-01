@@ -75,7 +75,7 @@ pub mod v1 {
             management::v1::{
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::UpdateRoleSourceSystemRequest,
+                role::{RoleMetadata, UpdateRoleSourceSystemRequest},
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
                     ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
@@ -489,6 +489,31 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<Arc<Role>>)> {
         ApiServer::<C, A, S>::get_role(api_context, metadata, role_id)
+            .await
+            .map(|role| (StatusCode::OK, Json(role)))
+    }
+
+    /// Get Role Metadata
+    ///
+    /// Retrieves high-level metadata about a specific role.
+    /// Depending on the authorizer, this method is typically allowed also for roles in
+    /// other projects.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::GetRoleMetadata.path(),
+        params(("role_id" = Uuid, Path, description = "Role ID")),
+        responses(
+            (status = 200, description = "High level Role Metadata", body = RoleMetadata),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_role_metadata<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<RoleMetadata>)> {
+        ApiServer::<C, A, S>::get_role_metadata(api_context, metadata, role_id)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
     }
@@ -1800,6 +1825,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetRoleActions.path_in_management_v1(),
                     get(get_role_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetRoleMetadata.path_in_management_v1(),
+                    get(get_role_metadata),
                 )
                 // User management
                 .route("/whoami", get(whoami))

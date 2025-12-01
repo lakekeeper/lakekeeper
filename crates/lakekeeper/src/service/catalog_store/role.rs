@@ -20,12 +20,12 @@ use crate::{
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("A role with id '{role_id}' does not exist in project with id '{project_id}'")]
-pub struct RoleIdNotFound {
+pub struct RoleIdNotFoundInProject {
     pub role_id: RoleId,
     pub project_id: ProjectId,
     pub stack: Vec<String>,
 }
-impl RoleIdNotFound {
+impl RoleIdNotFoundInProject {
     #[must_use]
     pub fn new(role_id: RoleId, project_id: ProjectId) -> Self {
         Self {
@@ -35,12 +35,41 @@ impl RoleIdNotFound {
         }
     }
 }
+impl_error_stack_methods!(RoleIdNotFoundInProject);
+
+impl From<RoleIdNotFoundInProject> for ErrorModel {
+    fn from(err: RoleIdNotFoundInProject) -> Self {
+        ErrorModel {
+            r#type: "RoleNotFoundInProject".to_string(),
+            code: StatusCode::NOT_FOUND.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("A role with id '{role_id}' does not exist")]
+pub struct RoleIdNotFound {
+    pub role_id: RoleId,
+    pub stack: Vec<String>,
+}
+impl RoleIdNotFound {
+    #[must_use]
+    pub fn new(role_id: RoleId) -> Self {
+        Self {
+            role_id,
+            stack: Vec::new(),
+        }
+    }
+}
 impl_error_stack_methods!(RoleIdNotFound);
 
 impl From<RoleIdNotFound> for ErrorModel {
     fn from(err: RoleIdNotFound) -> Self {
         ErrorModel {
-            r#type: "RoleNotFound".to_string(),
+            r#type: "RoleIdNotFound".to_string(),
             code: StatusCode::NOT_FOUND.as_u16(),
             message: err.to_string(),
             stack: err.stack,
@@ -122,7 +151,26 @@ define_transparent_error! {
 
 // --------------------------- GET ROLE ERROR ---------------------------
 define_transparent_error! {
-    pub enum GetRoleError,
+    pub enum GetRoleInProjectError,
+    stack_message: "Error getting Role from catalog",
+    variants: [
+        CatalogBackendError,
+        InvalidPaginationToken,
+        RoleIdNotFoundInProject,
+    ]
+}
+
+impl From<ListRolesError> for GetRoleInProjectError {
+    fn from(err: ListRolesError) -> Self {
+        match err {
+            ListRolesError::CatalogBackendError(e) => e.into(),
+            ListRolesError::InvalidPaginationToken(e) => e.into(),
+        }
+    }
+}
+
+define_transparent_error! {
+    pub enum GetRoleAcrossProjectsError,
     stack_message: "Error getting Role from catalog",
     variants: [
         CatalogBackendError,
@@ -131,7 +179,7 @@ define_transparent_error! {
     ]
 }
 
-impl From<ListRolesError> for GetRoleError {
+impl From<ListRolesError> for GetRoleAcrossProjectsError {
     fn from(err: ListRolesError) -> Self {
         match err {
             ListRolesError::CatalogBackendError(e) => e.into(),
@@ -146,7 +194,7 @@ define_transparent_error! {
     stack_message: "Error deleting role in catalog",
     variants: [
         CatalogBackendError,
-        RoleIdNotFound
+        RoleIdNotFoundInProject
     ]
 }
 
@@ -158,7 +206,7 @@ define_transparent_error! {
         CatalogBackendError,
         RoleSourceIdConflict,
         RoleNameAlreadyExists,
-        RoleIdNotFound,
+        RoleIdNotFoundInProject,
     ]
 }
 
@@ -219,7 +267,7 @@ where
         let deleted_roles =
             Self::delete_roles_impl(project_id, Some(&[role_id]), None, transaction).await?;
         if deleted_roles.is_empty() {
-            Err(RoleIdNotFound::new(role_id, project_id.clone()).into())
+            Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
         } else {
             Ok(())
         }
@@ -256,16 +304,23 @@ where
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError> {
-        Self::list_roles_impl(project_id, filter, pagination, catalog_state).await
+        Self::list_roles_impl(Some(project_id), filter, pagination, catalog_state).await
     }
 
-    async fn get_role_by_id(
-        project_id: &ProjectId,
+    async fn list_roles_across_projects(
+        filter: CatalogListRolesFilter<'_>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesResponse, ListRolesError> {
+        Self::list_roles_impl(None, filter, pagination, catalog_state).await
+    }
+
+    async fn get_role_by_id_across_projects(
         role_id: RoleId,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleError> {
-        let roles = Self::list_roles(
-            project_id,
+    ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
+        let roles = Self::list_roles_impl(
+            None,
             CatalogListRolesFilter::builder()
                 .role_ids(Some(&[role_id]))
                 .build(),
@@ -277,7 +332,29 @@ where
         if let Some(role) = roles.roles.into_iter().next() {
             Ok(role)
         } else {
-            Err(RoleIdNotFound::new(role_id, project_id.clone()).into())
+            Err(RoleIdNotFound::new(role_id).into())
+        }
+    }
+
+    async fn get_role_by_id(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        catalog_state: Self::State,
+    ) -> Result<Arc<Role>, GetRoleInProjectError> {
+        let roles = Self::list_roles_impl(
+            Some(project_id),
+            CatalogListRolesFilter::builder()
+                .role_ids(Some(&[role_id]))
+                .build(),
+            PaginationQuery::new_with_page_size(1),
+            catalog_state,
+        )
+        .await?;
+
+        if let Some(role) = roles.roles.into_iter().next() {
+            Ok(role)
+        } else {
+            Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
         }
     }
 
