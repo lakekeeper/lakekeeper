@@ -275,29 +275,39 @@ impl AdlsProfile {
         let sas = if let Some(sas_token) = cached_sas_token {
             sas_token
         } else {
+            let (sas_token_start, sas_token_end) = self.sas_token_validity_period();
             let sas = match credential {
                 AzCredential::ClientCredentials { .. } => {
                     let client = self.blob_service_client(credential).await?;
-                    self.sas_via_delegation_key(&stc_request, client).await?
+                    self.sas_via_delegation_key(
+                        sas_token_start,
+                        sas_token_end,
+                        &stc_request,
+                        client,
+                    )
+                    .await?
                 }
                 AzCredential::SharedAccessKey { key } => self.sas(
                     &stc_request,
-                    OffsetDateTime::now_utc()
-                        .saturating_sub(time::Duration::minutes(5))
-                        .saturating_add(time::Duration::days(7)),
+                    sas_token_end,
                     azure_core::auth::Secret::new(key.clone()),
                 )?,
                 AzCredential::AzureSystemIdentity {} => {
                     let client = self.blob_service_client(credential).await?;
-                    self.sas_via_delegation_key(&stc_request, client)
-                        .await
-                        .map_err(|e| {
-                            tracing::debug!("Failed to get azure system identity token: {e}",);
-                            CredentialsError::ShortTermCredential {
-                                reason: "Failed to get azure system identity token".to_string(),
-                                source: Some(Box::new(e)),
-                            }
-                        })?
+                    self.sas_via_delegation_key(
+                        sas_token_start,
+                        sas_token_end,
+                        &stc_request,
+                        client,
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::debug!("Failed to get azure system identity token: {e}",);
+                        CredentialsError::ShortTermCredential {
+                            reason: "Failed to get azure system identity token".to_string(),
+                            source: Some(Box::new(e)),
+                        }
+                    })?
                 }
             };
 
@@ -328,6 +338,23 @@ impl AdlsProfile {
         })
     }
 
+    fn sas_token_validity_period(&self) -> (OffsetDateTime, OffsetDateTime) {
+        // allow for some clock drift
+        let start = OffsetDateTime::now_utc() - time::Duration::minutes(5);
+        // Add 5 minutes to validity to account for clock drift
+        let validity = self
+            .sas_token_validity_seconds
+            .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS)
+            + 300;
+
+        let clamped_validity_seconds = i64::try_from(validity)
+            .unwrap_or(MAX_SAS_TOKEN_VALIDITY_SECONDS_I64)
+            .clamp(0, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
+
+        let end = start.saturating_add(time::Duration::seconds(clamped_validity_seconds));
+        (start, end)
+    }
+
     async fn load_sas_token_from_cache(&self, cache_key: &STCCacheKey) -> Option<String> {
         let stc_request = &cache_key.request;
         if CONFIG.cache.stc.enabled {
@@ -353,41 +380,29 @@ impl AdlsProfile {
 
     async fn sas_via_delegation_key(
         &self,
+        sas_token_start: OffsetDateTime,
+        sas_token_end: OffsetDateTime,
         stc_request: &ShortTermCredentialsRequest,
         client: BlobServiceClient,
     ) -> Result<String, CredentialsError> {
-        // allow for some clock drift
-        let start = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
-        let max_validity_seconds = MAX_SAS_TOKEN_VALIDITY_SECONDS_I64;
-        // account for the 5 minutes offset from above
-        let sas_token_validity_seconds = self
-            .sas_token_validity_seconds
-            .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS)
-            + 300;
-        let clamped_validity_seconds = i64::try_from(sas_token_validity_seconds)
-            .unwrap_or(max_validity_seconds)
-            .clamp(0, max_validity_seconds);
-
+        tracing::debug!(
+            "Requesting user delegation key from azure for sas token generation - Valid from {sas_token_start} to {sas_token_end}",
+        );
         let delegation_key = client
-            .get_user_deligation_key(
-                start,
-                start
-                    .checked_add(time::Duration::seconds(clamped_validity_seconds))
-                    .ok_or(CredentialsError::ShortTermCredential {
-                        reason: format!(
-                            "SAS expiry overflow: Cannot issue a token valid for {clamped_validity_seconds} seconds",
-                        )
-                            .to_string(),
-                        source: None,
-                    })?,
-            )
+            .get_user_deligation_key(sas_token_start, sas_token_end)
             .await
             .map_err(|e| CredentialsError::ShortTermCredential {
                 reason: "Error getting azure user delegation key.".to_string(),
                 source: Some(Box::new(e)),
             })?;
         let signed_expiry = delegation_key.user_deligation_key.signed_expiry;
-        let key = delegation_key.user_deligation_key.clone();
+
+        tracing::debug!(
+            "Successfully obtained user delegation key from azure for sas token generation - Valid from {} until {signed_expiry}",
+            delegation_key.user_deligation_key.signed_start
+        );
+
+        let key = delegation_key.user_deligation_key;
 
         self.sas(stc_request, signed_expiry, key)
     }
@@ -407,6 +422,11 @@ impl AdlsProfile {
             self.account_name.as_str(),
             self.filesystem.as_str(),
             rootless_path
+        );
+
+        tracing::debug!(
+            "Generationg SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
+            stc_request.storage_permissions
         );
 
         let sas = BlobSharedAccessSignature::new(
