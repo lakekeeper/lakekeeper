@@ -13,7 +13,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- Add the new column (initially nullable)
 ALTER TABLE tabular
-ADD COLUMN tabular_namespace_name text[] COLLATE public.case_insensitive;
+ADD COLUMN tabular_namespace_name text[] COLLATE case_insensitive;
 
 -- Populate the new column for existing rows
 UPDATE tabular t
@@ -22,7 +22,7 @@ FROM namespace n
 WHERE t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id;
 
 -- Make the column non-nullable
-ALTER TABLE public.tabular
+ALTER TABLE tabular
 ALTER COLUMN tabular_namespace_name SET NOT NULL;
 
 ALTER TABLE namespace
