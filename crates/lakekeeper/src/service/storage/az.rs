@@ -70,7 +70,7 @@ pub struct AdlsProfile {
     pub allow_alternative_protocols: bool,
     /// Enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage.
     /// When disabled, clients cannot use vended credentials for this storage profile.
-    /// Defaults to true for backward compatibility.
+    /// Defaults to true.
     #[serde(default = "default_true")]
     pub sas_enabled: bool,
 }

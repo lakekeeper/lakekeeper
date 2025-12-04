@@ -151,7 +151,7 @@ pub struct S3Profile {
     pub aws_kms_key_arn: Option<String>,
     /// Enable remote signing for S3 requests.
     /// When disabled, clients cannot use remote signing even if STS is disabled.
-    /// Defaults to true for backward compatibility.
+    /// Defaults to true.
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub remote_signing_enabled: bool,

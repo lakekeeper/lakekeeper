@@ -44,7 +44,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
 | `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
-| `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true` for backward compatibility. |
+| `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
 | `endpoint`                    | URL     | No       | None                       | Optional endpoint URL for S3 requests. If not provided, the region will be used to determine the endpoint. If both are provided, the endpoint takes precedence. Example: `http://s3-de.my-domain.com:9000` |
 | `flavor`                      | String  | No       | `aws`                      | S3 flavor to use. Options: `aws` (Amazon S3) or `s3-compat` (for S3-compatible solutions like MinIO). |
@@ -412,7 +412,7 @@ The following table describes all configuration parameters for an ADLS storage p
 |-------------------------------|---------|----------|-------------------------------------|-----|
 | `account-name`                | String  | Yes      | -                                   | Name of the Azure storage account. |
 | `filesystem`                  | String  | Yes      | -                                   | Name of the ADLS filesystem, in blob storage also known as container. |
-| `sas-enabled`                 | Boolean | No       | `true`                              | Whether to enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true` for backward compatibility. |
+| `sas-enabled`                 | Boolean | No       | `true`                              | Whether to enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                                | Subpath in the filesystem to use. |
 | `allow-alternative-protocols` | Boolean | No       | `false`                             | Whether to allow `wasbs://` in locations in addition to `abfss://`. This is disabled by default and should only be enabled for migrating legacy Hadoop-based tables via the register endpoint. |
 | `host`                        | String  | No       | `dfs.core.windows.net`              | The host to use for the storage account. |
@@ -486,11 +486,11 @@ Google Cloud Storage can be used to store Iceberg tables through the `gs://` pro
 
 The following table describes all configuration parameters for a GCS storage profile:
 
-| Parameter    | Type    | Required | Default | Description                     |
-|--------------|---------|----------|---------|---------------------------------|
-| `bucket`     | String  | Yes      | -       | Name of the GCS bucket.         |
-| `key-prefix` | String  | No       | None    | Subpath in the bucket to use for this warehouse. |
-| `sts-enabled`| Boolean | No       | `true`  | Whether to enable STS (Security Token Service) downscoped token generation for GCS. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true` for backward compatibility. |
+| Parameter     | Type    | Required | Default | Description                   |
+|---------------|---------|----------|---------|-------------------------------|
+| `bucket`      | String  | Yes      | -       | Name of the GCS bucket.       |
+| `key-prefix`  | String  | No       | None    | Subpath in the bucket to use for this warehouse. |
+| `sts-enabled` | Boolean | No       | `true`  | Whether to enable STS (Security Token Service) downscoped token generation for GCS. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
 
 The service account should have appropriate permissions (such as Storage Admin role) on the bucket. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
 

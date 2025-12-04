@@ -61,7 +61,7 @@ pub struct GcsProfile {
     pub key_prefix: Option<String>,
     /// Enable STS (Security Token Service) downscoped token generation for GCS.
     /// When disabled, clients cannot use vended credentials for this storage profile.
-    /// Defaults to true for backward compatibility.
+    /// Defaults to true.
     #[serde(default = "default_true")]
     pub sts_enabled: bool,
 }
