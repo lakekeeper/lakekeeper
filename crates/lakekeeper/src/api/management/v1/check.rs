@@ -13,11 +13,11 @@ use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse,
-        SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags,
-        TabularNotFound, ViewInfo, ViewOrTableInfo, WarehouseIdNotFound, WarehouseStatus,
-        WarehouseVersion,
+        BasicTabularInfo, CachePolicy, CatalogGetNamespaceError, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, NamespaceId, NamespaceVersion, NamespaceWithParent,
+        ResolvedWarehouse, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
+        TabularListFlags, TabularNotFound, ViewInfo, ViewOrTableInfo, WarehouseIdNotFound,
+        WarehouseStatus, WarehouseVersion,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZProjectOps, AuthZServerOps,
             AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -639,7 +639,7 @@ async fn refetch_outdated_namespaces<C: CatalogStore>(
     namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
     min_namespace_versions: &Arc<HashMap<(WarehouseId, NamespaceId), NamespaceVersion>>,
     catalog_state: C::State,
-) -> Vec<crate::service::NamespaceHierarchy> {
+) -> Result<Vec<crate::service::NamespaceHierarchy>, CatalogGetNamespaceError> {
     let mut re_fetched_namespaces = Vec::new();
     for (namespace_id, namespace) in namespaces {
         if let Some(min_version) = min_namespace_versions.get(&(warehouse_id, *namespace_id))
@@ -661,15 +661,11 @@ async fn refetch_outdated_namespaces<C: CatalogStore>(
                         "Namespace {namespace_id} in warehouse {warehouse_id} not found when refetching with min version {min_version}"
                     );
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to refetch namespace {namespace_id} with min version {min_version}: {e}"
-                    );
-                }
+                Err(e) => return Err(e),
             }
         }
     }
-    re_fetched_namespaces
+    Ok(re_fetched_namespaces)
 }
 
 /// Fetch namespaces by ID and ident with minimum version requirements
@@ -716,7 +712,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &min_namespace_versions,
                     catalog_state.clone(),
                 )
-                .await;
+                .await?;
 
                 for ns_hierarchy in re_fetched_namespaces {
                     namespaces.insert(
@@ -760,7 +756,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &min_namespace_versions,
                     catalog_state.clone(),
                 )
-                .await;
+                .await?;
 
                 for ns_hierarchy in re_fetched_namespaces {
                     namespaces.insert(
