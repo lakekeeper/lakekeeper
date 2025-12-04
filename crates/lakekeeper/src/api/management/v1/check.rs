@@ -1,17 +1,32 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use iceberg::{ NamespaceIdent, TableIdent};
+use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use unicase::UniCase;
 
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, NamespaceId, SecretStore, State, TabularId, TabularIdentOwned, TabularListFlags, ViewOrTableInfo, WarehouseIdNotFound, WarehouseStatus, authz::{
-            ActionOnTableOrView, AuthZCannotSeeNamespace,  AuthZProjectOps, AuthZServerOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, RequireTableActionError, RequireWarehouseActionError, UserOrRole
-        }, build_namespace_hierarchy, namespace_cache::namespace_ident_to_cache_key
+        BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse,
+        SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags,
+        TabularNotFound, ViewInfo, ViewOrTableInfo, WarehouseIdNotFound, WarehouseStatus,
+        WarehouseVersion,
+        authz::{
+            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZProjectOps, AuthZServerOps,
+            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, MustUse, RequireTableActionError,
+            RequireWarehouseActionError, UserOrRole,
+        },
+        build_namespace_hierarchy,
+        namespace_cache::namespace_ident_to_cache_key,
     },
 };
 
@@ -38,10 +53,11 @@ pub enum NamespaceIdentOrUuid {
 
 impl NamespaceIdentOrUuid {
     /// Get the warehouse ID associated with this namespace identifier
+    #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
         match self {
-            NamespaceIdentOrUuid::Id { warehouse_id, .. } => *warehouse_id,
-            NamespaceIdentOrUuid::Name { warehouse_id, .. } => *warehouse_id,
+            NamespaceIdentOrUuid::Id { warehouse_id, .. }
+            | NamespaceIdentOrUuid::Name { warehouse_id, .. } => *warehouse_id,
         }
     }
 }
@@ -72,10 +88,11 @@ pub enum TabularIdentOrUuid {
 
 impl TabularIdentOrUuid {
     /// Get the warehouse ID associated with this table/view identifier
+    #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
         match self {
-            TabularIdentOrUuid::IdInWarehouse { warehouse_id, .. } => *warehouse_id,
-            TabularIdentOrUuid::Name { warehouse_id, .. } => *warehouse_id,
+            TabularIdentOrUuid::IdInWarehouse { warehouse_id, .. }
+            | TabularIdentOrUuid::Name { warehouse_id, .. } => *warehouse_id,
         }
     }
 }
@@ -163,39 +180,63 @@ pub struct CatalogActionsBatchCheckResult {
     allowed: bool,
 }
 
-async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
-    api_context: ApiContext<State<A, C, S>>,
-    metadata: &RequestMetadata,
-    request: CatalogActionsBatchCheckRequest,
-) -> Result<CatalogActionsBatchCheckResponse, ErrorModel> {
-    let authorizer = api_context.v1_state.authz.clone();
-    let catalog_state = api_context.v1_state.catalog.clone();
-    let CatalogActionsBatchCheckRequest {
-        checks,
-        error_on_not_found,
-    } = request;
+// Type aliases for complex grouped check types
+type ServerChecksMap = HashMap<Option<UserOrRole>, Vec<(usize, CatalogServerAction)>>;
+type ProjectChecksMap =
+    HashMap<ProjectId, HashMap<Option<UserOrRole>, Vec<(usize, CatalogProjectAction)>>>;
+type WarehouseChecksMap =
+    HashMap<(WarehouseId, Option<UserOrRole>), Vec<(usize, CatalogWarehouseAction)>>;
+type NamespaceChecksByIdMap = HashMap<
+    (WarehouseId, Option<UserOrRole>),
+    HashMap<NamespaceId, Vec<(usize, CatalogNamespaceAction)>>,
+>;
+type NamespaceChecksByIdentMap = HashMap<
+    (WarehouseId, Option<UserOrRole>),
+    HashMap<NamespaceIdent, Vec<(usize, CatalogNamespaceAction)>>,
+>;
+type TabularActionPair = (Option<CatalogTableAction>, Option<CatalogViewAction>);
+type TabularChecksByIdMap =
+    HashMap<(WarehouseId, Option<UserOrRole>), HashMap<TabularId, Vec<(usize, TabularActionPair)>>>;
+type TabularChecksByIdentMap = HashMap<
+    (WarehouseId, Option<UserOrRole>),
+    HashMap<TabularIdentOwned, Vec<(usize, TabularActionPair)>>,
+>;
+type AuthzTaskJoinSet = tokio::task::JoinSet<Result<(Vec<usize>, MustUse<Vec<bool>>), ErrorModel>>;
 
-    let mut server_checks: HashMap<Option<UserOrRole>, Vec<_>> = HashMap::new();
-    let mut project_checks: HashMap<ProjectId, HashMap<Option<UserOrRole>, Vec<_>>> =
-        HashMap::new();
-    let mut warehouse_checks: HashMap<(WarehouseId, Option<UserOrRole>), Vec<_>> = HashMap::new();
-    let mut namespace_checks_by_id: HashMap<
-        (WarehouseId, Option<UserOrRole>),
-        HashMap<NamespaceId, Vec<_>>,
-    > = HashMap::new();
-    let mut namespace_checks_by_ident: HashMap<
-        (WarehouseId, Option<UserOrRole>),
-        HashMap<NamespaceIdent, Vec<_>>,
-    > = HashMap::new();
-    let mut tabular_checks_by_id: HashMap<
-        (WarehouseId, Option<UserOrRole>),
-        HashMap<TabularId, Vec<_>>,
-    > = HashMap::new();
-    let mut tabular_checks_by_ident: HashMap<
-        (WarehouseId, Option<UserOrRole>),
-        HashMap<TabularIdentOwned, Vec<_>>,
-    > = HashMap::new();
-    let mut seen_warehouse_ids = HashSet::new();
+/// Grouped checks by resource type
+struct GroupedChecks {
+    server_checks: ServerChecksMap,
+    project_checks: ProjectChecksMap,
+    warehouse_checks: WarehouseChecksMap,
+    namespace_checks_by_id: NamespaceChecksByIdMap,
+    namespace_checks_by_ident: NamespaceChecksByIdentMap,
+    tabular_checks_by_id: TabularChecksByIdMap,
+    tabular_checks_by_ident: TabularChecksByIdentMap,
+    seen_warehouse_ids: HashSet<WarehouseId>,
+}
+
+impl GroupedChecks {
+    fn new() -> Self {
+        Self {
+            server_checks: HashMap::new(),
+            project_checks: HashMap::new(),
+            warehouse_checks: HashMap::new(),
+            namespace_checks_by_id: HashMap::new(),
+            namespace_checks_by_ident: HashMap::new(),
+            tabular_checks_by_id: HashMap::new(),
+            tabular_checks_by_ident: HashMap::new(),
+            seen_warehouse_ids: HashSet::new(),
+        }
+    }
+}
+
+/// Group checks by resource type and prepare result slots
+#[allow(clippy::too_many_lines)]
+fn group_checks(
+    checks: Vec<CatalogActionCheckItem>,
+    metadata: &RequestMetadata,
+) -> Result<(GroupedChecks, Vec<CatalogActionsBatchCheckResult>), ErrorModel> {
+    let mut grouped = GroupedChecks::new();
     let mut results = Vec::with_capacity(checks.len());
 
     for (i, check) in checks.into_iter().enumerate() {
@@ -204,13 +245,19 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
             allowed: false,
         });
         let for_user = check.identity;
+
         match check.operation {
             CatalogActionCheckOperation::Server { action } => {
-                server_checks.entry(for_user).or_default().push((i, action));
+                grouped
+                    .server_checks
+                    .entry(for_user)
+                    .or_default()
+                    .push((i, action));
             }
             CatalogActionCheckOperation::Project { action, project_id } => {
                 let project_id = metadata.require_project_id(project_id)?;
-                project_checks
+                grouped
+                    .project_checks
                     .entry(project_id)
                     .or_default()
                     .entry(for_user)
@@ -221,20 +268,23 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
                 action,
                 warehouse_id,
             } => {
-                seen_warehouse_ids.insert(warehouse_id);
-                let key = (warehouse_id, for_user);
-                warehouse_checks.entry(key).or_default().push((i, action));
+                grouped.seen_warehouse_ids.insert(warehouse_id);
+                grouped
+                    .warehouse_checks
+                    .entry((warehouse_id, for_user))
+                    .or_default()
+                    .push((i, action));
             }
             CatalogActionCheckOperation::Namespace { action, namespace } => {
-                seen_warehouse_ids.insert(namespace.warehouse_id());
+                grouped.seen_warehouse_ids.insert(namespace.warehouse_id());
                 match namespace {
                     NamespaceIdentOrUuid::Id {
                         namespace_id,
                         warehouse_id,
                     } => {
-                        let key = (warehouse_id, for_user);
-                        namespace_checks_by_id
-                            .entry(key)
+                        grouped
+                            .namespace_checks_by_id
+                            .entry((warehouse_id, for_user))
                             .or_default()
                             .entry(namespace_id)
                             .or_default()
@@ -244,9 +294,9 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
                         namespace,
                         warehouse_id,
                     } => {
-                        let key = (warehouse_id, for_user);
-                        namespace_checks_by_ident
-                            .entry(key)
+                        grouped
+                            .namespace_checks_by_ident
+                            .entry((warehouse_id, for_user))
                             .or_default()
                             .entry(namespace)
                             .or_default()
@@ -255,14 +305,15 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
                 }
             }
             CatalogActionCheckOperation::Table { action, table } => {
-                seen_warehouse_ids.insert(table.warehouse_id());
+                grouped.seen_warehouse_ids.insert(table.warehouse_id());
                 match table {
                     TabularIdentOrUuid::IdInWarehouse {
                         warehouse_id,
                         table_id,
                     } => {
                         let tabular_id = TabularId::Table(table_id.into());
-                        tabular_checks_by_id
+                        grouped
+                            .tabular_checks_by_id
                             .entry((warehouse_id, for_user))
                             .or_default()
                             .entry(tabular_id)
@@ -276,7 +327,8 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
                     } => {
                         let tabular_ident =
                             TabularIdentOwned::Table(TableIdent::new(namespace, table_name));
-                        tabular_checks_by_ident
+                        grouped
+                            .tabular_checks_by_ident
                             .entry((warehouse_id, for_user))
                             .or_default()
                             .entry(tabular_ident)
@@ -286,14 +338,15 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
                 }
             }
             CatalogActionCheckOperation::View { action, view } => {
-                seen_warehouse_ids.insert(view.warehouse_id());
+                grouped.seen_warehouse_ids.insert(view.warehouse_id());
                 match view {
                     TabularIdentOrUuid::IdInWarehouse {
                         warehouse_id,
                         table_id,
                     } => {
                         let tabular_id = TabularId::View(table_id.into());
-                        tabular_checks_by_id
+                        grouped
+                            .tabular_checks_by_id
                             .entry((warehouse_id, for_user))
                             .or_default()
                             .entry(tabular_id)
@@ -307,7 +360,8 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
                     } => {
                         let tabular_ident =
                             TabularIdentOwned::View(TableIdent::new(namespace, view_name));
-                        tabular_checks_by_ident
+                        grouped
+                            .tabular_checks_by_ident
                             .entry((warehouse_id, for_user))
                             .or_default()
                             .entry(tabular_ident)
@@ -319,245 +373,371 @@ async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
         }
     }
 
-    // Load required entities
-    // 1. Tablulars (which gives us min required warehouse version)
-    let fetch_tabular_by_ident_tasks = if !tabular_checks_by_ident.is_empty() {
-        let mut tasks = tokio::task::JoinSet::new();
-        for ((warehouse_id, _for_user), tables_map) in &tabular_checks_by_ident {
+    Ok((grouped, results))
+}
+
+/// Fetch tabular infos and extract minimum required versions
+/// Fetches by ident and by ID IN PARALLEL
+#[allow(clippy::too_many_lines)]
+async fn fetch_tabulars<C: CatalogStore>(
+    tabular_checks_by_id: &TabularChecksByIdMap,
+    tabular_checks_by_ident: &TabularChecksByIdentMap,
+    catalog_state: C::State,
+) -> Result<
+    (
+        HashMap<(WarehouseId, TabularIdentOwned), ViewOrTableInfo>,
+        HashMap<(WarehouseId, TabularId), ViewOrTableInfo>,
+        HashMap<(WarehouseId, NamespaceId), NamespaceVersion>,
+        HashMap<WarehouseId, WarehouseVersion>,
+    ),
+    ErrorModel,
+> {
+    // Early return if nothing to fetch
+    if tabular_checks_by_id.is_empty() && tabular_checks_by_ident.is_empty() {
+        return Ok((
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        ));
+    }
+
+    let mut min_namespace_versions = HashMap::new();
+    let mut min_warehouse_versions = HashMap::new();
+
+    // Spawn BOTH fetch operations in parallel
+    let mut tasks = tokio::task::JoinSet::new();
+
+    // Spawn by-ident fetches
+    let ident_task_count = if tabular_checks_by_ident.is_empty() {
+        0
+    } else {
+        let mut count = 0;
+        for ((warehouse_id, _for_user), tables_map) in tabular_checks_by_ident {
             let catalog_state = catalog_state.clone();
             let tabulars = tables_map.keys().cloned().collect_vec();
-            let warehouse_id = warehouse_id.clone();
+            let warehouse_id = *warehouse_id;
             tasks.spawn(async move {
                 let tabulars = tabulars
                     .iter()
                     .map(TabularIdentOwned::as_borrowed)
                     .collect_vec();
-                C::get_tabular_infos_by_ident(
-                    warehouse_id,
-                    &tabulars,
-                    TabularListFlags::all(),
-                    catalog_state,
-                )
-                .await
-            });
-        }
-        Some(tasks)
-    } else {
-        None
-    };
-
-    let fetch_tabular_by_id_tasks = if !tabular_checks_by_id.is_empty() {
-        let mut tasks = tokio::task::JoinSet::new();
-        for ((warehouse_id, _for_user), tables_map) in &tabular_checks_by_id {
-            let catalog_state = catalog_state.clone();
-            let tabular_ids = tables_map.keys().cloned().collect_vec();
-            let warehouse_id = warehouse_id.clone();
-            tasks.spawn(async move {
-                C::get_tabular_infos_by_id(
-                    warehouse_id,
-                    &tabular_ids,
-                    TabularListFlags::all(),
-                    catalog_state,
-                )
-                .await
-            });
-        }
-        Some(tasks)
-    } else {
-        None
-    };
-
-    // Collect tabular results
-    let mut min_namespace_versions = HashMap::new();
-    let mut min_warehouse_versions = HashMap::new();
-    let tabular_infos_by_ident = match fetch_tabular_by_ident_tasks {
-        Some(mut tasks) => {
-            let mut output = Vec::with_capacity(tasks.len());
-
-            while let Some(res) = tasks.join_next().await {
-                match res {
-                    Ok(t) => output.push(t.map_err(RequireTableActionError::from)?),
-                    Err(err) => {
-                        return Err(ErrorModel::internal(
-                            "Failed to fetch tabular infos",
-                            "FailedToJoinFetchTabularInfosTask",
-                            Some(Box::new(err)),
-                        ));
-                    }
-                }
-            }
-            output
-        }
-        None => Vec::new(),
-    }
-    .into_iter()
-    .flatten()
-    .map(|ti| {
-        min_namespace_versions
-            .entry((ti.warehouse_id(), ti.namespace_id()))
-            .and_modify(|v| {
-                if ti.namespace_version() < *v {
-                    *v = ti.namespace_version();
-                }
-            })
-            .or_insert(ti.namespace_version());
-        min_warehouse_versions
-            .entry(ti.warehouse_id())
-            .and_modify(|v| {
-                if ti.warehouse_version() < *v {
-                    *v = ti.warehouse_version();
-                }
-            })
-            .or_insert(ti.warehouse_version());
-        ((ti.warehouse_id(), ti.tabular_ident().clone()), ti)
-    })
-    .collect::<HashMap<_, _>>();
-
-    let tabular_infos_by_id = match fetch_tabular_by_id_tasks {
-        Some(mut tasks) => {
-            let mut output = Vec::with_capacity(tasks.len());
-
-            while let Some(res) = tasks.join_next().await {
-                match res {
-                    Ok(t) => output.push(t.map_err(RequireTableActionError::from)?),
-                    Err(err) => {
-                        return Err(ErrorModel::internal(
-                            "Failed to fetch tabular infos",
-                            "FailedToJoinFetchTabularInfosTask",
-                            Some(Box::new(err)),
-                        ));
-                    }
-                }
-            }
-            output
-        }
-        None => Vec::new(),
-    }
-    .into_iter()
-    .flatten()
-    .map(|ti| {
-        min_namespace_versions
-            .entry((ti.warehouse_id(), ti.namespace_id()))
-            .and_modify(|v| {
-                if ti.namespace_version() < *v {
-                    *v = ti.namespace_version();
-                }
-            })
-            .or_insert(ti.namespace_version());
-        min_warehouse_versions
-            .entry(ti.warehouse_id())
-            .and_modify(|v| {
-                if ti.warehouse_version() < *v {
-                    *v = ti.warehouse_version();
-                }
-            })
-            .or_insert(ti.warehouse_version());
-
-        ((ti.warehouse_id(), ti.tabular_id().clone()), ti)
-    })
-    .collect::<HashMap<_, _>>();
-
-    // 2. Warehouses & Namespaces
-    let fetch_warehouses_tasks = if !seen_warehouse_ids.is_empty() {
-        let mut tasks = tokio::task::JoinSet::new();
-        for warehouse_id in seen_warehouse_ids {
-            let catalog_state = catalog_state.clone();
-            let min_warehouse_version = min_warehouse_versions.get(&warehouse_id).copied();
-            tasks.spawn(async move {
                 (
-                    warehouse_id,
-                    C::get_warehouse_by_id_cache_aware(
+                    true,
+                    C::get_tabular_infos_by_ident(
                         warehouse_id,
-                        WarehouseStatus::active_and_inactive(),
-                        min_warehouse_version
-                            .map(|v| CachePolicy::RequireMinimumVersion(*v))
-                            .unwrap_or(CachePolicy::Use),
+                        &tabulars,
+                        TabularListFlags::all(),
                         catalog_state,
                     )
                     .await,
                 )
             });
+            count += 1;
         }
-        Some(tasks)
-    } else {
-        None
+        count
     };
 
-    let min_namespace_versions = Arc::new(min_namespace_versions);
-    let fetch_namespace_tasks_by_ident = if namespace_checks_by_ident.is_empty() {
-        None
+    // Spawn by-ID fetches
+    let id_task_count = if tabular_checks_by_id.is_empty() {
+        0
     } else {
+        let mut count = 0;
+        for ((warehouse_id, _for_user), tables_map) in tabular_checks_by_id {
+            let catalog_state = catalog_state.clone();
+            let tabular_ids = tables_map.keys().copied().collect_vec();
+            let warehouse_id = *warehouse_id;
+            tasks.spawn(async move {
+                (
+                    false,
+                    C::get_tabular_infos_by_id(
+                        warehouse_id,
+                        &tabular_ids,
+                        TabularListFlags::all(),
+                        catalog_state,
+                    )
+                    .await,
+                )
+            });
+            count += 1;
+        }
+        count
+    };
+
+    // Collect results from both sets of tasks
+    let mut ident_results = Vec::with_capacity(ident_task_count);
+    let mut id_results = Vec::with_capacity(id_task_count);
+
+    while let Some(res) = tasks.join_next().await {
+        match res {
+            Ok((is_ident, t)) => {
+                let result = t.map_err(RequireTableActionError::from)?;
+                if is_ident {
+                    ident_results.push(result);
+                } else {
+                    id_results.push(result);
+                }
+            }
+            Err(err) => {
+                return Err(ErrorModel::internal(
+                    "Failed to fetch tabular infos",
+                    "FailedToJoinFetchTabularInfosTask",
+                    Some(Box::new(err)),
+                ));
+            }
+        }
+    }
+
+    // Process by-ident results
+    let tabular_infos_by_ident = ident_results
+        .into_iter()
+        .flatten()
+        .map(|ti| {
+            min_namespace_versions
+                .entry((ti.warehouse_id(), ti.namespace_id()))
+                .and_modify(|v| {
+                    if ti.namespace_version() < *v {
+                        *v = ti.namespace_version();
+                    }
+                })
+                .or_insert(ti.namespace_version());
+            min_warehouse_versions
+                .entry(ti.warehouse_id())
+                .and_modify(|v| {
+                    if ti.warehouse_version() < *v {
+                        *v = ti.warehouse_version();
+                    }
+                })
+                .or_insert(ti.warehouse_version());
+            let tabular_ident = match &ti {
+                ViewOrTableInfo::Table(info) => {
+                    TabularIdentOwned::Table(info.tabular_ident().clone())
+                }
+                ViewOrTableInfo::View(info) => {
+                    TabularIdentOwned::View(info.tabular_ident().clone())
+                }
+            };
+            ((ti.warehouse_id(), tabular_ident), ti)
+        })
+        .collect::<HashMap<_, _>>();
+
+    // Process by-ID results
+    let tabular_infos_by_id = id_results
+        .into_iter()
+        .flatten()
+        .map(|ti| {
+            min_namespace_versions
+                .entry((ti.warehouse_id(), ti.namespace_id()))
+                .and_modify(|v| {
+                    if ti.namespace_version() < *v {
+                        *v = ti.namespace_version();
+                    }
+                })
+                .or_insert(ti.namespace_version());
+            min_warehouse_versions
+                .entry(ti.warehouse_id())
+                .and_modify(|v| {
+                    if ti.warehouse_version() < *v {
+                        *v = ti.warehouse_version();
+                    }
+                })
+                .or_insert(ti.warehouse_version());
+            ((ti.warehouse_id(), ti.tabular_id()), ti)
+        })
+        .collect::<HashMap<_, _>>();
+
+    Ok((
+        tabular_infos_by_ident,
+        tabular_infos_by_id,
+        min_namespace_versions,
+        min_warehouse_versions,
+    ))
+}
+
+/// Fetch warehouses with minimum version requirements
+async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
+    seen_warehouse_ids: &HashSet<WarehouseId>,
+    min_warehouse_versions: &HashMap<WarehouseId, WarehouseVersion>,
+    catalog_state: C::State,
+    authorizer: &A,
+    error_on_not_found: bool,
+) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, ErrorModel> {
+    if seen_warehouse_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for warehouse_id in seen_warehouse_ids {
+        let catalog_state = catalog_state.clone();
+        let min_warehouse_version = min_warehouse_versions.get(warehouse_id).copied();
+        let warehouse_id = *warehouse_id;
+        tasks.spawn(async move {
+            (
+                warehouse_id,
+                C::get_warehouse_by_id_cache_aware(
+                    warehouse_id,
+                    WarehouseStatus::active_and_inactive(),
+                    min_warehouse_version
+                        .map_or(CachePolicy::Use, |v| CachePolicy::RequireMinimumVersion(*v)),
+                    catalog_state,
+                )
+                .await,
+            )
+        });
+    }
+
+    let mut warehouses = HashMap::new();
+    while let Some(res) = tasks.join_next().await {
+        let (warehouse_id, warehouse) = res.map_err(|e| {
+            ErrorModel::internal(
+                "Failed to join fetch warehouse task",
+                "FailedToJoinFetchWarehouseTask",
+                Some(Box::new(e)),
+            )
+        })?;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse);
+        match warehouse {
+            Ok(warehouse) => {
+                warehouses.insert(warehouse.warehouse_id, warehouse);
+            }
+            Err(e) if matches!(e, RequireWarehouseActionError::AuthZCannotUseWarehouseId(_)) => {
+                if error_on_not_found {
+                    return Err(e.into());
+                }
+                tracing::debug!(
+                    "Warehouse {warehouse_id} not authorized or not found during fetch, excluding from all permission checks"
+                );
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    }
+
+    Ok(warehouses)
+}
+
+/// Convert optional table/view actions into `ActionOnTableOrView`
+fn convert_tabular_action(
+    tabular_info: &ViewOrTableInfo,
+    table_action: Option<CatalogTableAction>,
+    view_action: Option<CatalogViewAction>,
+) -> Option<ActionOnTableOrView<'_, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>> {
+    match tabular_info {
+        ViewOrTableInfo::Table(table_info) => {
+            table_action.map(|action| ActionOnTableOrView::Table((table_info, action)))
+        }
+        ViewOrTableInfo::View(view_info) => {
+            view_action.map(|action| ActionOnTableOrView::View((view_info, action)))
+        }
+    }
+}
+
+/// Refetch namespaces that don't meet minimum version requirements
+async fn refetch_outdated_namespaces<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+    min_namespace_versions: &Arc<HashMap<(WarehouseId, NamespaceId), NamespaceVersion>>,
+    catalog_state: C::State,
+) -> Vec<crate::service::NamespaceHierarchy> {
+    let mut re_fetched_namespaces = Vec::new();
+    for (namespace_id, namespace) in namespaces {
+        if let Some(min_version) = min_namespace_versions.get(&(warehouse_id, *namespace_id))
+            && namespace.version() < *min_version
+        {
+            match C::get_namespace_cache_aware(
+                warehouse_id,
+                *namespace_id,
+                CachePolicy::RequireMinimumVersion(**min_version),
+                catalog_state.clone(),
+            )
+            .await
+            {
+                Ok(Some(updated_ns)) => {
+                    re_fetched_namespaces.push(updated_ns);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "Namespace {namespace_id} in warehouse {warehouse_id} not found when refetching with min version {min_version}"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to refetch namespace {namespace_id} with min version {min_version}: {e}"
+                    );
+                }
+            }
+        }
+    }
+    re_fetched_namespaces
+}
+
+/// Fetch namespaces by ID and ident with minimum version requirements
+#[allow(clippy::too_many_lines)]
+async fn fetch_namespaces<C: CatalogStore>(
+    namespace_checks_by_id: &NamespaceChecksByIdMap,
+    namespace_checks_by_ident: &NamespaceChecksByIdentMap,
+    min_namespace_versions: &HashMap<(WarehouseId, NamespaceId), NamespaceVersion>,
+    catalog_state: C::State,
+) -> Result<
+    (
+        HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
+        HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
+    ),
+    ErrorModel,
+> {
+    let min_namespace_versions = Arc::new(min_namespace_versions.clone());
+
+    // Spawn by-ident fetches
+    let mut tasks = tokio::task::JoinSet::new();
+
+    if !namespace_checks_by_ident.is_empty() {
         let by_ident_grouped: HashMap<WarehouseId, Vec<NamespaceIdent>> = namespace_checks_by_ident
             .iter()
-            .map(|((wh_id, _), v)| v.keys().map(|ns_id| (*wh_id, ns_id.clone())))
-            .flatten()
+            .flat_map(|((wh_id, _), v)| v.keys().map(|ns_id| (*wh_id, ns_id.clone())))
             .into_group_map();
-
-        let mut tasks = tokio::task::JoinSet::new();
 
         for (warehouse_id, namespace_idents) in by_ident_grouped {
             let catalog_state = catalog_state.clone();
             let min_namespace_versions = min_namespace_versions.clone();
             tasks.spawn(async move {
                 let namespace_idents_refs = namespace_idents.iter().collect_vec();
-                let mut namespaces = C::get_namespaces_by_ident(warehouse_id, &namespace_idents_refs, catalog_state.clone())
-                    .await?;
-                
+                let mut namespaces = C::get_namespaces_by_ident(
+                    warehouse_id,
+                    &namespace_idents_refs,
+                    catalog_state.clone(),
+                )
+                .await?;
+
                 // Refetch namespaces that don't meet minimum version requirements
-                let mut re_fetched_namespaces = Vec::new();
-                for (namespace_id, namespace) in &namespaces {
-                    if let Some(min_version) = min_namespace_versions.get(&(warehouse_id, *namespace_id)) {
-                        if namespace.version() < *min_version {
-                            // Refetch with required minimum version
-                            match C::get_namespace_cache_aware(
-                                warehouse_id,
-                                *namespace_id,
-                                CachePolicy::RequireMinimumVersion(**min_version),
-                                catalog_state.clone(),
-                            )
-                            .await
-                            {
-                                Ok(Some(updated_ns)) => {
-                                    re_fetched_namespaces.push(updated_ns);
-                                }
-                                Ok(None) => {
-                                    tracing::warn!(
-                                        "Namespace {namespace_id} in warehouse {warehouse_id} not found when refetching with min version {min_version}"
-                                    );
-                                    // Continue with existing namespace
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to refetch namespace {namespace_id} with min version {min_version}: {e}"
-                                    );
-                                    // Continue with existing namespace
-                                }
-                            }
-                        }
-                    }
-                }
+                let re_fetched_namespaces = refetch_outdated_namespaces::<C>(
+                    warehouse_id,
+                    &namespaces,
+                    &min_namespace_versions,
+                    catalog_state.clone(),
+                )
+                .await;
 
                 for ns_hierarchy in re_fetched_namespaces {
-                    namespaces.insert(ns_hierarchy.namespace.namespace_id(), ns_hierarchy.namespace);
+                    namespaces.insert(
+                        ns_hierarchy.namespace.namespace_id(),
+                        ns_hierarchy.namespace,
+                    );
                     for ns in ns_hierarchy.parents {
                         namespaces.insert(ns.namespace_id(), ns);
                     }
                 }
-                
-                Ok::<_, ErrorModel>(namespaces)
+
+                Ok::<_, ErrorModel>((true, namespaces))
             });
         }
-        Some(tasks)
-    };
+    }
 
-let fetch_namespace_tasks_by_id =
-    if namespace_checks_by_id.is_empty() && min_namespace_versions.is_empty() {
-        None
-    } else {
+    // Spawn by-ID fetches
+    if !namespace_checks_by_id.is_empty() || !min_namespace_versions.is_empty() {
         let by_id_grouped: HashMap<WarehouseId, Vec<NamespaceId>> = namespace_checks_by_id
             .iter()
-            .map(|((wh_id, _), v)| v.keys().map(|ns_id| (*wh_id, *ns_id)))
-            .flatten()
+            .flat_map(|((wh_id, _), v)| v.keys().map(|ns_id| (*wh_id, *ns_id)))
             .chain(
                 min_namespace_versions
                     .keys()
@@ -565,171 +745,78 @@ let fetch_namespace_tasks_by_id =
             )
             .into_group_map();
 
-        let mut tasks = tokio::task::JoinSet::new();
-
         for (warehouse_id, namespace_ids) in by_id_grouped {
             let catalog_state = catalog_state.clone();
             let min_namespace_versions = min_namespace_versions.clone();
             tasks.spawn(async move {
-                let mut namespaces = C::get_namespaces_by_id(warehouse_id, &namespace_ids, catalog_state.clone())
-                    .await?;
-                
+                let mut namespaces =
+                    C::get_namespaces_by_id(warehouse_id, &namespace_ids, catalog_state.clone())
+                        .await?;
+
                 // Refetch namespaces that don't meet minimum version requirements
-                let mut re_fetched_namespaces = Vec::new();
-                for (namespace_id, namespace) in &namespaces {
-                    if let Some(min_version) = min_namespace_versions.get(&(warehouse_id, *namespace_id)) {
-                        if namespace.version() < *min_version {
-                            // Refetch with required minimum version
-                            match C::get_namespace_cache_aware(
-                                warehouse_id,
-                                *namespace_id,
-                                CachePolicy::RequireMinimumVersion(**min_version),
-                                catalog_state.clone(),
-                            )
-                            .await
-                            {
-                                Ok(Some(updated_ns)) => {
-                                    re_fetched_namespaces.push(updated_ns);
-                                }
-                                Ok(None) => {
-                                    tracing::warn!(
-                                        "Namespace {namespace_id} in warehouse {warehouse_id} not found when refetching with min version {min_version}"
-                                    );
-                                    // Continue with existing namespace
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to refetch namespace {namespace_id} with min version {min_version}: {e}"
-                                    );
-                                    // Continue with existing namespace
-                                }
-                            }
-                        }
-                    }
-                }
+                let re_fetched_namespaces = refetch_outdated_namespaces::<C>(
+                    warehouse_id,
+                    &namespaces,
+                    &min_namespace_versions,
+                    catalog_state.clone(),
+                )
+                .await;
 
                 for ns_hierarchy in re_fetched_namespaces {
-                    namespaces.insert(ns_hierarchy.namespace.namespace_id(), ns_hierarchy.namespace);
+                    namespaces.insert(
+                        ns_hierarchy.namespace.namespace_id(),
+                        ns_hierarchy.namespace,
+                    );
                     for ns in ns_hierarchy.parents {
                         namespaces.insert(ns.namespace_id(), ns);
                     }
                 }
-                
-                Ok::<_, ErrorModel>(namespaces)
+
+                Ok::<_, ErrorModel>((false, namespaces))
             });
         }
-        Some(tasks)
-    };
+    }
 
-    // Collect Warehouse results
-    let warehouses = match fetch_warehouses_tasks {
-        Some(mut tasks) => {
-            let mut warehouses = HashMap::new();
+    // Collect results
+    let mut namespaces_by_id: HashMap<WarehouseId, HashMap<NamespaceId, _>> = HashMap::new();
+    let mut namespace_ident_lookup = HashMap::new();
 
-            while let Some(res) = tasks.join_next().await {
-                let (warehouse_id, warehouse) = res.map_err(|e| {
-                    ErrorModel::internal(
-                        "Failed to join fetch warehouse task",
-                        "FailedToJoinFetchWarehouseTask",
-                        Some(Box::new(e)),
-                    )
-                })?;
-                let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse);
-                match warehouse {
-                    Ok(warehouse) => {
-                        warehouses.insert(warehouse.warehouse_id, warehouse);
-                    }
-                    Err(e)
-                        if matches!(
-                            e,
-                            RequireWarehouseActionError::AuthZCannotUseWarehouseId(_)
-                        ) =>
-                    {
-                        if error_on_not_found {
-                            return Err(e.into());
-                        } else {
-                            tracing::info!(
-                                "Warehouse {warehouse_id} not found, treating as denied",
-                            );
-                            continue;
-                        }
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                }
+    while let Some(res) = tasks.join_next().await {
+        let (is_by_ident, namespace_list) = res.map_err(|e| {
+            ErrorModel::internal(
+                "Failed to join fetch namespace task",
+                "FailedToJoinFetchNamespaceTask",
+                Some(Box::new(e)),
+            )
+        })??;
+
+        for (_, namespace) in namespace_list {
+            if is_by_ident {
+                namespace_ident_lookup.insert(
+                    (
+                        namespace.warehouse_id(),
+                        namespace_ident_to_cache_key(namespace.namespace_ident()),
+                    ),
+                    namespace.namespace_id(),
+                );
             }
-            warehouses
+            namespaces_by_id
+                .entry(namespace.warehouse_id())
+                .or_default()
+                .insert(namespace.namespace_id(), namespace);
         }
-        None => HashMap::new(),
-    };
+    }
 
-    // Collect Namespace results
-    // First by id
-    let mut namespaces_by_id = match fetch_namespace_tasks_by_id {
-        Some(mut tasks) => {
-            let mut namespaces: HashMap<WarehouseId, HashMap<NamespaceId, _>> = HashMap::new();
+    Ok((namespaces_by_id, namespace_ident_lookup))
+}
 
-            while let Some(res) = tasks.join_next().await {
-                let namespace_list = res.map_err(|e| {
-                    ErrorModel::internal(
-                        "Failed to join fetch namespace task",
-                        "FailedToJoinFetchNamespaceTask",
-                        Some(Box::new(e)),
-                    )
-                })??;
-
-                for (_, namespace) in namespace_list {
-                    namespaces
-                        .entry(namespace.warehouse_id())
-                        .or_default()
-                        .insert(namespace.namespace_id(), namespace);
-                }
-            }
-            namespaces
-        }
-        None => HashMap::new(),
-    };
-    // Then by ident
-    let namespace_ident_lookup = match fetch_namespace_tasks_by_ident {
-        Some(mut tasks) => {
-            let mut namespce_ident_lookup = HashMap::new();
-            while let Some(res) = tasks.join_next().await {
-                let namespace_list = res.map_err(|e| {
-                    ErrorModel::internal(
-                        "Failed to join fetch namespace task",
-                        "FailedToJoinFetchNamespaceTask",
-                        Some(Box::new(e)),
-                    )
-                })??;
-
-                for (_, namespace) in namespace_list {
-                    namespce_ident_lookup.insert(
-                        (
-                            namespace.warehouse_id(),
-                            namespace_ident_to_cache_key(namespace.namespace_ident()),
-                        ),
-                        namespace.namespace_id(),
-                    );
-                    namespaces_by_id
-                        .entry(namespace.warehouse_id())
-                        .or_default()
-                        .insert(namespace.namespace_id(), namespace);
-                }
-            }
-            namespce_ident_lookup
-        }
-        None => HashMap::new(),
-    };
-
-    // AuthZ checks
-    let namespaces_by_id = Arc::new(namespaces_by_id);
-    let namespace_ident_lookup = Arc::new(namespace_ident_lookup);
-    let tabular_infos_by_id = Arc::new(tabular_infos_by_id);
-    let tabular_infos_by_ident = Arc::new(tabular_infos_by_ident);
-
-    let mut authz_tasks = tokio::task::JoinSet::new();
-
+/// Spawn server authorization check tasks
+fn spawn_server_checks<A: Authorizer>(
+    authz_tasks: &mut AuthzTaskJoinSet,
+    server_checks: ServerChecksMap,
+    authorizer: &A,
+    metadata: &RequestMetadata,
+) {
     for (for_user, actions) in server_checks {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
@@ -741,7 +828,15 @@ let fetch_namespace_tasks_by_id =
             Ok::<_, ErrorModel>((original_indices, allowed))
         });
     }
+}
 
+/// Spawn project authorization check tasks
+fn spawn_project_checks<A: Authorizer>(
+    authz_tasks: &mut AuthzTaskJoinSet,
+    project_checks: ProjectChecksMap,
+    authorizer: &A,
+    metadata: &RequestMetadata,
+) {
     for (project_id, user_map) in project_checks {
         for (for_user, actions) in user_map {
             let authorizer = authorizer.clone();
@@ -763,7 +858,16 @@ let fetch_namespace_tasks_by_id =
             });
         }
     }
+}
 
+/// Spawn warehouse authorization check tasks
+fn spawn_warehouse_checks<A: Authorizer>(
+    authz_tasks: &mut AuthzTaskJoinSet,
+    warehouse_checks: WarehouseChecksMap,
+    warehouses: &HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    authorizer: &A,
+    metadata: &RequestMetadata,
+) {
     for ((warehouse_id, for_user), actions) in warehouse_checks {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
@@ -783,23 +887,35 @@ let fetch_namespace_tasks_by_id =
                     .await?;
                 Ok::<_, ErrorModel>((original_indices, allowed))
             });
-        };
+        }
     }
+}
 
+/// Spawn namespace authorization check tasks (by ID)
+fn spawn_namespace_checks_by_id<A: Authorizer>(
+    authz_tasks: &mut AuthzTaskJoinSet,
+    namespace_checks_by_id: NamespaceChecksByIdMap,
+    warehouses: &HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    namespaces_by_id: &HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
+    authorizer: &A,
+    metadata: &RequestMetadata,
+    error_on_not_found: bool,
+) -> Result<(), ErrorModel> {
     for ((warehouse_id, for_user), actions) in namespace_checks_by_id {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
 
-        let warehouse = match warehouses.get(&warehouse_id) {
-            Some(w) => w.clone(),
-            None => {
-                if error_on_not_found {
-                    return Err(WarehouseIdNotFound::new(warehouse_id).into());
-                } else {
-                    tracing::info!("Warehouse {warehouse_id} not found, treating as denied",);
-                    continue;
-                }
+        let warehouse = if let Some(w) = warehouses.get(&warehouse_id) {
+            w.clone()
+        } else {
+            if error_on_not_found {
+                return Err(WarehouseIdNotFound::new(warehouse_id).into());
             }
+            let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
+            tracing::debug!(
+                "Warehouse {warehouse_id} not found for namespace-by-id checks, denying {total_actions} action(s) for user {for_user:?}"
+            );
+            continue;
         };
 
         let mut checks = Vec::with_capacity(actions.len());
@@ -819,23 +935,20 @@ let fetch_namespace_tasks_by_id =
                 // Namespace not found
                 if error_on_not_found {
                     return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_id).into());
-                } else {
-                    tracing::info!(
-                        "Namespace {namespace_id} in warehouse {warehouse_id} not found, treating as denied",
-                    );
                 }
+                tracing::debug!(
+                    "Namespace {namespace_id} in warehouse {warehouse_id} not found, denying {count} action(s) for user {for_user:?}",
+                    count = actions.len()
+                );
             }
         }
 
         authz_tasks.spawn(async move {
             let (original_indices, namespace_with_actions): (Vec<_>, Vec<_>) = checks
                 .iter()
-                .map(|(ns_hierarchy, actions)| {
-                    actions
-                        .into_iter()
-                        .map(move |(i, a)| (i, (ns_hierarchy, *a)))
+                .flat_map(|(ns_hierarchy, actions)| {
+                    actions.iter().map(move |(i, a)| (i, (ns_hierarchy, *a)))
                 })
-                .flatten()
                 .unzip();
             let allowed = authorizer
                 .are_allowed_namespace_actions_vec(
@@ -848,68 +961,93 @@ let fetch_namespace_tasks_by_id =
             Ok::<_, ErrorModel>((original_indices, allowed))
         });
     }
+    Ok(())
+}
 
+/// Parameters for namespace check spawning by ident
+struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
+    authz_tasks: &'a mut AuthzTaskJoinSet,
+    namespace_checks_by_ident: NamespaceChecksByIdentMap,
+    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
+    namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
+    authorizer: &'a A,
+    metadata: &'a RequestMetadata,
+    error_on_not_found: bool,
+}
+
+/// Spawn namespace authorization check tasks (by ident)
+fn spawn_namespace_checks_by_ident<A: Authorizer>(
+    params: NamespaceCheckByIdentParams<'_, A>,
+) -> Result<(), ErrorModel> {
+    let NamespaceCheckByIdentParams {
+        authz_tasks,
+        namespace_checks_by_ident,
+        warehouses,
+        namespaces_by_id,
+        namespace_ident_lookup,
+        authorizer,
+        metadata,
+        error_on_not_found,
+    } = params;
     for ((warehouse_id, for_user), actions) in namespace_checks_by_ident {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
 
-        let warehouse = match warehouses.get(&warehouse_id) {
-            Some(w) => w.clone(),
-            None => {
-                if error_on_not_found {
-                    return Err(WarehouseIdNotFound::new(warehouse_id).into());
-                } else {
-                    tracing::info!("Warehouse {warehouse_id} not found, treating as denied",);
-                    continue;
-                }
+        let warehouse = if let Some(w) = warehouses.get(&warehouse_id) {
+            w.clone()
+        } else {
+            if error_on_not_found {
+                return Err(WarehouseIdNotFound::new(warehouse_id).into());
             }
+            let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
+            tracing::debug!(
+                "Warehouse {warehouse_id} not found for namespace-by-name checks, denying {total_actions} action(s) for user {for_user:?}"
+            );
+            continue;
         };
 
         let mut checks = Vec::with_capacity(actions.len());
         for (namespace_ident, actions) in actions {
             // Look up namespace ID from ident
             let cache_key = (warehouse_id, namespace_ident_to_cache_key(&namespace_ident));
-            if let Some(namespace_id) = namespace_ident_lookup.get(&cache_key) {
-                if let Some(namespace) = namespaces_by_id
-                    .get(&warehouse_id)
-                    .and_then(|m| m.get(namespace_id))
-                {
-                    let namespace_hierarchy = build_namespace_hierarchy(
-                        namespace,
-                        namespaces_by_id
-                            .get(&warehouse_id)
-                            .unwrap_or(&HashMap::new()),
-                    );
-                    checks.push((namespace_hierarchy, actions));
-                } else {
-                    // Namespace not found by ID (shouldn't happen if lookup succeeded)
-                    return Err(ErrorModel::internal(
-                        "Could not find namespace by ID after successful lookup by ident",
-                        "InconsistentNamespaceLookup",
-                        None,
-                    ));
-                }
-            } else {
+            let Some(namespace_id) = namespace_ident_lookup.get(&cache_key) else {
                 // Namespace not found by ident
                 if error_on_not_found {
                     return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_ident).into());
-                } else {
-                    tracing::info!(
-                        "Namespace {namespace_ident} in warehouse {warehouse_id} not found, treating as denied",
-                    );
                 }
-            }
+                tracing::debug!(
+                    "Namespace '{namespace_ident}' in warehouse {warehouse_id} not found by name, denying {count} action(s) for user {for_user:?}",
+                    count = actions.len()
+                );
+                continue;
+            };
+            let Some(namespace) = namespaces_by_id
+                .get(&warehouse_id)
+                .and_then(|m| m.get(namespace_id))
+            else {
+                // Namespace not found by ID (shouldn't happen if lookup succeeded)
+                return Err(ErrorModel::internal(
+                    "Could not find namespace by ID after successful lookup by ident",
+                    "InconsistentNamespaceLookup",
+                    None,
+                ));
+            };
+            let namespace_hierarchy = build_namespace_hierarchy(
+                namespace,
+                namespaces_by_id
+                    .get(&warehouse_id)
+                    .unwrap_or(&HashMap::new()),
+            );
+            checks.push((namespace_hierarchy, actions));
         }
 
         authz_tasks.spawn(async move {
             let (original_indices, namespace_with_actions): (Vec<_>, Vec<_>) = checks
                 .iter()
-                .map(|(ns_hierarchy, actions)| {
-                    actions
-                        .into_iter()
-                        .map(move |(i, a)| (i, (ns_hierarchy, *a)))
+                .flat_map(|(ns_hierarchy, actions)| {
+                    actions.iter().map(move |(i, a)| (i, (ns_hierarchy, *a)))
                 })
-                .flatten()
                 .unzip();
             let allowed = authorizer
                 .are_allowed_namespace_actions_vec(
@@ -922,32 +1060,65 @@ let fetch_namespace_tasks_by_id =
             Ok::<_, ErrorModel>((original_indices, allowed))
         });
     }
+    Ok(())
+}
 
+/// Parameters for tabular check spawning by ID
+struct TabularCheckByIdParams<'a, A: Authorizer> {
+    authz_tasks: &'a mut AuthzTaskJoinSet,
+    tabular_checks_by_id: TabularChecksByIdMap,
+    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    tabular_infos_by_id: &'a Arc<HashMap<(WarehouseId, TabularId), ViewOrTableInfo>>,
+    namespaces_by_id: &'a Arc<HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>>,
+    authorizer: &'a A,
+    metadata: &'a RequestMetadata,
+    error_on_not_found: bool,
+}
+
+/// Spawn tabular authorization check tasks (by ID)
+fn spawn_tabular_checks_by_id<A: Authorizer>(
+    params: TabularCheckByIdParams<'_, A>,
+) -> Result<(), ErrorModel> {
+    let TabularCheckByIdParams {
+        authz_tasks,
+        tabular_checks_by_id,
+        warehouses,
+        tabular_infos_by_id,
+        namespaces_by_id,
+        authorizer,
+        metadata,
+        error_on_not_found,
+    } = params;
     for ((warehouse_id, for_user), actions) in tabular_checks_by_id {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         let tabular_infos_by_id = tabular_infos_by_id.clone();
         let namespaces_by_id = namespaces_by_id.clone();
 
-        let warehouse = match warehouses.get(&warehouse_id) {
-            Some(w) => w.clone(),
-            None => {
-                if error_on_not_found {
-                    return Err(WarehouseIdNotFound::new(warehouse_id).into());
-                } else {
-                    tracing::info!("Warehouse {warehouse_id} not found, treating as denied");
-                    continue;
-                }
+        let warehouse = if let Some(w) = warehouses.get(&warehouse_id) {
+            w.clone()
+        } else {
+            if error_on_not_found {
+                return Err(WarehouseIdNotFound::new(warehouse_id).into());
             }
+            let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
+            tracing::debug!(
+                "Warehouse {warehouse_id} not found for tabular-by-id checks, denying {total_actions} action(s) for user {for_user:?}"
+            );
+            continue;
         };
 
         authz_tasks.spawn(async move {
             let mut checks = Vec::with_capacity(actions.len());
             for (tabular_id, actions_on_tabular) in &actions {
                 let Some(tabular_info) = tabular_infos_by_id.get(&(warehouse_id, *tabular_id)) else {
-                    // Tabular not found - skip these checks
-                    tracing::info!(
-                        "Tabular {tabular_id} in warehouse {warehouse_id} not found, skipping checks"
+                    // Tabular not found
+                    if error_on_not_found {
+                        return Err(TabularNotFound::new(warehouse_id, *tabular_id).into());
+                    }
+                    tracing::debug!(
+                        "Tabular {tabular_id} in warehouse {warehouse_id} not found, denying {count} action(s)",
+                        count = actions_on_tabular.len()
                     );
                     continue;
                 };
@@ -955,35 +1126,22 @@ let fetch_namespace_tasks_by_id =
                 let Some(namespace) = namespaces_by_id
                     .get(&warehouse_id)
                     .and_then(|m| m.get(&namespace_id)) else {
-                    // Namespace not found - skip these checks
-                    tracing::info!(
-                        "Namespace {namespace_id} in warehouse {warehouse_id} not found, skipping checks"
+                    // Namespace not found
+                    if error_on_not_found {
+                        return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_id).into());
+                    }
+                    tracing::debug!(
+                        "Namespace {namespace_id} in warehouse {warehouse_id} not found for tabular {tabular_id}, denying {count} action(s)",
+                        count = actions_on_tabular.len()
                     );
                     continue;
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    let action_on_tabular = match &tabular_info {
-                        ViewOrTableInfo::Table(table_info) => {
-                            if let Some(action) = table_action {
-                                Some(ActionOnTableOrView::Table((table_info, *action)))
-                            } else {
-                                None
-                            }
-                        }
-                        ViewOrTableInfo::View(view_info) => {
-                            if let Some(action) = view_action {
-                                Some(ActionOnTableOrView::View((view_info, *action)))
-                            } else {
-                                None
-                            }
-                        }
-                    };
-                    
-                    if let Some(action) = action_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, *table_action, *view_action) {
                         checks.push((i, namespace, action));
                     }
-                }           
+                }
             }
 
             let (original_indices, tabular_with_actions): (Vec<_>, Vec<_>) = checks
@@ -1006,33 +1164,65 @@ let fetch_namespace_tasks_by_id =
             Ok::<_, ErrorModel>((original_indices, allowed))
         });
     }
+    Ok(())
+}
 
+/// Parameters for tabular check spawning by ident
+struct TabularCheckByIdentParams<'a, A: Authorizer> {
+    authz_tasks: &'a mut AuthzTaskJoinSet,
+    tabular_checks_by_ident: TabularChecksByIdentMap,
+    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    tabular_infos_by_ident: &'a Arc<HashMap<(WarehouseId, TabularIdentOwned), ViewOrTableInfo>>,
+    namespaces_by_id: &'a Arc<HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>>,
+    authorizer: &'a A,
+    metadata: &'a RequestMetadata,
+    error_on_not_found: bool,
+}
+
+/// Spawn tabular authorization check tasks (by ident)
+fn spawn_tabular_checks_by_ident<A: Authorizer>(
+    params: TabularCheckByIdentParams<'_, A>,
+) -> Result<(), ErrorModel> {
+    let TabularCheckByIdentParams {
+        authz_tasks,
+        tabular_checks_by_ident,
+        warehouses,
+        tabular_infos_by_ident,
+        namespaces_by_id,
+        authorizer,
+        metadata,
+        error_on_not_found,
+    } = params;
     for ((warehouse_id, for_user), actions) in tabular_checks_by_ident {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         let tabular_infos_by_ident = tabular_infos_by_ident.clone();
         let namespaces_by_id = namespaces_by_id.clone();
 
-        let warehouse = match warehouses.get(&warehouse_id) {
-            Some(w) => w.clone(),
-            None => {
-                if error_on_not_found {
-                    return Err(WarehouseIdNotFound::new(warehouse_id).into());
-                } else {
-                    tracing::info!("Warehouse {warehouse_id} not found, treating as denied");
-                    continue;
-                }
+        let warehouse = if let Some(w) = warehouses.get(&warehouse_id) {
+            w.clone()
+        } else {
+            if error_on_not_found {
+                return Err(WarehouseIdNotFound::new(warehouse_id).into());
             }
+            let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
+            tracing::debug!(
+                "Warehouse {warehouse_id} not found for tabular-by-name checks, denying {total_actions} action(s) for user {for_user:?}"
+            );
+            continue;
         };
 
         authz_tasks.spawn(async move {
             let mut checks = Vec::with_capacity(actions.len());
             for (tabular_ident, actions_on_tabular) in &actions {
-                let Some(tabular_info) = tabular_infos_by_ident.get(&(warehouse_id, tabular_ident.as_table_ident().clone())) else {
-                    // Tabular not found - skip these checks
-                    tracing::info!(
-                        "Tabular {:?} in warehouse {warehouse_id} not found, skipping checks",
-                        tabular_ident
+                let Some(tabular_info) = tabular_infos_by_ident.get(&(warehouse_id, tabular_ident.clone())) else {
+                    // Tabular not found
+                    if error_on_not_found {
+                        return Err(TabularNotFound::new(warehouse_id, tabular_ident.clone()).into());
+                    }
+                    tracing::debug!(
+                        "Tabular '{tabular_ident:?}' in warehouse {warehouse_id} not found by name, denying {count} action(s)",
+                        count = actions_on_tabular.len()
                     );
                     continue;
                 };
@@ -1040,35 +1230,22 @@ let fetch_namespace_tasks_by_id =
                 let Some(namespace) = namespaces_by_id
                     .get(&warehouse_id)
                     .and_then(|m| m.get(&namespace_id)) else {
-                    // Namespace not found - skip these checks
-                    tracing::info!(
-                        "Namespace {namespace_id} in warehouse {warehouse_id} not found, skipping checks"
+                    // Namespace not found
+                    if error_on_not_found {
+                        return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_id).into());
+                    }
+                    tracing::debug!(
+                        "Namespace {namespace_id} in warehouse {warehouse_id} not found for tabular '{tabular_ident:?}', denying {count} action(s)",
+                        count = actions_on_tabular.len()
                     );
                     continue;
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    let action_on_tabular = match &tabular_info {
-                        ViewOrTableInfo::Table(table_info) => {
-                            if let Some(action) = table_action {
-                                Some(ActionOnTableOrView::Table((table_info, *action)))
-                            } else {
-                                None
-                            }
-                        }
-                        ViewOrTableInfo::View(view_info) => {
-                            if let Some(action) = view_action {
-                                Some(ActionOnTableOrView::View((view_info, *action)))
-                            } else {
-                                None
-                            }
-                        }
-                    };
-                    
-                    if let Some(action) = action_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, *table_action, *view_action) {
                         checks.push((i, namespace, action));
                     }
-                }           
+                }
             }
 
             let (original_indices, tabular_with_actions): (Vec<_>, Vec<_>) = checks
@@ -1091,7 +1268,14 @@ let fetch_namespace_tasks_by_id =
             Ok::<_, ErrorModel>((original_indices, allowed))
         });
     }
+    Ok(())
+}
 
+/// Collect authorization results and update the results array
+async fn collect_authz_results(
+    authz_tasks: &mut AuthzTaskJoinSet,
+    results: &mut [CatalogActionsBatchCheckResult],
+) -> Result<(), ErrorModel> {
     while let Some(res) = authz_tasks.join_next().await {
         let (original_indices, allowed) = res.map_err(|e| {
             ErrorModel::internal(
@@ -1100,13 +1284,1021 @@ let fetch_namespace_tasks_by_id =
                 Some(Box::new(e)),
             )
         })??;
-        for (i, is_allowed) in original_indices
-            .into_iter()
-            .zip(allowed.into_inner().into_iter())
-        {
+        let allowed_vec = allowed.into_inner();
+        if original_indices.len() != allowed_vec.len() {
+            return Err(ErrorModel::internal(
+                "Authorization result count mismatch",
+                "AuthZResultCountMismatch",
+                Some(Box::new(std::io::Error::other(format!(
+                    "Expected {} authorization results but got {}",
+                    original_indices.len(),
+                    allowed_vec.len()
+                )))),
+            ));
+        }
+        for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec.into_iter()) {
             results[i].allowed = is_allowed;
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    metadata: &RequestMetadata,
+    request: CatalogActionsBatchCheckRequest,
+) -> Result<CatalogActionsBatchCheckResponse, ErrorModel> {
+    const MAX_CHECKS: usize = 1000;
+
+    let authorizer = api_context.v1_state.authz.clone();
+    let catalog_state = api_context.v1_state.catalog.clone();
+    let CatalogActionsBatchCheckRequest {
+        checks,
+        error_on_not_found,
+    } = request;
+
+    // Limit total number of checks to prevent abuse
+    if checks.len() > MAX_CHECKS {
+        return Err(ErrorModel::bad_request(
+            format!(
+                "Too many checks requested: {}. Maximum allowed is {}",
+                checks.len(),
+                MAX_CHECKS
+            ),
+            "TooManyChecks",
+            None,
+        ));
+    }
+
+    let (grouped, mut results) = group_checks(checks, metadata)?;
+    let GroupedChecks {
+        server_checks,
+        project_checks,
+        warehouse_checks,
+        namespace_checks_by_id,
+        namespace_checks_by_ident,
+        tabular_checks_by_id,
+        tabular_checks_by_ident,
+        seen_warehouse_ids,
+    } = grouped;
+
+    // Load required entities
+    // 1. Tabulars (which gives us min required warehouse & namespace versions)
+    let (
+        tabular_infos_by_ident,
+        tabular_infos_by_id,
+        min_namespace_versions,
+        min_warehouse_versions,
+    ) = fetch_tabulars::<C>(
+        &tabular_checks_by_id,
+        &tabular_checks_by_ident,
+        catalog_state.clone(),
+    )
+    .await?;
+
+    // 2. Warehouses & Namespaces, respecting min version requirements from tabulars
+    let warehouses = fetch_warehouses::<A, C>(
+        &seen_warehouse_ids,
+        &min_warehouse_versions,
+        catalog_state.clone(),
+        &authorizer,
+        error_on_not_found,
+    )
+    .await?;
+
+    let (namespaces_by_id, namespace_ident_lookup) = fetch_namespaces::<C>(
+        &namespace_checks_by_id,
+        &namespace_checks_by_ident,
+        &min_namespace_versions,
+        catalog_state.clone(),
+    )
+    .await?;
+
+    // AuthZ checks
+    let namespaces_by_id = Arc::new(namespaces_by_id);
+    let namespace_ident_lookup = Arc::new(namespace_ident_lookup);
+    let tabular_infos_by_id = Arc::new(tabular_infos_by_id);
+    let tabular_infos_by_ident = Arc::new(tabular_infos_by_ident);
+
+    let mut authz_tasks = tokio::task::JoinSet::new();
+
+    // Server checks
+    spawn_server_checks(&mut authz_tasks, server_checks, &authorizer, metadata);
+
+    // Project checks
+    spawn_project_checks(&mut authz_tasks, project_checks, &authorizer, metadata);
+
+    // Warehouse checks
+    spawn_warehouse_checks(
+        &mut authz_tasks,
+        warehouse_checks,
+        &warehouses,
+        &authorizer,
+        metadata,
+    );
+
+    // Namespace checks by ID
+    spawn_namespace_checks_by_id(
+        &mut authz_tasks,
+        namespace_checks_by_id,
+        &warehouses,
+        &namespaces_by_id,
+        &authorizer,
+        metadata,
+        error_on_not_found,
+    )?;
+
+    // Namespace checks by ident
+    spawn_namespace_checks_by_ident(NamespaceCheckByIdentParams {
+        authz_tasks: &mut authz_tasks,
+        namespace_checks_by_ident,
+        warehouses: &warehouses,
+        namespaces_by_id: &namespaces_by_id,
+        namespace_ident_lookup: &namespace_ident_lookup,
+        authorizer: &authorizer,
+        metadata,
+        error_on_not_found,
+    })?;
+
+    // Tabular checks by ID
+    spawn_tabular_checks_by_id(TabularCheckByIdParams {
+        authz_tasks: &mut authz_tasks,
+        tabular_checks_by_id,
+        warehouses: &warehouses,
+        tabular_infos_by_id: &tabular_infos_by_id,
+        namespaces_by_id: &namespaces_by_id,
+        authorizer: &authorizer,
+        metadata,
+        error_on_not_found,
+    })?;
+
+    // Tabular checks by ident
+    spawn_tabular_checks_by_ident(TabularCheckByIdentParams {
+        authz_tasks: &mut authz_tasks,
+        tabular_checks_by_ident,
+        warehouses: &warehouses,
+        tabular_infos_by_ident: &tabular_infos_by_ident,
+        namespaces_by_id: &namespaces_by_id,
+        authorizer: &authorizer,
+        metadata,
+        error_on_not_found,
+    })?;
+
+    collect_authz_results(&mut authz_tasks, &mut results).await?;
 
     Ok(CatalogActionsBatchCheckResponse { results })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::management::v1::warehouse::TabularDeleteProfile;
+    use crate::{
+        api::iceberg::{
+            types::Prefix,
+            v1::{DataAccess, NamespaceParameters, tables::TablesService},
+        },
+        implementations::{CatalogState, postgres::PostgresBackend},
+        request_metadata::RequestMetadata,
+        server::CatalogServer,
+        service::authz::{
+            CatalogNamespaceAction, CatalogServerAction, CatalogTableAction,
+            CatalogWarehouseAction, tests::HidingAuthorizer,
+        },
+        tests::create_table_request,
+    };
+
+    #[sqlx::test]
+    async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create a namespace
+        let ns_name = "test_namespace";
+        let create_ns_resp = crate::server::test::create_ns(
+            api_context.clone(),
+            test_warehouse.warehouse_id.to_string(),
+            ns_name.to_string(),
+        )
+        .await;
+
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(test_warehouse.warehouse_id.to_string())),
+            namespace: create_ns_resp.namespace.clone(),
+        };
+
+        // Create a table
+        let table_name = "test_table";
+        let create_table_resp = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request(Some(table_name.to_string()), None),
+            DataAccess::not_specified(),
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+
+        let table_id = create_table_resp.metadata.uuid();
+
+        // Get the namespace ID from the catalog
+        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let namespace_hierarchy = PostgresBackend::get_namespace(
+            test_warehouse.warehouse_id,
+            create_ns_resp.namespace.clone(),
+            catalog_state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let namespace_id = namespace_hierarchy.namespace_id();
+
+        // Test 1: Check server action (should be allowed by default)
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("server-check-1".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Server {
+                    action: CatalogServerAction::CreateProject,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, Some("server-check-1".to_string()));
+        assert!(response.results[0].allowed);
+
+        // Test 2: Check warehouse action by ID
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("warehouse-check-1".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("warehouse-check-1".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 3: Check namespace action by ID
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("namespace-check-1".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Namespace {
+                    action: CatalogNamespaceAction::CreateTable,
+                    namespace: NamespaceIdentOrUuid::Id {
+                        namespace_id,
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("namespace-check-1".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 4: Check namespace action by name
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("namespace-check-2".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Namespace {
+                    action: CatalogNamespaceAction::CreateTable,
+                    namespace: NamespaceIdentOrUuid::Name {
+                        namespace: create_ns_resp.namespace.clone(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("namespace-check-2".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 5: Check table action by ID
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("table-check-1".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, Some("table-check-1".to_string()));
+        assert!(response.results[0].allowed);
+
+        // Test 6: Check table action by name
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("table-check-2".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::Name {
+                        namespace: create_ns_resp.namespace.clone(),
+                        table: table_name.to_string(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, Some("table-check-2".to_string()));
+        assert!(response.results[0].allowed);
+
+        // Test 7: Batch check with multiple operations
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: Some("batch-1".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Server {
+                        action: CatalogServerAction::CreateProject,
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("batch-2".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Warehouse {
+                        action: CatalogWarehouseAction::Use,
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("batch-3".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Table {
+                        action: CatalogTableAction::ReadData,
+                        table: TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id: test_warehouse.warehouse_id,
+                            table_id,
+                        },
+                    },
+                },
+            ],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 3);
+        assert!(response.results.iter().all(|r| r.allowed));
+        assert_eq!(response.results[0].id, Some("batch-1".to_string()));
+        assert_eq!(response.results[1].id, Some("batch-2".to_string()));
+        assert_eq!(response.results[2].id, Some("batch-3".to_string()));
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_hidden_warehouse(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // First verify warehouse is accessible
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("visible-warehouse".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].allowed); // Should be allowed initially
+
+        // Now hide the warehouse
+        authz.hide(&format!("warehouse:{}", test_warehouse.warehouse_id));
+
+        // Check warehouse action again - should now be denied
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("hidden-warehouse".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, Some("hidden-warehouse".to_string()));
+        assert!(!response.results[0].allowed); // Should now be denied
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_hidden_namespace(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create a namespace
+        let create_ns_resp = crate::server::test::create_ns(
+            api_context.clone(),
+            test_warehouse.warehouse_id.to_string(),
+            "test_namespace".to_string(),
+        )
+        .await;
+
+        // Get the namespace ID
+        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let namespace_hierarchy = PostgresBackend::get_namespace(
+            test_warehouse.warehouse_id,
+            create_ns_resp.namespace.clone(),
+            catalog_state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let namespace_id = namespace_hierarchy.namespace_id();
+
+        // First verify namespace is accessible by ID
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("visible-namespace-id".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Namespace {
+                    action: CatalogNamespaceAction::CreateTable,
+                    namespace: NamespaceIdentOrUuid::Id {
+                        namespace_id,
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].allowed); // Should be allowed initially
+
+        // Verify namespace is accessible by name
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("visible-namespace-name".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Namespace {
+                    action: CatalogNamespaceAction::CreateTable,
+                    namespace: NamespaceIdentOrUuid::Name {
+                        namespace: create_ns_resp.namespace.clone(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].allowed); // Should be allowed initially
+
+        // Now hide the namespace
+        authz.hide(&format!("namespace:{namespace_id}"));
+
+        // Check namespace action by ID - should now be denied
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("hidden-namespace-id".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Namespace {
+                    action: CatalogNamespaceAction::CreateTable,
+                    namespace: NamespaceIdentOrUuid::Id {
+                        namespace_id,
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(!response.results[0].allowed); // Should now be denied
+
+        // Check namespace action by name - should also be denied
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("hidden-namespace-name".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Namespace {
+                    action: CatalogNamespaceAction::CreateTable,
+                    namespace: NamespaceIdentOrUuid::Name {
+                        namespace: create_ns_resp.namespace.clone(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(!response.results[0].allowed); // Should now be denied
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_hidden_table(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create a namespace
+        let create_ns_resp = crate::server::test::create_ns(
+            api_context.clone(),
+            test_warehouse.warehouse_id.to_string(),
+            "test_namespace".to_string(),
+        )
+        .await;
+
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(test_warehouse.warehouse_id.to_string())),
+            namespace: create_ns_resp.namespace.clone(),
+        };
+
+        // Create a table
+        let table_name = "test_table";
+        let create_table_resp = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request(Some(table_name.to_string()), None),
+            DataAccess::not_specified(),
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+
+        let table_id = create_table_resp.metadata.uuid();
+
+        // First verify table is accessible by ID
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("visible-table-id".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].allowed); // Should be allowed initially
+
+        // Verify table is accessible by name
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("visible-table-name".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::Name {
+                        namespace: create_ns_resp.namespace.clone(),
+                        table: table_name.to_string(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].allowed); // Should be allowed initially
+
+        // Now hide the table
+        authz.hide(&format!(
+            "table:{}/{}",
+            test_warehouse.warehouse_id, table_id
+        ));
+
+        // Check table action by ID - should now be denied
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("hidden-table-id".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(!response.results[0].allowed); // Should now be denied
+
+        // Check table action by name - should also be denied
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("hidden-table-name".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::Name {
+                        namespace: create_ns_resp.namespace.clone(),
+                        table: table_name.to_string(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(!response.results[0].allowed); // Should now be denied
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_mixed_visibility(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create two namespaces
+        let ns1_resp = crate::server::test::create_ns(
+            api_context.clone(),
+            test_warehouse.warehouse_id.to_string(),
+            "visible_ns".to_string(),
+        )
+        .await;
+
+        let ns2_resp = crate::server::test::create_ns(
+            api_context.clone(),
+            test_warehouse.warehouse_id.to_string(),
+            "hidden_ns".to_string(),
+        )
+        .await;
+
+        // Get namespace IDs
+        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let ns1_hierarchy = PostgresBackend::get_namespace(
+            test_warehouse.warehouse_id,
+            ns1_resp.namespace.clone(),
+            catalog_state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let ns2_hierarchy = PostgresBackend::get_namespace(
+            test_warehouse.warehouse_id,
+            ns2_resp.namespace.clone(),
+            catalog_state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Hide the second namespace
+        authz.hide(&format!("namespace:{}", ns2_hierarchy.namespace_id()));
+
+        // Batch check with mixed visibility
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: Some("visible".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Namespace {
+                        action: CatalogNamespaceAction::CreateTable,
+                        namespace: NamespaceIdentOrUuid::Id {
+                            namespace_id: ns1_hierarchy.namespace_id(),
+                            warehouse_id: test_warehouse.warehouse_id,
+                        },
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("hidden".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Namespace {
+                        action: CatalogNamespaceAction::CreateTable,
+                        namespace: NamespaceIdentOrUuid::Id {
+                            namespace_id: ns2_hierarchy.namespace_id(),
+                            warehouse_id: test_warehouse.warehouse_id,
+                        },
+                    },
+                },
+            ],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(response.results[0].id, Some("visible".to_string()));
+        assert!(response.results[0].allowed); // Visible namespace should be allowed
+        assert_eq!(response.results[1].id, Some("hidden".to_string()));
+        assert!(!response.results[1].allowed); // Hidden namespace should be denied
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_error_on_not_found(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Check a non-existent table with error_on_not_found = false
+        let non_existent_table_id = uuid::Uuid::now_v7();
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("not-found-no-error".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id: non_existent_table_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert!(!response.results[0].allowed); // Should be denied but not error
+
+        // Check a non-existent table with error_on_not_found = true
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("not-found-with-error".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Table {
+                    action: CatalogTableAction::ReadData,
+                    table: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id: non_existent_table_id,
+                    },
+                },
+            }],
+            error_on_not_found: true,
+        };
+
+        let result = check_internal(api_context.clone(), &metadata, request).await;
+        assert!(result.is_err()); // Should return an error
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_no_id_defaults_to_index(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Check without providing IDs - should use None
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: None,
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Server {
+                        action: CatalogServerAction::CreateProject,
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: None,
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Warehouse {
+                        action: CatalogWarehouseAction::Use,
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            ],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), &metadata, request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(response.results[0].id, None);
+        assert_eq!(response.results[1].id, None);
+        assert!(response.results[0].allowed);
+        assert!(response.results[1].allowed);
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_max_checks_limit(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, _test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create more than MAX_CHECKS (1000) checks
+        let checks = (0..1001)
+            .map(|i| CatalogActionCheckItem {
+                id: Some(format!("check-{i}")),
+                identity: None,
+                operation: CatalogActionCheckOperation::Server {
+                    action: CatalogServerAction::CreateProject,
+                },
+            })
+            .collect();
+
+        let request = CatalogActionsBatchCheckRequest {
+            checks,
+            error_on_not_found: false,
+        };
+
+        let result = check_internal(api_context.clone(), &metadata, request).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.r#type, "TooManyChecks");
+    }
 }

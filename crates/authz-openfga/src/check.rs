@@ -1,12 +1,15 @@
 use http::StatusCode;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, RequestMetadata},
+    api::{
+        ApiContext, RequestMetadata,
+        management::v1::check::{NamespaceIdentOrUuid, TabularIdentOrUuid},
+    },
     axum::{Extension, Json, extract::State as AxumState},
-    iceberg::{NamespaceIdent, TableIdent},
+    iceberg::TableIdent,
     service::{
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
+        CatalogWarehouseOps, NamespaceIdentOrId, Result, SecretStore, State, TableId,
         TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
         authz::{
             AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
@@ -421,7 +424,7 @@ pub(super) struct CheckResponse {
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::UserId;
+    use lakekeeper::service::{NamespaceId, NamespaceIdent, UserId};
 
     use super::*;
 
@@ -581,7 +584,10 @@ mod tests {
             },
             implementations::postgres::{PostgresBackend, SecretsState},
             server::{CatalogServer, NAMESPACE_ID_PROPERTY},
-            service::{CreateNamespaceResponse, authn::UserId, authz::RoleAssignee},
+            service::{
+                CreateNamespaceResponse, NamespaceId, NamespaceIdent, authn::UserId,
+                authz::RoleAssignee,
+            },
             sqlx,
             tests::{SetupTestCatalog, TestWarehouseResponse},
         };

@@ -25,3 +25,5 @@ ALTER TYPE api_endpoints ADD value 'management-v1-get-namespace-actions';
 ALTER TYPE api_endpoints ADD value 'management-v1-get-table-actions';
 
 ALTER TYPE api_endpoints ADD value 'management-v1-get-view-actions';
+
+ALTER TYPE api_endpoints ADD value 'management-v1-batch-check-actions';
