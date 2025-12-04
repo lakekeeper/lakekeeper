@@ -17,7 +17,17 @@ By default, Lakekeeper Warehouses enforce specific URI schemas for tables and vi
 
 When a new table is created without an explicitly specified location, Lakekeeper automatically assigns the appropriate protocol based on the storage type. If a location is explicitly provided by the client, it must adhere to the required schema.
 
-### Allowing Alternative Protocols (s3a, s3n, wasbs)
+// ...existing code...
+
+## Disabling Credential Vending & Remote Signing
+
+Lakekeeper provides multiple ways to control how credentials and remote signing information are provided to clients.
+
+You can disable credential vending and remote signing on a per-warehouse basis using storage profile settings. For S3 warehouses, set `remote-signing-enabled` to `false` to disable remote signing and `sts-enabled` to `false` to disable STS vended credentials. For Azure ADLS warehouses, set `sas-enabled` to `false` to disable SAS token generation. For GCS warehouses, set `sts-enabled` to `false` to disable STS token generation. When these options are disabled at the storage profile level, clients will not receive the corresponding credentials or signing information for that warehouse, regardless of the request headers. Lakekeeper downscopes vended credentials for all supported storages to the location of the table being accessed and ensures that there are no overlapping table locations within a warehouse.
+
+Clients can also control credential delegation on a per-request basis using the `X-Iceberg-Access-Delegation` header. In addition to the standard Iceberg REST spec values (`vended-credentials` and `remote-signing`), Lakekeeper supports a special value `client-managed`. When this value is set, Lakekeeper will not return any remote signing information or vended credentials to the client, regardless of the storage profile configuration. This is useful when clients want to use their own credentials to access storage directly.
+
+## Allowing Alternative Protocols (s3a, s3n, wasbs)
 
 For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additional protocols. To enable these, activate the "Allow Alternative Protocols" flag in the storage profile of the Warehouse. When enabled, the following additional protocols are accepted for table creation or registration:
 

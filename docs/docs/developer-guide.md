@@ -239,5 +239,9 @@ fn get_model_manager(
     )
 }
 ```
+## Building the docs locally
 
-
+```bash
+cd site
+just serve
+```
