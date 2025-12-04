@@ -38,6 +38,18 @@ pub struct LoadTableResult {
     pub storage_credentials: Option<Vec<StorageCredential>>,
 }
 
+impl LoadTableResult {
+    #[must_use]
+    pub fn is_staged(&self) -> bool {
+        self.metadata_location.is_none()
+    }
+
+    #[must_use]
+    pub fn etag(&self) -> Option<ETag> {
+        self.metadata_location.as_ref().map(|loc| create_etag(loc))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateTableRequest {
@@ -139,10 +151,9 @@ impl IntoResponse for LoadTableResult {
         let mut headers = HeaderMap::new();
         let body = axum::Json(&self);
 
-        let Some(ref metadata_location) = self.metadata_location else {
+        let Some(ref etag) = self.etag() else {
             return (headers, body).into_response();
         };
-        let etag = create_etag(metadata_location);
 
         match etag.as_str().parse::<HeaderValue>() {
             Ok(header_value) => {
@@ -150,7 +161,11 @@ impl IntoResponse for LoadTableResult {
             }
             Err(e) => {
                 tracing::error!(
-                    "Failed to create valid ETAG header from metadata location: {metadata_location}, error: {e}"
+                    "Failed to create valid ETAG header from metadata location. Etag: {}. Metadata location: {}, error: {e}",
+                    etag.as_str(),
+                    self.metadata_location
+                        .as_ref()
+                        .unwrap_or(&"<none>".to_string())
                 );
             }
         }
