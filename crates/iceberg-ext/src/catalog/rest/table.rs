@@ -111,6 +111,13 @@ pub struct CommitTableResponse {
     pub config: Option<std::collections::HashMap<String, String>>,
 }
 
+impl CommitTableResponse {
+    #[must_use]
+    pub fn etag(&self) -> ETag {
+        create_etag(&self.metadata_location)
+    }
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CommitTransactionRequest {
