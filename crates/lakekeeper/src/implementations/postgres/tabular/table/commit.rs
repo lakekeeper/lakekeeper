@@ -19,7 +19,7 @@ use crate::{
     },
     server::tables::TableMetadataDiffs,
     service::{
-        CommitTableTransactionError, ConversionError, InternalBackendErrors,
+        CommitTableTransactionError, ConcurrentUpdateError, ConversionError, InternalBackendErrors,
         InternalParseLocationError, TableCommit, TableId, TableInfo, TabularNotFound,
         TooManyUpdatesInCommit, UnexpectedTabularInResponse, ViewOrTableInfo,
     },
@@ -339,13 +339,17 @@ fn verify_commit_completeness(
     // IDs are guaranteed to be unique, as they are in the same warehouse.
     let missing_tables = tabular_ids_in_commit.difference(&updated_tables_ids);
     if let Some(missing_id) = missing_tables.into_iter().next() {
-        return Err(TabularNotFound::new(warehouse_id, TableId::from(*missing_id)).into());
+        return Err(
+            TabularNotFound::new(warehouse_id, TableId::from(*missing_id))
+                .append_detail("Missing update in `table`")
+                .into(),
+        );
     }
 
     // Update for `tabular` table filters on `(warehouse_id, table_id, metadata_location)`.
     let missing_updates = tabular_ids_in_commit.difference(&updated_tabulars_ids);
     if let Some(missing_id) = missing_updates.into_iter().next() {
-        return Err(TabularNotFound::new(warehouse_id, TableId::from(*missing_id)).into());
+        return Err(ConcurrentUpdateError::new(warehouse_id, TableId::from(*missing_id)).into());
     }
     Ok(())
 }

@@ -13,10 +13,10 @@ use crate::{
     api::iceberg::v1::tables::LoadTableFilters,
     server::tables::TableMetadataDiffs,
     service::{
-        CatalogBackendError, CatalogStore, ConversionError, CreateTabularError,
-        InternalBackendErrors, InternalParseLocationError, InvalidNamespaceIdentifier,
-        LocationAlreadyTaken, NamespaceId, SerializationError, TableId, TableInfo,
-        TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
+        CatalogBackendError, CatalogStore, ConcurrentUpdateError, ConversionError,
+        CreateTabularError, InternalBackendErrors, InternalParseLocationError,
+        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, SerializationError, TableId,
+        TableInfo, TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
         WarehouseVersion, define_simple_error, define_simple_tabular_err, define_transparent_error,
         impl_error_stack_methods, impl_from_with_detail,
     },
@@ -179,7 +179,8 @@ define_transparent_error! {
         InternalParseLocationError,
         ConversionError,
         InvalidNamespaceIdentifier,
-        UnexpectedTabularInResponse
+        UnexpectedTabularInResponse,
+        ConcurrentUpdateError
     ]
 }
 impl From<InternalBackendErrors> for CommitTableTransactionError {

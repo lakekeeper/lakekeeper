@@ -641,7 +641,7 @@ async fn setup_stats_test(
     let tx = EndpointStatisticsTrackerTx::new(tx);
     let tracker = EndpointStatisticsTracker::new(
         rx,
-        vec![Arc::new(PostgresStatisticsSink::new(pool.clone()))],
+        vec![Arc::new(PostgresStatisticsSink::new(pool.clone(), pool))],
         Duration::from_millis(150),
         flush_mode,
     );
