@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 pub mod v1 {
+    pub mod check;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
@@ -73,6 +74,7 @@ pub mod v1 {
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
+                check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 role::{RoleMetadata, UpdateRoleSourceSystemRequest},
@@ -1740,6 +1742,40 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    /// Batch Check Catalog Actions
+    ///
+    /// Performs authorization checks for multiple catalog actions in a single request.
+    /// This endpoint allows checking permissions across different resource types (servers, projects,
+    /// warehouses, namespaces, tables, and views) efficiently.
+    ///
+    /// The endpoint supports:
+    /// - Checking actions for different identities (users or roles)
+    /// - Mixing different resource types in a single batch
+    /// - Optional error-on-not-found behavior (default: treat missing resources as denied)
+    ///
+    /// Each check in the request can optionally override the identity being checked.
+    /// If no identity is specified, the current user's identity is used.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "authorization",
+        path = ManagementV1Endpoint::BatchCheckActions.path(),
+        request_body = CatalogActionsBatchCheckRequest,
+        responses(
+            (status = 200, description = "Batch check results", body = CatalogActionsBatchCheckResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn batch_check_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<CatalogActionsBatchCheckRequest>,
+    ) -> Result<Json<CatalogActionsBatchCheckResponse>> {
+        check::check_internal(api_context, &metadata, request)
+            .await
+            .map(Json)
+            .map_err(Into::into)
+    }
+
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
@@ -1960,6 +1996,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::BatchCheckActions.path_in_management_v1(),
+                    post(batch_check_actions),
                 )
                 .merge(authorizer.new_router())
         }

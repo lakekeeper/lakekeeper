@@ -20,6 +20,43 @@ servers:
         default: https
         description: The scheme of the URI, either http or https
 paths:
+  /management/v1/action/batch-check:
+    post:
+      tags:
+        - authorization
+      summary: Batch Check Catalog Actions
+      description: |-
+        Performs authorization checks for multiple catalog actions in a single request.
+        This endpoint allows checking permissions across different resource types (servers, projects,
+        warehouses, namespaces, tables, and views) efficiently.
+
+        The endpoint supports:
+        - Checking actions for different identities (users or roles)
+        - Mixing different resource types in a single batch
+        - Optional error-on-not-found behavior (default: treat missing resources as denied)
+
+        Each check in the request can optionally override the identity being checked.
+        If no identity is specified, the current user's identity is used.
+      operationId: batch_check_actions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogActionsBatchCheckRequest'
+        required: true
+      responses:
+        '200':
+          description: Batch check results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogActionsBatchCheckResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/bootstrap:
     post:
       tags:
@@ -3362,6 +3399,12 @@ components:
             - string
             - 'null'
           description: Subpath in the filesystem to use.
+        sas-enabled:
+          type: boolean
+          description: |-
+            Enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage.
+            When disabled, clients cannot use vended credentials for this storage profile.
+            Defaults to true.
         sas-token-validity-seconds:
           type:
             - integer
@@ -3445,6 +3488,149 @@ components:
               description: |-
                 Type of the user performing bootstrap. Optional. If not provided
                 the server will try to parse the type from the provided token.
+    CatalogActionCheckItem:
+      type: object
+      description: A single check item with optional identity override
+      required:
+        - operation
+      properties:
+        id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Optional identifier for this check (returned in response).
+            If not specified, the index in the request array will be used.
+        identity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserOrRole'
+              description: |-
+                The user or role to check access for.
+                If not specified, the identity of the user making the request is used.
+        operation:
+          $ref: '#/components/schemas/CatalogActionCheckOperation'
+          description: The operation to check
+    CatalogActionCheckOperation:
+      oneOf:
+        - type: object
+          required:
+            - server
+          properties:
+            server:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/LakekeeperServerAction'
+        - type: object
+          required:
+            - project
+          properties:
+            project:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/LakekeeperProjectAction'
+                project-id:
+                  type:
+                    - string
+                    - 'null'
+                  format: uuid
+        - type: object
+          required:
+            - warehouse
+          properties:
+            warehouse:
+              type: object
+              required:
+                - action
+                - warehouse-id
+              properties:
+                action:
+                  $ref: '#/components/schemas/LakekeeperWarehouseAction'
+                warehouse-id:
+                  type: string
+                  format: uuid
+        - type: object
+          required:
+            - namespace
+          properties:
+            namespace:
+              allOf:
+                - $ref: '#/components/schemas/NamespaceIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperNamespaceAction'
+        - type: object
+          required:
+            - table
+          properties:
+            table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperTableAction'
+        - type: object
+          required:
+            - view
+          properties:
+            view:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperViewAction'
+      description: Represents an action on an object
+    CatalogActionsBatchCheckRequest:
+      type: object
+      required:
+        - checks
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogActionCheckItem'
+          description: List of checks to perform
+        error-on-not-found:
+          type: boolean
+          description: |-
+            If true, return 404 error when resources are not found.
+            If false, treat missing resources as denied (allowed = false).
+            Defaults to false.
+    CatalogActionsBatchCheckResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogActionsBatchCheckResult'
+    CatalogActionsBatchCheckResult:
+      type: object
+      required:
+        - allowed
+      properties:
+        allowed:
+          type: boolean
+        id:
+          type:
+            - string
+            - 'null'
     CheckOperation:
       oneOf:
         - type: object
@@ -3972,6 +4158,12 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        sts-enabled:
+          type: boolean
+          description: |-
+            Enable STS (Security Token Service) downscoped token generation for GCS.
+            When disabled, clients cannot use vended credentials for this storage profile.
+            Defaults to true.
     GcsServiceKey:
       type: object
       required:
@@ -5332,6 +5524,12 @@ components:
         region:
           type: string
           description: Region to use for S3 requests.
+        remote-signing-enabled:
+          type: boolean
+          description: |-
+            Enable remote signing for S3 requests.
+            When disabled, clients cannot use remote signing even if STS is disabled.
+            Defaults to true.
         remote-signing-url-style:
           $ref: '#/components/schemas/S3UrlStyleDetectionMode'
           description: |-

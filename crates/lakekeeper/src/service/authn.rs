@@ -66,7 +66,7 @@ pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authori
     pub authorizer: A,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct UserId(Subject);
 
 const OIDC_IDP_ID: &str = "oidc";

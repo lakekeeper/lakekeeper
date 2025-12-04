@@ -234,7 +234,7 @@ async fn build_hierarchy_from_cache(namespace: &NamespaceWithParent) -> Option<N
 
 /// Convert a `NamespaceIdent` to a Vec<`UniCase`<String>> for case-insensitive comparison.
 /// This uses the inner Vec<String> to avoid issues with dots in namespace names.
-fn namespace_ident_to_cache_key(ident: &NamespaceIdent) -> Vec<UniCase<String>> {
+pub(crate) fn namespace_ident_to_cache_key(ident: &NamespaceIdent) -> Vec<UniCase<String>> {
     ident
         .clone()
         .inner()

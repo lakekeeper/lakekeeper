@@ -149,6 +149,12 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub aws_kms_key_arn: Option<String>,
+    /// Enable remote signing for S3 requests.
+    /// When disabled, clients cannot use remote signing even if STS is disabled.
+    /// Defaults to true.
+    #[serde(default = "fn_true")]
+    #[builder(default = true)]
+    pub remote_signing_enabled: bool,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -477,6 +483,9 @@ impl S3Profile {
         }
 
         if remote_signing {
+            if !self.remote_signing_enabled {
+                return Err(TableConfigError::RemoteSigningDisabled);
+            }
             let warehouse_id = stc_request.warehouse_id;
             let tabular_id = stc_request.tabular_id;
             config.insert(&s3::RemoteSigningEnabled(true));
@@ -1336,6 +1345,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
+            remote_signing_enabled: true,
             sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
@@ -1381,6 +1391,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
+            remote_signing_enabled: true,
             sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
@@ -1439,6 +1450,7 @@ pub(crate) mod test {
                 sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1498,6 +1510,7 @@ pub(crate) mod test {
                 sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1593,6 +1606,7 @@ pub(crate) mod test {
                 sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1655,6 +1669,7 @@ pub(crate) mod test {
                 sts_role_arn: None,
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 sts_session_tags: BTreeMap::new(),
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
@@ -1738,6 +1753,7 @@ mod is_overlapping_location_tests {
             path_style_access: None,
             sts_role_arn: None,
             sts_enabled: false,
+            remote_signing_enabled: true,
             sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,

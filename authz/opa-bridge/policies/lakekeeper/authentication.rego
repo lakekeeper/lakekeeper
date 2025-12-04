@@ -4,7 +4,7 @@ import data.lakekeeper
 
 # Retrieve an access token from the identity provider.
 # Caches the token for 150 seconds.
-# Token is warehouse specific.
+# Token is specific to a `lakekeeper_id`.
 access_token[lakekeeper_id] := access_token if {
     this := lakekeeper.lakekeeper_by_id[lakekeeper_id]
     value := http.send({
@@ -34,6 +34,4 @@ authenticated_http_send(lakekeeper_id, method, path, body) := response if {
         },
         "body": body
     })
-    # print(body)
-    # print(response)
 }
