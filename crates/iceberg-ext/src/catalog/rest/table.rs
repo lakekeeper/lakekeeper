@@ -182,9 +182,31 @@ impl IntoResponse for LoadTableResult {
 }
 
 #[cfg(feature = "axum")]
-impl_into_response!(ListTablesResponse);
+impl IntoResponse for CommitTableResponse {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        let mut headers = HeaderMap::new();
+        let body = axum::Json(&self);
+
+        let etag = self.etag();
+        match etag.as_str().parse::<HeaderValue>() {
+            Ok(header_value) => {
+                headers.insert(header::ETAG, header_value);
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create valid ETAG header from metadata location after commit. Etag: {}. Metadata location: {}, error: {e}",
+                    etag.as_str(),
+                    self.metadata_location
+                );
+            }
+        }
+
+        (headers, body).into_response()
+    }
+}
+
 #[cfg(feature = "axum")]
-impl_into_response!(CommitTableResponse);
+impl_into_response!(ListTablesResponse);
 #[cfg(feature = "axum")]
 impl_into_response!(LoadCredentialsResponse);
 
