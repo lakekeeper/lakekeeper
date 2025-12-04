@@ -231,7 +231,7 @@ generate_endpoints! {
         ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
         GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
         ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
-        BatchCheckActions(POST, "/management/v1/batch-check-actions"),
+        BatchCheckActions(POST, "/management/v1/action/batch-check"),
         // --------- Deprecated endpoints ---------
         GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
         DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),

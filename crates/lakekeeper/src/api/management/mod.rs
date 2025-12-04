@@ -1756,14 +1756,14 @@ pub mod v1 {
     /// Each check in the request can optionally override the identity being checked.
     /// If no identity is specified, the current user's identity is used.
     #[cfg_attr(feature = "open-api", utoipa::path(
-    post,
-    tag = "authorization",
-    path = ManagementV1Endpoint::BatchCheckActions.path(),
-    request_body = CatalogActionsBatchCheckRequest,
-    responses(
-        (status = 200, description = "Batch check results", body = CatalogActionsBatchCheckResponse),
-        (status = "4XX", body = IcebergErrorResponse),
-    )
+        post,
+        tag = "authorization",
+        path = ManagementV1Endpoint::BatchCheckActions.path(),
+        request_body = CatalogActionsBatchCheckRequest,
+        responses(
+            (status = 200, description = "Batch check results", body = CatalogActionsBatchCheckResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
     ))]
     async fn batch_check_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
