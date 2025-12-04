@@ -197,7 +197,13 @@ pub struct Migration {
 }
 
 fn get_changed_migration_ids() -> HashSet<i64> {
-    HashSet::from([20_250_328_131_139, 20_250_505_101_407, 20_250_523_101_407])
+    HashSet::from([
+        20_250_328_131_139,
+        20_250_505_101_407,
+        20_250_523_101_407,
+        20_250_923_164_029,
+        20_251_109_122_721,
+    ])
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
