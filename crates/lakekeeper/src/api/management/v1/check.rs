@@ -1453,11 +1453,13 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::management::v1::warehouse::TabularDeleteProfile;
     use crate::{
-        api::iceberg::{
-            types::Prefix,
-            v1::{DataAccess, NamespaceParameters, tables::TablesService},
+        api::{
+            iceberg::{
+                types::Prefix,
+                v1::{DataAccess, NamespaceParameters, tables::TablesService},
+            },
+            management::v1::warehouse::TabularDeleteProfile,
         },
         implementations::{CatalogState, postgres::PostgresBackend},
         request_metadata::RequestMetadata,
