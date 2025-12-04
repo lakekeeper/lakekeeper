@@ -33,7 +33,7 @@ mod test {
         )
         .await;
 
-        let sink = PostgresStatisticsSink::new(pool);
+        let sink = PostgresStatisticsSink::new(pool.clone(), pool);
 
         let project = DEFAULT_PROJECT_ID.clone().unwrap();
         let status_code = http::StatusCode::OK;

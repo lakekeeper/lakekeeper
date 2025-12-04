@@ -2,12 +2,13 @@ use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
+    http::header,
     response::IntoResponse,
     routing::{get, post},
 };
-use http::{HeaderMap, HeaderName, StatusCode};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::LoadCredentialsResponse;
+use iceberg_ext::catalog::rest::{ETag, LoadCredentialsResponse};
 
 use super::{PageToken, PaginationQuery};
 use crate::{
@@ -70,6 +71,39 @@ impl From<ListTablesQuery> for PaginationQuery {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadTableResultOrNotModified {
+    LoadTableResult(LoadTableResult),
+    NotModifiedResponse(ETag),
+}
+
+impl IntoResponse for LoadTableResultOrNotModified {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            LoadTableResultOrNotModified::NotModifiedResponse(etag) => {
+                let mut header = HeaderMap::new();
+
+                let etag = etag.as_str();
+
+                match etag.parse::<HeaderValue>() {
+                    Ok(header_value) => {
+                        header.insert(header::ETAG, header_value);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to create valid ETAG header from String {etag}, error: {e}"
+                        );
+                    }
+                }
+                (StatusCode::NOT_MODIFIED, header).into_response()
+            }
+            LoadTableResultOrNotModified::LoadTableResult(load_table_result) => {
+                load_table_result.into_response()
+            }
+        }
+    }
+}
+
 #[async_trait]
 pub trait TablesService<S: crate::api::ThreadSafe>
 where
@@ -107,7 +141,8 @@ where
         filters: LoadTableFilters,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<LoadTableResult>;
+        etags: Vec<ETag>,
+    ) -> Result<LoadTableResultOrNotModified>;
 
     /// Load a table from the catalog
     async fn load_table_credentials(
@@ -246,6 +281,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                         filters,
                         api_context,
                         metadata,
+                        parse_if_none_match(&headers),
                     )
                 },
             )
@@ -428,6 +464,30 @@ impl DataAccess {
     }
 }
 
+fn parse_etags(etags: &str) -> Vec<ETag> {
+    let etags = etags.trim().trim_matches('"');
+    etags
+        .split(',')
+        .map(|s| {
+            s.trim()
+                .trim_matches('"')
+                .trim_start_matches("W/")
+                .trim_matches('"')
+        })
+        .filter(|s| !s.is_empty())
+        .map(ETag::from)
+        .collect()
+}
+
+pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<ETag> {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(parse_etags)
+        .collect()
+}
+
 pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
     let header = headers
         .get_all(DATA_ACCESS_HEADER)
@@ -449,7 +509,13 @@ pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
+    use std::{collections::HashMap, error::Error, str::FromStr, sync::Arc};
+
+    use axum::response::Response;
+    use http_body_util::BodyExt;
+    use iceberg::spec::{
+        FormatVersion, Schema, SortOrder, TableMetadata, TableMetadataBuilder, UnboundPartitionSpec,
+    };
 
     use super::*;
 
@@ -567,7 +633,8 @@ mod test {
                 filters: super::LoadTableFilters,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-            ) -> crate::api::Result<LoadTableResult> {
+                _etags: Vec<ETag>,
+            ) -> crate::api::Result<LoadTableResultOrNotModified> {
                 // Return the snapshots filter in the error message for testing
                 let snapshots_str = match filters.snapshots {
                     super::SnapshotsQuery::All => "all",
@@ -697,5 +764,293 @@ mod test {
         let response_str = String::from_utf8(bytes.to_vec()).unwrap();
         let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
         assert_eq!(error.error.message, "snapshots=refs");
+    }
+
+    #[test]
+    fn test_load_table_result_or_not_modified_from_not_modified_response() {
+        let etag = "\"abcdef1234567890\"".to_string();
+        let not_modified_response =
+            LoadTableResultOrNotModified::NotModifiedResponse(etag.clone().into()).into_response();
+        assert_eq!(not_modified_response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            not_modified_response.headers().get(header::ETAG).unwrap(),
+            &etag
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_table_result_or_not_modified_from_load_table_result() {
+        let table_metadata = create_table_metadata_mock();
+        let load_table_result = LoadTableResult {
+            metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
+            metadata: table_metadata,
+            config: None,
+            storage_credentials: None,
+        };
+        let load_table_result_response_expected = load_table_result.clone().into_response();
+
+        let load_table_result_response_result =
+            LoadTableResultOrNotModified::LoadTableResult(load_table_result).into_response();
+
+        assert_eq!(load_table_result_response_result.status(), StatusCode::OK);
+        match (
+            extract_body_from_response(load_table_result_response_expected).await,
+            extract_body_from_response(load_table_result_response_result).await,
+        ) {
+            (Ok(body_result), Ok(body_expected)) => {
+                assert_eq!(body_result, body_expected);
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                panic!("Failed to extract body: {e}");
+            }
+        }
+    }
+
+    async fn extract_body_from_response(response: Response) -> Result<String, Box<dyn Error>> {
+        let bytes = response.into_body().collect().await?.to_bytes();
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
+    // Duplicated from iceberg-ext/src/catalog/rest/table.rs because package should be independent
+    fn create_table_metadata_mock() -> Arc<TableMetadata> {
+        let schema = Schema::builder().with_schema_id(0).build().unwrap();
+
+        let unbound_spec = UnboundPartitionSpec::default();
+
+        let sort_order = SortOrder::builder()
+            .with_order_id(0)
+            .build(&schema)
+            .unwrap();
+
+        let props = HashMap::new();
+
+        let mut builder = TableMetadataBuilder::new(
+            schema.clone(),
+            unbound_spec.clone(),
+            sort_order.clone(),
+            "memory://dummy".to_string(),
+            FormatVersion::V2,
+            props,
+        )
+        .unwrap();
+        builder = builder.add_schema(schema.clone()).unwrap();
+        builder = builder.set_current_schema(0).unwrap();
+        builder = builder.add_partition_spec(unbound_spec).unwrap();
+        builder = builder
+            .set_default_partition_spec(TableMetadataBuilder::LAST_ADDED)
+            .unwrap();
+        builder = builder.add_sort_order(sort_order).unwrap();
+        builder = builder
+            .set_default_sort_order(i64::from(TableMetadataBuilder::LAST_ADDED))
+            .unwrap();
+
+        let build_result: TableMetadata = builder.build().unwrap().into();
+        build_result.into()
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_empty_list_when_no_header_exists() {
+        let headers = HeaderMap::new();
+        let etags = parse_if_none_match(&headers);
+        assert!(etags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_single_value() {
+        let etag = "\"abcdefghi123456789\"";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_single_value_without_additional_space() {
+        let etag = "\"abcdefghi123456789\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, format!(" {etag}").parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_single_value_with_weak_etag() {
+        let etag = "W/\"abcdefghi123456789\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_asterisk_with_asterisk() {
+        let etag = "*".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["*".into()]);
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn test_parse_if_none_match_returns_multiple_values() {
+        let etag1 = "W/\"abcdefghi123456789\"".to_string();
+        let etag2 = "\"123456789abcdefghi\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::IF_NONE_MATCH,
+            format!("{etag1},{etag2}").parse().unwrap(),
+        );
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(
+            etags,
+            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn test_parse_if_none_match_returns_multiple_values_with_spaces_inbetween() {
+        let etag1 = "W/\"abcdefghi123456789\"".to_string();
+        let etag2 = "\"123456789abcdefghi\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::IF_NONE_MATCH,
+            format!("{etag1}, {etag2}").parse().unwrap(),
+        );
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(
+            etags,
+            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    #[allow(clippy::needless_raw_string_hashes)]
+    fn test_parse_if_none_match_returns_multiple_values_with_mixed_styles() {
+        let etag1 = r#"etag-without-quote"#.to_string();
+        let etag2 = r#""etag-with-normal-quote""#.to_string();
+        let etag3 = r#"""etag-with-quotes-twice"""#.to_string();
+        let etag4 = r#"W/weak-etag-without-quote"#.to_string();
+        let etag5 = r#"W/"weak-etag-with-normal-quote""#.to_string();
+        let etag6 = r#"W/""weak-etag-with-quotes-twice"""#.to_string();
+        let etag7 = r#""W/weak-etag-without-inner-quote-and-outer-quote""#.to_string();
+        let etag8 = r#"""W/weak-etag-without-inner-quote-and-outer-quote-twice"""#.to_string();
+        let etag9 = r#""W/"weak-etag-with-normal-inner-quote-and-outer-quote"""#.to_string();
+        let etag10 =
+            r#"""W/"weak-etag-with-normal-inner-quote-and-outer-quote-twice""""#.to_string();
+        let etag11 = r#""W/""weak-etag-with-inner-quote-twice-and-outer-quote""""#.to_string();
+        let etag12 =
+            r#"""W/""weak-etag-with-inner-quote-twice-and-outer-quote-twice"""""#.to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::IF_NONE_MATCH,
+            format!("{etag1}, {etag2}, {etag3}, {etag4}, {etag5}, {etag6}, {etag7}, {etag8}, {etag9}, {etag10}, {etag11}, {etag12}").parse().unwrap(),
+        );
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(
+            etags,
+            vec![
+                "etag-without-quote".into(),
+                "etag-with-normal-quote".into(),
+                "etag-with-quotes-twice".into(),
+                "weak-etag-without-quote".into(),
+                "weak-etag-with-normal-quote".into(),
+                "weak-etag-with-quotes-twice".into(),
+                "weak-etag-without-inner-quote-and-outer-quote".into(),
+                "weak-etag-without-inner-quote-and-outer-quote-twice".into(),
+                "weak-etag-with-normal-inner-quote-and-outer-quote".into(),
+                "weak-etag-with-normal-inner-quote-and-outer-quote-twice".into(),
+                "weak-etag-with-inner-quote-twice-and-outer-quote".into(),
+                "weak-etag-with-inner-quote-twice-and-outer-quote-twice".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_if_none_match_returns_with_empty_header() {
+        let etag = String::new();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert!(etags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_if_none_match_only_contains_spaces() {
+        let etag = " ".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert!(etags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_if_none_match_is_quoted_twice() {
+        let etag = "\"\"abcdefghi123456789\"\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn test_parse_if_none_match_recieves_multiple_single_headers_with_etags() {
+        let etag = "\"abcdefghi123456789\"".to_string();
+        let etag2 = "\"123456789abcdefghi\"".to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+        headers.append(header::IF_NONE_MATCH, etag2.parse().unwrap());
+
+        let etags = parse_if_none_match(&headers);
+
+        assert_eq!(
+            etags,
+            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+        );
+    }
+
+    #[test]
+    fn test_load_table_result_or_not_modified_into_response_should_return_response_without_header_when_parsing_failed()
+     {
+        let result = LoadTableResultOrNotModified::NotModifiedResponse("\n".into());
+        let response = result.into_response();
+
+        let headers = response.headers();
+
+        assert!(headers.is_empty());
     }
 }

@@ -2043,7 +2043,9 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::NamespaceHierarchy;
+    use std::str::FromStr;
+
+    use lakekeeper::service::{NamespaceHierarchy, UserId};
     use uuid::Uuid;
 
     use super::*;
@@ -2059,6 +2061,37 @@ mod tests {
 
     fn random_namespace(namespace_id: NamespaceId) -> NamespaceHierarchy {
         NamespaceHierarchy::new_with_id(Uuid::nil().into(), namespace_id)
+    }
+
+    #[test]
+    fn test_get_role_assignments_response_serde() {
+        let response = GetRoleAssignmentsResponse {
+            assignments: vec![
+                RoleAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
+                RoleAssignment::Assignee(UserOrRole::Role(
+                    RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
+                        .into_assignees(),
+                )),
+            ],
+        };
+        let serialized = serde_json::to_value(&response).unwrap();
+        println!(
+            "Serialized: {}",
+            serde_json::to_string_pretty(&response).unwrap()
+        );
+        let expected = serde_json::json!({
+          "assignments": [
+            {
+              "type": "ownership",
+              "user": "oidc~user1"
+            },
+            {
+              "type": "assignee",
+              "role": "b0ef03ea-f314-42df-ae26-dc5eeea8259f"
+            }
+          ]
+        });
+        assert_eq!(serialized, expected);
     }
 
     mod openfga_integration_tests {

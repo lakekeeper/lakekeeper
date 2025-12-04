@@ -59,6 +59,7 @@ pub async fn get_default_catalog_from_config() -> anyhow::Result<(
     };
 
     let stats_sink = std::sync::Arc::new(postgres::PostgresStatisticsSink::new(
+        catalog_state.read_pool(),
         catalog_state.write_pool(),
     ));
 

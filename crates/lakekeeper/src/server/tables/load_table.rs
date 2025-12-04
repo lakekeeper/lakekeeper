@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::StorageCredential;
+use iceberg_ext::catalog::rest::{ETag, StorageCredential, create_etag};
 
 use crate::{
     WarehouseId,
     api::iceberg::v1::{
-        ApiContext, LoadTableResult, Result, TableIdent, TableParameters,
+        ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
+        TableParameters,
         tables::{DataAccessMode, LoadTableFilters},
     },
     request_metadata::RequestMetadata,
@@ -16,12 +17,24 @@ use crate::{
     },
     service::{
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
-        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
+        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId, TabularInfo,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{Authorizer, AuthzWarehouseOps},
         secrets::SecretStore,
     },
 };
+
+fn get_etag(table_info: &TabularInfo<TableId>) -> Option<ETag> {
+    table_info
+        .metadata_location
+        .as_ref()
+        .map(lakekeeper_io::Location::as_str)
+        .map(create_etag)
+}
+
+fn etag_already_present(etags: &[ETag], etag: &ETag) -> bool {
+    etags.iter().any(|e| e == etag || e == &ETag::from("*"))
+}
 
 /// Load a table from the catalog
 #[allow(clippy::too_many_lines)]
@@ -31,7 +44,8 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     filters: LoadTableFilters,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-) -> Result<LoadTableResult> {
+    etags: Vec<ETag>,
+) -> Result<LoadTableResultOrNotModified> {
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -58,6 +72,19 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         catalog_state.clone(),
     )
     .await?;
+
+    // ------------------- ETAG CHECK -------------------
+    let etag = get_etag(&table_info);
+    if let Some(etag_value) = etag
+        .as_ref()
+        .map(|e| e.as_str().trim_matches('"'))
+        .map(ETag::from)
+        && etag_already_present(&etags, &etag_value)
+    {
+        return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
+            etag.unwrap(),
+        ));
+    }
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
@@ -133,7 +160,9 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         storage_credentials,
     };
 
-    Ok(load_table_result)
+    Ok(LoadTableResultOrNotModified::LoadTableResult(
+        load_table_result,
+    ))
 }
 
 /// Load a table from the catalog, ensuring that it is not staged
@@ -206,13 +235,17 @@ mod tests {
     use iceberg_ext::catalog::rest::{CreateTableRequest, LoadTableResult};
     use sqlx::PgPool;
 
+    use super::{create_etag, load_table};
     use crate::{
         api::{
             ApiContext,
             iceberg::v1::{
                 NamespaceParameters, TableParameters,
                 namespace::NamespaceService as _,
-                tables::{DataAccess, LoadTableFilters, SnapshotsQuery, TablesService as _},
+                tables::{
+                    DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery,
+                    TablesService as _,
+                },
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
@@ -242,6 +275,60 @@ mod tests {
             stage_create: Some(false),
             properties: None,
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn setup_simple_table(
+        pool: PgPool,
+    ) -> (
+        ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+        NamespaceParameters,
+        TableIdent,
+        LoadTableResult,
+    ) {
+        let prof = crate::server::test::memory_io_profile();
+        let (ctx, warehouse) = setup(
+            pool,
+            prof,
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        // Create namespace
+        let ns_name = NamespaceIdent::new("test_namespace".to_string());
+        let ns_params = NamespaceParameters {
+            namespace: ns_name.clone(),
+            prefix: Some(warehouse.warehouse_id.to_string().into()),
+        };
+
+        let _ = CatalogServer::create_namespace(
+            ns_params.prefix.clone(),
+            crate::api::iceberg::v1::CreateNamespaceRequest {
+                namespace: ns_name.clone(),
+                properties: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        // Create table
+        let table_ident = TableIdent::new(ns_name, "test_table".to_string());
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request("test_table"),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        (ctx, ns_params, table_ident, table)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -462,11 +549,17 @@ mod tests {
             filters,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
 
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
+
         // Verify that all snapshots are present (1, 2, and 3)
+
         let snapshots: Vec<i64> = result
             .metadata
             .snapshots()
@@ -512,9 +605,14 @@ mod tests {
             filters,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
 
         // Verify that only referenced snapshots are present (2 and 3)
         // Snapshot 1 should be filtered out as it's not referenced by any branch
@@ -560,9 +658,14 @@ mod tests {
             filters,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
 
         // Verify that all snapshots are present by default
         let snapshots: Vec<i64> = result
@@ -675,9 +778,14 @@ mod tests {
             filters,
             ctx.clone(),
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+            panic!("Expected LoadTableResult");
+        };
 
         // Verify that no snapshots are returned when using Refs filter with no references
         let snapshots: Vec<i64> = result
@@ -699,9 +807,14 @@ mod tests {
             filters_all,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result_all) = result_all else {
+            panic!("Expected LoadTableResult");
+        };
 
         // Verify that all snapshots are returned with All filter
         let snapshots_all: Vec<i64> = result_all
@@ -738,9 +851,14 @@ mod tests {
             filters_all,
             ctx.clone(),
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result_all) = result_all else {
+            panic!("Expected LoadTableResult");
+        };
 
         let result_refs = CatalogServer::load_table(
             table_params,
@@ -748,9 +866,14 @@ mod tests {
             filters_refs,
             ctx,
             random_request_metadata(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(result_refs) = result_refs else {
+            panic!("Expected LoadTableResult");
+        };
 
         let snapshots_all: Vec<i64> = result_all
             .metadata
@@ -784,5 +907,113 @@ mod tests {
             .collect();
 
         assert_eq!(diff, vec![1]); // Only snapshot 1 should be filtered out
+    }
+
+    #[sqlx::test]
+    async fn test_load_table_returns_not_modified_with_single_matching_etag(pool: PgPool) {
+        let (api_context, namespace_parameters, table_identifier, table) =
+            setup_simple_table(pool).await;
+        let parameters = TableParameters {
+            prefix: namespace_parameters.prefix.clone(),
+            table: table_identifier.clone(),
+        };
+
+        let data_access = DataAccess::not_specified();
+        let filters = LoadTableFilters::default();
+
+        let request_metadata = random_request_metadata();
+
+        let etag = create_etag(&table.metadata_location.unwrap());
+        let etags = vec![etag.as_str().trim_matches('"').into()];
+        let load_table_result = load_table(
+            parameters,
+            data_access,
+            filters,
+            api_context,
+            request_metadata,
+            etags,
+        )
+        .await;
+        let Ok(result) = load_table_result else {
+            panic!("Dummy table could not be loaded");
+        };
+        assert_eq!(
+            result,
+            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_load_table_returns_not_modified_when_given_multiple_etags_and_one_matches(
+        pool: PgPool,
+    ) {
+        let (api_context, namespace_parameters, table_identifier, table) =
+            setup_simple_table(pool).await;
+        let parameters = TableParameters {
+            prefix: namespace_parameters.prefix.clone(),
+            table: table_identifier.clone(),
+        };
+
+        let data_access = DataAccess::not_specified();
+        let filters = LoadTableFilters::default();
+
+        let request_metadata = random_request_metadata();
+
+        let etag = create_etag(&table.metadata_location.unwrap());
+        let etags = vec![
+            "a4b2f6c1dd87".into(),
+            etag.as_str().trim_matches('"').into(),
+            "b6f8c2d4a45f".into(),
+        ];
+        let load_table_result = load_table(
+            parameters,
+            data_access,
+            filters,
+            api_context,
+            request_metadata,
+            etags,
+        )
+        .await;
+        let Ok(result) = load_table_result else {
+            panic!("Dummy table could not be loaded");
+        };
+        assert_eq!(
+            result,
+            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_load_table_returns_not_modified_when_given_wildcard(pool: PgPool) {
+        let (api_context, namespace_parameters, table_identifier, table) =
+            setup_simple_table(pool).await;
+        let parameters = TableParameters {
+            prefix: namespace_parameters.prefix.clone(),
+            table: table_identifier.clone(),
+        };
+
+        let data_access = DataAccess::not_specified();
+        let filters = LoadTableFilters::default();
+
+        let request_metadata = random_request_metadata();
+
+        let etag = create_etag(&table.metadata_location.unwrap());
+        let etags = vec!["*".into()];
+        let load_table_result = load_table(
+            parameters,
+            data_access,
+            filters,
+            api_context,
+            request_metadata,
+            etags,
+        )
+        .await;
+        let Ok(result) = load_table_result else {
+            panic!("Dummy table could not be loaded");
+        };
+        assert_eq!(
+            result,
+            LoadTableResultOrNotModified::NotModifiedResponse(etag)
+        );
     }
 }

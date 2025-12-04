@@ -333,7 +333,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn list_roles_impl(
-        project_id: &ProjectId,
+        project_id: Option<&ProjectId>,
         filter: CatalogListRolesFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,

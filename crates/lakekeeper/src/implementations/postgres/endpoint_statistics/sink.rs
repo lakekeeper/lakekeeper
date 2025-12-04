@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use fxhash::FxHashSet;
 use itertools::Itertools;
-use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
@@ -49,13 +48,17 @@ impl EndpointStatisticsSink for PostgresStatisticsSink {
 
 #[derive(Debug)]
 pub struct PostgresStatisticsSink {
-    pool: sqlx::PgPool,
+    read_pool: sqlx::PgPool,
+    write_pool: sqlx::PgPool,
 }
 
 impl PostgresStatisticsSink {
     #[must_use]
-    pub fn new(pool: sqlx::PgPool) -> Self {
-        Self { pool }
+    pub fn new(read_pool: sqlx::PgPool, write_pool: sqlx::PgPool) -> Self {
+        Self {
+            read_pool,
+            write_pool,
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -63,18 +66,13 @@ impl PostgresStatisticsSink {
         &self,
         stats: Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
     ) -> crate::api::Result<()> {
-        let mut conn = self.pool.begin().await.map_err(|e| {
-            tracing::error!("Failed to start transaction: {e}");
-            e.into_error_model("failed to start transaction")
-        })?;
-
         tracing::debug!(
             "Resolving projects and warehouses for '{}' recorded unique project ids.",
             stats.len()
         );
 
-        let resolved_projects = resolve_projects(&stats, &mut conn).await?;
-        let warehouse_ids = resolve_warehouses(&stats, &mut conn).await?;
+        let resolved_projects = resolve_projects(&stats, &self.read_pool).await?;
+        let warehouse_ids = resolve_warehouses(&stats, &self.read_pool).await?;
 
         let endpoint_calls_total = stats
             .iter()
@@ -173,22 +171,18 @@ impl PostgresStatisticsSink {
                 &uris as _,
                 &status_codes,
                 &counts
-            ).execute(&mut *conn).await.map_err(|e| {
+            ).execute(&self.write_pool).await.map_err(|e| {
             tracing::error!("Failed to insert stats: {e}, lost stats: {stats:?}");
             e.into_error_model("failed to insert stats")
         })?;
 
-        conn.commit().await.map_err(|e| {
-            tracing::error!("Failed to commit: {e}");
-            e.into_error_model("failed to commit")
-        })?;
         Ok(())
     }
 }
 
-async fn resolve_projects(
+async fn resolve_projects<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     stats: &Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
-    conn: &mut Transaction<'_, Postgres>,
+    conn: E,
 ) -> crate::api::Result<FxHashSet<ProjectId>> {
     let projects = stats.keys().map(ToString::to_string).collect_vec();
     tracing::debug!("Resolving '{}' project ids.", projects.len());
@@ -198,7 +192,7 @@ async fn resolve_projects(
                WHERE project_id = ANY($1::text[])"#,
         &projects
     )
-    .fetch_all(&mut **conn)
+    .fetch_all(conn)
     .await
     .map_err(|e| {
         tracing::error!("Failed to fetch project ids: {e}");
@@ -222,9 +216,9 @@ async fn resolve_projects(
     Ok(resolved_projects)
 }
 
-async fn resolve_warehouses(
+async fn resolve_warehouses<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     stats: &Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
-    conn: &mut Transaction<'_, Postgres>,
+    conn: E,
 ) -> crate::api::Result<HashMap<(String, String), Uuid>> {
     let (projects, warehouse_idents): (Vec<_>, Vec<_>) = stats
         .iter()
@@ -247,7 +241,7 @@ async fn resolve_warehouses(
         &projects,
         &warehouse_idents
     )
-    .fetch_all(&mut **conn)
+    .fetch_all(conn)
     .await
     .map_err(|e| {
         tracing::error!("Failed to fetch warehouse ids: {e}");

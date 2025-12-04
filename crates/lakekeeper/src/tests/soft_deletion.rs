@@ -11,7 +11,8 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                DataAccessMode, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                DataAccessMode, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                NamespaceParameters, TableParameters,
                 namespace::NamespaceService,
                 tables::{LoadTableFilters, TablesService},
             },
@@ -226,9 +227,15 @@ async fn test_soft_deletion(pool: PgPool) {
         LoadTableFilters::default(),
         api_context.clone(),
         random_request_metadata(),
+        Vec::new(),
     )
     .await
     .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(table) = table else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
     assert_eq!(table.metadata.uuid(), *undrop_table_id);
 
     // Verify listing tables shows the undropped table

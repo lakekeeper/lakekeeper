@@ -15,7 +15,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{ETag, IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
@@ -40,8 +40,8 @@ use crate::{
             v1::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest,
-                RenameTableRequest, Result, TableIdent, TableParameters,
+                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
                 tables::{DataAccessMode, LoadTableFilters},
             },
         },
@@ -368,8 +368,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         filters: LoadTableFilters,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<LoadTableResult> {
-        load_table::load_table(parameters, data_access, filters, state, request_metadata).await
+        etags: Vec<ETag>,
+    ) -> Result<LoadTableResultOrNotModified> {
+        load_table::load_table(
+            parameters,
+            data_access,
+            filters,
+            state,
+            request_metadata,
+            etags,
+        )
+        .await
     }
 
     async fn load_table_credentials(
@@ -1743,7 +1752,8 @@ pub(crate) mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                    NamespaceParameters, TableParameters,
                     tables::{LoadTableFilters, TablesService as _},
                 },
             },
@@ -1894,7 +1904,7 @@ pub(crate) mod test {
             name: table_name.to_string(),
         };
 
-        CatalogServer::load_table(
+        let load_table_result = CatalogServer::load_table(
             TableParameters {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident,
@@ -1903,9 +1913,16 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
-        .unwrap()
+        .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(load_table_result) = load_table_result
+        else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+        load_table_result
     }
 
     /// Helper to commit table changes
@@ -2031,9 +2048,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2188,9 +2211,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
@@ -2250,9 +2278,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2333,9 +2367,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(&*tab.metadata, &builder.metadata);
     }
 
@@ -2380,9 +2420,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
         let builder = builder
@@ -2423,9 +2469,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
@@ -2467,9 +2518,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
     }
@@ -2775,9 +2831,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v2) = loaded_table_v2 else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(loaded_table_v2.metadata.format_version(), FormatVersion::V2);
 
@@ -2809,9 +2870,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v3) = loaded_table_v3 else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(loaded_table_v3.metadata.format_version(), FormatVersion::V3);
         assert_eq!(loaded_table_v3.metadata.next_row_id(), 0); // Should be 0 after migration
@@ -2860,9 +2926,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(final_table) = final_table else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(final_table.metadata.format_version(), FormatVersion::V3);
         assert_eq!(final_table.metadata.next_row_id(), 50);
@@ -2942,9 +3013,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(tab.metadata.history(), builder.metadata.history());
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3005,9 +3082,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3063,9 +3145,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3102,9 +3189,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(tab.metadata.history(), builder.metadata.history());
         assert_eq!(
             tab.metadata
@@ -4203,9 +4296,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table) = loaded_table else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());

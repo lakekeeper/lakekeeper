@@ -193,6 +193,7 @@ generate_endpoints! {
         UpdateRole(POST, "/management/v1/role/{role_id}"),
         UpdateRoleSourceSystem(PUT, "/management/v1/role/{role_id}/source-system"),
         GetRoleActions(GET, "/management/v1/role/{role_id}/actions"),
+        GetRoleMetadata(GET, "/management/v1/role/{role_id}/metadata"),
         CreateWarehouse(POST, "/management/v1/warehouse"),
         ListProjects(GET, "/management/v1/project-list"),
         CreateProject(POST, "/management/v1/project"),
