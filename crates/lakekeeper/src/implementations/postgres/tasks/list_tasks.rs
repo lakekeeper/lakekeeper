@@ -22,7 +22,7 @@ use crate::{
 #[derive(sqlx::FromRow, Debug)]
 struct TaskRow {
     task_id: Uuid,
-    warehouse_id: Uuid,
+    warehouse_id: Option<Uuid>,
     queue_name: String,
     entity_id: uuid::Uuid,
     entity_type: EntityType,
@@ -42,7 +42,7 @@ struct TaskRow {
 fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
     Ok(APITask {
         task_id: row.task_id.into(),
-        warehouse_id: row.warehouse_id.into(),
+        warehouse_id: WarehouseId::try_from(row.warehouse_id)?,
         queue_name: row.queue_name.into(),
         entity: match row.entity_type {
             EntityType::Table => TaskEntity::Table {
@@ -210,7 +210,7 @@ pub(crate) async fn list_tasks(
         )
         SELECT 
             task_id AS "task_id!",
-            warehouse_id AS "warehouse_id!",
+            warehouse_id AS "warehouse_id",
             queue_name AS "queue_name!",
             entity_id AS "entity_id!",
             entity_type as "entity_type!: EntityType",

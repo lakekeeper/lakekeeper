@@ -4,10 +4,10 @@ use uuid::Uuid;
 use super::EntityType;
 use crate::{
     WarehouseId,
+    api::ErrorModel,
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        InvalidTabularIdentifier, ResolvedTask, TableNamed, ViewNamed,
-        build_tabular_ident_from_vec,
+        ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec,
         tasks::{TaskId, TaskQueueName},
     },
 };
@@ -64,7 +64,7 @@ where
         )
         SELECT 
             task_id as "task_id!",
-            warehouse_id as "warehouse_id!",
+            warehouse_id as "warehouse_id",
             entity_name as "entity_name!",
             entity_id as "entity_id!",
             entity_type as "entity_type!: EntityType",
@@ -73,7 +73,7 @@ where
         UNION ALL
         SELECT 
             task_id as "task_id!",
-            warehouse_id as "warehouse_id!",
+            warehouse_id as "warehouse_id",
             entity_name as "entity_name!",
             entity_id as "entity_id!",
             entity_type as "entity_type!: EntityType",
@@ -95,13 +95,13 @@ where
             let entity = match record.entity_type {
                 EntityType::Table => TableNamed {
                     table_id: record.entity_id.into(),
-                    warehouse_id: record.warehouse_id.into(),
+                    warehouse_id: WarehouseId::try_from(record.warehouse_id)?,
                     table_ident: build_tabular_ident_from_vec(&record.entity_name)?,
                 }
                 .into(),
                 EntityType::View => ViewNamed {
                     view_id: record.entity_id.into(),
-                    warehouse_id: record.warehouse_id.into(),
+                    warehouse_id: WarehouseId::try_from(record.warehouse_id)?,
                     view_ident: build_tabular_ident_from_vec(&record.entity_name)?,
                 }
                 .into(),
@@ -113,7 +113,7 @@ where
                 queue_name,
             })
         })
-        .collect::<Result<_, InvalidTabularIdentifier>>()?;
+        .collect::<Result<_, ErrorModel>>()?;
 
     Ok(result)
 }
