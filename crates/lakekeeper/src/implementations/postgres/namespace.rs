@@ -1053,8 +1053,7 @@ pub(crate) mod tests {
     async fn test_namespace_lifecycle(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
         let properties = HashMap::from_iter(vec![
@@ -1183,8 +1182,7 @@ pub(crate) mod tests {
     async fn test_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
         let properties = Some(HashMap::from_iter(vec![
             ("key1".to_string(), "value1".to_string()),
@@ -1302,8 +1300,7 @@ pub(crate) mod tests {
     async fn test_get_nested_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let parent_namespace_ident = NamespaceIdent::from_vec(vec!["parent".to_string()]).unwrap();
         let parent_namespace: NamespaceWithParent =
@@ -1334,8 +1331,7 @@ pub(crate) mod tests {
     async fn test_get_nonexistent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let result = PostgresBackend::get_namespace_cache_aware(
             warehouse_id,
@@ -1352,8 +1348,7 @@ pub(crate) mod tests {
     async fn test_drop_nonexistent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1377,8 +1372,7 @@ pub(crate) mod tests {
     async fn test_cannot_drop_nonempty_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
         let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
@@ -1414,8 +1408,7 @@ pub(crate) mod tests {
     async fn test_can_recursive_drop_nonempty_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
         let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
@@ -1476,8 +1469,7 @@ pub(crate) mod tests {
     async fn test_cannot_drop_namespace_with_sub_namespaces(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
@@ -1527,8 +1519,7 @@ pub(crate) mod tests {
     async fn test_can_recursive_drop_namespace_with_sub_namespaces(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
@@ -1585,8 +1576,7 @@ pub(crate) mod tests {
     async fn test_case_insensitive_but_preserve_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace_1 = NamespaceIdent::from_vec(vec!["Test".to_string()]).unwrap();
         let namespace_2 = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
@@ -1636,8 +1626,7 @@ pub(crate) mod tests {
     async fn test_cannot_drop_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
@@ -1676,8 +1665,7 @@ pub(crate) mod tests {
     async fn test_can_force_drop_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
@@ -1717,8 +1705,7 @@ pub(crate) mod tests {
     async fn test_can_recursive_force_drop_nonempty_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let outer_namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response =
@@ -1781,8 +1768,7 @@ pub(crate) mod tests {
     async fn test_can_recursive_force_drop_namespace_with_protected_table(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let outer_namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
 
         let response =
@@ -1851,8 +1837,7 @@ pub(crate) mod tests {
     #[sqlx::test]
     async fn test_list_namespaces_with_hierarchy(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         // Create a hierarchy: root, root.child, root.child.grandchild
         let root = NamespaceIdent::from_vec(vec!["root".to_string()]).unwrap();
@@ -1970,8 +1955,7 @@ pub(crate) mod tests {
     #[sqlx::test]
     async fn test_list_namespaces_multiple_hierarchies(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         // Create multiple root namespaces with children
         // Root A with child A.1
@@ -2076,8 +2060,7 @@ pub(crate) mod tests {
     #[sqlx::test]
     async fn test_list_namespaces_pagination_with_hierarchy(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         // Create parent and multiple children
         let parent = NamespaceIdent::from_vec(vec!["parent".to_string()]).unwrap();
@@ -2167,8 +2150,7 @@ pub(crate) mod tests {
     #[sqlx::test]
     async fn test_list_namespaces_deep_hierarchy(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let (_, warehouse_id) =
-            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         // Create a 4-level deep hierarchy
         let level1 = NamespaceIdent::from_vec(vec!["level1".to_string()]).unwrap();
