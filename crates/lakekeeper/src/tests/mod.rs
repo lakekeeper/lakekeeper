@@ -185,7 +185,11 @@ pub(crate) async fn setup<T: Authorizer>(
         )
         .await
         .unwrap();
-        additional_warehouses.push((create_wh_response.project_id(), create_wh_response.warehouse_id(), warehouse_name.clone()));
+        additional_warehouses.push((
+            create_wh_response.project_id(),
+            create_wh_response.warehouse_id(),
+            warehouse_name.clone(),
+        ));
     }
     (
         api_context,

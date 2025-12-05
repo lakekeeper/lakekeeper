@@ -12,9 +12,8 @@ use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
     service::{
-        CatalogStore,
-        CatalogWarehouseOps, SecretStore, WarehouseIdMissing, WarehouseIdNotFound, WarehouseStatus,
-        tasks::TaskQueueName,
+        CatalogStore, CatalogWarehouseOps, SecretStore, WarehouseIdMissing, WarehouseIdNotFound,
+        WarehouseStatus, tasks::TaskQueueName,
     },
 };
 
@@ -83,22 +82,23 @@ pub(crate) async fn tabular_purge_worker<C: CatalogStore, S: SecretStore>(
             tracing::info!("Graceful shutdown: exiting `{QN_STR}` worker");
             return;
         };
-        let span = match task.task_metadata.warehouse_id {
-            Some(warehouse_id) => tracing::debug_span!(
+        let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
+            tracing::debug_span!(
                 QN_STR,
                 location = %task.data.tabular_location,
                 warehouse_id = %warehouse_id,
                 entity_type = %task.task_metadata.entity_id.entity_type().to_string(),
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
-            ),
-            None => tracing::debug_span!(
+            )
+        } else {
+            tracing::debug_span!(
                 QN_STR,
                 location = %task.data.tabular_location,
                 entity_type = %task.task_metadata.entity_id.entity_type().to_string(),
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
-            ),
+            )
         };
 
         instrumented_purge::<_, C>(catalog_state.clone(), &secret_state, &task)

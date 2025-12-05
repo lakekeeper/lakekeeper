@@ -409,8 +409,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use crate::{
-        ProjectId,
-        WarehouseId,
+        ProjectId, WarehouseId,
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             CatalogState, PostgresBackend,
@@ -679,7 +678,8 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_correct_location(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_id, _, _, metadata_location, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, metadata_location, _) =
+            prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         super::super::drop_tabular(
             warehouse_id,
@@ -840,7 +840,8 @@ pub(crate) mod tests {
         ProjectId,
     ) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let (project_id, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
@@ -880,7 +881,7 @@ pub(crate) mod tests {
             namespace,
             "myview".into(),
             metadata_location,
-            project_id
+            project_id,
         )
     }
 }

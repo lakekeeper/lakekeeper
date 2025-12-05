@@ -1290,8 +1290,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
         let project_id = warehouse_resolved.project_id.clone();
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        C::set_task_queue_config(project_id, warehouse_id, queue_name, request, transaction.transaction())
-            .await?;
+        C::set_task_queue_config(
+            project_id,
+            warehouse_id,
+            queue_name,
+            request,
+            transaction.transaction(),
+        )
+        .await?;
         transaction.commit().await?;
         Ok(())
     }

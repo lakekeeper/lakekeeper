@@ -120,14 +120,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use google_cloud_auth::project::Project;
+
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
     use crate::{
-        ProjectId,
-        WarehouseId,
+        ProjectId, WarehouseId,
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success,
             test::{setup_two_warehouses, setup_warehouse},
@@ -141,6 +140,7 @@ mod tests {
         },
     };
 
+    #[allow(clippy::too_many_arguments)]
     async fn queue_task_helper(
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
@@ -177,7 +177,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_resolve_tasks_empty_input(pool: PgPool) {
-        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
 
         let result = resolve_tasks(Some(warehouse_id), &[], &pool).await.unwrap();
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_resolve_tasks_nonexistent_tasks(pool: PgPool) {
-        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
 
         let nonexistent_task_ids = vec![
             TaskId::from(Uuid::now_v7()),
@@ -471,7 +471,8 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_with_specific_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (project_id1, warehouse_id1, project_id2, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
+        let (project_id1, warehouse_id1, project_id2, warehouse_id2) =
+            setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
@@ -533,7 +534,8 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_without_warehouse_filter(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (project_id1, warehouse_id1, project_id2, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
+        let (project_id1, warehouse_id1, project_id2, warehouse_id2) =
+            setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();

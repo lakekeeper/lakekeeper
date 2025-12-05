@@ -1795,7 +1795,8 @@ pub(crate) mod tests {
     async fn test_drop_table(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let (project_id, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let mut transaction = pool.begin().await.unwrap();

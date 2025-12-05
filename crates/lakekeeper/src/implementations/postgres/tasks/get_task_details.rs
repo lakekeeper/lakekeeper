@@ -259,8 +259,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ProjectId,
-        WarehouseId,
+        ProjectId, WarehouseId,
         api::management::v1::tasks::TaskStatus as APITaskStatus,
         implementations::postgres::tasks::{
             check_and_heartbeat_task, pick_task, record_failure, record_success,
@@ -589,7 +588,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_task_details_nonexistent_task(pool: PgPool) {
-        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
         let task_id = TaskId::from(Uuid::now_v7());
 
         let result = get_task_details(warehouse_id, task_id, 10, &pool)

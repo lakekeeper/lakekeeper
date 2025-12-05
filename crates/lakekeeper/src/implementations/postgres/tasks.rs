@@ -308,7 +308,7 @@ pub(crate) async fn pick_task(
         let project_id = ProjectId::try_new(task.project_id)?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
-                project_id: project_id,
+                project_id,
                 warehouse_id: task.warehouse_id.map(WarehouseId::from),
                 entity_id: match task.entity_type {
                     EntityType::View => EntityId::View(task.entity_id.into()),
@@ -1127,6 +1127,7 @@ mod test {
         },
     };
 
+    #[allow(clippy::too_many_arguments)]
     async fn queue_task(
         conn: &mut PgConnection,
         queue_name: &TaskQueueName,
@@ -1228,7 +1229,9 @@ mod test {
         (wh.warehouse_id, wh.project_id)
     }
 
-    pub(crate) async fn setup_two_warehouses(pool: PgPool) -> (ProjectId, WarehouseId, ProjectId, WarehouseId) {
+    pub(crate) async fn setup_two_warehouses(
+        pool: PgPool,
+    ) -> (ProjectId, WarehouseId, ProjectId, WarehouseId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -1240,7 +1243,12 @@ mod test {
             2,
         )
         .await;
-        (wh.project_id, wh.warehouse_id, wh.additional_warehouses[0].0.clone(), wh.additional_warehouses[0].1)
+        (
+            wh.project_id,
+            wh.warehouse_id,
+            wh.additional_warehouses[0].0.clone(),
+            wh.additional_warehouses[0].1,
+        )
     }
 
     #[sqlx::test]
@@ -1952,9 +1960,15 @@ mod test {
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
-        set_task_queue_config(&mut conn, &tq_name, project_id.clone(), warehouse_id, config)
-            .await
-            .unwrap();
+        set_task_queue_config(
+            &mut conn,
+            &tq_name,
+            project_id.clone(),
+            warehouse_id,
+            config,
+        )
+        .await
+        .unwrap();
         let payload = serde_json::json!("our-task");
         let _task = queue_task(
             &mut conn,

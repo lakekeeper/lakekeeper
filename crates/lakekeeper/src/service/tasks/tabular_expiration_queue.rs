@@ -91,8 +91,8 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         let entity_id = task.task_metadata.entity_id;
         let entity_id_uuid = entity_id.as_uuid();
 
-        let span = match task.task_metadata.warehouse_id {
-            Some(warehouse_id) => tracing::debug_span!(
+        let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
+            tracing::debug_span!(
                 QN_STR,
                 warehouse_id = %warehouse_id,
                 entity_type = %entity_id.entity_type().to_string(),
@@ -100,15 +100,16 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
                 deletion_kind = ?task.data.deletion_kind,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
-            ),
-            None => tracing::debug_span!(
+            )
+        } else {
+            tracing::debug_span!(
                 QN_STR,
                 entity_type = %entity_id.entity_type().to_string(),
                 entity_id = %entity_id_uuid,
                 deletion_kind = ?task.data.deletion_kind,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
-            ),
+            )
         };
 
         instrumented_expire::<C, A>(catalog_state.clone(), authorizer.clone(), &task)
@@ -197,13 +198,8 @@ where
             location
         }
         EntityId::View(view_id) => {
-            let location = match C::drop_tabular(
-                warehouse_id,
-                view_id,
-                true,
-                trx.transaction(),
-            )
-            .await
+            let location = match C::drop_tabular(warehouse_id, view_id, true, trx.transaction())
+                .await
             {
                 Err(DropTabularError::TabularNotFound(..)) => {
                     tracing::warn!(

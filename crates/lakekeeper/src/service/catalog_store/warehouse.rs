@@ -173,12 +173,16 @@ impl From<WarehouseIdNotFound> for ErrorModel {
 pub struct WarehouseIdMissing {
     pub stack: Vec<String>,
 }
+impl Default for WarehouseIdMissing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WarehouseIdMissing {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            stack: Vec::new(),
-        }
+        Self { stack: Vec::new() }
     }
 }
 impl_error_stack_methods!(WarehouseIdMissing);

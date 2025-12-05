@@ -282,8 +282,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ProjectId,
-        WarehouseId,
+        ProjectId, WarehouseId,
         api::management::v1::tasks::{ListTasksRequest, TaskStatus as APITaskStatus},
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success, test::setup_warehouse,
@@ -380,7 +379,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_empty_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
 
         let request = ListTasksRequest::default();
         let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
@@ -443,12 +442,26 @@ mod tests {
         let tq_name2 = generate_tq_name();
 
         // Queue tasks in different queues
-        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let task_id2 = queue_task_helper(&mut conn, &tq_name2, entity_id2, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id1 = queue_task_helper(
+            &mut conn,
+            &tq_name1,
+            entity_id1,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let task_id2 = queue_task_helper(
+            &mut conn,
+            &tq_name2,
+            entity_id2,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         let request = ListTasksRequest::default();
         let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
@@ -472,12 +485,26 @@ mod tests {
         let tq_name2 = generate_tq_name();
 
         // Queue tasks in different queues
-        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let _task_id2 = queue_task_helper(&mut conn, &tq_name2, entity_id2, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id1 = queue_task_helper(
+            &mut conn,
+            &tq_name1,
+            entity_id1,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let _task_id2 = queue_task_helper(
+            &mut conn,
+            &tq_name2,
+            entity_id2,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Filter by first queue only
         let request = ListTasksRequest {
@@ -500,12 +527,26 @@ mod tests {
         let tq_name = generate_tq_name();
 
         // Queue two tasks
-        queue_task_helper(&mut conn, &tq_name, entity_id1, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        queue_task_helper(&mut conn, &tq_name, entity_id2, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id1,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id2,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Pick up one task to make it running
         let _picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
@@ -543,12 +584,26 @@ mod tests {
         let tq_name = generate_tq_name();
 
         // Queue tasks for different entities
-        let task_id1 = queue_task_helper(&mut conn, &tq_name, entity_id1, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let _task_id2 = queue_task_helper(&mut conn, &tq_name, entity_id2, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id1 = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id1,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let _task_id2 = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id2,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Filter by first entity only
         let request = ListTasksRequest {
@@ -583,9 +638,16 @@ mod tests {
         let after_time = now + chrono::Duration::hours(1);
 
         // Queue a task
-        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Filter with created_after (should include our task)
         let request = ListTasksRequest {
@@ -633,9 +695,16 @@ mod tests {
         let mut seen_ids = HashSet::new();
         for _ in 0..5 {
             let entity_id = EntityId::Table(Uuid::now_v7().into());
-            let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id.clone(), warehouse_id, None)
-                .await
-                .unwrap();
+            let task_id = queue_task_helper(
+                &mut conn,
+                &tq_name,
+                entity_id,
+                project_id.clone(),
+                warehouse_id,
+                None,
+            )
+            .await
+            .unwrap();
             task_ids.push(task_id);
         }
 
@@ -1155,9 +1224,16 @@ mod tests {
         let tq_name = generate_tq_name();
 
         // Queue and complete a task
-        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id,warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Pick up the task
         let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
@@ -1191,15 +1267,36 @@ mod tests {
         let tq_name = generate_tq_name();
 
         // Queue three tasks
-        let task_id1 = queue_task_helper(&mut conn, &tq_name, entity_id1, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let task_id2 = queue_task_helper(&mut conn, &tq_name, entity_id2, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let task_id3 = queue_task_helper(&mut conn, &tq_name, entity_id3, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id1 = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id1,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let task_id2 = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id2,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let task_id3 = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id3,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Complete first task
         let picked_task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
@@ -1253,9 +1350,16 @@ mod tests {
         let tq_name = generate_tq_name();
 
         // Queue a task
-        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // First attempt - pick and fail
         let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
@@ -1295,9 +1399,16 @@ mod tests {
         let tq_name = generate_tq_name();
 
         // Queue a task in the correct warehouse
-        let _task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let _task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Try to list tasks from wrong warehouse
         let request = ListTasksRequest::default();
@@ -1320,15 +1431,36 @@ mod tests {
         let tq_name2 = generate_tq_name();
 
         // Queue tasks in different queues and entities
-        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let _task_id2 = queue_task_helper(&mut conn, &tq_name1, entity_id2, project_id.clone(), warehouse_id, None)
-            .await
-            .unwrap();
-        let _task_id3 = queue_task_helper(&mut conn, &tq_name2, entity_id1, project_id, warehouse_id, None)
-            .await
-            .unwrap();
+        let task_id1 = queue_task_helper(
+            &mut conn,
+            &tq_name1,
+            entity_id1,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let _task_id2 = queue_task_helper(
+            &mut conn,
+            &tq_name1,
+            entity_id2,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let _task_id3 = queue_task_helper(
+            &mut conn,
+            &tq_name2,
+            entity_id1,
+            project_id,
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Filter by queue_name AND entity
         let request = ListTasksRequest {
