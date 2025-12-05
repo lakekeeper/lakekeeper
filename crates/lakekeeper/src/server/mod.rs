@@ -427,7 +427,7 @@ pub(crate) mod test {
 
         let mut wh_ids = Vec::with_capacity(num_warehouses);
         wh_ids.push(res.warehouse_id);
-        for (wh_id, _) in &res.additional_warehouses {
+        for (_, wh_id, _) in &res.additional_warehouses {
             wh_ids.push(*wh_id);
         }
         assert_eq!(wh_ids.len(), num_warehouses);

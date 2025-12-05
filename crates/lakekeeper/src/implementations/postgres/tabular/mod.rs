@@ -1695,7 +1695,7 @@ mod tests {
 
     pub(super) async fn setup_test_tabular(pool: &sqlx::PgPool, protected: bool) -> TableInfo {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace =
             iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
@@ -1745,7 +1745,7 @@ mod tests {
     #[sqlx::test]
     async fn test_drop_tabular_table_not_found_returns_404(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let mut transaction = pool.begin().await.unwrap();
         let nonexistent_table_id = TabularId::Table(Uuid::now_v7().into());
@@ -1875,7 +1875,7 @@ mod tests {
     #[sqlx::test]
     async fn test_drop_tabular_view_not_found_returns_404(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let mut transaction = pool.begin().await.unwrap();
         let nonexistent_view_id = TabularId::View(Uuid::now_v7().into());
@@ -1927,7 +1927,7 @@ mod tests {
     #[sqlx::test]
     async fn test_search_tabular_no_results(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let res = search_tabular(
             warehouse_id,
@@ -1943,7 +1943,7 @@ mod tests {
     #[sqlx::test]
     async fn test_search_tabular(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace1 = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
         let namespace1_id = initialize_namespace(state.clone(), warehouse_id, &namespace1, None)
             .await
@@ -2009,7 +2009,7 @@ mod tests {
     #[sqlx::test]
     async fn test_search_tabular_by_uuid(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["hr_ns".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await

@@ -796,7 +796,7 @@ pub(crate) mod test {
         project_id: Option<&ProjectId>,
         secret_id: Option<SecretId>,
         create_project: bool,
-    ) -> crate::WarehouseId {
+    ) -> (crate::ProjectId, crate::WarehouseId) {
         let project_id = project_id.map_or(
             ProjectId::from(uuid::Uuid::nil()),
             std::borrow::ToOwned::to_owned,
@@ -838,13 +838,13 @@ pub(crate) mod test {
         .unwrap();
 
         t.commit().await.unwrap();
-        warehouse.warehouse_id
+        (project_id, warehouse.warehouse_id)
     }
 
     #[sqlx::test]
     async fn test_get_warehouse_by_name(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
         let fetched_warehouse = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
@@ -920,7 +920,7 @@ pub(crate) mod test {
     async fn test_list_warehouses(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id_1 =
+        let (_, warehouse_id_1) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
         let warehouses = PostgresBackend::list_warehouses(&project_id, None, state)
             .await
@@ -934,7 +934,7 @@ pub(crate) mod test {
     async fn test_list_warehouses_active_filter(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id_1 =
+        let (_, warehouse_id_1) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
         // Rename warehouse 1
@@ -954,7 +954,7 @@ pub(crate) mod test {
         transaction.commit().await.unwrap();
 
         // Create warehouse 2
-        let warehouse_id_2 =
+        let (_, warehouse_id_2) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, false).await;
 
         // Assert active whs
@@ -982,7 +982,7 @@ pub(crate) mod test {
     async fn test_rename_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id =
+        let (_, warehouse_id) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
@@ -1055,7 +1055,7 @@ pub(crate) mod test {
     async fn test_cannot_drop_protected_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id =
+        let (_, warehouse_id) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
         let mut trx = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1092,7 +1092,7 @@ pub(crate) mod test {
     async fn test_can_force_drop_protected_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id =
+        let (_, warehouse_id) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
         let mut trx = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1115,7 +1115,7 @@ pub(crate) mod test {
     async fn test_warehouse_statistics_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id =
+        let (_, warehouse_id) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
         let mut t = PostgresTransaction::begin_write(state.clone())
@@ -1214,7 +1214,7 @@ pub(crate) mod test {
     async fn test_delete_non_existing_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
-        let warehouse_id =
+        let (_, warehouse_id) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
         let mut trx = PostgresTransaction::begin_write(state.clone())
             .await

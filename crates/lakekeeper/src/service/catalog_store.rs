@@ -665,6 +665,7 @@ where
     ) -> Result<()>;
 
     async fn set_task_queue_config_impl(
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,

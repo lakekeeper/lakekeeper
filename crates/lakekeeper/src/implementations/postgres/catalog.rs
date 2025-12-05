@@ -776,12 +776,13 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn set_task_queue_config_impl(
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        set_task_queue_config(transaction, queue_name, warehouse_id, config).await
+        set_task_queue_config(transaction, queue_name, project_id, warehouse_id, config).await
     }
 
     async fn get_task_queue_config_impl(
