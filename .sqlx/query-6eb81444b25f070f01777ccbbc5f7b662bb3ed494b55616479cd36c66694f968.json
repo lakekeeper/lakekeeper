@@ -115,6 +115,7 @@
                       "management-v1-get-namespace-actions",
                       "management-v1-get-table-actions",
                       "management-v1-get-view-actions",
+                      "management-v1-get-role-metadata",
                       "management-v1-update-role-source-system"
                     ]
                   }

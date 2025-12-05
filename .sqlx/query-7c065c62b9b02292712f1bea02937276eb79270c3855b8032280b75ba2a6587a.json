@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO task_config (queue_name, project_id, warehouse_id, config, max_time_since_last_heartbeat)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (queue_name, project_id, warehouse_id) DO UPDATE\n        SET config = $4, max_time_since_last_heartbeat = COALESCE($5, task_config.max_time_since_last_heartbeat)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Interval"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c065c62b9b02292712f1bea02937276eb79270c3855b8032280b75ba2a6587a"
+}
