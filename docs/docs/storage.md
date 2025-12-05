@@ -36,7 +36,7 @@ For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additio
 
 ## S3
 
-We support remote signing and vended-credentials with S3 compatible storages & AWS. Both provide a secure way to access data on S3:
+We support remote signing and vended-credentials with S3-compatible storages & AWS. Both provide a secure way to access data on S3:
 
 * **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
 * **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
