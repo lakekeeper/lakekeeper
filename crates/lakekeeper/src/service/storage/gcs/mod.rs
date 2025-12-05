@@ -346,6 +346,11 @@ impl GcsProfile {
         let mut table_properties = TableProperties::default();
 
         if !data_access.provide_credentials() || !self.sts_enabled {
+            tracing::debug!(
+                "Not providing GCS credentials - provide_credentials: {}, sts_enabled: {}",
+                data_access.provide_credentials(),
+                self.sts_enabled
+            );
             return Ok(TableConfig {
                 creds: table_properties.clone(),
                 config: table_properties,

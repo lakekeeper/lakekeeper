@@ -259,6 +259,11 @@ impl AdlsProfile {
         stc_request: ShortTermCredentialsRequest,
     ) -> Result<TableConfig, TableConfigError> {
         if !data_access.provide_credentials() || !self.sas_enabled {
+            tracing::debug!(
+                "Not providing Azure SAS credentials - provide_credentials: {}, sas_enabled: {}",
+                data_access.provide_credentials(),
+                self.sas_enabled
+            );
             return Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),

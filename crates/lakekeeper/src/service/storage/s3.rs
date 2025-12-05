@@ -434,17 +434,15 @@ impl S3Profile {
                     vended_credentials = false;
                 }
 
-                // If vended_credentials is False and remote_signing is False,
-                // use vended_credentials for wider compatability if possible.
+                // If neither method was explicitly requested or both were disabled,
+                // prefer vended credentials for wider compatibility, then fall back to remote signing
                 if !vended_credentials && !remote_signing {
-                    if can_use_vended_credentials {
-                        vended_credentials = true;
-                    } else if self.remote_signing_enabled {
-                        remote_signing = true;
-                    } else {
-                        tracing::debug!(
-                            "Both vended_credentials and remote_signing are disabled for this S3 warehouse. Cannot return any credentials."
-                        );
+                    match (can_use_vended_credentials, self.remote_signing_enabled) {
+                        (true, _) => vended_credentials = true,
+                        (false, true) => remote_signing = true,
+                        (false, false) => tracing::debug!(
+                            "Both vended_credentials and remote_signing are disabled for this S3 warehouse. Cannot return credentials."
+                        ),
                     }
                 }
                 (remote_signing, vended_credentials)
