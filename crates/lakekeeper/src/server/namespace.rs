@@ -546,12 +546,14 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             t.transaction(),
         )
         .await?;
+        let project_id = &warehouse.project_id;
 
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
                 TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
-                        warehouse_id: warehouse.warehouse_id,
+                        project_id: project_id.clone(),
+                        warehouse_id: warehouse.warehouse_id.into(),
                         entity_id: EntityId::from(*tabular_id),
                         parent_task_id: None,
                         schedule_for: None,

@@ -157,6 +157,11 @@ impl CreateWarehouseResponse {
     pub fn warehouse_id(&self) -> WarehouseId {
         self.0.warehouse_id
     }
+
+    #[must_use]
+    pub fn project_id(&self) -> ProjectId {
+        self.0.project_id.clone()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1248,7 +1253,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        authorizer
+        let warehouse_resolved = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
@@ -1283,10 +1288,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
-
+        let project_id = warehouse_resolved.project_id.clone();
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-
-        C::set_task_queue_config(warehouse_id, queue_name, request, transaction.transaction())
+        C::set_task_queue_config(project_id, warehouse_id, queue_name, request, transaction.transaction())
             .await?;
         transaction.commit().await?;
         Ok(())

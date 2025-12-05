@@ -7,8 +7,9 @@ use strum::EnumIter;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{
-    CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+use crate::{
+    ProjectId,
+    service::{CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed},
 };
 
 mod task_queues_runner;
@@ -193,6 +194,10 @@ impl AsRef<TaskAttemptId> for TaskAttemptId {
 pub enum TaskFilter {
     WarehouseId(WarehouseId),
     TaskIds(Vec<TaskId>),
+    ProjectId {
+        project_id: ProjectId,
+        include_sub_tasks: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -208,7 +213,8 @@ pub struct TaskInput {
 /// Metadata stored for each task in the database backend.
 /// This is separate from the task payload, which is specific to each task type.
 pub struct TaskMetadata {
-    pub warehouse_id: WarehouseId,
+    pub warehouse_id: Option<WarehouseId>,
+    pub project_id: ProjectId,
     pub parent_task_id: Option<TaskId>,
     pub entity_id: EntityId,
     pub entity_name: Vec<String>,

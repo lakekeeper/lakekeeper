@@ -282,6 +282,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        ProjectId,
         WarehouseId,
         api::management::v1::tasks::{ListTasksRequest, TaskStatus as APITaskStatus},
         implementations::postgres::tasks::{
@@ -328,6 +329,7 @@ mod tests {
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         entity_id: EntityId,
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -336,6 +338,7 @@ mod tests {
             queue_name,
             entity_id,
             vec!["ns".to_string(), "table".to_string()],
+            project_id,
             warehouse_id,
             payload,
         )
@@ -347,6 +350,7 @@ mod tests {
         queue_name: &TaskQueueName,
         entity_id: EntityId,
         entity_name: Vec<String>,
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -355,7 +359,8 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: TaskMetadata {
-                    warehouse_id,
+                    project_id,
+                    warehouse_id: warehouse_id.into(),
                     parent_task_id: None,
                     entity_id,
                     entity_name,
@@ -375,7 +380,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_empty_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let request = ListTasksRequest::default();
         let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
@@ -387,7 +392,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_single_active_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Table(Uuid::now_v7().into());
         let entity_name = vec!["ns".to_string(), "table".to_string()];
         let tq_name = generate_tq_name();
@@ -399,6 +404,7 @@ mod tests {
             &tq_name,
             entity_id,
             entity_name.clone(),
+            project_id,
             warehouse_id,
             Some(payload.clone()),
         )
@@ -430,17 +436,17 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_multiple_tasks_different_queues(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id1 = EntityId::Table(Uuid::now_v7().into());
         let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
         // Queue tasks in different queues
-        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, warehouse_id, None)
+        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let task_id2 = queue_task_helper(&mut conn, &tq_name2, entity_id2, warehouse_id, None)
+        let task_id2 = queue_task_helper(&mut conn, &tq_name2, entity_id2, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -459,17 +465,17 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_filter_by_queue_name(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id1 = EntityId::Table(Uuid::now_v7().into());
         let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
         // Queue tasks in different queues
-        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, warehouse_id, None)
+        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let _task_id2 = queue_task_helper(&mut conn, &tq_name2, entity_id2, warehouse_id, None)
+        let _task_id2 = queue_task_helper(&mut conn, &tq_name2, entity_id2, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -488,16 +494,16 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_filter_by_status(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id1 = EntityId::Table(Uuid::now_v7().into());
         let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue two tasks
-        queue_task_helper(&mut conn, &tq_name, entity_id1, warehouse_id, None)
+        queue_task_helper(&mut conn, &tq_name, entity_id1, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        queue_task_helper(&mut conn, &tq_name, entity_id2, warehouse_id, None)
+        queue_task_helper(&mut conn, &tq_name, entity_id2, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -531,16 +537,16 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_filter_by_entity(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id1 = EntityId::Table(Uuid::now_v7().into());
         let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue tasks for different entities
-        let task_id1 = queue_task_helper(&mut conn, &tq_name, entity_id1, warehouse_id, None)
+        let task_id1 = queue_task_helper(&mut conn, &tq_name, entity_id1, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let _task_id2 = queue_task_helper(&mut conn, &tq_name, entity_id2, warehouse_id, None)
+        let _task_id2 = queue_task_helper(&mut conn, &tq_name, entity_id2, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -567,7 +573,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_filter_by_created_date_range(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
@@ -577,7 +583,7 @@ mod tests {
         let after_time = now + chrono::Duration::hours(1);
 
         // Queue a task
-        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, warehouse_id, None)
+        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -619,7 +625,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_pagination(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         // Queue 5 tasks
@@ -627,7 +633,7 @@ mod tests {
         let mut seen_ids = HashSet::new();
         for _ in 0..5 {
             let entity_id = EntityId::Table(Uuid::now_v7().into());
-            let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, warehouse_id, None)
+            let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id.clone(), warehouse_id, None)
                 .await
                 .unwrap();
             task_ids.push(task_id);
@@ -705,7 +711,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_pagination_mixed_active_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         // Create 10 tasks - mix of active and completed
@@ -718,6 +724,7 @@ mod tests {
                 &mut conn,
                 &tq_name,
                 entity_id,
+                project_id.clone(),
                 warehouse_id,
                 Some(serde_json::json!({"index": i})),
             )
@@ -823,7 +830,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_pagination_only_completed_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         // Create and complete 6 tasks
@@ -836,6 +843,7 @@ mod tests {
                 &mut conn,
                 &tq_name,
                 entity_id,
+                project_id.clone(),
                 warehouse_id,
                 Some(serde_json::json!({"completed_index": i})),
             )
@@ -903,7 +911,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_pagination_mixed_scenarios_with_retries(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         // Create 8 tasks with different outcomes
@@ -916,6 +924,7 @@ mod tests {
                 &mut conn,
                 &tq_name,
                 entity_id,
+                project_id.clone(),
                 warehouse_id,
                 Some(serde_json::json!({"retry_test_index": i})),
             )
@@ -1038,7 +1047,7 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_pagination_across_multiple_queues(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
@@ -1053,6 +1062,7 @@ mod tests {
                 &mut conn,
                 &tq_name1,
                 entity_id,
+                project_id.clone(),
                 warehouse_id,
                 Some(serde_json::json!({"queue1_index": i})),
             )
@@ -1068,6 +1078,7 @@ mod tests {
                 &mut conn,
                 &tq_name2,
                 entity_id,
+                project_id.clone(),
                 warehouse_id,
                 Some(serde_json::json!({"queue2_index": i})),
             )
@@ -1139,12 +1150,12 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_completed_tasks_from_log(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue and complete a task
-        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, warehouse_id, None)
+        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id,warehouse_id, None)
             .await
             .unwrap();
 
@@ -1173,20 +1184,20 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_mixed_active_and_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id1 = EntityId::Table(Uuid::now_v7().into());
         let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let entity_id3 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue three tasks
-        let task_id1 = queue_task_helper(&mut conn, &tq_name, entity_id1, warehouse_id, None)
+        let task_id1 = queue_task_helper(&mut conn, &tq_name, entity_id1, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let task_id2 = queue_task_helper(&mut conn, &tq_name, entity_id2, warehouse_id, None)
+        let task_id2 = queue_task_helper(&mut conn, &tq_name, entity_id2, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let task_id3 = queue_task_helper(&mut conn, &tq_name, entity_id3, warehouse_id, None)
+        let task_id3 = queue_task_helper(&mut conn, &tq_name, entity_id3, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
 
@@ -1237,12 +1248,12 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_with_retries(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue a task
-        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, warehouse_id, None)
+        let task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -1278,13 +1289,13 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_wrong_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let wrong_warehouse_id = WarehouseId::from(Uuid::now_v7());
         let entity_id = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_tq_name();
 
         // Queue a task in the correct warehouse
-        let _task_id = queue_task_helper(&mut conn, &tq_name, entity_id, warehouse_id, None)
+        let _task_id = queue_task_helper(&mut conn, &tq_name, entity_id, project_id, warehouse_id, None)
             .await
             .unwrap();
 
@@ -1302,20 +1313,20 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_complex_filters(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity_id1 = EntityId::Table(Uuid::now_v7().into());
         let entity_id2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_tq_name();
         let tq_name2 = generate_tq_name();
 
         // Queue tasks in different queues and entities
-        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, warehouse_id, None)
+        let task_id1 = queue_task_helper(&mut conn, &tq_name1, entity_id1, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let _task_id2 = queue_task_helper(&mut conn, &tq_name1, entity_id2, warehouse_id, None)
+        let _task_id2 = queue_task_helper(&mut conn, &tq_name1, entity_id2, project_id.clone(), warehouse_id, None)
             .await
             .unwrap();
-        let _task_id3 = queue_task_helper(&mut conn, &tq_name2, entity_id1, warehouse_id, None)
+        let _task_id3 = queue_task_helper(&mut conn, &tq_name2, entity_id1, project_id, warehouse_id, None)
             .await
             .unwrap();
 

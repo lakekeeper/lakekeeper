@@ -8,7 +8,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use super::{CatalogStore, Transaction};
 use crate::{
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::management::v1::{
         tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
         warehouse::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
@@ -246,12 +246,14 @@ where
     }
 
     async fn set_task_queue_config(
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        Self::set_task_queue_config_impl(warehouse_id, queue_name, config, transaction).await
+        Self::set_task_queue_config_impl(project_id, warehouse_id, queue_name, config, transaction)
+            .await
     }
 
     async fn get_task_queue_config(

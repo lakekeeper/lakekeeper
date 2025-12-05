@@ -710,7 +710,7 @@ mod tests {
 
     async fn setup_table(pool: sqlx::PgPool) -> (TableInfo, TableMetadata) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace_ident = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
         let namespace =
             initialize_namespace(state.clone(), warehouse_id, &namespace_ident, None).await;

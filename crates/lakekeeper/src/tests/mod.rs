@@ -1,4 +1,5 @@
 use crate::{
+    ProjectId,
     api::{
         RequestMetadata,
         management::v1::{
@@ -58,8 +59,9 @@ pub fn memory_io_profile() -> StorageProfile {
 #[derive(Debug)]
 pub struct TestWarehouseResponse {
     pub warehouse_id: WarehouseId,
+    pub project_id: ProjectId,
     pub warehouse_name: String,
-    pub additional_warehouses: Vec<(WarehouseId, String)>,
+    pub additional_warehouses: Vec<(ProjectId, WarehouseId, String)>,
 }
 
 pub async fn spawn_build_in_queues<T: Authorizer>(
@@ -183,11 +185,12 @@ pub(crate) async fn setup<T: Authorizer>(
         )
         .await
         .unwrap();
-        additional_warehouses.push((create_wh_response.warehouse_id(), warehouse_name.clone()));
+        additional_warehouses.push((create_wh_response.project_id(), create_wh_response.warehouse_id(), warehouse_name.clone()));
     }
     (
         api_context,
         TestWarehouseResponse {
+            project_id: warehouse.project_id(),
             warehouse_id: warehouse.warehouse_id(),
             warehouse_name,
             additional_warehouses,

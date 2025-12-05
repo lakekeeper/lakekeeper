@@ -120,11 +120,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use google_cloud_auth::project::Project;
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
     use crate::{
+        ProjectId,
         WarehouseId,
         implementations::postgres::tasks::{
             pick_task, record_failure, record_success,
@@ -144,6 +146,7 @@ mod tests {
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
         entity_id: EntityId,
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         schedule_for: Option<chrono::DateTime<chrono::Utc>>,
         payload: Option<serde_json::Value>,
@@ -153,7 +156,8 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: TaskMetadata {
-                    warehouse_id,
+                    project_id,
+                    warehouse_id: warehouse_id.into(),
                     parent_task_id,
                     entity_id,
                     entity_name: vec!["ns".to_string(), format!("table{}", entity_id.as_uuid())],
@@ -173,7 +177,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_resolve_tasks_empty_input(pool: PgPool) {
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let result = resolve_tasks(Some(warehouse_id), &[], &pool).await.unwrap();
 
@@ -182,7 +186,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_resolve_tasks_nonexistent_tasks(pool: PgPool) {
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let nonexistent_task_ids = vec![
             TaskId::from(Uuid::now_v7()),
@@ -201,7 +205,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_active_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_test_queue_name();
@@ -213,6 +217,7 @@ mod tests {
             &tq_name1,
             None,
             entity1,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "task1"})),
@@ -226,6 +231,7 @@ mod tests {
             &tq_name2,
             None,
             entity2,
+            project_id,
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "task2"})),
@@ -283,7 +289,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_completed_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name1 = generate_test_queue_name();
@@ -295,6 +301,7 @@ mod tests {
             &tq_name1,
             None,
             entity1,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "completed1"})),
@@ -308,6 +315,7 @@ mod tests {
             &tq_name2,
             None,
             entity2,
+            project_id,
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "completed2"})),
@@ -371,7 +379,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_mixed_active_and_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let entity3 = EntityId::Table(Uuid::now_v7().into());
@@ -383,6 +391,7 @@ mod tests {
             &tq_name,
             None,
             entity1,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "active"})),
@@ -396,6 +405,7 @@ mod tests {
             &tq_name,
             None,
             entity2,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "completed"})),
@@ -409,6 +419,7 @@ mod tests {
             &tq_name,
             None,
             entity3,
+            project_id,
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "scheduled"})),
@@ -460,7 +471,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_with_specific_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
+        let (project_id1, warehouse_id1, project_id2, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
@@ -471,6 +482,7 @@ mod tests {
             &tq_name,
             None,
             entity1,
+            project_id1,
             warehouse_id1,
             None,
             Some(serde_json::json!({"warehouse": "1"})),
@@ -484,6 +496,7 @@ mod tests {
             &tq_name,
             None,
             entity2,
+            project_id2,
             warehouse_id2,
             None,
             Some(serde_json::json!({"warehouse": "2"})),
@@ -520,7 +533,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_without_warehouse_filter(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
+        let (project_id1, warehouse_id1, project_id2, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
@@ -531,6 +544,7 @@ mod tests {
             &tq_name,
             None,
             entity1,
+            project_id1,
             warehouse_id1,
             None,
             Some(serde_json::json!({"warehouse": "1"})),
@@ -544,6 +558,7 @@ mod tests {
             &tq_name,
             None,
             entity2,
+            project_id2,
             warehouse_id2,
             None,
             Some(serde_json::json!({"warehouse": "2"})),
@@ -587,7 +602,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_partial_match(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
@@ -597,6 +612,7 @@ mod tests {
             &tq_name,
             None,
             entity,
+            project_id,
             warehouse_id,
             None,
             Some(serde_json::json!({"exists": true})),
@@ -637,7 +653,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_with_retried_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
 
@@ -647,6 +663,7 @@ mod tests {
             &tq_name,
             None,
             entity,
+            project_id,
             warehouse_id,
             None,
             Some(serde_json::json!({"retry": "test"})),
@@ -697,7 +714,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_performance_with_many_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_test_queue_name();
 
         // Create a moderate number of tasks for performance testing
@@ -709,6 +726,7 @@ mod tests {
                 &tq_name,
                 None,
                 entity,
+                project_id.clone(),
                 warehouse_id,
                 None,
                 Some(serde_json::json!({"batch": i})),

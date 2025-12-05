@@ -60,6 +60,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .into_result()?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+    let project_id = &warehouse.project_id;
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
             let location = C::drop_tabular(warehouse_id, view_id, force, t.transaction()).await?;
@@ -67,7 +68,8 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             if purge_requested {
                 TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
-                        warehouse_id,
+                        project_id: project_id.clone(),
+                        warehouse_id: warehouse_id.into(),
                         entity_id: EntityId::View(view_id),
                         parent_task_id: None,
                         schedule_for: None,
@@ -97,8 +99,9 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
                 TaskMetadata {
+                    project_id: project_id.clone(),
                     entity_id: EntityId::View(view_info.view_id()),
-                    warehouse_id,
+                    warehouse_id: warehouse_id.into(),
                     parent_task_id: None,
                     schedule_for: Some(chrono::Utc::now() + expiration_seconds),
                     entity_name: view.clone().into_name_parts(),

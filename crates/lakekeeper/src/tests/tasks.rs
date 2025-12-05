@@ -106,6 +106,7 @@ mod test {
                 .await
                 .unwrap();
         <PostgresBackend as CatalogTaskOps>::set_task_queue_config(
+            setup.warehouse.project_id.clone(),
             setup.warehouse.warehouse_id,
             &QUEUE_NAME,
             SetTaskQueueConfigRequest {
@@ -132,7 +133,8 @@ mod test {
             &QUEUE_NAME,
             TaskInput {
                 task_metadata: TaskMetadata {
-                    warehouse_id: setup.warehouse.warehouse_id,
+                    project_id: setup.warehouse.project_id.clone(),
+                    warehouse_id: setup.warehouse.warehouse_id.into(),
                     parent_task_id: None,
                     entity_id: EntityId::Table(Uuid::now_v7().into()),
                     schedule_for: None,
