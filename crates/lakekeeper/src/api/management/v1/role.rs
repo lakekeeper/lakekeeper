@@ -327,15 +327,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<RoleMetadata> {
         let authorizer = context.v1_state.authz;
 
-        let role = C::get_role_by_id(
-            &request_metadata.require_project_id(None)?,
-            role_id,
-            context.v1_state.catalog,
-        )
-        .await;
+        let role = C::get_role_by_id_across_projects(role_id, context.v1_state.catalog).await?;
 
         let role = authorizer
-            .require_role_action(&request_metadata, role, CatalogRoleAction::ReadMetadata)
+            .require_role_action(&request_metadata, Ok(role), CatalogRoleAction::ReadMetadata)
             .await?;
 
         let role_metadata = RoleMetadata {
