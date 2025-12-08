@@ -505,7 +505,7 @@ mod test {
                 request_metadata: request_metadata.clone(),
                 response_status: http::StatusCode::OK,
                 path_params: hashmap! {
-                    "warehouse_id".to_string() => setup.warehouse.additional_warehouses.first().unwrap().0.to_string(),
+                    "warehouse_id".to_string() => setup.warehouse.additional_warehouses.first().unwrap().1.to_string(),
                 },
                 query_params: HashMap::default(),
             })
@@ -524,7 +524,6 @@ mod test {
             .await
             .unwrap();
         setup.tracker_handle.await.unwrap();
-        tokio::time::sleep(Duration::from_millis(75)).await;
         // Test filtering by warehouse
         let stats = ApiServer::get_endpoint_statistics(
             setup.ctx.clone(),
