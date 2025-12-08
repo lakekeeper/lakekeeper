@@ -5,15 +5,14 @@ package configuration
 env := opa.runtime().env
 
 # ------------- Lakekeeper Configuration -------------
-# Define projects that are available in Lakekeeper. Multiple projects from multiple
-# Lakekeeper instances can be defined here.
+# Define lakekeeper instances.
 #
-# The first project can be configured via environment variables.
+# The first instance can be configured via environment variables.
 # Each configuration must contain the following fields:
 # 
-# - id: Id of this lakekeeper project. 
+# - id: Id of this lakekeeper instance. 
 #       Has no relevance except as an internal OPA identifier. 
-#       Used to reference this project in the query engine mappings below.
+#       Used to reference this instance in the `trino_catalog` configuration below.
 # - lakekeeper_url: The URL where OPA can reach the Lakekeeper instance.
 # - idp_token_endpoint: The URL of the token endpoint of the identity provider. 
 #       Example: http://localhost:30080/realms/iceberg/protocol/openid-connect/token

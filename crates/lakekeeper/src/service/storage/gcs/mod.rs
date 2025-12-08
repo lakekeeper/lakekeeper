@@ -59,6 +59,15 @@ pub struct GcsProfile {
     pub bucket: String,
     /// Subpath in the bucket to use.
     pub key_prefix: Option<String>,
+    /// Enable STS (Security Token Service) downscoped token generation for GCS.
+    /// When disabled, clients cannot use vended credentials for this storage profile.
+    /// Defaults to true.
+    #[serde(default = "default_true")]
+    pub sts_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,7 +345,12 @@ impl GcsProfile {
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
-        if !data_access.provide_credentials() {
+        if !data_access.provide_credentials() || !self.sts_enabled {
+            tracing::debug!(
+                "Not providing GCS credentials - provide_credentials: {}, sts_enabled: {}",
+                data_access.provide_credentials(),
+                self.sts_enabled
+            );
             return Ok(TableConfig {
                 creds: table_properties.clone(),
                 config: table_properties,
@@ -543,6 +557,7 @@ pub(crate) mod test {
             let profile = GcsProfile {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+                sts_enabled: true,
             };
             (profile, cred)
         }
@@ -612,6 +627,7 @@ pub(crate) mod test {
             let profile = GcsProfile {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+                sts_enabled: true,
             };
             (profile, cred)
         }
@@ -648,6 +664,7 @@ mod is_overlapping_location_tests {
         GcsProfile {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
+            sts_enabled: true,
         }
     }
 

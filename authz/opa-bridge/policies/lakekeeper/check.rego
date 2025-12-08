@@ -12,84 +12,108 @@ lakekeeper_by_id[lakekeeper_id] := lakekeeper if {
 require_warehouse_access(lakekeeper_id, warehouse_name, user, action) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
-        "POST", "/management/v1/permissions/check", 
+        "POST", "/management/v1/action/batch-check",
         {
-            "operation": {
-                "warehouse": {
-                    "action": action,
-                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name)
+            "error-on-not-found": false,
+            "checks" :  [
+                {
+                    "operation": {
+                        "warehouse": {
+                            "action": action,
+                            "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name)
+                        }
+                    },
+                    "identity": {
+                        "user": user
+                    }
                 }
-            },
-            "identity": {
-                "user": user
-            }
+            ]
         }
     ).body
-    value.allowed == true
+    value.results[0].allowed == true
+    count(value.results) == 1
 }
 
 # Check access to a namespace
 require_namespace_access(lakekeeper_id, warehouse_name, namespace_name, user, action) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
-        "POST", "/management/v1/permissions/check", 
+        "POST", "/management/v1/action/batch-check", 
         {
-            "operation": {
-                "namespace" : {
-                    "action": action,
-                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-                    "namespace": namespace_name
+            "error-on-not-found": false,
+            "checks": [
+                {
+                    "operation": {
+                        "namespace" : {
+                            "action": action,
+                            "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+                            "namespace": namespace_name
+                        }
+                    },
+                    "identity": {
+                        "user": user
+                    }
                 }
-            },
-            "identity": {
-                "user": user
-            }
+            ]
         }
     ).body
-    value.allowed == true
+    value.results[0].allowed == true
+    count(value.results) == 1
 }
 
 # Check access to a table
 require_table_access(lakekeeper_id, warehouse_name, namespace_name, table_name, user, action) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
-        "POST", "/management/v1/permissions/check", 
+        "POST", "/management/v1/action/batch-check", 
         {
-            "operation": {
-                "table": {
-                    "action": action,
-                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-                    "namespace": namespace_name,
-                    "table": table_name
+            "error-on-not-found": false,
+            "checks": [
+                {
+                    "operation": {
+                        "table": {
+                            "action": action,
+                            "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+                            "namespace": namespace_name,
+                            "table": table_name
+                        }
+                    },
+                    "identity": {
+                        "user": user
+                    }
                 }
-            },
-            "identity": {
-                "user": user
-            }
+            ]
         }
     ).body
-    value.allowed == true
+    value.results[0].allowed == true
+    count(value.results) == 1
 }
 
 # Check access to a view
 require_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user, action) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
-        "POST", "/management/v1/permissions/check", 
+        "POST", "/management/v1/action/batch-check", 
         {
-            "operation": {
-                "view": {
-                    "action": action,
-                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-                    "namespace": namespace_name,
-                    "table": view_name
+            "error-on-not-found": false,
+            "checks": [
+                {
+                    "operation": {
+                        "view": {
+                            "action": action,
+                            "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+                            "namespace": namespace_name,
+                            "table": view_name
+                        }
+                    },
+                    "identity": {
+                        "user": user
+                    }
                 }
-            },
-            "identity": {
-                "user": user
-            }
+            ]
         }
     ).body
-    value.allowed == true
+    value.results[0].allowed == true
+    count(value.results) == 1
 }
 

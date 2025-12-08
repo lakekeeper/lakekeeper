@@ -149,6 +149,12 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub aws_kms_key_arn: Option<String>,
+    /// Enable remote signing for S3 requests.
+    /// When disabled, clients cannot use remote signing even if STS is disabled.
+    /// Defaults to true.
+    #[serde(default = "fn_true")]
+    #[builder(default = true)]
+    pub remote_signing_enabled: bool,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -410,18 +416,44 @@ impl S3Profile {
     ) -> Result<TableConfig, TableConfigError> {
         let (remote_signing, vended_credentials) = match data_access {
             DataAccessMode::ServerDelegated(DataAccess {
-                vended_credentials,
-                remote_signing,
+                mut vended_credentials,
+                mut remote_signing,
             }) => {
-                // If vended_credentials is False and remote_signing is False,
-                // use remote_signing. This avoids generating costly STS credentials
-                // for clients that don't need them.
-                let remote_signing = !vended_credentials || remote_signing;
+                if remote_signing && !self.remote_signing_enabled {
+                    tracing::debug!(
+                        "Remote signing is explicitly requested but is disabled for this S3 warehouse."
+                    );
+                    remote_signing = false;
+                }
+                let can_use_vended_credentials = self.sts_enabled
+                    || matches!(s3_credential, Some(S3Credential::CloudflareR2(..)));
+                if vended_credentials && !(can_use_vended_credentials) {
+                    tracing::debug!(
+                        "vended_credentials is explicitly requested but STS is disabled for this S3 warehouse and the credential type is not Cloudflare R2."
+                    );
+                    vended_credentials = false;
+                }
+
+                // If neither method was explicitly requested or both were disabled,
+                // prefer vended credentials for wider compatibility, then fall back to remote signing
+                if !vended_credentials && !remote_signing {
+                    match (can_use_vended_credentials, self.remote_signing_enabled) {
+                        (true, _) => vended_credentials = true,
+                        (false, true) => remote_signing = true,
+                        (false, false) => tracing::debug!(
+                            "Both vended_credentials and remote_signing are disabled for this S3 warehouse. Cannot return credentials."
+                        ),
+                    }
+                }
                 (remote_signing, vended_credentials)
             }
-            DataAccessMode::ClientManaged => (false, false),
+            DataAccessMode::ClientManaged => {
+                tracing::debug!(
+                    "Client requested client-managed access, not providing credentials"
+                );
+                (false, false)
+            }
         };
-        let mut remote_signing = remote_signing;
 
         let mut config = TableProperties::default();
         let mut creds = TableProperties::default();
@@ -442,43 +474,36 @@ impl S3Profile {
         }
 
         if vended_credentials {
-            if self.sts_enabled || matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
-                let cache_key = STCCacheKey::new(
-                    stc_request.clone(),
-                    self.into(),
-                    s3_credential.map(Into::into),
-                );
+            let cache_key = STCCacheKey::new(
+                stc_request.clone(),
+                self.into(),
+                s3_credential.map(Into::into),
+            );
 
-                let temporary_credential = self
-                    .get_or_fetch_temporary_credentials(&stc_request, s3_credential, cache_key)
-                    .await?;
+            let temporary_credential = self
+                .get_or_fetch_temporary_credentials(&stc_request, s3_credential, cache_key)
+                .await?;
 
-                let aws_sdk_sts::types::Credentials {
-                    access_key_id,
-                    secret_access_key,
-                    session_token,
-                    expiration: _,
-                    ..
-                } = temporary_credential;
+            let aws_sdk_sts::types::Credentials {
+                access_key_id,
+                secret_access_key,
+                session_token,
+                expiration: _,
+                ..
+            } = temporary_credential;
 
-                config.insert(&s3::AccessKeyId(access_key_id.clone()));
-                config.insert(&s3::SecretAccessKey(secret_access_key.clone()));
-                config.insert(&s3::SessionToken(session_token.clone()));
-                creds.insert(&s3::AccessKeyId(access_key_id));
-                creds.insert(&s3::SecretAccessKey(secret_access_key));
-                creds.insert(&s3::SessionToken(session_token));
-            } else {
-                tracing::debug!(
-                    "Falling back to remote signing: vended_credentials requested but STS is disabled for this Warehouse and the credential type is not Cloudflare R2."
-                );
-                push_fsspec_fileio_with_s3v4restsigner(&mut config);
-                remote_signing = true;
-            }
+            config.insert(&s3::AccessKeyId(access_key_id.clone()));
+            config.insert(&s3::SecretAccessKey(secret_access_key.clone()));
+            config.insert(&s3::SessionToken(session_token.clone()));
+            creds.insert(&s3::AccessKeyId(access_key_id));
+            creds.insert(&s3::SecretAccessKey(secret_access_key));
+            creds.insert(&s3::SessionToken(session_token));
         }
 
         if remote_signing {
             let warehouse_id = stc_request.warehouse_id;
             let tabular_id = stc_request.tabular_id;
+            push_fsspec_fileio_with_s3v4restsigner(&mut config);
             config.insert(&s3::RemoteSigningEnabled(true));
             config.insert(&s3::SignerUri(request_metadata.s3_signer_uri(warehouse_id)));
             config.insert(&s3::SignerEndpoint(
@@ -1336,6 +1361,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
+            remote_signing_enabled: true,
             sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
@@ -1381,6 +1407,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
+            remote_signing_enabled: true,
             sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
@@ -1439,6 +1466,7 @@ pub(crate) mod test {
                 sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1498,6 +1526,7 @@ pub(crate) mod test {
                 sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1593,6 +1622,7 @@ pub(crate) mod test {
                 sts_session_tags: BTreeMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -1655,6 +1685,7 @@ pub(crate) mod test {
                 sts_role_arn: None,
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
+                remote_signing_enabled: true,
                 sts_session_tags: BTreeMap::new(),
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
@@ -1738,6 +1769,7 @@ mod is_overlapping_location_tests {
             path_style_access: None,
             sts_role_arn: None,
             sts_enabled: false,
+            remote_signing_enabled: true,
             sts_session_tags: BTreeMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,

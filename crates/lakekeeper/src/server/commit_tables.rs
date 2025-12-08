@@ -74,7 +74,7 @@ pub(super) fn apply_commit(
         .map_err(|e| {
             tracing::debug!("Table metadata build failed: {}", e);
             let msg = e.message().to_string();
-            ErrorModel::bad_request(msg, "TableMetadataBuildFailed", Some(Box::new(e))).into()
+            ErrorModel::conflict(msg, "CommitFailedException", Some(Box::new(e))).into()
         })
         .inspect(|r| {
             tracing::debug!(

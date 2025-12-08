@@ -43,6 +43,7 @@ use crate::{
     ),
     paths(
         super::activate_warehouse,
+        super::batch_check_actions,
         super::bootstrap,
         super::control_tasks,
         super::create_project,

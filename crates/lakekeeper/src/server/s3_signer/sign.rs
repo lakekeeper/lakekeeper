@@ -76,6 +76,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
+        // Check if remote signing is enabled for this storage profile
+        if let StorageProfile::S3(s3_profile) = &warehouse.storage_profile {
+            if !s3_profile.remote_signing_enabled {
+                return Err(IcebergErrorResponse::from(ErrorModel::forbidden(
+                    "Remote signing is disabled for this storage profile",
+                    "RemoteSigningDisabled",
+                    None,
+                )));
+            }
+        } else {
+            return Err(IcebergErrorResponse::from(ErrorModel::bad_request(
+                "Remote signing is only supported for S3 storage",
+                "UnsupportedStorageType",
+                None,
+            )));
+        }
+
         let S3SignRequest {
             region: request_region,
             uri: request_url,
