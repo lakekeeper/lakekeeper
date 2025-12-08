@@ -545,6 +545,7 @@ mod test {
         assert_eq!(stats.called_endpoints[0][0].count, 1);
         assert_eq!(stats.called_endpoints[0][1].count, 1);
         assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
+        assert!(stats.called_endpoints[0][1].warehouse_name.is_some());
 
         ApiServer::delete_warehouse(
             stats.called_endpoints[0][0].warehouse_id.unwrap().into(),
