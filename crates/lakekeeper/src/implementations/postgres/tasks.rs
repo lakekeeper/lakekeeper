@@ -1029,7 +1029,6 @@ pub(crate) async fn cancel_scheduled_tasks(
             project_id,
             include_sub_tasks,
         } => {
-            // Should it only filter project_tasks by specifying warehouse_id IS NULL?
             sqlx::query!(
                 r#"
                 WITH deleted as (
