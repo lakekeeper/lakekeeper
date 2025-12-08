@@ -1805,7 +1805,7 @@ pub(crate) mod tests {
             TaskMetadata {
                 project_id,
                 entity_id: EntityId::Table(table.table_id),
-                warehouse_id: warehouse_id.into(),
+                warehouse_id: Some(warehouse_id),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
                 entity_name: table.table_ident.into_name_parts(),
