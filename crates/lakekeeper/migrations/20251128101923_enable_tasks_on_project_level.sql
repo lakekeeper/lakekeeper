@@ -101,3 +101,12 @@ alter column warehouse_id drop not null;
 
 alter table task_log
 alter column warehouse_id drop not null;
+
+-- 4. Add CHECKs to enforce: For table/view entity_type warehouse_id is required
+alter table task
+add check ("entity_type" not in ('table', 'view')
+or warehouse_id is not null);
+
+alter table task_log
+add check ("entity_type" not in ('table', 'view')
+or warehouse_id is not null);
