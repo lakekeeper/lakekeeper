@@ -384,6 +384,7 @@ pub(crate) mod test {
             delete_profile,
             user_id,
             1,
+            None,
         )
         .await
     }
@@ -422,6 +423,7 @@ pub(crate) mod test {
             delete_profile,
             None,
             num_warehouses,
+            None,
         )
         .await;
 

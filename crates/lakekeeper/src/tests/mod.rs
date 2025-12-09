@@ -95,6 +95,8 @@ pub struct SetupTestCatalog<T: Authorizer> {
     user_id: Option<UserId>,
     #[builder(default = 1)]
     number_of_warehouses: usize,
+    #[builder(default)]
+    project_id: Option<ProjectId>,
 }
 
 impl<T: Authorizer> SetupTestCatalog<T> {
@@ -112,6 +114,7 @@ impl<T: Authorizer> SetupTestCatalog<T> {
             self.delete_profile,
             self.user_id,
             self.number_of_warehouses,
+            self.project_id,
         )
         .await
     }
@@ -126,6 +129,7 @@ pub(crate) async fn setup<T: Authorizer>(
     delete_profile: TabularDeleteProfile,
     user_id: Option<UserId>,
     number_of_warehouses: usize,
+    project_id: Option<ProjectId>,
 ) -> (
     ApiContext<State<T, PostgresBackend, SecretsState>>,
     TestWarehouseResponse,
@@ -159,7 +163,7 @@ pub(crate) async fn setup<T: Authorizer>(
     let warehouse = ApiServer::create_warehouse(
         CreateWarehouseRequest {
             warehouse_name: warehouse_name.clone(),
-            project_id: None,
+            project_id,
             storage_profile,
             storage_credential,
             delete_profile,
@@ -175,7 +179,7 @@ pub(crate) async fn setup<T: Authorizer>(
         let create_wh_response = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
-                project_id: None,
+                project_id: Some(warehouse.project_id()),
                 storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,

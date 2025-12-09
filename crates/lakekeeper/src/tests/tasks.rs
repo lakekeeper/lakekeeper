@@ -190,6 +190,7 @@ async fn setup_tasks_test(pool: PgPool) -> TasksSetup {
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         1,
+            None,
     )
     .await;
 
