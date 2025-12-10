@@ -581,7 +581,8 @@ where
     ) -> Result<Option<Task>>;
 
     async fn resolve_tasks_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<Vec<ResolvedTask>>;
@@ -602,7 +603,8 @@ where
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
     async fn get_task_details_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_id: TaskId,
         num_attempts: u16, // Number of attempts to retrieve in the task details
         state: Self::State,
@@ -610,7 +612,8 @@ where
 
     /// List tasks
     async fn list_tasks_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ListTasksResponse>;
@@ -666,14 +669,15 @@ where
 
     async fn set_task_queue_config_impl(
         project_id: ProjectId,
-        warehouse_id: WarehouseId,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
     async fn get_task_queue_config_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;

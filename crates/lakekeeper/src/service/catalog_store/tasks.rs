@@ -40,13 +40,14 @@ static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, Arc<ResolvedTask>>> =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTask {
     pub task_id: TaskId,
+    pub project_id: ProjectId,
     pub entity: TaskEntityNamed,
     pub queue_name: TaskQueueName,
 }
 
 impl ResolvedTask {
     #[must_use]
-    pub fn warehouse_id(&self) -> WarehouseId {
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
         self.entity.warehouse_id()
     }
 }
@@ -141,12 +142,13 @@ where
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
     async fn get_task_details(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_id: TaskId,
         num_attempts: u16,
         state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>> {
-        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, state).await
+        Self::get_task_details_impl(project_id, warehouse_id, task_id, num_attempts, state).await
     }
 
     /// Enqueue a single task to a task queue.
@@ -179,18 +181,20 @@ where
 
     /// List tasks
     async fn list_tasks(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ListTasksResponse> {
-        Self::list_tasks_impl(warehouse_id, query, transaction).await
+        Self::list_tasks_impl(project_id, warehouse_id, query, transaction).await
     }
 
     /// Resolve tasks among all known active and historical tasks.
     /// Returns a map of `task_id` to `(TaskEntity, queue_name)`.
     /// If a task does not exist, it is not included in the map.
     async fn resolve_tasks(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
@@ -215,7 +219,7 @@ where
             return Ok(cached_results);
         }
         let resolve_uncached_result =
-            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, state).await?;
+            Self::resolve_tasks_impl(project_id, warehouse_id, &not_cached_ids, state).await?;
         for value in resolve_uncached_result {
             let value = Arc::new(value);
             cached_results.insert(value.task_id, value.clone());
@@ -225,11 +229,12 @@ where
     }
 
     async fn resolve_required_tasks(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
-        let tasks = Self::resolve_tasks(warehouse_id, task_ids, state).await?;
+        let tasks = Self::resolve_tasks(project_id, warehouse_id, task_ids, state).await?;
 
         for task_id in task_ids {
             if !tasks.contains_key(task_id) {
@@ -247,7 +252,7 @@ where
 
     async fn set_task_queue_config(
         project_id: ProjectId,
-        warehouse_id: WarehouseId,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -257,11 +262,12 @@ where
     }
 
     async fn get_task_queue_config(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
-        Self::get_task_queue_config_impl(warehouse_id, queue_name, state).await
+        Self::get_task_queue_config_impl(project_id, warehouse_id, queue_name, state).await
     }
 }
 

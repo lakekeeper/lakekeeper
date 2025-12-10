@@ -733,7 +733,7 @@ pub(crate) mod tests {
                 warehouse_id: warehouse_id.into(),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: vec!["myview".to_string()],
+                entity_name: Some(vec!["myview".to_string()]),
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

@@ -685,11 +685,12 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn resolve_tasks_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<Vec<ResolvedTask>> {
-        resolve_tasks(Some(warehouse_id), task_ids, &state.read_pool()).await
+        resolve_tasks(project_id, warehouse_id, task_ids, &state.read_pool()).await
     }
 
     async fn record_task_success_impl(
@@ -710,21 +711,23 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn get_task_details_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         task_id: TaskId,
         num_attempts: u16,
         state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>> {
-        get_task_details(warehouse_id, task_id, num_attempts, &state.read_pool()).await
+        get_task_details(project_id, warehouse_id, task_id, num_attempts, &state.read_pool()).await
     }
 
     /// List tasks
     async fn list_tasks_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ListTasksResponse> {
-        list_tasks(warehouse_id, query, &mut *transaction).await
+        list_tasks(project_id, warehouse_id, query, &mut *transaction).await
     }
 
     async fn enqueue_tasks_impl(
@@ -777,7 +780,7 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn set_task_queue_config_impl(
         project_id: ProjectId,
-        warehouse_id: WarehouseId,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -786,10 +789,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn get_task_queue_config_impl(
-        warehouse_id: WarehouseId,
+        project_id: Option<ProjectId>,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
-        get_task_queue_config(&state.read_pool(), warehouse_id, queue_name).await
+        get_task_queue_config(&state.read_pool(), project_id, warehouse_id, queue_name).await
     }
 }

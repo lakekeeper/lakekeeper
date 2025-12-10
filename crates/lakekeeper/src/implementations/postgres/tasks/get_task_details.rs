@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
+    ProjectId,
     WarehouseId,
     api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
@@ -15,9 +16,9 @@ use crate::{
 #[derive(sqlx::FromRow, Debug)]
 struct TaskDetailsRow {
     pub queue_name: String,
-    pub entity_id: uuid::Uuid,
+    pub entity_id: Option<uuid::Uuid>,
     pub entity_type: EntityType,
-    pub entity_name: Vec<String>,
+    pub entity_name: Option<Vec<String>>,
     pub task_status: Option<TaskStatus>,
     pub task_log_status: Option<TaskOutcome>,
     pub attempt_scheduled_for: DateTime<chrono::Utc>,
@@ -33,11 +34,12 @@ struct TaskDetailsRow {
     pub execution_details: Option<serde_json::Value>,
     pub duration: Option<PgInterval>,
     pub message: Option<String>,
+    pub project_id: String,
+    pub warehouse_id: Option<uuid::Uuid>,
 }
 
 fn parse_task_details(
     task_id: TaskId,
-    warehouse_id: WarehouseId,
     mut records: Vec<TaskDetailsRow>,
 ) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse> {
     // Sort by attempt descending
@@ -86,14 +88,33 @@ fn parse_task_details(
 
     let task = APITask {
         task_id,
-        warehouse_id,
+        project_id: ProjectId::from(most_recent.project_id.clone()),
+        warehouse_id: most_recent.warehouse_id.map(WarehouseId::from),
         queue_name: most_recent.queue_name.into(),
         entity: match most_recent.entity_type {
             EntityType::Table => TaskEntity::Table {
-                table_id: most_recent.entity_id.into(),
+                table_id: most_recent.entity_id.ok_or(ErrorModel::internal(
+                    "Most recent task record has no entity_id for type Table.",
+                    "InternalError",
+                    None,
+                ))?.into(),
             },
             EntityType::View => TaskEntity::View {
-                view_id: most_recent.entity_id.into(),
+                view_id: most_recent.entity_id.ok_or(ErrorModel::internal(
+                    "Most recent task record has no entity_id for type View.",
+                    "InternalError",
+                    None,
+                ))?.into(),
+            },
+            EntityType::Project => TaskEntity::Project {
+                project_id: ProjectId::from(most_recent.project_id),
+            },
+            EntityType::Warehouse => TaskEntity::Warehouse {
+                warehouse_id: most_recent.warehouse_id.map(WarehouseId::from).ok_or(ErrorModel::internal(
+                    "Most recent task record has no warehouse_id for type Warehouse.",
+                    "InternalError",
+                    None,
+                ))?,
             },
         },
         entity_name: most_recent.entity_name,
@@ -145,7 +166,8 @@ fn pg_interval_to_duration(interval: PgInterval) -> Result<Duration, ErrorModel>
 }
 
 pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
+    project_id: Option<ProjectId>,
+    warehouse_id: Option<WarehouseId>,
     task_id: TaskId,
     num_attempts: u16,
     state: E,
@@ -153,16 +175,20 @@ pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
+    let project_id_is_none = project_id.is_none();
+    let warehouse_id_is_none = warehouse_id.is_none();
     // Overwrite necessary due to:
     // https://github.com/launchbadge/sqlx/issues/1266
     let records = sqlx::query_as!(
         TaskDetailsRow,
         r#"
-        SELECT 
+        SELECT
+            project_id as "project_id!",
+            warehouse_id,
             queue_name AS "queue_name!",
-            entity_id AS "entity_id!",
+            entity_id AS "entity_id",
             entity_type as "entity_type!: EntityType",
-            entity_name as "entity_name!: Vec<String>",
+            entity_name as "entity_name: Vec<String>",
             task_status as "task_status: TaskStatus",
             task_log_status as "task_log_status: TaskOutcome",
             attempt_scheduled_for as "attempt_scheduled_for!",
@@ -180,6 +206,8 @@ where
             message
          FROM (
         SELECT
+            project_id,
+            warehouse_id,
             queue_name,
             entity_id,
             entity_type,
@@ -203,9 +231,11 @@ where
             end as duration,
             null as message
         FROM task
-        WHERE warehouse_id = $1 AND task_id = $2
+        WHERE ($4 or warehouse_id = $1) AND task_id = $2 AND (project_id = $5 OR $6)
         UNION ALL
         (SELECT
+            project_id,
+            warehouse_id,
             queue_name,
             entity_id,
             entity_type,
@@ -226,20 +256,23 @@ where
             duration,
             message
         FROM task_log        
-        WHERE warehouse_id = $1 AND task_id = $2
+        WHERE ($4 or warehouse_id = $1) AND task_id = $2 AND (project_id = $5 OR $6)
         ORDER BY attempt desc 
         LIMIT $3 + 1
         )) as combined
         "#,
-        *warehouse_id,
+        warehouse_id.map(|w| *w),
         *task_id,
-        i32::from(num_attempts) // Query limit is num_attempts + 1 to handle the case where there's an active task plus historical attempts
+        i32::from(num_attempts), // Query limit is num_attempts + 1 to handle the case where there's an active task plus historical attempts
+        warehouse_id_is_none,
+        project_id.map(|p| p.to_string()),
+        project_id_is_none,
     )
     .fetch_all(state)
     .await
     .map_err(|e| e.into_error_model("Failed to get task details"))?;
 
-    let result = parse_task_details(task_id, warehouse_id, records)?;
+    let result = parse_task_details(task_id, records)?;
 
     Ok(if let Some(mut result) = result {
         if result.attempts.len() > num_attempts as usize {
@@ -260,7 +293,7 @@ mod tests {
     use super::*;
     use crate::{
         ProjectId, WarehouseId,
-        api::management::v1::tasks::TaskStatus as APITaskStatus,
+        api::management::v1::{tasks::TaskStatus as APITaskStatus},
         implementations::postgres::tasks::{
             check_and_heartbeat_task, pick_task, record_failure, record_success,
             test::setup_warehouse,
@@ -282,12 +315,14 @@ mod tests {
         started_at: Option<DateTime<Utc>>,
         task_created_at: DateTime<Utc>,
         attempt_created_at: Option<DateTime<Utc>>,
+        project_id: &str,
+        warehouse_id: Option<Uuid>,
     ) -> TaskDetailsRow {
         TaskDetailsRow {
             queue_name: queue_name.to_string(),
-            entity_id,
+            entity_id: Some(entity_id),
             entity_type: EntityType::Table,
-            entity_name: vec!["ns1".to_string(), "table1".to_string()],
+            entity_name: Some(vec!["ns1".to_string(), "table1".to_string()]),
             task_status,
             task_log_status,
             attempt_scheduled_for: scheduled_for,
@@ -307,16 +342,17 @@ mod tests {
                 microseconds: 3_600_000_000, // 1 hour
             }),
             message: Some("Test message".to_string()),
+            project_id: project_id.to_string(),
+            warehouse_id
         }
     }
 
     #[test]
     fn test_parse_task_details_empty_records() {
         let task_id = TaskId::from(Uuid::now_v7());
-        let warehouse_id = WarehouseId::from(Uuid::now_v7());
         let records = vec![];
 
-        let result = parse_task_details(task_id, warehouse_id, records).unwrap();
+        let result = parse_task_details(task_id, records).unwrap();
         assert!(result.is_none());
     }
 
@@ -324,6 +360,7 @@ mod tests {
     fn test_parse_task_details_active_task_only() {
         let task_id = TaskId::from(Uuid::now_v7());
         let warehouse_id = WarehouseId::from(Uuid::now_v7());
+        let project_id = ProjectId::new_random();
         let entity_id = Uuid::now_v7();
         let scheduled_for = Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap();
         let started_at = Some(Utc.with_ymd_and_hms(2024, 1, 1, 12, 5, 0).unwrap());
@@ -338,16 +375,18 @@ mod tests {
             scheduled_for,
             started_at,
             task_created_at,
-            None, // No attempt_created_at for active tasks
+            None, // No attempt_created_at for active tasks,
+            project_id.as_str(),
+            Some(*warehouse_id)
         )];
 
-        let result = parse_task_details(task_id, warehouse_id, records)
+        let result = parse_task_details(task_id, records)
             .unwrap()
             .unwrap();
 
         // Verify main task details
         assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, warehouse_id);
+        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), "test-queue");
         assert_eq!(result.task.attempt, 1);
         assert_eq!(result.task.scheduled_for, scheduled_for);
@@ -361,6 +400,8 @@ mod tests {
                 assert_eq!(*table_id, entity_id);
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify task data
@@ -378,6 +419,7 @@ mod tests {
     fn test_parse_task_details_active_with_history() {
         let task_id = TaskId::from(Uuid::now_v7());
         let warehouse_id = WarehouseId::from(Uuid::now_v7());
+        let project_id = ProjectId::new_random();
         let entity_id = Uuid::now_v7();
         let scheduled_for = Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap();
         let task_created_at = Utc.with_ymd_and_hms(2024, 1, 1, 11, 0, 0).unwrap();
@@ -395,6 +437,8 @@ mod tests {
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 12, 10, 0).unwrap()),
                 task_created_at,
                 None,
+                project_id.as_str(),
+                Some(*warehouse_id)
             ),
             // Previous failed attempt (attempt 1)
             create_test_row(
@@ -407,10 +451,12 @@ mod tests {
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 11, 50, 0).unwrap()),
                 task_created_at,
                 Some(attempt1_created_at),
+                project_id.as_str(),
+                Some(*warehouse_id)
             ),
         ];
 
-        let result = parse_task_details(task_id, warehouse_id, records)
+        let result = parse_task_details(task_id, records)
             .unwrap()
             .unwrap();
 
@@ -448,6 +494,7 @@ mod tests {
     fn test_parse_task_details_log_only() {
         let task_id = TaskId::from(Uuid::now_v7());
         let warehouse_id = WarehouseId::from(Uuid::now_v7());
+        let project_id = ProjectId::new_random();
         let entity_id = Uuid::now_v7();
         let scheduled_for = Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap();
         let started_at = Some(Utc.with_ymd_and_hms(2024, 1, 1, 12, 5, 0).unwrap());
@@ -464,15 +511,17 @@ mod tests {
             started_at,
             task_created_at,
             Some(attempt_created_at),
+            project_id.as_str(),
+            Some(*warehouse_id)
         )];
 
-        let result = parse_task_details(task_id, warehouse_id, records)
+        let result = parse_task_details(task_id, records)
             .unwrap()
             .unwrap();
 
         // Verify main task details
         assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, warehouse_id);
+        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), "cleanup-queue");
         assert_eq!(result.task.attempt, 1);
         assert_eq!(result.task.scheduled_for, scheduled_for);
@@ -488,6 +537,7 @@ mod tests {
     fn test_parse_task_details_multiple_historical_attempts() {
         let task_id = TaskId::from(Uuid::now_v7());
         let warehouse_id = WarehouseId::from(Uuid::now_v7());
+        let project_id = ProjectId::new_random();
         let entity_id = Uuid::now_v7();
         let task_created_at = Utc.with_ymd_and_hms(2024, 1, 1, 11, 0, 0).unwrap();
 
@@ -503,6 +553,8 @@ mod tests {
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 12, 35, 0).unwrap()),
                 task_created_at,
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 12, 20, 0).unwrap()),
+                project_id.as_str(),
+                Some(*warehouse_id),
             ),
             // Second failed attempt (attempt 2)
             create_test_row(
@@ -515,6 +567,8 @@ mod tests {
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 12, 5, 0).unwrap()),
                 task_created_at,
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 11, 50, 0).unwrap()),
+                project_id.as_str(),
+                Some(*warehouse_id),
             ),
             // First failed attempt (attempt 1)
             create_test_row(
@@ -527,10 +581,12 @@ mod tests {
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 11, 35, 0).unwrap()),
                 task_created_at,
                 Some(Utc.with_ymd_and_hms(2024, 1, 1, 11, 20, 0).unwrap()),
+                project_id.as_str(),
+                Some(*warehouse_id),
             ),
         ];
 
-        let result = parse_task_details(task_id, warehouse_id, records)
+        let result = parse_task_details(task_id, records)
             .unwrap()
             .unwrap();
 
@@ -571,7 +627,7 @@ mod tests {
                     warehouse_id: warehouse_id.into(),
                     parent_task_id,
                     entity_id,
-                    entity_name,
+                    entity_name: Some(entity_name),
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -588,10 +644,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_task_details_nonexistent_task(pool: PgPool) {
-        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let task_id = TaskId::from(Uuid::now_v7());
 
-        let result = get_task_details(warehouse_id, task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
             .await
             .unwrap();
 
@@ -618,7 +674,7 @@ mod tests {
             None,
             entity_id,
             entity_name.clone(),
-            project_id,
+            project_id.clone(),
             warehouse_id,
             Some(scheduled_for),
             Some(payload.clone()),
@@ -634,7 +690,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(task.task_id(), task_id);
-        assert_eq!(&task.task_metadata.entity_name, &entity_name);
+        assert_eq!(task.task_metadata.entity_name.as_ref().unwrap(), &entity_name);
 
         // Update progress and execution details
         let execution_details = serde_json::json!({"progress": "in progress"});
@@ -645,14 +701,14 @@ mod tests {
         assert_eq!(check_result, TaskCheckState::Continue);
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
 
         // Verify task details
         assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, warehouse_id);
+        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), tq_name.as_str());
         assert_eq!(result.task.attempt, 1);
         assert!(matches!(result.task.status, APITaskStatus::Running));
@@ -668,9 +724,11 @@ mod tests {
 
         match result.task.entity {
             TaskEntity::Table { table_id } => {
-                assert_eq!(*table_id, entity_id.as_uuid());
+                assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify task data and execution details
@@ -696,7 +754,7 @@ mod tests {
             None,
             entity_id,
             vec!["ns".to_string(), "table".to_string()],
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -717,14 +775,14 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
 
         // Verify task details
         assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, warehouse_id);
+        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), tq_name.as_str());
         assert_eq!(result.task.attempt, 1);
         assert!(matches!(result.task.status, APITaskStatus::Success));
@@ -752,7 +810,7 @@ mod tests {
             None,
             entity_id,
             vec!["ns".to_string(), "table".to_string()],
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -795,7 +853,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -835,7 +893,7 @@ mod tests {
             None,
             entity_id,
             vec!["ns".to_string(), "table".to_string()],
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(payload.clone()),
@@ -868,7 +926,7 @@ mod tests {
             .unwrap();
 
         // Get task details
-        let result = get_task_details(warehouse_id, task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -903,7 +961,7 @@ mod tests {
             None,
             entity_id,
             vec!["ns".to_string(), "table".to_string()],
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"many_attempts": "test"})),
@@ -935,7 +993,7 @@ mod tests {
             .unwrap();
 
         // Get task details with limit of 3 attempts
-        let result = get_task_details(warehouse_id, task_id, 3, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), task_id, 3, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -982,7 +1040,7 @@ mod tests {
             Some(parent_task_id),
             child_entity_id,
             vec!["ns".to_string(), "table".to_string()],
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "child"})),
@@ -998,7 +1056,7 @@ mod tests {
             .unwrap();
 
         // Get child task details
-        let result = get_task_details(warehouse_id, child_task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(warehouse_id), child_task_id, 10, &pool)
             .await
             .unwrap()
             .unwrap();
@@ -1024,7 +1082,7 @@ mod tests {
             None,
             entity_id,
             vec!["ns".to_string(), "table".to_string()],
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"test": "data"})),
@@ -1034,7 +1092,7 @@ mod tests {
         .unwrap();
 
         // Try to get task details with wrong warehouse ID
-        let result = get_task_details(wrong_warehouse_id, task_id, 10, &pool)
+        let result = get_task_details(Some(project_id), Some(wrong_warehouse_id), task_id, 10, &pool)
             .await
             .unwrap();
 

@@ -60,6 +60,8 @@ alter table task_config
 alter table task 
 	drop constraint if exists task_unique_warehouse_id_entity_type_entity_id_queue_name,
 	alter column warehouse_id drop not null,
+	alter column entity_id drop not null,
+	alter column entity_name drop not null,
 	add unique nulls not distinct (project_id, warehouse_id, entity_type, entity_id, queue_name),
 	add check ("entity_type" not in ('table', 'view') or warehouse_id is not null);
 
@@ -71,4 +73,12 @@ alter table task_config
 -- 7. Modify task_log constraints and make warehouse_id optional
 alter table task_log
 	alter column warehouse_id drop not null,
+	alter column entity_id drop not null,
+	alter column entity_name drop not null,
 	add check ("entity_type" not in ('table', 'view') or warehouse_id is not null);
+
+-- 8. Add new value for entity_type enum to represent project-level tasks
+alter type entity_type
+	add value if not exists 'project';
+alter type entity_type
+	add value if not exists 'warehouse';

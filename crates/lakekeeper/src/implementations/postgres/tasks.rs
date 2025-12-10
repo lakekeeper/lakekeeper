@@ -9,7 +9,10 @@ use crate::{
         GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
     },
     implementations::postgres::dbutils::DBErrorHandler,
-    service::tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
+    service::{
+        TableId, ViewId,
+        tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
+    },
 };
 
 mod get_task_details;
@@ -31,6 +34,8 @@ pub(crate) struct InsertResult {
 enum EntityType {
     Table,
     View,
+    Project,
+    Warehouse,
 }
 
 impl From<EntityId> for EntityType {
@@ -38,6 +43,8 @@ impl From<EntityId> for EntityType {
         match entity_id {
             EntityId::Table(_) => Self::Table,
             EntityId::View(_) => Self::View,
+            EntityId::Project => Self::Project,
+            EntityId::Warehouse => Self::Warehouse,
         }
     }
 }
@@ -79,13 +86,20 @@ pub(crate) async fn queue_task_batch(
         payloads.push(payload);
         entity_types.push(EntityType::from(entity_id));
         entity_ids.push(entity_id.as_uuid());
-        entity_names.push(serde_json::to_value(&entity_name).map_err(|e| {
-            ErrorModel::internal(
-                format!("Failed to serialize entity name: {entity_name:?}, error: {e}"),
-                "InternalError",
-                None,
-            )
-        })?);
+        match entity_name {
+            None => {
+                entity_names.push(None);
+            }
+            Some(name) => {
+                entity_names.push(Some(serde_json::to_value(&name).map_err(|e| {
+                    ErrorModel::internal(
+                        format!("Failed to serialize entity name: {name:?}, error: {e}"),
+                        "InternalError",
+                        None,
+                    )
+                })?));
+            }
+        };
     }
 
     Ok(sqlx::query!(
@@ -160,10 +174,10 @@ pub(crate) async fn queue_task_batch(
             .map(|t| t.as_ref())
             .collect::<Vec<_>>() as _,
         &payloads,
-        &entity_ids,
+        &entity_ids as _,
         &entity_types as _,
         TaskStatus::Scheduled as _,
-        &entity_names,
+        &entity_names as _,
         &project_ids
     )
     .fetch_all(conn)
@@ -176,8 +190,10 @@ pub(crate) async fn queue_task_batch(
                 // queue_name: record.queue_name,
                 #[cfg(test)]
                 entity_id: match record.entity_type {
-                    EntityType::View => EntityId::View(record.entity_id.into()),
-                    EntityType::Table => EntityId::Table(record.entity_id.into()),
+                    EntityType::View => EntityId::View(record.entity_id.unwrap().into()),
+                    EntityType::Table => EntityId::Table(record.entity_id.unwrap().into()),
+                    EntityType::Project => EntityId::Project,
+                    EntityType::Warehouse => EntityId::Warehouse,
                 },
             })
             .collect_vec()
@@ -205,6 +221,7 @@ pub(crate) async fn pick_task(
                 None,
             ))?,
     };
+    // AND ((tc.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (tc.warehouse_id = t.warehouse_id))
     let x = sqlx::query!(
         r#"
         WITH picked_task AS (
@@ -212,7 +229,8 @@ pub(crate) async fn pick_task(
             FROM task t
             LEFT JOIN task_config tc
                 ON tc.queue_name = t.queue_name
-                    AND tc.warehouse_id = t.warehouse_id
+                    AND ((tc.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (tc.warehouse_id = t.warehouse_id))
+                    AND tc.project_id = t.project_id
             WHERE (t.queue_name = $1 AND scheduled_for <= now()) 
                 AND (
                     (status = 'scheduled') OR 
@@ -311,8 +329,26 @@ pub(crate) async fn pick_task(
                 project_id,
                 warehouse_id: task.warehouse_id.map(WarehouseId::from),
                 entity_id: match task.entity_type {
-                    EntityType::View => EntityId::View(task.entity_id.into()),
-                    EntityType::Table => EntityId::Table(task.entity_id.into()),
+                    EntityType::View => task
+                        .entity_id
+                        .ok_or(ErrorModel::internal(
+                            "EntityId is missing for view.",
+                            "InternalError",
+                            None,
+                        ))
+                        .map(ViewId::from)
+                        .map(EntityId::View)?,
+                    EntityType::Table => task
+                        .entity_id
+                        .ok_or(ErrorModel::internal(
+                            "EntityId is missing for view.",
+                            "InternalError",
+                            None,
+                        ))
+                        .map(TableId::from)
+                        .map(EntityId::Table)?,
+                    EntityType::Project => EntityId::Project,
+                    EntityType::Warehouse => EntityId::Warehouse,
                 },
                 entity_name: task.entity_name,
                 parent_task_id: task.parent_task_id.map(TaskId::from),
@@ -643,17 +679,24 @@ pub(crate) async fn get_task_queue_config<
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
     connection: E,
-    warehouse_id: WarehouseId,
+    project_id: Option<ProjectId>,
+    warehouse_id: Option<WarehouseId>,
     queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
+    let warehouse_id_is_none = warehouse_id.is_none();
+    let project_id_is_none = project_id.is_none();
+
     let result = sqlx::query!(
         r#"
         SELECT config, max_time_since_last_heartbeat
         FROM task_config
-        WHERE warehouse_id = $1 AND queue_name = $2
+        WHERE ($3 OR warehouse_id = $1) AND ($5 OR project_id = $4) AND queue_name = $2
         "#,
-        *warehouse_id,
-        queue_name.as_str()
+        warehouse_id.map(|id| *id),
+        queue_name.as_str(),
+        warehouse_id_is_none,
+        project_id.map(|id| id.to_string()),
+        project_id_is_none
     )
     .fetch_optional(connection)
     .await
@@ -679,7 +722,7 @@ pub(crate) async fn set_task_queue_config(
     transaction: &mut PgConnection,
     queue_name: &TaskQueueName,
     project_id: ProjectId,
-    warehouse_id: WarehouseId,
+    warehouse_id: Option<WarehouseId>,
     config: SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
     let serialized = config.queue_config.0;
@@ -708,7 +751,7 @@ pub(crate) async fn set_task_queue_config(
         "#,
         queue_name.as_str(),
         project_id.as_str(),
-        *warehouse_id,
+        warehouse_id.map(Uuid::from),
         serialized,
         max_time_since_last_heartbeat
     )
@@ -1105,9 +1148,10 @@ pub(crate) async fn cancel_scheduled_tasks(
 
 #[cfg(test)]
 mod test {
-    use std::vec;
+    use std::{collections::HashMap, vec};
 
     use chrono::{DateTime, Utc};
+    use serde_json::Value;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -1118,12 +1162,18 @@ mod test {
             tasks::TaskStatus as ApiTaskStatus,
             warehouse::{QueueConfig, TabularDeleteProfile},
         },
+        implementations::{
+            CatalogState,
+            postgres::{PostgresBackend, PostgresTransaction},
+        },
         service::{
+            CatalogStore, Transaction,
             authz::AllowAllAuthorizer,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskId, TaskInput, TaskStatus,
             },
         },
+        tests::SetupTestCatalog,
     };
 
     #[allow(clippy::too_many_arguments)]
@@ -1133,7 +1183,7 @@ mod test {
         parent_task_id: Option<TaskId>,
         entity_id: EntityId,
         project_id: ProjectId,
-        warehouse_id: WarehouseId,
+        warehouse_id: Option<WarehouseId>,
         schedule_for: Option<DateTime<Utc>>,
         payload: Option<serde_json::Value>,
     ) -> Result<Option<TaskId>, IcebergErrorResponse> {
@@ -1143,10 +1193,10 @@ mod test {
             vec![TaskInput {
                 task_metadata: TaskMetadata {
                     project_id,
-                    warehouse_id: warehouse_id.into(),
+                    warehouse_id,
                     parent_task_id,
                     entity_id,
-                    entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+                    entity_name: entity_id.as_uuid().map(|id| vec![format!("entity-{}", id)]),
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -1174,7 +1224,7 @@ mod test {
             None,
             entity_id,
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1188,7 +1238,7 @@ mod test {
                 None,
                 entity_id,
                 project_id.clone(),
-                warehouse_id,
+                Some(warehouse_id),
                 None,
                 None
             )
@@ -1203,7 +1253,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1223,6 +1273,7 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             1,
+            None,
         )
         .await;
         (wh.warehouse_id, wh.project_id)
@@ -1240,6 +1291,7 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             2,
+            None,
         )
         .await;
         (
@@ -1261,7 +1313,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1320,7 +1372,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1366,7 +1418,7 @@ mod test {
             None,
             entity,
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"a": "a"})),
         )
@@ -1397,7 +1449,7 @@ mod test {
             None,
             entity,
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"b": "b"})),
         )
@@ -1432,7 +1484,7 @@ mod test {
             None,
             entity,
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"a": "a"})),
         )
@@ -1455,7 +1507,7 @@ mod test {
             None,
             entity,
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"b": "b"})),
         )
@@ -1492,7 +1544,7 @@ mod test {
             None,
             entity,
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"a": "a"})),
         )
@@ -1523,7 +1575,7 @@ mod test {
             None,
             entity,
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"b": "b"})),
         )
@@ -1557,7 +1609,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             Some(scheduled_for),
             None,
         )
@@ -1598,7 +1650,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1644,7 +1696,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1663,7 +1715,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -1720,7 +1772,7 @@ mod test {
                     task_metadata: TaskMetadata {
                         project_id: project_id.clone(),
                         entity_id: EntityId::Table(Uuid::now_v7().into()),
-                        entity_name: task_1_entity_name.clone(),
+                        entity_name: Some(task_1_entity_name.clone()),
                         warehouse_id: warehouse_id.into(),
                         parent_task_id: None,
                         schedule_for: None,
@@ -1732,7 +1784,7 @@ mod test {
                     task_metadata: TaskMetadata {
                         project_id,
                         entity_id: EntityId::Table(Uuid::now_v7().into()),
-                        entity_name: task_2_entity_name.clone(),
+                        entity_name: Some(task_2_entity_name.clone()),
                         warehouse_id: warehouse_id.into(),
                         parent_task_id: None,
                         schedule_for: None,
@@ -1768,7 +1820,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
-        assert_eq!(task.task_metadata.entity_name, task_1_entity_name);
+        assert_eq!(task.task_metadata.entity_name, Some(task_1_entity_name));
 
         assert_eq!(task2.task_id(), id2);
         assert!(matches!(task2.status, TaskStatus::Running));
@@ -1776,7 +1828,7 @@ mod test {
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, &tq_name);
-        assert_eq!(task2.task_metadata.entity_name, task_2_entity_name);
+        assert_eq!(task2.task_metadata.entity_name, Some(task_2_entity_name));
 
         record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
@@ -1794,7 +1846,7 @@ mod test {
         TaskMetadata {
             project_id,
             entity_id,
-            entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            entity_name: entity_id.as_uuid().map(|id| vec![format!("entity-{}", id)]),
             warehouse_id: warehouse_id.into(),
             parent_task_id: None,
             schedule_for: None,
@@ -1920,10 +1972,15 @@ mod test {
         let tq_name = generate_tq_name();
 
         assert!(
-            get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
-                .await
-                .unwrap()
-                .is_none()
+            get_task_queue_config(
+                &mut *conn,
+                Some(project_id.clone()),
+                Some(warehouse_id),
+                &tq_name
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
 
         let config = SetTaskQueueConfigRequest {
@@ -1931,14 +1988,21 @@ mod test {
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
-        set_task_queue_config(&mut conn, &tq_name, project_id, warehouse_id, config)
-            .await
-            .unwrap();
+        set_task_queue_config(
+            &mut conn,
+            &tq_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            config,
+        )
+        .await
+        .unwrap();
 
-        let response = get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
-            .await
-            .unwrap()
-            .unwrap();
+        let response =
+            get_task_queue_config(&mut *conn, Some(project_id), Some(warehouse_id), &tq_name)
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(&response.queue_config.queue_name, &tq_name);
         assert_eq!(
@@ -1963,7 +2027,7 @@ mod test {
             &mut conn,
             &tq_name,
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             config,
         )
         .await
@@ -1975,7 +2039,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(payload.clone()),
         )
@@ -2000,7 +2064,7 @@ mod test {
             None,
             EntityId::Table(Uuid::now_v7().into()),
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             Some(other_payload.clone()),
         )
@@ -2030,8 +2094,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "data"})),
         )
@@ -2069,10 +2133,11 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist in task_log");
 
         // Should be marked as successful
         assert!(matches!(task_details.task.status, ApiTaskStatus::Success));
@@ -2095,7 +2160,7 @@ mod test {
             None,
             entity_id,
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -2174,7 +2239,7 @@ mod test {
             None,
             entity_id,
             project_id,
-            warehouse_id,
+            Some(warehouse_id),
             None,
             None,
         )
@@ -2217,8 +2282,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "failure_data"})),
         )
@@ -2256,10 +2321,11 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist in task_log");
 
         assert_eq!(task_details.attempts.len(), 0); // No retries, so no historical attempts
 
@@ -2283,8 +2349,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "conflict_test"})),
         )
@@ -2303,10 +2369,11 @@ mod test {
             .await
             .unwrap();
         // Get original task details, assert last_heartbeat is reset
-        let original_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let original_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist in task_log");
         assert_eq!(original_details.task.last_heartbeat_at, None);
 
         // Task should be rescheduled for retry since max_retries=2 > attempt=1
@@ -2398,8 +2465,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "cancel_data"})),
         )
@@ -2461,10 +2528,11 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
         assert!(matches!(task_details.task.status, ApiTaskStatus::Cancelled));
@@ -2486,8 +2554,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "running_cancel_data"})),
         )
@@ -2539,10 +2607,11 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
         assert!(matches!(task_details.task.status, ApiTaskStatus::Cancelled));
@@ -2564,8 +2633,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "mixed_operations"})),
         )
@@ -2615,10 +2684,11 @@ mod test {
         .unwrap();
 
         // Verify task is still marked as successful using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist in task_log");
 
         // Should remain marked as successful despite later operations
         assert!(matches!(task_details.task.status, ApiTaskStatus::Success));
@@ -2643,7 +2713,7 @@ mod test {
             None,
             entity_id1,
             project_id.clone(),
-            warehouse_id,
+            Some(warehouse_id),
             Some(future_time), // Schedule for 2 hours in the future
             Some(serde_json::json!({"test": "run_now"})),
         )
@@ -2678,8 +2748,8 @@ mod test {
             &tq_name,
             None,
             entity_id2,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             Some(future_time), // Schedule for 2 hours in the future
             Some(serde_json::json!({"test": "run_at_specific_time"})),
         )
@@ -2693,10 +2763,16 @@ mod test {
             .unwrap();
 
         // Verify the task's scheduled_for was updated to the specific time
-        let details2 = get_task_details(warehouse_id, task_id2, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task 2 should exist");
+        let details2 = get_task_details(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            task_id2,
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task 2 should exist");
 
         // The scheduled_for should be close to our specific_time (within a few seconds tolerance)
         let time_diff = (details2.task.scheduled_for - specific_time)
@@ -2708,7 +2784,7 @@ mod test {
         );
 
         // Test 3: Verify using get_task_details shows the updated scheduling
-        let details1 = get_task_details(warehouse_id, task_id1, 10, &pool)
+        let details1 = get_task_details(Some(project_id), Some(warehouse_id), task_id1, 10, &pool)
             .await
             .unwrap()
             .expect("Task 1 should exist");
@@ -2748,8 +2824,8 @@ mod test {
             &tq_name,
             None,
             entity_id,
-            project_id,
-            warehouse_id,
+            project_id.clone(),
+            Some(warehouse_id),
             None,
             Some(serde_json::json!({"test": "reschedule_running_task"})),
         )
@@ -2775,10 +2851,16 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist");
+        let task_details = get_task_details(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            task_id,
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist");
 
         // Task should still be running, as rescheduling does not affect running tasks
         assert_eq!(task_details.task.status, ApiTaskStatus::Running);
@@ -2791,10 +2873,11 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist");
+        let task_details =
+            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
+                .await
+                .unwrap()
+                .expect("Task should exist");
 
         assert_eq!(task_details.task.status, ApiTaskStatus::Scheduled);
 
@@ -2866,5 +2949,225 @@ mod test {
         assert_eq!(now_task.task_id(), task_id);
         assert_eq!(now_task.status, TaskStatus::Running);
         assert_eq!(now_task.attempt(), 2); // Attempt 2 now as the task used to be running
+    }
+
+    async fn setup_project(state: CatalogState) -> crate::api::Result<ProjectId> {
+        let project_id = ProjectId::new_random();
+        let mut transaction = PostgresTransaction::begin_write(state).await?;
+        PostgresBackend::create_project(
+            &project_id,
+            format!("Project {project_id}"),
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(project_id)
+    }
+
+    async fn setup_task_config(
+        conn: &mut PgConnection,
+        queue_name: &TaskQueueName,
+        config: Value,
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
+    ) -> crate::api::Result<()> {
+        set_task_queue_config(
+            conn,
+            queue_name,
+            project_id,
+            warehouse_id,
+            SetTaskQueueConfigRequest {
+                queue_config: QueueConfig(config),
+                max_seconds_since_last_heartbeat: None,
+            },
+        )
+        .await
+    }
+
+    /// Test: Project-level tasks across different projects get picked correctly
+    #[sqlx::test]
+    async fn test_pick_task_finds_correct_config_for_project_level_tasks_on_different_projects(
+        pool: PgPool,
+    ) {
+        let mut conn = pool.acquire().await.unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // 1. Set up two projects
+        let project_id_1 = setup_project(state.clone()).await.unwrap();
+        let project_id_2 = setup_project(state.clone()).await.unwrap();
+
+        // 2. Store expected data per task_id in HashMap (pick order can be random)
+        let mut config_expected = HashMap::with_capacity(2);
+        config_expected.insert(
+            project_id_1.clone(),
+            serde_json::json!({"test": "Task in Project 1"}),
+        );
+        config_expected.insert(
+            project_id_2.clone(),
+            serde_json::json!({"test": "Task in Project 2"}),
+        );
+
+        // 3. Queue one project-level task per project (warehouse_id = None)
+        let tq_name = generate_tq_name();
+
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            config_expected.get(&project_id_1).cloned().unwrap(),
+            project_id_1.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            config_expected.get(&project_id_2).cloned().unwrap(),
+            project_id_2.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            EntityId::Project,
+            project_id_1.clone(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            EntityId::Project,
+            project_id_2.clone(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // 4. Pick both tasks and verify:
+        //    - data matches the project's data
+        let mut picked_project_tasks = Vec::new();
+
+        while let Some(picked_task) =
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+        {
+            if picked_task.task_metadata.warehouse_id.is_some() {
+                continue;
+            }
+            picked_project_tasks.push(picked_task.clone());
+            let project_id = picked_task.task_metadata.project_id.clone();
+            let config = picked_task.config.unwrap();
+            assert_eq!(config_expected.get(&project_id).cloned().unwrap(), config);
+        }
+        assert_eq!(picked_project_tasks.len(), 2);
+    }
+
+    // Test: Project-level and warehouse-level tasks for same project are isolated
+    #[sqlx::test]
+    async fn test_pick_task_finds_correct_config_for_project_and_warehouse_level_tasks_in_same_project(
+        pool: PgPool,
+    ) {
+        let mut conn = pool.acquire().await.unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // 1. Set up one project with one warehouse
+        let project_id = setup_project(state).await.unwrap();
+        let (_, warehouse) = SetupTestCatalog::builder()
+            .project_id(Some(project_id.clone()))
+            .pool(pool.clone())
+            .authorizer(AllowAllAuthorizer::default())
+            .build()
+            .setup()
+            .await;
+
+        // 2. Store expected data
+        let project_level_config = serde_json::json!({"level": "project"});
+        let warehouse_level_config = serde_json::json!({"level": "warehouse"});
+
+        // 3. Queue one project-level task and one warehouse-level task
+        let tq_name = generate_tq_name();
+
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            project_level_config.clone(),
+            project_id.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            warehouse_level_config.clone(),
+            project_id.clone(),
+            Some(warehouse.warehouse_id),
+        )
+        .await
+        .unwrap();
+
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            EntityId::Project,
+            project_id.clone(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            EntityId::Table(TableId::new_random()),
+            project_id,
+            Some(warehouse.warehouse_id),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // 4. Pick both tasks and verify:
+        //    - data matches with the corresponding task
+        let mut picked_tasks = Vec::new();
+
+        while let Some(picked_task) =
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+        {
+            picked_tasks.push(picked_task.clone());
+            match picked_task.task_metadata.warehouse_id {
+                None => {
+                    let config = picked_task.config.unwrap();
+                    assert_eq!(project_level_config, config);
+                }
+                Some(_) => {
+                    let config = picked_task.config.unwrap();
+                    assert_eq!(warehouse_level_config, config);
+                }
+            }
+        }
+        assert_eq!(picked_tasks.len(), 2);
     }
 }

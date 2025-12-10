@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
-    CONFIG, WarehouseId,
+    CONFIG, ProjectId, WarehouseId,
     api::management::v1::tasks::{
         ListTasksRequest, ListTasksResponse, Task as APITask, TaskStatus as APITaskStatus,
     },
@@ -22,11 +22,12 @@ use crate::{
 #[derive(sqlx::FromRow, Debug)]
 struct TaskRow {
     task_id: Uuid,
+    project_id: String,
     warehouse_id: Option<Uuid>,
     queue_name: String,
-    entity_id: uuid::Uuid,
+    entity_id: Option<uuid::Uuid>,
     entity_type: EntityType,
-    entity_name: Vec<String>,
+    entity_name: Option<Vec<String>>,
     task_status: Option<TaskStatus>,
     task_log_status: Option<TaskOutcome>,
     attempt_scheduled_for: DateTime<chrono::Utc>,
@@ -42,14 +43,35 @@ struct TaskRow {
 fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
     Ok(APITask {
         task_id: row.task_id.into(),
-        warehouse_id: WarehouseId::try_from(row.warehouse_id)?,
+        project_id: ProjectId::from(row.project_id.clone()),
+        warehouse_id: row.warehouse_id.map(WarehouseId::from),
         queue_name: row.queue_name.into(),
         entity: match row.entity_type {
             EntityType::Table => TaskEntity::Table {
-                table_id: row.entity_id.into(),
+                table_id: row.entity_id.ok_or(ErrorModel::internal(
+                    "Most recent task record has no entity_id for type Table.",
+                    "InternalError",
+                    None,
+                ))?.into(),
             },
             EntityType::View => TaskEntity::View {
-                view_id: row.entity_id.into(),
+                view_id: row.entity_id.ok_or(ErrorModel::internal(
+                    "Most recent task record has no entity_id for type View.",
+                    "InternalError",
+                    None,
+                ))?.into(),
+            },
+            EntityType::Project => TaskEntity::Project {
+                project_id: ProjectId::from(row.project_id),
+            },
+            EntityType::Warehouse => TaskEntity::Warehouse {
+                warehouse_id: row.warehouse_id.map(WarehouseId::from).ok_or(
+                    ErrorModel::internal(
+                        "Most recent task record has no warehouse_id for type Warehouse.",
+                        "InternalError",
+                        None,
+                    ),
+                )?,
             },
         },
         entity_name: row.entity_name,
@@ -95,7 +117,8 @@ fn categorize_task_statuses(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn list_tasks(
-    warehouse_id: WarehouseId,
+    project_id: Option<ProjectId>,
+    warehouse_id: Option<WarehouseId>,
     query: ListTasksRequest,
     transaction: &mut PgConnection,
 ) -> Result<ListTasksResponse, IcebergErrorResponse> {
@@ -108,6 +131,9 @@ pub(crate) async fn list_tasks(
         page_token,
         page_size,
     } = query;
+
+    let warehouse_id_is_none = warehouse_id.is_none();
+    let project_id_is_none = project_id.is_none();
 
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
     let previous_page_token = page_token.clone();
@@ -138,8 +164,10 @@ pub(crate) async fn list_tasks(
         .unwrap_or_default()
         .into_iter()
         .map(|e| match e {
-            TaskEntity::Table { table_id } => (*table_id, EntityType::Table),
-            TaskEntity::View { view_id } => (*view_id, EntityType::View),
+            TaskEntity::Table { table_id } => (Some(*table_id), EntityType::Table),
+            TaskEntity::View { view_id } => (Some(*view_id), EntityType::View),
+            TaskEntity::Project { .. } => (None, EntityType::Project),
+            TaskEntity::Warehouse { .. } => (None, EntityType::Warehouse),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -153,6 +181,7 @@ pub(crate) async fn list_tasks(
         active_tasks AS (
             SELECT
                 task_id,
+                project_id,
                 warehouse_id,
                 queue_name,
                 entity_id,
@@ -169,19 +198,21 @@ pub(crate) async fn list_tasks(
                 created_at as task_created_at,
                 updated_at
             FROM task
-            WHERE warehouse_id = $1
+            WHERE ($15 or warehouse_id = $1)
                 AND ((created_at < $3 OR $3 IS NULL) OR (created_at = $3 AND task_id < $4))
                 AND ($6 OR queue_name = ANY($5))
                 AND ($9 OR status = ANY($7::task_intermediate_status[]))
                 AND ($12 OR (entity_id, entity_type) IN (SELECT entity_id, entity_type FROM selected_entities))
                 AND (created_at >= $13 OR $13 IS NULL)
                 AND (created_at <= $14 OR $14 IS NULL)
+                AND ($17 OR project_id = $16)
             ORDER BY task_created_at DESC, task_id DESC
             LIMIT $2
         ),
         log_tasks as (
             SELECT DISTINCT ON (task_created_at, task_id)
                 task_id,
+                project_id,
                 warehouse_id,
                 queue_name,
                 entity_id,
@@ -198,18 +229,20 @@ pub(crate) async fn list_tasks(
                 task_created_at,
                 null::timestamptz as updated_at
             FROM task_log
-            WHERE warehouse_id = $1
+            WHERE ($15 OR warehouse_id = $1)
                 AND ((task_created_at < $3 OR $3 IS NULL) OR (task_created_at = $3 AND task_id < $4))
                 AND ($6 OR queue_name = ANY($5))
                 AND ($9 OR status = ANY($8::task_final_status[]))
                 AND ($12 OR (entity_id, entity_type) IN (SELECT entity_id, entity_type FROM selected_entities))
                 AND (task_created_at >= $13 OR $13 IS NULL)
                 AND (task_created_at <= $14 OR $14 IS NULL)
+                AND ($17 OR project_id = $16)
             ORDER BY task_created_at DESC, task_id DESC, attempt DESC
             LIMIT $2
         )
         SELECT 
             task_id AS "task_id!",
+            project_id AS "project_id!",
             warehouse_id AS "warehouse_id",
             queue_name AS "queue_name!",
             entity_id AS "entity_id!",
@@ -233,7 +266,7 @@ pub(crate) async fn list_tasks(
         ORDER BY task_created_at DESC, task_id DESC
         LIMIT $2
         "#,
-        *warehouse_id,
+        warehouse_id.map(|id| *id),
         page_size as i64,
         pagination_ts,
         pagination_task_id.map(|id| *id),
@@ -247,6 +280,9 @@ pub(crate) async fn list_tasks(
         entities_filter_is_none, // 13
         created_after, // 14
         created_before,
+        warehouse_id_is_none,
+        project_id.map(|id| id.to_string()),
+        project_id_is_none,
     )
     .fetch_all(&mut *transaction)
     .await
@@ -362,7 +398,7 @@ mod tests {
                     warehouse_id: warehouse_id.into(),
                     parent_task_id: None,
                     entity_id,
-                    entity_name,
+                    entity_name: Some(entity_name),
                     schedule_for: None,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -379,10 +415,10 @@ mod tests {
     #[sqlx::test]
     async fn test_list_tasks_empty_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let request = ListTasksRequest::default();
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert!(result.tasks.is_empty());
         assert!(result.next_page_token.is_none());
@@ -403,7 +439,7 @@ mod tests {
             &tq_name,
             entity_id,
             entity_name.clone(),
-            project_id,
+            project_id.clone(),
             warehouse_id,
             Some(payload.clone()),
         )
@@ -411,13 +447,13 @@ mod tests {
         .unwrap();
 
         let request = ListTasksRequest::default();
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
         assert_eq!(task.task_id, task_id);
-        assert_eq!(task.entity_name, entity_name);
-        assert_eq!(task.warehouse_id, warehouse_id);
+        assert_eq!(task.entity_name, Some(entity_name));
+        assert_eq!(task.warehouse_id, Some(warehouse_id));
         assert_eq!(task.queue_name.as_str(), tq_name.as_str());
         assert!(matches!(task.status, APITaskStatus::Scheduled));
         assert_eq!(task.attempt, 0);
@@ -426,9 +462,11 @@ mod tests {
 
         match task.entity {
             TaskEntity::Table { table_id } => {
-                assert_eq!(*table_id, entity_id.as_uuid());
+                assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -456,7 +494,7 @@ mod tests {
             &mut conn,
             &tq_name2,
             entity_id2,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -464,7 +502,7 @@ mod tests {
         .unwrap();
 
         let request = ListTasksRequest::default();
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 2);
         let task_ids: HashSet<_> = result.tasks.iter().map(|t| t.task_id).collect();
@@ -499,7 +537,7 @@ mod tests {
             &mut conn,
             &tq_name2,
             entity_id2,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -511,7 +549,7 @@ mod tests {
             queue_name: Some(vec![tq_name1.clone()]),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);
@@ -541,7 +579,7 @@ mod tests {
             &mut conn,
             &tq_name,
             entity_id2,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -559,7 +597,7 @@ mod tests {
             status: Some(vec![APITaskStatus::Running]),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert!(matches!(result.tasks[0].status, APITaskStatus::Running));
@@ -569,7 +607,7 @@ mod tests {
             status: Some(vec![APITaskStatus::Scheduled]),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert!(matches!(result.tasks[0].status, APITaskStatus::Scheduled));
@@ -598,7 +636,7 @@ mod tests {
             &mut conn,
             &tq_name,
             entity_id2,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -608,20 +646,22 @@ mod tests {
         // Filter by first entity only
         let request = ListTasksRequest {
             entities: Some(vec![TaskEntity::Table {
-                table_id: entity_id1.as_uuid().into(),
+                table_id: entity_id1.as_uuid().unwrap().into(),
             }]),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);
 
         match result.tasks[0].entity {
             TaskEntity::Table { table_id } => {
-                assert_eq!(*table_id, entity_id1.as_uuid());
+                assert_eq!(Some(*table_id), entity_id1.as_uuid());
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -642,7 +682,7 @@ mod tests {
             &mut conn,
             &tq_name,
             entity_id,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -654,7 +694,7 @@ mod tests {
             created_after: Some(before_time),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id);
 
@@ -663,7 +703,7 @@ mod tests {
             created_before: Some(after_time),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id);
 
@@ -672,7 +712,7 @@ mod tests {
             created_after: Some(after_time),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
         assert!(result.tasks.is_empty());
 
         // Filter with created_before that excludes our task
@@ -680,7 +720,7 @@ mod tests {
             created_before: Some(before_time),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
         assert!(result.tasks.is_empty());
     }
 
@@ -713,7 +753,7 @@ mod tests {
             page_size: Some(2),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
         seen_ids.extend(result.tasks.iter().map(|t| t.task_id));
 
         assert_eq!(result.tasks.len(), 2);
@@ -725,7 +765,7 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
         seen_ids.extend(result.tasks.iter().map(|t| t.task_id));
 
         assert_eq!(result.tasks.len(), 2);
@@ -737,7 +777,7 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
         seen_ids.extend(result.tasks.iter().map(|t| t.task_id));
 
         assert_eq!(result.tasks.len(), 1);
@@ -749,7 +789,7 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(
             result.tasks,
@@ -766,7 +806,7 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
         assert!(result.tasks.is_empty());
         assert!(result.next_page_token.is_some());
 
@@ -849,7 +889,7 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -946,7 +986,7 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -1067,7 +1107,7 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -1185,7 +1225,7 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -1228,7 +1268,7 @@ mod tests {
             &mut conn,
             &tq_name,
             entity_id,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -1248,7 +1288,7 @@ mod tests {
 
         // List all tasks
         let request = ListTasksRequest::default();
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
@@ -1317,7 +1357,7 @@ mod tests {
 
         // List all tasks
         let request = ListTasksRequest::default();
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 3);
 
@@ -1354,7 +1394,7 @@ mod tests {
             &mut conn,
             &tq_name,
             entity_id,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -1381,7 +1421,7 @@ mod tests {
 
         // List all tasks - should show the successful attempt
         let request = ListTasksRequest::default();
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
@@ -1403,7 +1443,7 @@ mod tests {
             &mut conn,
             &tq_name,
             entity_id,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -1412,7 +1452,7 @@ mod tests {
 
         // Try to list tasks from wrong warehouse
         let request = ListTasksRequest::default();
-        let result = list_tasks(wrong_warehouse_id, request, &mut conn)
+        let result = list_tasks(Some(project_id), Some(wrong_warehouse_id), request, &mut conn)
             .await
             .unwrap();
 
@@ -1455,7 +1495,7 @@ mod tests {
             &mut conn,
             &tq_name2,
             entity_id1,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
         )
@@ -1466,11 +1506,11 @@ mod tests {
         let request = ListTasksRequest {
             queue_name: Some(vec![tq_name1.clone()]),
             entities: Some(vec![TaskEntity::Table {
-                table_id: entity_id1.as_uuid().into(),
+                table_id: entity_id1.as_uuid().unwrap().into(),
             }]),
             ..Default::default()
         };
-        let result = list_tasks(warehouse_id, request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);
@@ -1478,9 +1518,11 @@ mod tests {
 
         match result.tasks[0].entity {
             TaskEntity::Table { table_id } => {
-                assert_eq!(*table_id, entity_id1.as_uuid());
+                assert_eq!(Some(*table_id), entity_id1.as_uuid());
             }
             TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
     }
 }

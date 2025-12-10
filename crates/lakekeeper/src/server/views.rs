@@ -128,6 +128,7 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
+        ProjectId,
         WarehouseId,
         api::{
             ApiContext, RequestMetadata,
@@ -157,10 +158,11 @@ mod test {
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceIdent,
         WarehouseId,
+        ProjectId,
     ) {
         let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
         let state = api_context.v1_state.catalog.clone();
-        let (_, warehouse_id) = initialize_warehouse(
+        let (project_id, warehouse_id) = initialize_warehouse(
             state.clone(),
             Some(StorageProfile::Memory(MemoryProfile::default())),
             None,
@@ -179,7 +181,7 @@ mod test {
         .await
         .namespace_ident()
         .clone();
-        (api_context, namespace, warehouse_id)
+        (api_context, namespace, warehouse_id, project_id)
     }
 
     // Returns a random view location and matching location for its metadata.

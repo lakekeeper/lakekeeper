@@ -557,7 +557,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         entity_id: EntityId::from(*tabular_id),
                         parent_task_id: None,
                         schedule_for: None,
-                        entity_name: tabular_ident.clone().into_name_parts(),
+                        entity_name: Some(tabular_ident.clone().into_name_parts()),
                     },
                     TabularPurgePayload {
                         tabular_location: tabular_location.to_string(),

@@ -89,7 +89,10 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         };
 
         let entity_id = task.task_metadata.entity_id;
-        let entity_id_uuid = entity_id.as_uuid();
+        let entity_id_uuid = entity_id
+            .as_uuid()
+            .map(|uuid| uuid.to_string())
+            .unwrap_or("Null".to_string());
 
         let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
             tracing::debug_span!(
@@ -226,6 +229,14 @@ where
                 .ok();
             location
         }
+        _ => {
+            let entity_type = entity_id.entity_type();
+            return Err(ErrorModel::bad_request(
+                format!("Entity type `{entity_type}` is not supported for tabular expiration.",),
+                "UnsupportedEntityType",
+                None,
+            ).into());
+        }
     };
 
     if let Some(tabular_location) = tabular_location
@@ -358,7 +369,7 @@ mod test {
                 entity_id: EntityId::Table(table.table_id),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: table.table_ident.into_name_parts(),
+                entity_name: Some(table.table_ident.into_name_parts()),
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

@@ -24,6 +24,12 @@ impl From<ProjectId> for String {
     }
 }
 
+impl From<String> for ProjectId {
+    fn from(s: String) -> Self {
+        ProjectId::from_db_unchecked(s)
+    }
+}
+
 impl ProjectId {
     #[must_use]
     pub fn new(id: uuid::Uuid) -> Self {

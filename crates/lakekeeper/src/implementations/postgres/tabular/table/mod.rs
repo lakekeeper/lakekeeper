@@ -1808,7 +1808,7 @@ pub(crate) mod tests {
                 warehouse_id: Some(warehouse_id),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: table.table_ident.into_name_parts(),
+                entity_name: Some(table.table_ident.into_name_parts()),
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

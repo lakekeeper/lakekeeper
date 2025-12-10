@@ -107,7 +107,7 @@ mod test {
                 .unwrap();
         <PostgresBackend as CatalogTaskOps>::set_task_queue_config(
             setup.warehouse.project_id.clone(),
-            setup.warehouse.warehouse_id,
+            Some(setup.warehouse.warehouse_id),
             &QUEUE_NAME,
             SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(
@@ -138,7 +138,7 @@ mod test {
                     parent_task_id: None,
                     entity_id: EntityId::Table(Uuid::now_v7().into()),
                     schedule_for: None,
-                    entity_name: vec!["mytable".to_string()],
+                    entity_name: Some(vec!["mytable".to_string()]),
                 },
                 payload: serde_json::to_value(task_state).unwrap(),
             },

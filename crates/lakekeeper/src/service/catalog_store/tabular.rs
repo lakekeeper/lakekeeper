@@ -6,6 +6,7 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{Location, LocationParseError};
 
 use crate::{
+    ProjectId,
     WarehouseId,
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
@@ -345,6 +346,15 @@ pub struct ViewNamed {
     pub warehouse_id: WarehouseId,
     pub view_ident: TableIdent,
     pub view_id: ViewId,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectNamed {
+    pub project_id: ProjectId,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarehouseNamed {
+    pub project_id: ProjectId,
+    pub warehouse_id: WarehouseId,
 }
 pub trait AuthZTableInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;

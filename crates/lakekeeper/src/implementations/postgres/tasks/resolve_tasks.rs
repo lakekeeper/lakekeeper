@@ -3,11 +3,12 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::ErrorModel,
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec,
+        ProjectNamed, ResolvedTask, TableNamed, ViewNamed, WarehouseNamed,
+        build_tabular_ident_from_vec,
         tasks::{TaskId, TaskQueueName},
     },
 };
@@ -16,6 +17,7 @@ use crate::{
 /// Returns a map of `task_id` to (`TaskEntity`, `queue_name`).
 /// Only includes task IDs that exist - missing task IDs are not included in the result.
 pub(crate) async fn resolve_tasks<'e, 'c: 'e, E>(
+    project_id: Option<ProjectId>,
     warehouse_id: Option<WarehouseId>,
     task_ids: &[TaskId],
     state: E,
@@ -27,6 +29,8 @@ where
         return Ok(Vec::new());
     }
 
+    let project_id_is_none = project_id.is_none();
+
     let warehouse_id_is_none = warehouse_id.is_none();
     let warehouse_id = warehouse_id.map_or_else(Uuid::nil, |id| *id);
 
@@ -36,13 +40,14 @@ where
         WITH active_tasks AS (
             SELECT 
                 task_id,
+                project_id,
                 warehouse_id,
                 entity_name,
                 entity_id,
                 entity_type,
                 queue_name
             FROM task
-            WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)
+            WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3) AND (project_id = $4 OR $5)
         ),
         missing_task_ids AS (
             SELECT unnest($1::uuid[]) as task_id
@@ -52,6 +57,7 @@ where
         historical_tasks AS (
             SELECT DISTINCT ON (task_id)
                 task_id,
+                project_id,
                 warehouse_id,
                 entity_name,
                 entity_id,
@@ -59,11 +65,12 @@ where
                 queue_name
             FROM task_log
             WHERE task_id IN (SELECT task_id FROM missing_task_ids) 
-              AND (warehouse_id = $2 OR $3)
+              AND (warehouse_id = $2 OR $3) AND (project_id = $4 OR $5)
             ORDER BY task_id, attempt DESC
         )
         SELECT 
             task_id as "task_id!",
+            project_id as "project_id!",
             warehouse_id as "warehouse_id",
             entity_name as "entity_name!",
             entity_id as "entity_id!",
@@ -73,6 +80,7 @@ where
         UNION ALL
         SELECT 
             task_id as "task_id!",
+            project_id as "project_id!",
             warehouse_id as "warehouse_id",
             entity_name as "entity_name!",
             entity_id as "entity_id!",
@@ -82,7 +90,9 @@ where
         "#,
         &task_ids.iter().map(|id| **id).collect::<Vec<_>>()[..],
         warehouse_id,
-        warehouse_id_is_none
+        warehouse_id_is_none,
+        project_id.map(|id| id.to_string()),
+        project_id_is_none,
     )
     .fetch_all(state)
     .await
@@ -91,6 +101,7 @@ where
     let result = tasks
         .into_iter()
         .map(|record| {
+            let project_id = ProjectId::from(record.project_id);
             let task_id = TaskId::from(record.task_id);
             let entity = match record.entity_type {
                 EntityType::Table => TableNamed {
@@ -105,9 +116,25 @@ where
                     view_ident: build_tabular_ident_from_vec(&record.entity_name)?,
                 }
                 .into(),
+                EntityType::Project => ProjectNamed {
+                    project_id: ProjectId::from(project_id.clone()),
+                }
+                .into(),
+                EntityType::Warehouse => WarehouseNamed {
+                    project_id: ProjectId::from(project_id.clone()),
+                    warehouse_id: record.warehouse_id.map(WarehouseId::from).ok_or(
+                        ErrorModel::internal(
+                            "warehouse_id must be set for entity of type warehouse.",
+                            "MissingWarehouseId",
+                            None,
+                        ),
+                    )?,
+                }
+                .into(),
             };
             let queue_name = TaskQueueName::from(record.queue_name);
             Ok(ResolvedTask {
+                project_id,
                 task_id,
                 entity,
                 queue_name,
@@ -160,7 +187,7 @@ mod tests {
                     warehouse_id: warehouse_id.into(),
                     parent_task_id,
                     entity_id,
-                    entity_name: vec!["ns".to_string(), format!("table{}", entity_id.as_uuid())],
+                    entity_name: entity_id.as_uuid().map(|id| vec!["ns".to_string(), format!("table{}", id)]),
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -177,16 +204,16 @@ mod tests {
 
     #[sqlx::test]
     async fn test_resolve_tasks_empty_input(pool: PgPool) {
-        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
-        let result = resolve_tasks(Some(warehouse_id), &[], &pool).await.unwrap();
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &[], &pool).await.unwrap();
 
         assert!(result.is_empty());
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_nonexistent_tasks(pool: PgPool) {
-        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let nonexistent_task_ids = vec![
             TaskId::from(Uuid::now_v7()),
@@ -194,7 +221,7 @@ mod tests {
             TaskId::from(Uuid::now_v7()),
         ];
 
-        let result = resolve_tasks(Some(warehouse_id), &nonexistent_task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &nonexistent_task_ids, &pool)
             .await
             .unwrap();
 
@@ -231,7 +258,7 @@ mod tests {
             &tq_name2,
             None,
             entity2,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "task2"})),
@@ -252,7 +279,7 @@ mod tests {
 
         // Resolve both tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
         let result = result
@@ -270,9 +297,11 @@ mod tests {
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
+                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
@@ -280,9 +309,11 @@ mod tests {
 
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity2.as_uuid()));
+                assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -315,7 +346,7 @@ mod tests {
             &tq_name2,
             None,
             entity2,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "completed2"})),
@@ -343,7 +374,7 @@ mod tests {
 
         // Resolve both completed tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id),Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -361,18 +392,22 @@ mod tests {
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
+                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity2.as_uuid()));
+                assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -419,7 +454,7 @@ mod tests {
             &tq_name,
             None,
             entity3,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"type": "scheduled"})),
@@ -444,7 +479,7 @@ mod tests {
 
         // Resolve all three tasks
         let task_ids = vec![task_id1, task_id2, task_id3];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -483,7 +518,7 @@ mod tests {
             &tq_name,
             None,
             entity1,
-            project_id1,
+            project_id1.clone(),
             warehouse_id1,
             None,
             Some(serde_json::json!({"warehouse": "1"})),
@@ -508,7 +543,7 @@ mod tests {
 
         // Resolve tasks with warehouse_id1 filter
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(warehouse_id1), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id1), Some(warehouse_id1), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -525,9 +560,11 @@ mod tests {
         let (entity_result, _) = &result[&task_id1];
         match entity_result {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
+                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -571,7 +608,7 @@ mod tests {
 
         // Resolve tasks without warehouse filter (None)
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(None, &task_ids, &pool).await.unwrap();
+        let result = resolve_tasks(None, None, &task_ids, &pool).await.unwrap();
 
         // Both tasks should be found regardless of warehouse
         assert_eq!(result.len(), 2);
@@ -588,16 +625,20 @@ mod tests {
 
         match entity_result1 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity1.as_uuid()));
+                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity2.as_uuid()));
+                assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -614,7 +655,7 @@ mod tests {
             &tq_name,
             None,
             entity,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"exists": true})),
@@ -628,7 +669,7 @@ mod tests {
 
         // Resolve both existing and non-existing tasks
         let task_ids = vec![existing_task_id, nonexistent_task_id];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -646,9 +687,11 @@ mod tests {
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity.as_uuid()));
+                assert_eq!(Some(table.table_id), entity.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -665,7 +708,7 @@ mod tests {
             &tq_name,
             None,
             entity,
-            project_id,
+            project_id.clone(),
             warehouse_id,
             None,
             Some(serde_json::json!({"retry": "test"})),
@@ -691,7 +734,7 @@ mod tests {
 
         // Resolve the task (should find it in active tasks, not task_log)
         let task_ids = vec![task_id];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
         let result = result
@@ -707,9 +750,11 @@ mod tests {
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, TableId::from(entity.as_uuid()));
+                assert_eq!(Some(table.table_id), entity.as_uuid().map(TableId::from));
             }
             TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -759,7 +804,7 @@ mod tests {
         task_ids.extend(nonexistent_ids.iter());
 
         // Resolve all tasks
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
