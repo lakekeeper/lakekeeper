@@ -27,7 +27,9 @@
             "kind": {
               "Enum": [
                 "table",
-                "view"
+                "view",
+                "project",
+                "warehouse"
               ]
             }
           }
@@ -53,7 +55,9 @@
                   "kind": {
                     "Enum": [
                       "table",
-                      "view"
+                      "view",
+                      "project",
+                      "warehouse"
                     ]
                   }
                 }
@@ -80,7 +84,7 @@
     "nullable": [
       false,
       false,
-      false,
+      true,
       false
     ]
   },
