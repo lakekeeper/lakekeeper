@@ -172,7 +172,7 @@ mod test {
         },
         request_metadata::RequestMetadata,
         server::views::{
-            create::{test::create_view}, drop::drop_view, load::test::load_view, test::setup,
+            create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
         service::tasks::TaskEntity,
         tests::{create_view_request, random_request_metadata},

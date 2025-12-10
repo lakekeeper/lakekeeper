@@ -6,8 +6,7 @@ use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
-    ProjectId,
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
     service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
@@ -93,28 +92,36 @@ fn parse_task_details(
         queue_name: most_recent.queue_name.into(),
         entity: match most_recent.entity_type {
             EntityType::Table => TaskEntity::Table {
-                table_id: most_recent.entity_id.ok_or(ErrorModel::internal(
-                    "Most recent task record has no entity_id for type Table.",
-                    "InternalError",
-                    None,
-                ))?.into(),
+                table_id: most_recent
+                    .entity_id
+                    .ok_or(ErrorModel::internal(
+                        "Most recent task record has no entity_id for type Table.",
+                        "InternalError",
+                        None,
+                    ))?
+                    .into(),
             },
             EntityType::View => TaskEntity::View {
-                view_id: most_recent.entity_id.ok_or(ErrorModel::internal(
-                    "Most recent task record has no entity_id for type View.",
-                    "InternalError",
-                    None,
-                ))?.into(),
+                view_id: most_recent
+                    .entity_id
+                    .ok_or(ErrorModel::internal(
+                        "Most recent task record has no entity_id for type View.",
+                        "InternalError",
+                        None,
+                    ))?
+                    .into(),
             },
             EntityType::Project => TaskEntity::Project {
                 project_id: ProjectId::from(most_recent.project_id),
             },
             EntityType::Warehouse => TaskEntity::Warehouse {
-                warehouse_id: most_recent.warehouse_id.map(WarehouseId::from).ok_or(ErrorModel::internal(
-                    "Most recent task record has no warehouse_id for type Warehouse.",
-                    "InternalError",
-                    None,
-                ))?,
+                warehouse_id: most_recent.warehouse_id.map(WarehouseId::from).ok_or(
+                    ErrorModel::internal(
+                        "Most recent task record has no warehouse_id for type Warehouse.",
+                        "InternalError",
+                        None,
+                    ),
+                )?,
             },
         },
         entity_name: most_recent.entity_name,
@@ -293,7 +300,7 @@ mod tests {
     use super::*;
     use crate::{
         ProjectId, WarehouseId,
-        api::management::v1::{tasks::TaskStatus as APITaskStatus},
+        api::management::v1::tasks::TaskStatus as APITaskStatus,
         implementations::postgres::tasks::{
             check_and_heartbeat_task, pick_task, record_failure, record_success,
             test::setup_warehouse,
@@ -343,7 +350,7 @@ mod tests {
             }),
             message: Some("Test message".to_string()),
             project_id: project_id.to_string(),
-            warehouse_id
+            warehouse_id,
         }
     }
 
@@ -377,12 +384,10 @@ mod tests {
             task_created_at,
             None, // No attempt_created_at for active tasks,
             project_id.as_str(),
-            Some(*warehouse_id)
+            Some(*warehouse_id),
         )];
 
-        let result = parse_task_details(task_id, records)
-            .unwrap()
-            .unwrap();
+        let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details
         assert_eq!(result.task.task_id, task_id);
@@ -438,7 +443,7 @@ mod tests {
                 task_created_at,
                 None,
                 project_id.as_str(),
-                Some(*warehouse_id)
+                Some(*warehouse_id),
             ),
             // Previous failed attempt (attempt 1)
             create_test_row(
@@ -452,13 +457,11 @@ mod tests {
                 task_created_at,
                 Some(attempt1_created_at),
                 project_id.as_str(),
-                Some(*warehouse_id)
+                Some(*warehouse_id),
             ),
         ];
 
-        let result = parse_task_details(task_id, records)
-            .unwrap()
-            .unwrap();
+        let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details (should be the most recent attempt)
         assert_eq!(result.task.attempt, 2);
@@ -512,12 +515,10 @@ mod tests {
             task_created_at,
             Some(attempt_created_at),
             project_id.as_str(),
-            Some(*warehouse_id)
+            Some(*warehouse_id),
         )];
 
-        let result = parse_task_details(task_id, records)
-            .unwrap()
-            .unwrap();
+        let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details
         assert_eq!(result.task.task_id, task_id);
@@ -586,9 +587,7 @@ mod tests {
             ),
         ];
 
-        let result = parse_task_details(task_id, records)
-            .unwrap()
-            .unwrap();
+        let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details (should be the most recent attempt)
         assert_eq!(result.task.attempt, 3);
@@ -690,7 +689,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(task.task_id(), task_id);
-        assert_eq!(task.task_metadata.entity_name.as_ref().unwrap(), &entity_name);
+        assert_eq!(
+            task.task_metadata.entity_name.as_ref().unwrap(),
+            &entity_name
+        );
 
         // Update progress and execution details
         let execution_details = serde_json::json!({"progress": "in progress"});
@@ -1056,10 +1058,16 @@ mod tests {
             .unwrap();
 
         // Get child task details
-        let result = get_task_details(Some(project_id), Some(warehouse_id), child_task_id, 10, &pool)
-            .await
-            .unwrap()
-            .unwrap();
+        let result = get_task_details(
+            Some(project_id),
+            Some(warehouse_id),
+            child_task_id,
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // Verify child task has parent reference
         assert_eq!(result.task.task_id, child_task_id);
@@ -1092,9 +1100,15 @@ mod tests {
         .unwrap();
 
         // Try to get task details with wrong warehouse ID
-        let result = get_task_details(Some(project_id), Some(wrong_warehouse_id), task_id, 10, &pool)
-            .await
-            .unwrap();
+        let result = get_task_details(
+            Some(project_id),
+            Some(wrong_warehouse_id),
+            task_id,
+            10,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Should return None since task doesn't exist in the wrong warehouse
         assert!(result.is_none());

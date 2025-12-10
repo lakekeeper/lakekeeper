@@ -356,22 +356,20 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 C::list_tasks(project_id, Some(warehouse_id), query, t.transaction()).await?;
             t.commit().await?;
             Ok(tasks)
+        } else if let Some(_project_id) = project_id {
+            return Err(ErrorModel::internal(
+                "Project-level tasks are not yet supported",
+                "ProjectLevelTasksNotSupported",
+                None,
+            )
+            .into());
         } else {
-            if let Some(_project_id) = project_id {
-                return Err(ErrorModel::internal(
-                    "Project-level tasks are not yet supported",
-                    "ProjectLevelTasksNotSupported",
-                    None,
-                )
-                .into());
-            } else {
-                return Err(ErrorModel::bad_request(
-                    "Either ProjectId or WarehouseId must be provided.",
-                    "MissingNecessaryId",
-                    None,
-                )
-                .into());
-            }
+            return Err(ErrorModel::bad_request(
+                "Either ProjectId or WarehouseId must be provided.",
+                "MissingNecessaryId",
+                None,
+            )
+            .into());
         }
     }
 
@@ -439,22 +437,20 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }
 
             Ok(task_details)
+        } else if let Some(_project_id) = project_id {
+            return Err(ErrorModel::internal(
+                "Project-level tasks are not yet supported",
+                "ProjectLevelTasksNotSupported",
+                None,
+            )
+            .into());
         } else {
-            if let Some(_project_id) = project_id {
-                return Err(ErrorModel::internal(
-                    "Project-level tasks are not yet supported",
-                    "ProjectLevelTasksNotSupported",
-                    None,
-                )
-                .into());
-            } else {
-                return Err(ErrorModel::bad_request(
-                    "Either ProjectId or WarehouseId must be provided.",
-                    "MissingNecessaryId",
-                    None,
-                )
-                .into());
-            }
+            return Err(ErrorModel::bad_request(
+                "Either ProjectId or WarehouseId must be provided.",
+                "MissingNecessaryId",
+                None,
+            )
+            .into());
         }
     }
 
@@ -573,7 +569,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .await?;
                 }
                 ControlTaskAction::RunNow => {
-                    C::run_tasks_at(&task_ids, None, t.transaction()).await?
+                    C::run_tasks_at(&task_ids, None, t.transaction()).await?;
                 }
                 ControlTaskAction::RunAt { scheduled_for } => {
                     C::run_tasks_at(&task_ids, Some(scheduled_for), t.transaction()).await?;
@@ -582,22 +578,20 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             t.commit().await?;
 
             Ok(())
+        } else if let Some(_project_id) = project_id {
+            return Err(ErrorModel::internal(
+                "Project-level tasks are not yet supported",
+                "ProjectLevelTasksNotSupported",
+                None,
+            )
+            .into());
         } else {
-            if let Some(_project_id) = project_id {
-                return Err(ErrorModel::internal(
-                    "Project-level tasks are not yet supported",
-                    "ProjectLevelTasksNotSupported",
-                    None,
-                )
-                .into());
-            } else {
-                return Err(ErrorModel::bad_request(
-                    "Either ProjectId or WarehouseId must be provided.",
-                    "MissingNecessaryId",
-                    None,
-                )
-                .into());
-            }
+            return Err(ErrorModel::bad_request(
+                "Either ProjectId or WarehouseId must be provided.",
+                "MissingNecessaryId",
+                None,
+            )
+            .into());
         }
     }
 }

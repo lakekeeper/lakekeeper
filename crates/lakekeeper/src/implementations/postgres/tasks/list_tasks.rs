@@ -48,18 +48,24 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
         queue_name: row.queue_name.into(),
         entity: match row.entity_type {
             EntityType::Table => TaskEntity::Table {
-                table_id: row.entity_id.ok_or(ErrorModel::internal(
-                    "Most recent task record has no entity_id for type Table.",
-                    "InternalError",
-                    None,
-                ))?.into(),
+                table_id: row
+                    .entity_id
+                    .ok_or(ErrorModel::internal(
+                        "Most recent task record has no entity_id for type Table.",
+                        "InternalError",
+                        None,
+                    ))?
+                    .into(),
             },
             EntityType::View => TaskEntity::View {
-                view_id: row.entity_id.ok_or(ErrorModel::internal(
-                    "Most recent task record has no entity_id for type View.",
-                    "InternalError",
-                    None,
-                ))?.into(),
+                view_id: row
+                    .entity_id
+                    .ok_or(ErrorModel::internal(
+                        "Most recent task record has no entity_id for type View.",
+                        "InternalError",
+                        None,
+                    ))?
+                    .into(),
             },
             EntityType::Project => TaskEntity::Project {
                 project_id: ProjectId::from(row.project_id),
@@ -418,7 +424,9 @@ mod tests {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert!(result.tasks.is_empty());
         assert!(result.next_page_token.is_none());
@@ -447,7 +455,9 @@ mod tests {
         .unwrap();
 
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
@@ -502,7 +512,9 @@ mod tests {
         .unwrap();
 
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 2);
         let task_ids: HashSet<_> = result.tasks.iter().map(|t| t.task_id).collect();
@@ -549,7 +561,9 @@ mod tests {
             queue_name: Some(vec![tq_name1.clone()]),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);
@@ -597,7 +611,14 @@ mod tests {
             status: Some(vec![APITaskStatus::Running]),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert!(matches!(result.tasks[0].status, APITaskStatus::Running));
@@ -607,7 +628,9 @@ mod tests {
             status: Some(vec![APITaskStatus::Scheduled]),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert!(matches!(result.tasks[0].status, APITaskStatus::Scheduled));
@@ -650,7 +673,9 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);
@@ -694,7 +719,14 @@ mod tests {
             created_after: Some(before_time),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id);
 
@@ -703,7 +735,14 @@ mod tests {
             created_before: Some(after_time),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id);
 
@@ -712,7 +751,14 @@ mod tests {
             created_after: Some(after_time),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
         assert!(result.tasks.is_empty());
 
         // Filter with created_before that excludes our task
@@ -720,7 +766,9 @@ mod tests {
             created_before: Some(before_time),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
         assert!(result.tasks.is_empty());
     }
 
@@ -753,7 +801,14 @@ mod tests {
             page_size: Some(2),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
         seen_ids.extend(result.tasks.iter().map(|t| t.task_id));
 
         assert_eq!(result.tasks.len(), 2);
@@ -765,7 +820,14 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
         seen_ids.extend(result.tasks.iter().map(|t| t.task_id));
 
         assert_eq!(result.tasks.len(), 2);
@@ -777,7 +839,14 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
         seen_ids.extend(result.tasks.iter().map(|t| t.task_id));
 
         assert_eq!(result.tasks.len(), 1);
@@ -789,7 +858,14 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(
+            Some(project_id.clone()),
+            Some(warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             result.tasks,
@@ -806,7 +882,9 @@ mod tests {
             page_token: result.next_page_token,
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
         assert!(result.tasks.is_empty());
         assert!(result.next_page_token.is_some());
 
@@ -889,7 +967,14 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+            let result = list_tasks(
+                Some(project_id.clone()),
+                Some(warehouse_id),
+                request,
+                &mut conn,
+            )
+            .await
+            .unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -986,7 +1071,14 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+            let result = list_tasks(
+                Some(project_id.clone()),
+                Some(warehouse_id),
+                request,
+                &mut conn,
+            )
+            .await
+            .unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -1107,7 +1199,14 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+            let result = list_tasks(
+                Some(project_id.clone()),
+                Some(warehouse_id),
+                request,
+                &mut conn,
+            )
+            .await
+            .unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -1225,7 +1324,14 @@ mod tests {
                 page_token: page_token.clone(),
                 ..Default::default()
             };
-            let result = list_tasks(Some(project_id.clone()), Some(warehouse_id), request, &mut conn).await.unwrap();
+            let result = list_tasks(
+                Some(project_id.clone()),
+                Some(warehouse_id),
+                request,
+                &mut conn,
+            )
+            .await
+            .unwrap();
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
@@ -1288,7 +1394,9 @@ mod tests {
 
         // List all tasks
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
@@ -1357,7 +1465,9 @@ mod tests {
 
         // List all tasks
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 3);
 
@@ -1421,7 +1531,9 @@ mod tests {
 
         // List all tasks - should show the successful attempt
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         let task = &result.tasks[0];
@@ -1452,9 +1564,14 @@ mod tests {
 
         // Try to list tasks from wrong warehouse
         let request = ListTasksRequest::default();
-        let result = list_tasks(Some(project_id), Some(wrong_warehouse_id), request, &mut conn)
-            .await
-            .unwrap();
+        let result = list_tasks(
+            Some(project_id),
+            Some(wrong_warehouse_id),
+            request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
 
         // Should return empty list
         assert!(result.tasks.is_empty());
@@ -1510,7 +1627,9 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn).await.unwrap();
+        let result = list_tasks(Some(project_id), Some(warehouse_id), request, &mut conn)
+            .await
+            .unwrap();
 
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_id1);

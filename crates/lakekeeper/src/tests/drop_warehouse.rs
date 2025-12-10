@@ -35,7 +35,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         TabularDeleteProfile::default(),
         None,
         1,
-            None,
+        None,
     )
     .await;
 

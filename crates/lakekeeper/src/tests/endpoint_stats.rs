@@ -634,7 +634,7 @@ async fn setup_stats_test(
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         number_of_warehouses,
-            None,
+        None,
     )
     .await;
 

@@ -128,8 +128,7 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        ProjectId,
-        WarehouseId,
+        ProjectId, WarehouseId,
         api::{
             ApiContext, RequestMetadata,
             iceberg::v1::{DropParams, PaginationQuery, ViewParameters, views::ViewService},

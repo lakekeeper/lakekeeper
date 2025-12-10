@@ -6,8 +6,7 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{Location, LocationParseError};
 
 use crate::{
-    ProjectId,
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::TabularType,

@@ -117,11 +117,11 @@ where
                 }
                 .into(),
                 EntityType::Project => ProjectNamed {
-                    project_id: ProjectId::from(project_id.clone()),
+                    project_id: project_id.clone(),
                 }
                 .into(),
                 EntityType::Warehouse => WarehouseNamed {
-                    project_id: ProjectId::from(project_id.clone()),
+                    project_id: project_id.clone(),
                     warehouse_id: record.warehouse_id.map(WarehouseId::from).ok_or(
                         ErrorModel::internal(
                             "warehouse_id must be set for entity of type warehouse.",
@@ -134,8 +134,8 @@ where
             };
             let queue_name = TaskQueueName::from(record.queue_name);
             Ok(ResolvedTask {
-                project_id,
                 task_id,
+                project_id,
                 entity,
                 queue_name,
             })
@@ -187,7 +187,9 @@ mod tests {
                     warehouse_id: warehouse_id.into(),
                     parent_task_id,
                     entity_id,
-                    entity_name: entity_id.as_uuid().map(|id| vec!["ns".to_string(), format!("table{}", id)]),
+                    entity_name: entity_id
+                        .as_uuid()
+                        .map(|id| vec!["ns".to_string(), format!("table{}", id)]),
                     schedule_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
@@ -206,7 +208,9 @@ mod tests {
     async fn test_resolve_tasks_empty_input(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &[], &pool).await.unwrap();
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &[], &pool)
+            .await
+            .unwrap();
 
         assert!(result.is_empty());
     }
@@ -221,9 +225,14 @@ mod tests {
             TaskId::from(Uuid::now_v7()),
         ];
 
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &nonexistent_task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            Some(project_id),
+            Some(warehouse_id),
+            &nonexistent_task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Should be empty since no tasks exist
         assert!(result.is_empty());
@@ -374,7 +383,7 @@ mod tests {
 
         // Resolve both completed tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(project_id),Some(warehouse_id), &task_ids, &pool)
+        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 

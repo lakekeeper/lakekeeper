@@ -1302,22 +1302,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
             transaction.commit().await?;
             Ok(())
+        } else if let Some(_project_id) = project_id {
+            return Err(ErrorModel::internal(
+                "Project-level tasks are not yet supported",
+                "ProjectLevelTasksNotSupported",
+                None,
+            )
+            .into());
         } else {
-            if let Some(_project_id) = project_id {
-                return Err(ErrorModel::internal(
-                    "Project-level tasks are not yet supported",
-                    "ProjectLevelTasksNotSupported",
-                    None,
-                )
-                .into());
-            } else {
-                return Err(ErrorModel::bad_request(
-                    "Either ProjectId or WarehouseId must be provided.",
-                    "MissingNecessaryId",
-                    None,
-                )
-                .into());
-            }
+            return Err(ErrorModel::bad_request(
+                "Either ProjectId or WarehouseId must be provided.",
+                "MissingNecessaryId",
+                None,
+            )
+            .into());
         }
     }
 
@@ -1346,33 +1344,35 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             // ------------------- Business Logic -------------------
             let project_id = warehouse_resolved.project_id.clone();
 
-            let config =
-                C::get_task_queue_config(Some(project_id), Some(warehouse_id), queue_name, context.v1_state.catalog)
-                    .await?
-                    .unwrap_or_else(|| GetTaskQueueConfigResponse {
-                        queue_config: QueueConfigResponse {
-                            config: serde_json::json!({}),
-                            queue_name: queue_name.clone(),
-                        },
-                        max_seconds_since_last_heartbeat: None,
-                    });
+            let config = C::get_task_queue_config(
+                Some(project_id),
+                Some(warehouse_id),
+                queue_name,
+                context.v1_state.catalog,
+            )
+            .await?
+            .unwrap_or_else(|| GetTaskQueueConfigResponse {
+                queue_config: QueueConfigResponse {
+                    config: serde_json::json!({}),
+                    queue_name: queue_name.clone(),
+                },
+                max_seconds_since_last_heartbeat: None,
+            });
             Ok(config)
+        } else if let Some(_project_id) = project_id {
+            return Err(ErrorModel::internal(
+                "Project-level tasks are not yet supported",
+                "ProjectLevelTasksNotSupported",
+                None,
+            )
+            .into());
         } else {
-            if let Some(_project_id) = project_id {
-                return Err(ErrorModel::internal(
-                    "Project-level tasks are not yet supported",
-                    "ProjectLevelTasksNotSupported",
-                    None,
-                )
-                .into());
-            } else {
-                return Err(ErrorModel::bad_request(
-                    "Either ProjectId or WarehouseId must be provided.",
-                    "MissingNecessaryId",
-                    None,
-                )
-                .into());
-            }
+            return Err(ErrorModel::bad_request(
+                "Either ProjectId or WarehouseId must be provided.",
+                "MissingNecessaryId",
+                None,
+            )
+            .into());
         }
     }
 }

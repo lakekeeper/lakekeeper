@@ -99,7 +99,7 @@ pub(crate) async fn queue_task_batch(
                     )
                 })?));
             }
-        };
+        }
     }
 
     Ok(sqlx::query!(
@@ -3157,15 +3157,12 @@ mod test {
                 .unwrap()
         {
             picked_tasks.push(picked_task.clone());
-            match picked_task.task_metadata.warehouse_id {
-                None => {
-                    let config = picked_task.config.unwrap();
-                    assert_eq!(project_level_config, config);
-                }
-                Some(_) => {
-                    let config = picked_task.config.unwrap();
-                    assert_eq!(warehouse_level_config, config);
-                }
+            if picked_task.task_metadata.warehouse_id == None {
+                let config = picked_task.config.unwrap();
+                assert_eq!(project_level_config, config);
+            } else {
+                let config = picked_task.config.unwrap();
+                assert_eq!(warehouse_level_config, config);
             }
         }
         assert_eq!(picked_tasks.len(), 2);

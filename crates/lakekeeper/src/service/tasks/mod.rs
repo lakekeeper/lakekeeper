@@ -9,7 +9,10 @@ use uuid::Uuid;
 use super::{Transaction, WarehouseId};
 use crate::{
     ProjectId,
-    service::{CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed, ProjectNamed, WarehouseNamed},
+    service::{
+        CatalogStore, CatalogTaskOps, ProjectNamed, TableId, TableNamed, TabularId, ViewId,
+        ViewNamed, WarehouseNamed,
+    },
 };
 
 mod task_queues_runner;
@@ -100,7 +103,7 @@ pub enum TaskEntity {
     Warehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
-    }
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
@@ -439,7 +442,8 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Q>> {
         let config =
-            C::get_task_queue_config(None, Some(warehouse_id), Self::queue_name(), catalog_state).await?;
+            C::get_task_queue_config(None, Some(warehouse_id), Self::queue_name(), catalog_state)
+                .await?;
 
         config
             .map(|cfg| {

@@ -1693,7 +1693,14 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ListTasksRequest>,
     ) -> Result<ListTasksResponse> {
-        ApiServer::<C, A, S>::list_tasks(None, Some(warehouse_id.into()), request, api_context, metadata).await
+        ApiServer::<C, A, S>::list_tasks(
+            None,
+            Some(warehouse_id.into()),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
     }
 
     /// Get Details about a specific task by its ID.
@@ -1715,8 +1722,15 @@ pub mod v1 {
     ) -> Result<GetTaskDetailsResponse> {
         let warehouse_id = WarehouseId::from(warehouse_id);
         let task_id = TaskId::from(task_id);
-        ApiServer::<C, A, S>::get_task_details(None, Some(warehouse_id), task_id, query, api_context, metadata)
-            .await
+        ApiServer::<C, A, S>::get_task_details(
+            None,
+            Some(warehouse_id),
+            task_id,
+            query,
+            api_context,
+            metadata,
+        )
+        .await
     }
 
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
@@ -1739,8 +1753,14 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ControlTasksRequest>,
     ) -> Result<StatusCode> {
-        ApiServer::<C, A, S>::control_tasks(None, Some(warehouse_id.into()), request, api_context, metadata)
-            .await?;
+        ApiServer::<C, A, S>::control_tasks(
+            None,
+            Some(warehouse_id.into()),
+            request,
+            api_context,
+            metadata,
+        )
+        .await?;
         Ok(StatusCode::NO_CONTENT)
     }
 

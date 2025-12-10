@@ -91,8 +91,7 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         let entity_id = task.task_metadata.entity_id;
         let entity_id_uuid = entity_id
             .as_uuid()
-            .map(|uuid| uuid.to_string())
-            .unwrap_or("Null".to_string());
+            .map_or("Null".to_string(), |uuid| uuid.to_string());
 
         let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
             tracing::debug_span!(
@@ -235,7 +234,8 @@ where
                 format!("Entity type `{entity_type}` is not supported for tabular expiration.",),
                 "UnsupportedEntityType",
                 None,
-            ).into());
+            )
+            .into());
         }
     };
 

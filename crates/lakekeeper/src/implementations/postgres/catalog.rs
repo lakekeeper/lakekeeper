@@ -717,7 +717,14 @@ impl CatalogStore for super::PostgresBackend {
         num_attempts: u16,
         state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>> {
-        get_task_details(project_id, warehouse_id, task_id, num_attempts, &state.read_pool()).await
+        get_task_details(
+            project_id,
+            warehouse_id,
+            task_id,
+            num_attempts,
+            &state.read_pool(),
+        )
+        .await
     }
 
     /// List tasks
