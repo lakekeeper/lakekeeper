@@ -774,8 +774,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 )
                 .await?;
         }
-        TaskEntity::Project { .. } | TaskEntity::Warehouse { .. }=> {
-        }
+        TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {}
     }
     Ok(())
 }

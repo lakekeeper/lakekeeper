@@ -474,7 +474,9 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+                panic!("Expected TaskEntity::Table")
+            }
         }
     }
 
@@ -682,7 +684,9 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id1.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+                panic!("Expected TaskEntity::Table")
+            }
         }
     }
 
@@ -1635,7 +1639,9 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id1.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+                panic!("Expected TaskEntity::Table")
+            }
         }
     }
 }
