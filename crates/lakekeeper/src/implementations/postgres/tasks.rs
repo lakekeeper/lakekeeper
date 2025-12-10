@@ -340,7 +340,7 @@ pub(crate) async fn pick_task(
                     EntityType::Table => task
                         .entity_id
                         .ok_or(ErrorModel::internal(
-                            "EntityId is missing for view.",
+                            "EntityId is missing for table.",
                             "InternalError",
                             None,
                         ))
