@@ -37,6 +37,7 @@ struct TaskDetailsRow {
     pub warehouse_id: Option<uuid::Uuid>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_task_details(
     task_id: TaskId,
     mut records: Vec<TaskDetailsRow>,
@@ -172,6 +173,7 @@ fn pg_interval_to_duration(interval: PgInterval) -> Result<Duration, ErrorModel>
     Ok(Duration::days(days.into()) + Duration::microseconds(microseconds))
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
     project_id: Option<ProjectId>,
     warehouse_id: Option<WarehouseId>,
@@ -404,9 +406,7 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id);
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
-            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
-            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify task data
@@ -728,9 +728,7 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
-            TaskEntity::View { .. } => panic!("Expected TaskEntity::Table"),
-            TaskEntity::Project { .. } => panic!("Expected TaskEntity::Table"),
-            TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
+            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify task data and execution details

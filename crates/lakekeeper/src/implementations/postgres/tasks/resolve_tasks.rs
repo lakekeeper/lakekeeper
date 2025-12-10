@@ -16,6 +16,7 @@ use crate::{
 /// Resolve tasks among all known active and historical tasks.
 /// Returns a map of `task_id` to (`TaskEntity`, `queue_name`).
 /// Only includes task IDs that exist - missing task IDs are not included in the result.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn resolve_tasks<'e, 'c: 'e, E>(
     project_id: Option<ProjectId>,
     warehouse_id: Option<WarehouseId>,
@@ -308,9 +309,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
@@ -320,9 +319,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -403,9 +400,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_)| TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
@@ -414,9 +409,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -571,9 +564,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -636,18 +627,14 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -698,9 +685,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -761,9 +746,7 @@ mod tests {
             TaskEntityNamed::Table(table) => {
                 assert_eq!(Some(table.table_id), entity.as_uuid().map(TableId::from));
             }
-            TaskEntityNamed::View(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Project(_) => panic!("Expected TaskEntity::Table"),
-            TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            TaskEntityNamed::View(_) | TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 

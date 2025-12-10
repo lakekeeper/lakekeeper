@@ -527,8 +527,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         match named_entity {
                             TaskEntityNamed::Table(t) => Some(TabularId::Table(t.table_id)),
                             TaskEntityNamed::View(v) => Some(TabularId::View(v.view_id)),
-                            TaskEntityNamed::Project(_) => None,
-                            TaskEntityNamed::Warehouse(_) => None,
+                            TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => None,
                         }
                     } else {
                         None
@@ -638,8 +637,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .filter_map(|entity| match entity {
             TaskEntity::Table { table_id } => Some(TabularId::from(*table_id)),
             TaskEntity::View { view_id } => Some(TabularId::from(*view_id)),
-            TaskEntity::Project { .. } => None,
-            TaskEntity::Warehouse { .. } => None,
+            TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => None,
         })
         .collect::<Vec<_>>();
 
@@ -776,11 +774,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 )
                 .await?;
         }
-        TaskEntity::Project { .. } => {
-            // TODO
-        }
-        TaskEntity::Warehouse { .. } => {
-            // TODO
+        TaskEntity::Project { .. } | TaskEntity::Warehouse { .. }=> {
         }
     }
     Ok(())
@@ -798,8 +792,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         .filter_map(|t| match &t.entity {
             TaskEntityNamed::Table(tabular) => Some(TabularId::Table(tabular.table_id)),
             TaskEntityNamed::View(tabular) => Some(TabularId::View(tabular.view_id)),
-            TaskEntityNamed::Project(_) => None,
-            TaskEntityNamed::Warehouse(_) => None,
+            TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => None,
         })
         .collect::<Vec<_>>();
     let required_namespace_idents = tasks
@@ -807,8 +800,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         .filter_map(|t| match &t.entity {
             TaskEntityNamed::Table(tabular) => Some(&tabular.table_ident.namespace),
             TaskEntityNamed::View(tabular) => Some(&tabular.view_ident.namespace),
-            TaskEntityNamed::Project(_) => None,
-            TaskEntityNamed::Warehouse(_) => None,
+            TaskEntityNamed::Project(_) | TaskEntityNamed::Warehouse(_) => None,
         })
         .collect::<Vec<_>>();
 

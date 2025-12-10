@@ -3157,7 +3157,7 @@ mod test {
                 .unwrap()
         {
             picked_tasks.push(picked_task.clone());
-            if picked_task.task_metadata.warehouse_id == None {
+            if picked_task.task_metadata.warehouse_id.is_none() {
                 let config = picked_task.config.unwrap();
                 assert_eq!(project_level_config, config);
             } else {

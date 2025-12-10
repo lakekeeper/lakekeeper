@@ -284,8 +284,7 @@ impl EntityId {
         match self {
             EntityId::Table(id) => Some(**id),
             EntityId::View(id) => Some(**id),
-            EntityId::Project => None,
-            EntityId::Warehouse => None,
+            EntityId::Project | EntityId::Warehouse => None,
         }
     }
 }
