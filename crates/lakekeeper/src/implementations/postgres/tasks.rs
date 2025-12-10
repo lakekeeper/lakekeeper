@@ -221,7 +221,6 @@ pub(crate) async fn pick_task(
                 None,
             ))?,
     };
-    // AND ((tc.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (tc.warehouse_id = t.warehouse_id))
     let x = sqlx::query!(
         r#"
         WITH picked_task AS (
