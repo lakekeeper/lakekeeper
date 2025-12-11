@@ -402,7 +402,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_commit_view(pool: PgPool) {
-        let (api_context, namespace, whi) = setup(pool, None).await;
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
         let prefix = whi.to_string();
         let view_name = "myview";
         let view = Box::pin(create_view(
@@ -455,7 +455,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_commit_view_fails_with_wrong_assertion(pool: PgPool) {
-        let (api_context, namespace, whi) = setup(pool, None).await;
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
         let prefix = whi.to_string();
         let view_name = "myview";
         let _ = Box::pin(create_view(

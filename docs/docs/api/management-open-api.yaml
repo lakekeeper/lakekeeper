@@ -6195,10 +6195,10 @@ components:
       type: object
       required:
         - task-id
+        - project-id
         - warehouse-id
         - queue-name
         - entity
-        - entity-name
         - status
         - scheduled-for
         - attempt
@@ -6217,7 +6217,9 @@ components:
           $ref: '#/components/schemas/TaskEntity'
           description: Type of entity this task operates on
         entity-name:
-          type: array
+          type:
+            - array
+            - 'null'
           items:
             type: string
           description: Name of the entity this task operates on
@@ -6243,6 +6245,9 @@ components:
           type: number
           format: float
           description: Progress of the task (0.0 to 1.0)
+        project-id:
+          type: string
+          description: Project ID associated with the task
         queue-name:
           type: string
           description: Name of the queue processing this task
@@ -6341,6 +6346,29 @@ components:
               enum:
                 - view
             view-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - project-id
+            - type
+          properties:
+            project-id:
+              type: string
+            type:
+              type: string
+              enum:
+                - project
+        - type: object
+          required:
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+            warehouse-id:
               type: string
               format: uuid
     TaskStatus:

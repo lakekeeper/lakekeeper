@@ -30,6 +30,7 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             1,
+            None,
         )
         .await;
 
@@ -69,6 +70,7 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             1,
+            None,
         )
         .await;
 

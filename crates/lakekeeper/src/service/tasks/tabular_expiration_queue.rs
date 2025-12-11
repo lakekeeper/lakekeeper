@@ -8,9 +8,9 @@ use utoipa::{PartialSchema, ToSchema};
 use super::{EntityId, TaskConfig, TaskExecutionDetails, TaskMetadata};
 use crate::{
     CancellationToken,
-    api::{Result, management::v1::DeleteKind},
+    api::{ErrorModel, Result, management::v1::DeleteKind},
     service::{
-        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
+        CatalogStore, CatalogTabularOps, DropTabularError, Transaction, WarehouseIdMissing,
         authz::Authorizer,
         tasks::{
             SpecializedTask, TaskData, TaskQueueName, tabular_purge_queue::TabularPurgePayload,
@@ -89,17 +89,30 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         };
 
         let entity_id = task.task_metadata.entity_id;
-        let entity_id_uuid = entity_id.as_uuid();
+        let entity_id_uuid = entity_id
+            .as_uuid()
+            .map_or("Null".to_string(), |uuid| uuid.to_string());
 
-        let span = tracing::debug_span!(
-            QN_STR,
-            warehouse_id = %task.task_metadata.warehouse_id,
-            entity_type = %entity_id.entity_type().to_string(),
-            entity_id = %entity_id_uuid,
-            deletion_kind = ?task.data.deletion_kind,
-            attempt = %task.attempt(),
-            task_id = %task.task_id(),
-        );
+        let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
+            tracing::debug_span!(
+                QN_STR,
+                warehouse_id = %warehouse_id,
+                entity_type = %entity_id.entity_type().to_string(),
+                entity_id = %entity_id_uuid,
+                deletion_kind = ?task.data.deletion_kind,
+                attempt = %task.attempt(),
+                task_id = %task.task_id(),
+            )
+        } else {
+            tracing::debug_span!(
+                QN_STR,
+                entity_type = %entity_id.entity_type().to_string(),
+                entity_id = %entity_id_uuid,
+                deletion_kind = ?task.data.deletion_kind,
+                attempt = %task.attempt(),
+                task_id = %task.task_id(),
+            )
+        };
 
         instrumented_expire::<C, A>(catalog_state.clone(), authorizer.clone(), &task)
             .instrument(span.or_current())
@@ -147,15 +160,16 @@ where
             e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue.",))
         })?;
 
+    let warehouse_id = task
+        .task_metadata
+        .warehouse_id
+        .ok_or(WarehouseIdMissing::new())
+        .map_err(ErrorModel::from)?;
+
     let tabular_location = match entity_id {
         EntityId::Table(table_id) => {
-            let drop_result = C::drop_tabular(
-                task.task_metadata.warehouse_id,
-                table_id,
-                true,
-                trx.transaction(),
-            )
-            .await;
+            let drop_result =
+                C::drop_tabular(warehouse_id, table_id, true, trx.transaction()).await;
 
             let location = match drop_result {
                 Err(DropTabularError::TabularNotFound(..)) => {
@@ -175,7 +189,7 @@ where
             };
 
             authorizer
-                .delete_table(task.task_metadata.warehouse_id, table_id)
+                .delete_table(warehouse_id, table_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
@@ -186,13 +200,8 @@ where
             location
         }
         EntityId::View(view_id) => {
-            let location = match C::drop_tabular(
-                task.task_metadata.warehouse_id,
-                view_id,
-                true,
-                trx.transaction(),
-            )
-            .await
+            let location = match C::drop_tabular(warehouse_id, view_id, true, trx.transaction())
+                .await
             {
                 Err(DropTabularError::TabularNotFound(..)) => {
                     tracing::warn!(
@@ -209,7 +218,7 @@ where
             };
 
             authorizer
-                .delete_view(task.task_metadata.warehouse_id, view_id)
+                .delete_view(warehouse_id, view_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
@@ -219,6 +228,15 @@ where
                 .ok();
             location
         }
+        _ => {
+            let entity_type = entity_id.entity_type();
+            return Err(ErrorModel::bad_request(
+                format!("Entity type `{entity_type}` is not supported for tabular expiration.",),
+                "UnsupportedEntityType",
+                None,
+            )
+            .into());
+        }
     };
 
     if let Some(tabular_location) = tabular_location
@@ -226,6 +244,7 @@ where
     {
         super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
             TaskMetadata {
+                project_id: task.task_metadata.project_id.clone(),
                 entity_id: task.task_metadata.entity_id,
                 warehouse_id: task.task_metadata.warehouse_id,
                 parent_task_id: Some(task.task_id()),
@@ -301,7 +320,7 @@ mod test {
         let runner = queues.task_queues_runner(cancellation_token.clone()).await;
         let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
 
-        let warehouse = initialize_warehouse(
+        let (project_id, warehouse_id) = initialize_warehouse(
             catalog_state.clone(),
             Some(MemoryProfile::default().into()),
             None,
@@ -311,7 +330,7 @@ mod test {
         .await;
 
         let table = initialize_table(
-            warehouse,
+            warehouse_id,
             catalog_state.clone(),
             false,
             None,
@@ -323,7 +342,7 @@ mod test {
             .await
             .unwrap();
         let _ = PostgresBackend::list_tabulars(
-            warehouse,
+            warehouse_id,
             None,
             TabularListFlags {
                 include_active: true,
@@ -345,11 +364,12 @@ mod test {
                 .unwrap();
         TabularExpirationTask::schedule_task::<PostgresBackend>(
             TaskMetadata {
-                warehouse_id: warehouse,
+                project_id,
+                warehouse_id: warehouse_id.into(),
                 entity_id: EntityId::Table(table.table_id),
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: table.table_ident.into_name_parts(),
+                entity_name: Some(table.table_ident.into_name_parts()),
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,
@@ -360,7 +380,7 @@ mod test {
         .unwrap();
 
         PostgresBackend::mark_tabular_as_deleted(
-            warehouse,
+            warehouse_id,
             table.table_id,
             false,
             trx.transaction(),
@@ -375,7 +395,7 @@ mod test {
             .unwrap();
 
         let deletion_info = PostgresBackend::list_tabulars(
-            warehouse,
+            warehouse_id,
             None,
             TabularListFlags {
                 include_active: false,
@@ -400,7 +420,7 @@ mod test {
                 .await
                 .unwrap();
             let gone = PostgresBackend::list_tabulars(
-                warehouse,
+                warehouse_id,
                 None,
                 TabularListFlags {
                     include_active: false,
@@ -428,7 +448,7 @@ mod test {
 
         assert!(
             PostgresBackend::list_tabulars(
-                warehouse,
+                warehouse_id,
                 None,
                 TabularListFlags {
                     include_active: false,

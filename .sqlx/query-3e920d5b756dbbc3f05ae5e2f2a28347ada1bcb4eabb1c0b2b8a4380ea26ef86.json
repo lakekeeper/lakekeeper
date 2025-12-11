@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT config, max_time_since_last_heartbeat\n        FROM task_config\n        WHERE warehouse_id = $1 AND queue_name = $2\n        ",
+  "query": "\n        SELECT config, max_time_since_last_heartbeat\n        FROM task_config\n        WHERE ($3 OR warehouse_id = $1) AND ($5 OR project_id = $4) AND queue_name = $2\n        ",
   "describe": {
     "columns": [
       {
@@ -17,7 +17,10 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text"
+        "Text",
+        "Bool",
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -25,5 +28,5 @@
       true
     ]
   },
-  "hash": "44036578dcf5472f7c9ecd1351734856662fb002475eaf3f3a57d86e7f85ea0c"
+  "hash": "3e920d5b756dbbc3f05ae5e2f2a28347ada1bcb4eabb1c0b2b8a4380ea26ef86"
 }

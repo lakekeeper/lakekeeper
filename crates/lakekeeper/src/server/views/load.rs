@@ -176,7 +176,7 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_load_view(pool: PgPool) {
-        let (api_context, namespace, whi) = setup(pool, None).await;
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
 
         let view_name = "my-view";
         let rq: CreateViewRequest = create_view_request(Some(view_name), None);

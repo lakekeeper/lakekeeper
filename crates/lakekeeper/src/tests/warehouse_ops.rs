@@ -830,7 +830,7 @@ async fn test_warehouse_cache_populated_by_list(pool: PgPool) {
     WAREHOUSE_CACHE
         .invalidate(&warehouse_resp.warehouse_id)
         .await;
-    for (wh_id, _) in &warehouse_resp.additional_warehouses {
+    for (_, wh_id, _) in &warehouse_resp.additional_warehouses {
         WAREHOUSE_CACHE.invalidate(wh_id).await;
     }
 

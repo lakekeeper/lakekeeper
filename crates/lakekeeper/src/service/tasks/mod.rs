@@ -7,8 +7,12 @@ use strum::EnumIter;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{
-    CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+use crate::{
+    ProjectId,
+    service::{
+        CatalogStore, CatalogTaskOps, ProjectNamed, TableId, TableNamed, TabularId, ViewId,
+        ViewNamed, WarehouseNamed,
+    },
 };
 
 mod task_queues_runner;
@@ -76,7 +80,7 @@ impl TaskQueueName {
     }
 }
 
-#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TaskEntity {
@@ -90,20 +94,34 @@ pub enum TaskEntity {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         view_id: ViewId,
     },
+    #[serde(rename_all = "kebab-case")]
+    Project {
+        #[cfg_attr(feature = "open-api", schema(value_type = String))]
+        project_id: ProjectId,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Warehouse {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum TaskEntityNamed {
     Table(TableNamed),
     View(ViewNamed),
+    Project(ProjectNamed),
+    Warehouse(WarehouseNamed),
 }
 
 impl TaskEntityNamed {
     #[must_use]
-    pub fn warehouse_id(&self) -> WarehouseId {
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
         match self {
-            TaskEntityNamed::Table(t) => t.warehouse_id,
-            TaskEntityNamed::View(v) => v.warehouse_id,
+            TaskEntityNamed::Table(t) => Some(t.warehouse_id),
+            TaskEntityNamed::View(v) => Some(v.warehouse_id),
+            TaskEntityNamed::Project(_) => None,
+            TaskEntityNamed::Warehouse(w) => Some(w.warehouse_id),
         }
     }
 }
@@ -193,6 +211,10 @@ impl AsRef<TaskAttemptId> for TaskAttemptId {
 pub enum TaskFilter {
     WarehouseId(WarehouseId),
     TaskIds(Vec<TaskId>),
+    ProjectId {
+        project_id: ProjectId,
+        include_sub_tasks: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -208,10 +230,11 @@ pub struct TaskInput {
 /// Metadata stored for each task in the database backend.
 /// This is separate from the task payload, which is specific to each task type.
 pub struct TaskMetadata {
-    pub warehouse_id: WarehouseId,
+    pub warehouse_id: Option<WarehouseId>,
+    pub project_id: ProjectId,
     pub parent_task_id: Option<TaskId>,
     pub entity_id: EntityId,
-    pub entity_name: Vec<String>,
+    pub entity_name: Option<Vec<String>>,
     pub schedule_for: Option<chrono::DateTime<Utc>>,
 }
 
@@ -220,12 +243,16 @@ pub struct TaskMetadata {
 pub enum EntityType {
     Table,
     View,
+    Project,
+    Warehouse,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, derive_more::From)]
+#[derive(Debug, Clone, Copy, PartialEq, derive_more::From)]
 pub enum EntityId {
     Table(TableId),
     View(ViewId),
+    Project,
+    Warehouse,
 }
 
 impl std::fmt::Display for EntityId {
@@ -233,6 +260,8 @@ impl std::fmt::Display for EntityId {
         match self {
             EntityId::Table(id) => write!(f, "Table({id})"),
             EntityId::View(id) => write!(f, "View({id})"),
+            EntityId::Project => write!(f, "Project()"),
+            EntityId::Warehouse => write!(f, "Warehouse()"),
         }
     }
 }
@@ -243,16 +272,19 @@ impl EntityId {
         match self {
             EntityId::Table(_) => EntityType::Table,
             EntityId::View(_) => EntityType::View,
+            EntityId::Project => EntityType::Project,
+            EntityId::Warehouse => EntityType::Warehouse,
         }
     }
 }
 
 impl EntityId {
     #[must_use]
-    pub fn as_uuid(&self) -> Uuid {
+    pub fn as_uuid(&self) -> Option<Uuid> {
         match self {
-            EntityId::Table(id) => **id,
-            EntityId::View(id) => **id,
+            EntityId::Table(id) => Some(**id),
+            EntityId::View(id) => Some(**id),
+            EntityId::Project | EntityId::Warehouse => None,
         }
     }
 }
@@ -409,7 +441,8 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Q>> {
         let config =
-            C::get_task_queue_config(warehouse_id, Self::queue_name(), catalog_state).await?;
+            C::get_task_queue_config(None, Some(warehouse_id), Self::queue_name(), catalog_state)
+                .await?;
 
         config
             .map(|cfg| {

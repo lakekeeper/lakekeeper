@@ -169,6 +169,37 @@ impl From<WarehouseIdNotFound> for ErrorModel {
 }
 
 #[derive(thiserror::Error, Debug, PartialEq)]
+#[error("Warehouse id is missing")]
+pub struct WarehouseIdMissing {
+    pub stack: Vec<String>,
+}
+impl Default for WarehouseIdMissing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WarehouseIdMissing {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(WarehouseIdMissing);
+
+impl From<WarehouseIdMissing> for ErrorModel {
+    fn from(err: WarehouseIdMissing) -> Self {
+        ErrorModel {
+            r#type: "WarehouseIdMissing".to_string(),
+            code: StatusCode::NOT_FOUND.as_u16(),
+            message: err.to_string(),
+            stack: err.stack,
+            source: None,
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
 #[error("A warehouse '{warehouse_name}' does not exist")]
 pub struct WarehouseNameNotFound {
     pub warehouse_name: String,
