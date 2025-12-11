@@ -47,10 +47,10 @@ pub struct Task {
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub task_id: TaskId,
     /// Project ID associated with the task
-    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub project_id: ProjectId,
     /// Warehouse ID associated with the task
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub warehouse_id: Option<WarehouseId>,
     /// Name of the queue processing this task
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
