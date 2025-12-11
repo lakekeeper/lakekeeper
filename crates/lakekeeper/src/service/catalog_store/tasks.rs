@@ -204,7 +204,9 @@ where
         let mut cached_results = HashMap::new();
         for id in task_ids {
             if let Some(cached_value) = TASKS_CACHE.get(id).await {
-                if cached_value.warehouse_id() != warehouse_id {
+                if cached_value.warehouse_id() != warehouse_id
+                    || (project_id.is_some() && Some(cached_value.project_id.clone()) != project_id)
+                {
                     continue;
                 }
                 cached_results.insert(*id, cached_value);
