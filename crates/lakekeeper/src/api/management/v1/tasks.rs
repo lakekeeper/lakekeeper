@@ -637,7 +637,6 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .filter_map(|entity| match entity {
             TaskEntity::Table { table_id } => Some(TabularId::from(*table_id)),
             TaskEntity::View { view_id } => Some(TabularId::from(*view_id)),
-            TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => None,
         })
         .collect::<Vec<_>>();
 
@@ -774,7 +773,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 )
                 .await?;
         }
-        TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {}
+        // TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {}
     }
     Ok(())
 }

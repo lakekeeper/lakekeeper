@@ -94,16 +94,6 @@ pub enum TaskEntity {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         view_id: ViewId,
     },
-    #[serde(rename_all = "kebab-case")]
-    Project {
-        #[cfg_attr(feature = "open-api", schema(value_type = String))]
-        project_id: ProjectId,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Warehouse {
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        warehouse_id: WarehouseId,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]

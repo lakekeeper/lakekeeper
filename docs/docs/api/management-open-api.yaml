@@ -6348,29 +6348,6 @@ components:
             view-id:
               type: string
               format: uuid
-        - type: object
-          required:
-            - project-id
-            - type
-          properties:
-            project-id:
-              type: string
-            type:
-              type: string
-              enum:
-                - project
-        - type: object
-          required:
-            - warehouse-id
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - warehouse
-            warehouse-id:
-              type: string
-              format: uuid
     TaskStatus:
       type: string
       enum:

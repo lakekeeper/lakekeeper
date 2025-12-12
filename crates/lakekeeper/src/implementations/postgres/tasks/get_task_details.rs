@@ -112,18 +112,14 @@ fn parse_task_details(
                     ))?
                     .into(),
             },
-            EntityType::Project => TaskEntity::Project {
-                project_id: ProjectId::from(most_recent.project_id),
-            },
-            EntityType::Warehouse => TaskEntity::Warehouse {
-                warehouse_id: most_recent.warehouse_id.map(WarehouseId::from).ok_or(
-                    ErrorModel::internal(
-                        "Most recent task record has no warehouse_id for type Warehouse.",
-                        "InternalError",
-                        None,
-                    ),
-                )?,
-            },
+            EntityType::Project | EntityType::Warehouse => {
+                return Err(ErrorModel::internal(
+                    "Task entity types Project and Warehouse are not supported by this endpoint.",
+                    "InternalError",
+                    None,
+                )
+                .into());
+            }
         },
         entity_name: most_recent.entity_name,
         status: most_recent
@@ -406,9 +402,12 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(*table_id, entity_id);
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+            TaskEntity::View { .. } => {
                 panic!("Expected TaskEntity::Table")
             }
+            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
+            //     panic!("Expected TaskEntity::Table")
+            // }
         }
 
         // Verify task data
@@ -730,9 +729,12 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+            TaskEntity::View { .. } => {
                 panic!("Expected TaskEntity::Table")
             }
+            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
+            //     panic!("Expected TaskEntity::Table")
+            // }
         }
 
         // Verify task data and execution details

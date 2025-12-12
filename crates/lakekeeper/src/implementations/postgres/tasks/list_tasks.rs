@@ -67,18 +67,26 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
                     ))?
                     .into(),
             },
-            EntityType::Project => TaskEntity::Project {
-                project_id: ProjectId::from(row.project_id),
-            },
-            EntityType::Warehouse => TaskEntity::Warehouse {
-                warehouse_id: row.warehouse_id.map(WarehouseId::from).ok_or(
-                    ErrorModel::internal(
-                        "Most recent task record has no warehouse_id for type Warehouse.",
-                        "InternalError",
-                        None,
-                    ),
-                )?,
-            },
+            EntityType::Project | EntityType::Warehouse => {
+                return Err(ErrorModel::internal(
+                    "Listing tasks for Project or Warehouse entity types is not supported.",
+                    "InternalError",
+                    None,
+                )
+                .into());
+            }
+            // EntityType::Project => TaskEntity::Project {
+            //     project_id: ProjectId::from(row.project_id),
+            // },
+            // EntityType::Warehouse => TaskEntity::Warehouse {
+            //     warehouse_id: row.warehouse_id.map(WarehouseId::from).ok_or(
+            //         ErrorModel::internal(
+            //             "Most recent task record has no warehouse_id for type Warehouse.",
+            //             "InternalError",
+            //             None,
+            //         ),
+            //     )?,
+            // },
         },
         entity_name: row.entity_name,
         status: row
@@ -172,8 +180,8 @@ pub(crate) async fn list_tasks(
         .map(|e| match e {
             TaskEntity::Table { table_id } => (Some(*table_id), EntityType::Table),
             TaskEntity::View { view_id } => (Some(*view_id), EntityType::View),
-            TaskEntity::Project { .. } => (None, EntityType::Project),
-            TaskEntity::Warehouse { .. } => (None, EntityType::Warehouse),
+            // TaskEntity::Project { .. } => (None, EntityType::Project),
+            // TaskEntity::Warehouse { .. } => (None, EntityType::Warehouse),
         })
         .collect::<(Vec<_>, Vec<_>)>();
 
@@ -474,9 +482,12 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+            TaskEntity::View { .. } => {
                 panic!("Expected TaskEntity::Table")
             }
+            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
+            //     panic!("Expected TaskEntity::Table")
+            // }
         }
     }
 
@@ -684,9 +695,12 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id1.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+            TaskEntity::View { .. } => {
                 panic!("Expected TaskEntity::Table")
             }
+            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
+            //     panic!("Expected TaskEntity::Table")
+            // }
         }
     }
 
@@ -1639,9 +1653,12 @@ mod tests {
             TaskEntity::Table { table_id } => {
                 assert_eq!(Some(*table_id), entity_id1.as_uuid());
             }
-            TaskEntity::View { .. } | TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {
+            TaskEntity::View { .. } => {
                 panic!("Expected TaskEntity::Table")
             }
+            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
+            //     panic!("Expected TaskEntity::Table")
+            // }
         }
     }
 }
