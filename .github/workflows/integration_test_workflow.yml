@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: lakekeeper-image
           path: artifacts
@@ -82,7 +82,7 @@ jobs:
         run: cat dump.sql | gzip -9 > dump.sql.gz
       - name: Upload dump
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: db-dump-${{ inputs.test_name }}
           path: dump.sql.gz
