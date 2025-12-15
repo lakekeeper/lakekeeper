@@ -807,8 +807,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                     GET_TASK_PERMISSION_VIEW,
                 )
                 .await?;
-        }
-        // TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {}
+        } // TaskEntity::Project { .. } | TaskEntity::Warehouse { .. } => {}
     }
     Ok(())
 }

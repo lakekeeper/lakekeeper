@@ -4,15 +4,10 @@ use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
 use uuid::Uuid;
 
 use crate::{
-    ProjectId, WarehouseId,
-    api::management::v1::warehouse::{
-        GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
-    },
-    implementations::postgres::dbutils::DBErrorHandler,
-    service::{
+    ProjectId, WarehouseId, api::management::v1::task_queue::{GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest}, implementations::postgres::dbutils::DBErrorHandler, service::{
         TableId, ViewId,
         tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
-    },
+    }
 };
 
 mod get_task_details;

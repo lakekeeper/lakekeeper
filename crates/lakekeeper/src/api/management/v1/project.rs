@@ -12,7 +12,7 @@ pub use crate::service::{
 };
 use crate::{
     ProjectId, WarehouseId,
-    api::{ApiContext, Result, management::v1::ApiServer},
+    api::{ApiContext, Result, management::v1::{ApiServer, task_queue::{SetTaskQueueConfigRequest, set_task_queue_config as set_task_queue_config_authorized}}},
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, State, Transaction,
@@ -21,7 +21,7 @@ use crate::{
             CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
-        secrets::SecretStore,
+        secrets::SecretStore, tasks::TaskQueueName,
     },
 };
 
@@ -303,6 +303,29 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog,
         )
         .await
+    }
+
+    async fn set_project_task_queue_config(
+        queue_name: &TaskQueueName,
+        request: SetTaskQueueConfigRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // ------------------- AuthZ -------------------
+        let authorizer = &context.v1_state.authz;
+
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::ModifyTaskQueueConfig,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        set_task_queue_config_authorized(project_id, None, queue_name, request, context).await
     }
 }
 

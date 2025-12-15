@@ -9,6 +9,7 @@ pub mod v1 {
     pub mod server;
     pub mod table;
     pub mod tabular;
+    pub mod task_queue;
     pub mod tasks;
     pub mod user;
     pub mod view;
@@ -74,19 +75,10 @@ pub mod v1 {
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
-                check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
-                lakekeeper_actions::GetAccessQuery,
-                project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::{RoleMetadata, UpdateRoleSourceSystemRequest},
-                tabular::{SearchTabularRequest, SearchTabularResponse},
-                tasks::{
+                check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse}, lakekeeper_actions::GetAccessQuery, project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest}, role::{RoleMetadata, UpdateRoleSourceSystemRequest}, tabular::{SearchTabularRequest, SearchTabularResponse}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{
                     ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
                     ListProjectTasksRequest, ListTasksRequest, ListTasksResponse, Service,
-                },
-                user::{ListUsersQuery, ListUsersResponse},
-                warehouse::{
-                    GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, UndropTabularsRequest,
-                },
+                }, user::{ListUsersQuery, ListUsersResponse}, warehouse::UndropTabularsRequest
             },
         },
         request_metadata::RequestMetadata,

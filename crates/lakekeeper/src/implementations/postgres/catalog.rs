@@ -26,15 +26,7 @@ use crate::{
             tables::LoadTableFilters,
         },
         management::v1::{
-            DeleteWarehouseQuery, TabularType,
-            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
-            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
-            user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
-            warehouse::{
-                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
-                WarehouseStatisticsResponse,
-            },
+            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
         },
     },
     implementations::postgres::{
