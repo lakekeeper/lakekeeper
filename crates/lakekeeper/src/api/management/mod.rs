@@ -81,7 +81,7 @@ pub mod v1 {
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 tasks::{
                     ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
-                    ListTasksRequest, ListTasksResponse, Service,
+                    ListProjectTasksRequest, ListTasksRequest, ListTasksResponse, Service,
                 },
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::{
@@ -92,7 +92,10 @@ pub mod v1 {
         request_metadata::RequestMetadata,
         service::{
             Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
-            State, TableId, TabularId, ViewId, authn::UserId, authz::Authorizer, tasks::TaskId,
+            State, TableId, TabularId, ViewId,
+            authn::UserId,
+            authz::Authorizer,
+            tasks::{TaskId, TaskQueueName},
         },
     };
 
@@ -1635,8 +1638,7 @@ pub mod v1 {
     ) -> Result<StatusCode> {
         let queue_name = queue_name.into();
         ApiServer::<C, A, S>::set_task_queue_config(
-            None,
-            Some(warehouse_id.into()),
+            warehouse_id.into(),
             &queue_name,
             request,
             api_context,
@@ -1762,6 +1764,165 @@ pub mod v1 {
         )
         .await?;
         Ok(StatusCode::NO_CONTENT)
+    }
+    /// Set the configuration for a Project-level Task Queue.
+    ///
+    /// These configurations are global per project and shared across all instances of this kind of task.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::SetProjectTaskQueueConfig.path(),
+        params(("queue_name" = String,)),
+        responses(
+            (status = 204, description = "Project-level Task queue config set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_project_task_queue_config<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path(queue_name): Path<String>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<SetTaskQueueConfigRequest>,
+    ) -> Result<StatusCode> {
+        let queue_name = TaskQueueName::from(queue_name);
+        ApiServer::<C, A, S>::set_project_task_queue_config(
+            &queue_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    /// Get the configuration for a Project-level Task Queue.
+    ///
+    /// These configurations are global per project and shared across all instances of this kind of task.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tasks",
+        path = ManagementV1Endpoint::GetProjectTaskQueueConfig.path(),
+        params(("queue_name" = String,)),
+        responses(
+            (status = 200, body = GetTaskQueueConfigResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_project_task_queue_config<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path(queue_name): Path<String>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<GetTaskQueueConfigResponse> {
+        let queue_name = TaskQueueName::from(queue_name);
+        // TODO
+        // ApiServer::<C, A, S>::get_task_queue_config(
+        //     None,
+        //     Some(warehouse_id.into()),
+        //     &queue_name,
+        //     api_context,
+        //     metadata,
+        // )
+        // .await
+        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
+    }
+
+    /// List active and historic Project-level tasks.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ListProjectTasks.path(),
+        request_body = ListProjectTasksRequest,
+        responses(
+            (status = 200, body = ListTasksResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_project_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ListProjectTasksRequest>,
+    ) -> Result<ListTasksResponse> {
+        // TODO
+        // ApiServer::<C, A, S>::list_tasks(
+        //     None,
+        //     Some(warehouse_id.into()),
+        //     request,
+        //     api_context,
+        //     metadata,
+        // )
+        // .await
+        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
+    }
+
+    /// Get Details about a specific Project-level task by its ID.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tasks",
+        path = ManagementV1Endpoint::GetProjectTaskDetails.path(),
+        params(("task_id" = Uuid,), GetTaskDetailsQuery),
+        responses(
+            (status = 200, body = GetTaskDetailsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_project_task_details<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(task_id): Path<uuid::Uuid>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Query(query): Query<GetTaskDetailsQuery>,
+    ) -> Result<GetTaskDetailsResponse> {
+        let task_id = TaskId::from(task_id);
+        // TODO
+        // ApiServer::<C, A, S>::get_task_details(
+        //     None,
+        //     Some(warehouse_id),
+        //     task_id,
+        //     query,
+        //     api_context,
+        //     metadata,
+        // )
+        // .await
+        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
+    }
+
+    /// Control a set of Project-level tasks by their IDs (e.g., cancel, request stop, run now)
+    ///
+    /// Accepts at most 100 task IDs in one request.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ControlProjectTasks.path(),
+        request_body = ControlTasksRequest,
+        responses(
+            (status = 204, description = "All requested actions were successful"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn control_project_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ControlTasksRequest>,
+    ) -> Result<StatusCode> {
+        // TODO
+        // ApiServer::<C, A, S>::control_tasks(
+        //     None,
+        //     Some(warehouse_id.into()),
+        //     request,
+        //     api_context,
+        //     metadata,
+        // )
+        // .await?;
+        // Ok(StatusCode::NO_CONTENT)
+        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
     }
 
     /// Batch Check Catalog Actions
@@ -2018,6 +2179,22 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::SetProjectTaskQueueConfig.path_in_management_v1(),
+                    post(set_project_task_queue_config).get(get_project_task_queue_config),
+                )
+                .route(
+                    ManagementV1Endpoint::ListProjectTasks.path_in_management_v1(),
+                    post(list_project_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::GetProjectTaskDetails.path_in_management_v1(),
+                    get(get_project_task_details),
+                )
+                .route(
+                    ManagementV1Endpoint::ControlProjectTasks.path_in_management_v1(),
+                    post(control_project_tasks),
                 )
                 .route(
                     ManagementV1Endpoint::BatchCheckActions.path_in_management_v1(),

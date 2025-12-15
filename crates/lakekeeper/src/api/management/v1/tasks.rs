@@ -238,6 +238,41 @@ pub struct ListTasksRequest {
     pub page_size: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, Default, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ListProjectTasksRequest {
+    /// Filter by task status
+    #[serde(default)]
+    #[builder(default)]
+    pub status: Option<Vec<TaskStatus>>,
+    /// Filter by one or more queue names
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<Vec<String>>))]
+    #[builder(default)]
+    pub queue_name: Option<Vec<TaskQueueName>>,
+    /// Filter tasks created after this timestamp
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
+    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Filter tasks created before this timestamp
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
+    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Next page token, re-use the same request as for the original request,
+    /// but set this to the `next_page_token` from the previous response.
+    /// Stop iterating when no more items are returned in a page.
+    #[serde(default)]
+    #[builder(default)]
+    pub page_token: Option<String>,
+    /// Number of results per page
+    #[serde(default)]
+    #[builder(default)]
+    pub page_size: Option<i64>,
+}
+
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]

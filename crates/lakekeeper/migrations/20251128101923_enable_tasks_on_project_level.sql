@@ -82,3 +82,10 @@ alter type entity_type
 	add value if not exists 'project';
 alter type entity_type
 	add value if not exists 'warehouse';
+
+-- 9. Add new values for api_endpoints enum
+ALTER TYPE api_endpoints ADD VALUE 'management-v1-set-project-task-queue-config';
+ALTER TYPE api_endpoints ADD VALUE 'management-v1-get-project-task-queue-config';
+ALTER TYPE api_endpoints ADD VALUE 'management-v1-control-project-tasks';
+ALTER TYPE api_endpoints ADD VALUE 'management-v1-get-project-task-details';
+ALTER TYPE api_endpoints ADD VALUE 'management-v1-list-project-tasks';
