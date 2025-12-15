@@ -1242,81 +1242,29 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 
     async fn set_task_queue_config(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         request: SetTaskQueueConfigRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        if let Some(warehouse_id) = warehouse_id {
-            // ------------------- AuthZ -------------------
-            let authorizer = context.v1_state.authz;
+        // ------------------- AuthZ -------------------
+        let authorizer = &context.v1_state.authz;
 
-            let warehouse =
-                C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-            let warehouse_resolved = authorizer
-                .require_warehouse_action(
-                    &request_metadata,
-                    warehouse_id,
-                    warehouse,
-                    CatalogWarehouseAction::ModifyTaskQueueConfig,
-                )
-                .await?;
-
-            // ------------------- Business Logic -------------------
-            let task_queues = context.v1_state.registered_task_queues;
-
-            if let Some(validate_config_fn) = task_queues.validate_config_fn(queue_name).await {
-                validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
-                ErrorModel::bad_request(
-                    format!(
-                        "Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"
-                    ),
-                    "InvalidQueueConfig",
-                    Some(Box::new(e)),
-                )
-            })?;
-            } else {
-                let mut existing_queue_names = task_queues.queue_names().await;
-                existing_queue_names.sort_unstable();
-                let existing_queue_names = existing_queue_names.iter().join(", ");
-                return Err(ErrorModel::bad_request(
-                    format!(
-                        "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"
-                    ),
-                    "QueueNotFound",
-                    None,
-                )
-                .into());
-            }
-            let project_id = warehouse_resolved.project_id.clone();
-            let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-            C::set_task_queue_config(
-                project_id,
-                Some(warehouse_id),
-                queue_name,
-                request,
-                transaction.transaction(),
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse_resolved = authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::ModifyTaskQueueConfig,
             )
             .await?;
-            transaction.commit().await?;
-            Ok(())
-        } else if let Some(_project_id) = project_id {
-            return Err(ErrorModel::internal(
-                "Project-level tasks are not yet supported",
-                "ProjectLevelTasksNotSupported",
-                None,
-            )
-            .into());
-        } else {
-            return Err(ErrorModel::bad_request(
-                "Either ProjectId or WarehouseId must be provided.",
-                "MissingNecessaryId",
-                None,
-            )
-            .into());
-        }
+        let project_id = warehouse_resolved.project_id.clone();
+
+        // ------------------- Business Logic -------------------
+        set_task_queue_config_authorized(project_id, Some(warehouse_id), queue_name, request, context).await
     }
 
     async fn get_task_queue_config(
@@ -1375,6 +1323,70 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into());
         }
     }
+
+    async fn set_project_task_queue_config(
+        queue_name: &TaskQueueName,
+        request: SetTaskQueueConfigRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // ------------------- AuthZ -------------------
+        let authorizer = &context.v1_state.authz;
+
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::ModifyTaskQueueConfig,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        set_task_queue_config_authorized(project_id, None, queue_name, request, context).await
+    }
+}
+
+async fn set_task_queue_config_authorized<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    project_id: ProjectId,
+    warehouse_id: Option<WarehouseId>,
+    queue_name: &TaskQueueName,
+    request: SetTaskQueueConfigRequest,
+    context: ApiContext<State<A, C, S>>,
+) -> Result<()> {
+    let task_queues = context.v1_state.registered_task_queues;
+
+    if let Some(validate_config_fn) = task_queues.validate_config_fn(queue_name).await {
+        validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
+            ErrorModel::bad_request(
+                format!("Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"),
+                "InvalidQueueConfig",
+                Some(Box::new(e)),
+            )
+        })?;
+    } else {
+        let mut existing_queue_names = task_queues.queue_names().await;
+        existing_queue_names.sort_unstable();
+        let existing_queue_names = existing_queue_names.iter().join(", ");
+        return Err(ErrorModel::bad_request(
+            format!("Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"),
+            "QueueNotFound",
+            None,
+        )
+        .into());
+    }
+    let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+    C::set_task_queue_config(
+        project_id,
+        warehouse_id,
+        queue_name,
+        request,
+        transaction.transaction(),
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

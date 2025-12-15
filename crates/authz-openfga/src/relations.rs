@@ -440,6 +440,7 @@ pub enum ProjectRelation {
     CanGrantSecurityAdmin,
     CanGrantDataAdmin,
     CanGetEndpointStatistics,
+    CanModifyTaskQueueConfig,
 }
 
 impl ProjectAction for ProjectRelation {}
@@ -660,6 +661,9 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::SearchRoles => ProjectRelation::CanSearchRoles,
             CatalogProjectAction::GetEndpointStatistics => {
                 ProjectRelation::CanGetEndpointStatistics
+            }
+            CatalogProjectAction::ModifyTaskQueueConfig => {
+                ProjectRelation::CanModifyTaskQueueConfig
             }
         }
     }
