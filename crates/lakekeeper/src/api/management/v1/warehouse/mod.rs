@@ -23,7 +23,12 @@ use crate::{
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
-            ListDeletedTabularsResponse, task_queue::{GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest, set_task_queue_config as set_task_queue_config_authorized},
+            ListDeletedTabularsResponse,
+            task_queue::{
+                GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
+                set_task_queue_config as set_task_queue_config_authorized,
+                get_task_queue_config as get_task_queue_config_authorized,
+            },
         },
     },
     request_metadata::RequestMetadata,
@@ -40,6 +45,7 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
+        task_configs::TaskQueueConfigFilter,
         tasks::{TaskFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask},
     },
 };
@@ -1264,64 +1270,43 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = warehouse_resolved.project_id.clone();
 
         // ------------------- Business Logic -------------------
-        set_task_queue_config_authorized(project_id, Some(warehouse_id), queue_name, request, context).await
+        set_task_queue_config_authorized(
+            project_id,
+            Some(warehouse_id),
+            queue_name,
+            request,
+            context,
+        )
+        .await
     }
 
     async fn get_task_queue_config(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetTaskQueueConfigResponse> {
-        if let Some(warehouse_id) = warehouse_id {
-            // ------------------- AuthZ -------------------
-            let authorizer = context.v1_state.authz;
+        // ------------------- AuthZ -------------------
+        let authorizer = &context.v1_state.authz;
 
-            let warehouse =
-                C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-            let warehouse_resolved = authorizer
-                .require_warehouse_action(
-                    &request_metadata,
-                    warehouse_id,
-                    warehouse,
-                    CatalogWarehouseAction::GetTaskQueueConfig,
-                )
-                .await?;
-
-            // ------------------- Business Logic -------------------
-            let project_id = warehouse_resolved.project_id.clone();
-
-            let config = C::get_task_queue_config(
-                Some(project_id),
-                Some(warehouse_id),
-                queue_name,
-                context.v1_state.catalog,
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse_resolved = authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::GetTaskQueueConfig,
             )
-            .await?
-            .unwrap_or_else(|| GetTaskQueueConfigResponse {
-                queue_config: QueueConfigResponse {
-                    config: serde_json::json!({}),
-                    queue_name: queue_name.clone(),
-                },
-                max_seconds_since_last_heartbeat: None,
-            });
-            Ok(config)
-        } else if let Some(_project_id) = project_id {
-            return Err(ErrorModel::internal(
-                "Project-level tasks are not yet supported",
-                "ProjectLevelTasksNotSupported",
-                None,
-            )
-            .into());
-        } else {
-            return Err(ErrorModel::bad_request(
-                "Either ProjectId or WarehouseId must be provided.",
-                "MissingNecessaryId",
-                None,
-            )
-            .into());
-        }
+            .await?;
+        
+        // ------------------- Business Logic -------------------
+        let project_id = warehouse_resolved.project_id.clone();
+        let filter = TaskQueueConfigFilter::WarehouseId {
+            warehouse_id,
+            project_id: project_id,
+        };
+        get_task_queue_config_authorized(&filter, queue_name, context).await
     }
 }
 

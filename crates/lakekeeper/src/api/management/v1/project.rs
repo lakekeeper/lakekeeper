@@ -12,16 +12,28 @@ pub use crate::service::{
 };
 use crate::{
     ProjectId, WarehouseId,
-    api::{ApiContext, Result, management::v1::{ApiServer, task_queue::{SetTaskQueueConfigRequest, set_task_queue_config as set_task_queue_config_authorized}}},
+    api::{
+        ApiContext, Result,
+        management::v1::{
+            ApiServer,
+            task_queue::{
+                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest,
+                get_task_queue_config as get_task_queue_config_authorized,
+                set_task_queue_config as set_task_queue_config_authorized,
+            },
+        },
+    },
     request_metadata::RequestMetadata,
     service::{
-        CatalogStore, CatalogWarehouseOps, State, Transaction,
+        CatalogStore, CatalogTaskOps, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
-        secrets::SecretStore, tasks::TaskQueueName,
+        secrets::SecretStore,
+        task_configs::TaskQueueConfigFilter,
+        tasks::TaskQueueName,
     },
 };
 
@@ -326,6 +338,28 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         set_task_queue_config_authorized(project_id, None, queue_name, request, context).await
+    }
+
+    async fn get_project_task_queue_config(
+        queue_name: &TaskQueueName,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetTaskQueueConfigResponse> {
+        // ------------------- AuthZ -------------------
+        let authorizer = &context.v1_state.authz;
+
+        let project_id = request_metadata.require_project_id(None)?;
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::GetTaskQueueConfig,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        let filter = TaskQueueConfigFilter::ProjectId { project_id };
+        get_task_queue_config_authorized(&filter, queue_name, context).await
     }
 }
 

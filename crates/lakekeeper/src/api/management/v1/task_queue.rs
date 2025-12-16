@@ -6,10 +6,46 @@ use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, Result},
     service::{
-        CatalogStore, CatalogTaskOps, SecretStore, State, Transaction, authz::Authorizer,
-        tasks::TaskQueueName,
+        CatalogStore, CatalogTaskOps, SecretStore, State, Transaction, authz::Authorizer, task_configs::TaskQueueConfigFilter, tasks::TaskQueueName
     },
 };
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct SetTaskQueueConfigRequest {
+    pub queue_config: QueueConfig,
+    pub max_seconds_since_last_heartbeat: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(transparent)]
+pub struct QueueConfig(pub(crate) serde_json::Value);
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct GetTaskQueueConfigResponse {
+    pub queue_config: QueueConfigResponse,
+    pub max_seconds_since_last_heartbeat: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct QueueConfigResponse {
+    #[serde(flatten)]
+    pub(crate) config: serde_json::Value,
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
+    pub(crate) queue_name: TaskQueueName,
+}
+
+impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        (http::StatusCode::OK, axum::Json(self)).into_response()
+    }
+}
 
 pub(crate) async fn set_task_queue_config<
     C: CatalogStore,
@@ -56,39 +92,27 @@ pub(crate) async fn set_task_queue_config<
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct SetTaskQueueConfigRequest {
-    pub queue_config: QueueConfig,
-    pub max_seconds_since_last_heartbeat: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(transparent)]
-pub struct QueueConfig(pub(crate) serde_json::Value);
-
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct GetTaskQueueConfigResponse {
-    pub queue_config: QueueConfigResponse,
-    pub max_seconds_since_last_heartbeat: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct QueueConfigResponse {
-    #[serde(flatten)]
-    pub(crate) config: serde_json::Value,
-    #[cfg_attr(feature = "open-api", schema(value_type=String))]
-    pub(crate) queue_name: TaskQueueName,
-}
-
-impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
-    fn into_response(self) -> axum::http::Response<axum::body::Body> {
-        (http::StatusCode::OK, axum::Json(self)).into_response()
-    }
+pub(crate) async fn get_task_queue_config<
+    C: CatalogStore,
+    A: Authorizer,
+    S: SecretStore,
+>(
+    filter: &TaskQueueConfigFilter,
+    queue_name: &TaskQueueName,
+    context: ApiContext<State<A, C, S>>
+) -> Result<GetTaskQueueConfigResponse> {
+    let config = C::get_task_queue_config(
+        filter,
+        queue_name,
+        context.v1_state.catalog,
+    )
+    .await?
+    .unwrap_or_else(|| GetTaskQueueConfigResponse {
+        queue_config: QueueConfigResponse {
+            config: serde_json::json!({}),
+            queue_name: queue_name.clone(),
+        },
+        max_seconds_since_last_heartbeat: None,
+    });
+    Ok(config)
 }

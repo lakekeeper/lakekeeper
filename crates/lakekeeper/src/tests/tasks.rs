@@ -17,16 +17,14 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        api::management::v1::warehouse::{QueueConfig, SetTaskQueueConfigRequest},
-        implementations::postgres::PostgresBackend,
-        service::{
+        api::management::v1::task_queue::{QueueConfig, SetTaskQueueConfigRequest}, implementations::postgres::PostgresBackend, service::{
             CatalogStore, CatalogTaskOps, Transaction,
             tasks::{
                 EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
                 TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
                 TaskQueueRegistry,
             },
-        },
+        }
     };
 
     #[sqlx::test]

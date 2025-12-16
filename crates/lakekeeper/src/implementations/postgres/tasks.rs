@@ -4,10 +4,16 @@ use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
 use uuid::Uuid;
 
 use crate::{
-    ProjectId, WarehouseId, api::management::v1::task_queue::{GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest}, implementations::postgres::dbutils::DBErrorHandler, service::{
+    ProjectId, WarehouseId,
+    api::management::v1::task_queue::{
+        GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
+    },
+    implementations::postgres::dbutils::DBErrorHandler,
+    service::{
         TableId, ViewId,
+        task_configs::TaskQueueConfigFilter,
         tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
-    }
+    },
 };
 
 mod get_task_details;
@@ -667,34 +673,54 @@ pub(crate) async fn record_failure(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct TaskConfigRow {
+    config: serde_json::Value,
+    max_time_since_last_heartbeat: Option<PgInterval>,
+}
+
 pub(crate) async fn get_task_queue_config<
     'e,
     'c: 'e,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
     connection: E,
-    project_id: Option<ProjectId>,
-    warehouse_id: Option<WarehouseId>,
+    filter: &TaskQueueConfigFilter,
     queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
-    let warehouse_id_is_none = warehouse_id.is_none();
-    let project_id_is_none = project_id.is_none();
+    let data = match filter {
+        TaskQueueConfigFilter::WarehouseId { warehouse_id, project_id } => {
+            sqlx::query_as!(
+                TaskConfigRow,
+                r#"
+                SELECT config, max_time_since_last_heartbeat
+                FROM task_config
+                WHERE warehouse_id = $1 AND queue_name = $2 AND project_id = $3
+                "#,
+                **warehouse_id,
+                queue_name.as_str(),
+                project_id.as_str()
+            )
+            .fetch_optional(connection)
+            .await
+        }
+        TaskQueueConfigFilter::ProjectId { project_id } => {
+            sqlx::query_as!(
+                TaskConfigRow,
+                r#"
+                SELECT config, max_time_since_last_heartbeat
+                FROM task_config
+                WHERE project_id = $1 AND queue_name = $2 AND warehouse_id IS NULL
+                "#,
+                project_id.as_str(),
+                queue_name.as_str(),
+            )
+            .fetch_optional(connection)
+            .await
+        }
+    };
 
-    let result = sqlx::query!(
-        r#"
-        SELECT config, max_time_since_last_heartbeat
-        FROM task_config
-        WHERE ($3 OR warehouse_id = $1) AND ($5 OR project_id = $4) AND queue_name = $2
-        "#,
-        warehouse_id.map(|id| *id),
-        queue_name.as_str(),
-        warehouse_id_is_none,
-        project_id.map(|id| id.to_string()),
-        project_id_is_none
-    )
-    .fetch_optional(connection)
-    .await
-    .map_err(|e| {
+    let result = data.map_err(|e| {
         tracing::error!(?e, "Failed to get task queue config");
         e.into_error_model(format!("Failed to get task queue config for {queue_name}"))
     })?;
@@ -1153,8 +1179,8 @@ mod test {
     use crate::{
         WarehouseId,
         api::management::v1::{
-            tasks::TaskStatus as ApiTaskStatus,
-            warehouse::{QueueConfig, TabularDeleteProfile},
+            task_queue::QueueConfig, tasks::TaskStatus as ApiTaskStatus,
+            warehouse::TabularDeleteProfile,
         },
         implementations::{
             CatalogState,
@@ -1968,8 +1994,7 @@ mod test {
         assert!(
             get_task_queue_config(
                 &mut *conn,
-                Some(project_id.clone()),
-                Some(warehouse_id),
+                &TaskQueueConfigFilter::WarehouseId { warehouse_id, project_id: project_id.clone() },
                 &tq_name
             )
             .await
@@ -1992,11 +2017,14 @@ mod test {
         .await
         .unwrap();
 
-        let response =
-            get_task_queue_config(&mut *conn, Some(project_id), Some(warehouse_id), &tq_name)
-                .await
-                .unwrap()
-                .unwrap();
+        let response = get_task_queue_config(
+            &mut *conn,
+            &TaskQueueConfigFilter::WarehouseId { warehouse_id, project_id },
+            &tq_name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         assert_eq!(&response.queue_config.queue_name, &tq_name);
         assert_eq!(
@@ -2004,6 +2032,112 @@ mod test {
             serde_json::json!({"max_attempts": 5})
         );
         assert_eq!(response.max_seconds_since_last_heartbeat, Some(3600));
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_config_with_project_filter(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        let (warehouse_id, project_id) = setup_warehouse(pool).await;
+
+        // Add warehouse-level task config
+        let warehouse_task_queue_name = generate_tq_name();
+        let warehouse_queue_config = serde_json::json!({"answer": 42});
+        let warehouse_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(warehouse_queue_config),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &warehouse_task_queue_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            warehouse_config,
+        )
+        .await
+        .unwrap();
+
+        // Add project-level task config
+        let project_task_queue_name = generate_tq_name();
+        let project_queue_config = serde_json::json!({"message": "Hello, World!"});
+        let project_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(project_queue_config.clone()),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &project_task_queue_name,
+            project_id.clone(),
+            None,
+            project_config,
+        )
+        .await
+        .unwrap();
+
+        // Retrieve and verify projet-level task queue config
+        let response = get_task_queue_config(
+            &mut *conn,
+            &TaskQueueConfigFilter::ProjectId { project_id },
+            &project_task_queue_name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.queue_config.config, project_queue_config);
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_config_with_project_filter_and_all_have_same_queue_name(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        let (warehouse_id, project_id) = setup_warehouse(pool).await;
+
+        let task_queue_name = generate_tq_name();
+
+        // Add warehouse-level task config
+        let warehouse_queue_config = serde_json::json!({"answer": 42});
+        let warehouse_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(warehouse_queue_config),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &task_queue_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            warehouse_config,
+        )
+        .await
+        .unwrap();
+
+        // Add project-level task config
+        let project_queue_config = serde_json::json!({"message": "Hello, World!"});
+        let project_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(project_queue_config.clone()),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &task_queue_name,
+            project_id.clone(),
+            None,
+            project_config,
+        )
+        .await
+        .unwrap();
+
+        // Retrieve and verify projet-level task queue config
+        let response = get_task_queue_config(
+            &mut *conn,
+            &TaskQueueConfigFilter::ProjectId { project_id },
+            &task_queue_name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.queue_config.config, project_queue_config);
     }
 
     #[sqlx::test]

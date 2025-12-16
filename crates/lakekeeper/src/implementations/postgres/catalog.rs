@@ -50,30 +50,9 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError,
-        CatalogRenameWarehouseError, CatalogSearchTabularResponse,
-        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
-        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
-        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
-        CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError,
-        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceHierarchy, NamespaceId, NamespaceWithParent, ProjectId,
-        RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError,
-        SearchTabularError, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, Transaction, UpdateRoleError,
-        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseId, WarehouseStatus,
-        authn::UserId,
-        storage::StorageProfile,
-        tasks::{
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError, CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError, CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceHierarchy, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, task_configs::TaskQueueConfigFilter, tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
-        },
+        }
     },
 };
 
@@ -788,11 +767,10 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn get_task_queue_config_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        filter: &TaskQueueConfigFilter,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
-        get_task_queue_config(&state.read_pool(), project_id, warehouse_id, queue_name).await
+        get_task_queue_config(&state.read_pool(), filter, queue_name).await
     }
 }

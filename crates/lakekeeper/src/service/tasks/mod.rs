@@ -11,7 +11,7 @@ use crate::{
     ProjectId,
     service::{
         CatalogStore, CatalogTaskOps, ProjectNamed, TableId, TableNamed, TabularId, ViewId,
-        ViewNamed, WarehouseNamed,
+        ViewNamed, WarehouseNamed, task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -427,12 +427,19 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the configuration cannot be fetched or deserialized.
     pub async fn get_queue_config<C: CatalogStore>(
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Q>> {
-        let config =
-            C::get_task_queue_config(None, Some(warehouse_id), Self::queue_name(), catalog_state)
-                .await?;
+        let config = C::get_task_queue_config(
+            &TaskQueueConfigFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            Self::queue_name(),
+            catalog_state,
+        )
+        .await?;
 
         config
             .map(|cfg| {

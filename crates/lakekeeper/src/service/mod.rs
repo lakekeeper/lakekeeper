@@ -9,6 +9,7 @@ pub mod health;
 pub mod secrets;
 pub mod storage;
 pub mod tasks;
+pub mod task_configs;
 pub use authn::{Actor, UserId};
 pub use catalog_store::*;
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;

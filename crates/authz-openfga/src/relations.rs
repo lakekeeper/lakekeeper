@@ -441,6 +441,7 @@ pub enum ProjectRelation {
     CanGrantDataAdmin,
     CanGetEndpointStatistics,
     CanModifyTaskQueueConfig,
+    CanGetTaskQueueConfig,
 }
 
 impl ProjectAction for ProjectRelation {}
@@ -664,7 +665,8 @@ impl ReducedRelation for CatalogProjectAction {
             }
             CatalogProjectAction::ModifyTaskQueueConfig => {
                 ProjectRelation::CanModifyTaskQueueConfig
-            }
+            },
+            CatalogProjectAction::GetTaskQueueConfig => ProjectRelation::CanGetTaskQueueConfig
         }
     }
 }

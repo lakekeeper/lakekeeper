@@ -20,21 +20,14 @@ use crate::{
             tables::LoadTableFilters,
         },
         management::v1::{
-            DeleteWarehouseQuery, TabularType,
-            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
-            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
-            user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
-            warehouse::{
-                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
-                WarehouseStatisticsResponse,
-            },
+            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
         },
     },
     service::{
         TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
+        task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
         },
@@ -676,8 +669,7 @@ where
     ) -> Result<()>;
 
     async fn get_task_queue_config_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        filter: &TaskQueueConfigFilter,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;

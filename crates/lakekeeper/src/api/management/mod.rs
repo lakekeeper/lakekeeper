@@ -1660,8 +1660,7 @@ pub mod v1 {
     ) -> Result<GetTaskQueueConfigResponse> {
         let queue_name = queue_name.into();
         ApiServer::<C, A, S>::get_task_queue_config(
-            None,
-            Some(warehouse_id.into()),
+            warehouse_id.into(),
             &queue_name,
             api_context,
             metadata,
@@ -1814,16 +1813,12 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<GetTaskQueueConfigResponse> {
         let queue_name = TaskQueueName::from(queue_name);
-        // TODO
-        // ApiServer::<C, A, S>::get_task_queue_config(
-        //     None,
-        //     Some(warehouse_id.into()),
-        //     &queue_name,
-        //     api_context,
-        //     metadata,
-        // )
-        // .await
-        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
+        ApiServer::<C, A, S>::get_project_task_queue_config(
+            &queue_name,
+            api_context,
+            metadata,
+        )
+        .await
     }
 
     /// List active and historic Project-level tasks.
