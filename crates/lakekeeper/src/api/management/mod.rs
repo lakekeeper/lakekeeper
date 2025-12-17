@@ -76,8 +76,7 @@ pub mod v1 {
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
                 check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse}, lakekeeper_actions::GetAccessQuery, project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest}, role::{RoleMetadata, UpdateRoleSourceSystemRequest}, tabular::{SearchTabularRequest, SearchTabularResponse}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{
-                    ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
-                    ListProjectTasksRequest, ListTasksRequest, ListTasksResponse, Service,
+                    ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery, GetTaskDetailsResponse, ListProjectTasksRequest, ListProjectTasksResponse, ListTasksRequest, ListTasksResponse, Service
                 }, user::{ListUsersQuery, ListUsersResponse}, warehouse::UndropTabularsRequest
             },
         },
@@ -1687,8 +1686,7 @@ pub mod v1 {
         Json(request): Json<ListTasksRequest>,
     ) -> Result<ListTasksResponse> {
         ApiServer::<C, A, S>::list_tasks(
-            None,
-            Some(warehouse_id.into()),
+            warehouse_id.into(),
             request,
             api_context,
             metadata,
@@ -1836,17 +1834,13 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ListProjectTasksRequest>,
-    ) -> Result<ListTasksResponse> {
-        // TODO
-        // ApiServer::<C, A, S>::list_tasks(
-        //     None,
-        //     Some(warehouse_id.into()),
-        //     request,
-        //     api_context,
-        //     metadata,
-        // )
-        // .await
-        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
+    ) -> Result<ListProjectTasksResponse> {
+        ApiServer::<C, A, S>::list_project_tasks(
+            request,
+            api_context,
+            metadata,
+        )
+        .await
     }
 
     /// Get Details about a specific Project-level task by its ID.
@@ -1865,7 +1859,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<GetTaskDetailsQuery>,
-    ) -> Result<GetTaskDetailsResponse> {
+    ) -> Result<GetProjectTaskDetailsResponse> {
         let task_id = TaskId::from(task_id);
         // TODO
         // ApiServer::<C, A, S>::get_task_details(

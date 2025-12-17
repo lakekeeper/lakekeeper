@@ -7,9 +7,14 @@ use uuid::Uuid;
 use super::EntityType;
 use crate::{
     ProjectId, WarehouseId,
-    api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
+    api::management::v1::tasks::{TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
-    service::tasks::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
+    service::{
+        TaskDetails,
+        tasks::{
+            EntityId, ListTask, TaskAttemptId, TaskId, TaskMetadata, TaskOutcome, TaskStatus
+        },
+    },
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -41,7 +46,7 @@ struct TaskDetailsRow {
 fn parse_task_details(
     task_id: TaskId,
     mut records: Vec<TaskDetailsRow>,
-) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse> {
+) -> Result<Option<TaskDetails>, IcebergErrorResponse> {
     // Sort by attempt descending
     records.sort_by_key(|r| -r.attempt);
     if records.is_empty() {
@@ -86,67 +91,64 @@ fn parse_task_details(
         })
         .try_collect()?;
 
-    let task = APITask {
-        task_id,
-        project_id: ProjectId::from(most_recent.project_id.clone()),
-        warehouse_id: most_recent.warehouse_id.map(WarehouseId::from),
+    let entity_id = match most_recent.entity_type {
+        EntityType::Table => EntityId::Table(
+            most_recent
+                .entity_id
+                .ok_or(ErrorModel::internal(
+                    "Most recent task record has no entity_id for type Table.",
+                    "InternalError",
+                    None,
+                ))?
+                .into(),
+        ),
+        EntityType::View => EntityId::View(
+            most_recent
+                .entity_id
+                .ok_or(ErrorModel::internal(
+                    "Most recent task record has no entity_id for type View.",
+                    "InternalError",
+                    None,
+                ))?
+                .into(),
+        ),
+        EntityType::Project | EntityType::Warehouse => {
+            return Err(ErrorModel::internal(
+                "Listing tasks for Project or Warehouse entity types is not yet supported.",
+                "InternalError",
+                None,
+            )
+            .into());
+        }
+    };
+
+    let task = ListTask {
         queue_name: most_recent.queue_name.into(),
-        entity: match most_recent.entity_type {
-            EntityType::Table => TaskEntity::Table {
-                table_id: most_recent
-                    .entity_id
-                    .ok_or(ErrorModel::internal(
-                        "Most recent task record has no entity_id for type Table.",
-                        "InternalError",
-                        None,
-                    ))?
-                    .into(),
-            },
-            EntityType::View => TaskEntity::View {
-                view_id: most_recent
-                    .entity_id
-                    .ok_or(ErrorModel::internal(
-                        "Most recent task record has no entity_id for type View.",
-                        "InternalError",
-                        None,
-                    ))?
-                    .into(),
-            },
-            EntityType::Project | EntityType::Warehouse => {
-                return Err(ErrorModel::internal(
-                    "Task entity types Project and Warehouse are not supported by this endpoint.",
-                    "InternalError",
-                    None,
-                )
-                .into());
-            }
+        id: TaskAttemptId {
+            task_id,
+            attempt: most_recent.attempt,
         },
-        entity_name: most_recent.entity_name,
-        status: most_recent
-            .task_status
-            .map(Into::into)
-            .or(most_recent.task_log_status.map(Into::into))
-            .ok_or_else(|| {
-                ErrorModel::internal(
-                    "Most recent task record has neither status nor log status.",
-                    "InternalError",
-                    None,
-                )
-            })?,
+        task_metadata: TaskMetadata {
+            warehouse_id: most_recent.warehouse_id.map(WarehouseId::from),
+            project_id: ProjectId::from(most_recent.project_id),
+            parent_task_id: most_recent.parent_task_id.map(TaskId::from),
+            entity_id,
+            entity_name: most_recent.entity_name,
+            schedule_for: Some(most_recent.attempt_scheduled_for),
+        },
+        status: most_recent.task_status.map(Into::into),
+        outcome: most_recent.task_log_status.map(Into::into),
         picked_up_at: most_recent.started_at,
-        attempt: most_recent.attempt,
-        parent_task_id: most_recent.parent_task_id.map(TaskId::from),
-        scheduled_for: most_recent.attempt_scheduled_for,
         created_at: most_recent.task_created_at,
         last_heartbeat_at: most_recent.last_heartbeat_at,
         updated_at: most_recent.updated_at,
         progress: most_recent.progress,
     };
 
-    Ok(Some(GetTaskDetailsResponse {
+    Ok(Some(TaskDetails {
         task,
+        data: most_recent.task_data,
         attempts,
-        task_data: most_recent.task_data,
         execution_details: most_recent.execution_details,
     }))
 }
@@ -176,7 +178,7 @@ pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
     task_id: TaskId,
     num_attempts: u16,
     state: E,
-) -> Result<Option<GetTaskDetailsResponse>, IcebergErrorResponse>
+) -> Result<Option<TaskDetails>, IcebergErrorResponse>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -304,7 +306,7 @@ mod tests {
             test::setup_warehouse,
         },
         service::tasks::{
-            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskCheckState, TaskEntity, TaskInput,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskCheckState, TaskInput,
             TaskMetadata, TaskOutcome, TaskQueueName, TaskStatus,
         },
     };
@@ -388,30 +390,27 @@ mod tests {
         let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details
-        assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.task_metadata.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), "test-queue");
-        assert_eq!(result.task.attempt, 1);
-        assert_eq!(result.task.scheduled_for, scheduled_for);
+        assert_eq!(result.task.id.attempt, 1);
+        assert_eq!(result.task.task_metadata.schedule_for, Some(scheduled_for));
         assert_eq!(result.task.picked_up_at, started_at);
         assert_eq!(result.task.created_at, task_created_at);
         assert!((result.task.progress - 0.5).abs() < f32::EPSILON);
-        assert!(matches!(result.task.status, APITaskStatus::Running));
+        assert!(matches!(result.task.status, Some(TaskStatus::Running)));
 
-        match result.task.entity {
-            TaskEntity::Table { table_id } => {
+        match result.task.task_metadata.entity_id {
+            EntityId::Table(table_id) => {
                 assert_eq!(*table_id, entity_id);
             }
-            TaskEntity::View { .. } => {
+            _ => {
                 panic!("Expected TaskEntity::Table")
             }
-            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
-            //     panic!("Expected TaskEntity::Table")
-            // }
         }
 
         // Verify task data
-        assert_eq!(result.task_data, serde_json::json!({"test": "data"}));
+        assert_eq!(result.data, serde_json::json!({"test": "data"}));
         assert_eq!(
             result.execution_details,
             Some(serde_json::json!({"details": "test"}))
@@ -465,8 +464,8 @@ mod tests {
         let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details (should be the most recent attempt)
-        assert_eq!(result.task.attempt, 2);
-        assert!(matches!(result.task.status, APITaskStatus::Running));
+        assert_eq!(result.task.id.attempt, 2);
+        assert!(matches!(result.task.status, Some(TaskStatus::Running)));
 
         // Verify we have one historical attempt
         assert_eq!(result.attempts.len(), 1);
@@ -522,14 +521,14 @@ mod tests {
         let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details
-        assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.task_metadata.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), "cleanup-queue");
-        assert_eq!(result.task.attempt, 1);
-        assert_eq!(result.task.scheduled_for, scheduled_for);
+        assert_eq!(result.task.id.attempt, 1);
+        assert_eq!(result.task.task_metadata.schedule_for, Some(scheduled_for));
         assert_eq!(result.task.picked_up_at, started_at);
         assert_eq!(result.task.created_at, task_created_at);
-        assert!(matches!(result.task.status, APITaskStatus::Success));
+        assert!(matches!(result.task.outcome, Some(TaskOutcome::Success)));
 
         // No historical attempts for completed task
         assert!(result.attempts.is_empty());
@@ -591,8 +590,8 @@ mod tests {
         let result = parse_task_details(task_id, records).unwrap().unwrap();
 
         // Verify main task details (should be the most recent attempt)
-        assert_eq!(result.task.attempt, 3);
-        assert!(matches!(result.task.status, APITaskStatus::Success));
+        assert_eq!(result.task.id.attempt, 3);
+        assert!(matches!(result.task.outcome, Some(TaskOutcome::Success)));
 
         // Verify we have two historical attempts, sorted by attempt descending
         assert_eq!(result.attempts.len(), 2);
@@ -710,35 +709,32 @@ mod tests {
             .unwrap();
 
         // Verify task details
-        assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.task_metadata.warehouse_id, Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), tq_name.as_str());
-        assert_eq!(result.task.attempt, 1);
-        assert!(matches!(result.task.status, APITaskStatus::Running));
+        assert_eq!(result.task.id.attempt, 1);
+        assert!(matches!(result.task.status, Some(TaskStatus::Running)));
         assert!(result.task.picked_up_at.is_some());
         assert!((result.task.progress - 0.5).abs() < f32::EPSILON);
         assert!(result.task.last_heartbeat_at.is_some());
-        assert!(result.task.parent_task_id.is_none());
-        assert_eq!(result.task.scheduled_for, scheduled_for);
+        assert!(result.task.task_metadata.parent_task_id.is_none());
+        assert_eq!(result.task.task_metadata.schedule_for, Some(scheduled_for));
         // Check that created is now +- a few seconds
         let now = Utc::now();
         assert!(result.task.created_at <= now + chrono::Duration::seconds(10));
         assert!(result.task.created_at >= now - chrono::Duration::seconds(10));
 
-        match result.task.entity {
-            TaskEntity::Table { table_id } => {
+        match result.task.task_metadata.entity_id {
+            EntityId::Table(table_id) => {
                 assert_eq!(Some(*table_id), entity_id.as_uuid());
             }
-            TaskEntity::View { .. } => {
+            _ => {
                 panic!("Expected TaskEntity::Table")
             }
-            // TaskEntityDeprecated::View { .. } | TaskEntityDeprecated::Project { .. } | TaskEntityDeprecated::Warehouse { .. } => {
-            //     panic!("Expected TaskEntity::Table")
-            // }
         }
 
         // Verify task data and execution details
-        assert_eq!(result.task_data, payload);
+        assert_eq!(result.data, payload);
         assert_eq!(result.execution_details, Some(execution_details));
 
         // No historical attempts for active task only
@@ -787,15 +783,15 @@ mod tests {
             .unwrap();
 
         // Verify task details
-        assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.warehouse_id, Some(warehouse_id));
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.warehouse_id(), Some(warehouse_id));
         assert_eq!(result.task.queue_name.as_str(), tq_name.as_str());
-        assert_eq!(result.task.attempt, 1);
-        assert!(matches!(result.task.status, APITaskStatus::Success));
+        assert_eq!(result.task.attempt(), 1);
+        assert!(matches!(result.task.outcome, Some(TaskOutcome::Success)));
         assert!(result.task.picked_up_at.is_some());
 
         // Verify task data
-        assert_eq!(result.task_data, payload);
+        assert_eq!(result.data, payload);
 
         // No historical attempts for single completed task
         assert!(result.attempts.is_empty());
@@ -865,9 +861,9 @@ mod tests {
             .unwrap();
 
         // Verify main task details (should be the most recent successful attempt)
-        assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.attempt, 3);
-        assert!(matches!(result.task.status, APITaskStatus::Success));
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.attempt(), 3);
+        assert!(matches!(result.task.outcome, Some(TaskOutcome::Success)));
 
         // Verify we have 2 historical attempts (failed attempts 1 and 2)
         assert_eq!(result.attempts.len(), 2);
@@ -938,9 +934,9 @@ mod tests {
             .unwrap();
 
         // Verify main task details (should be the currently running attempt)
-        assert_eq!(result.task.task_id, task_id);
-        assert_eq!(result.task.attempt, 2);
-        assert!(matches!(result.task.status, APITaskStatus::Running));
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.attempt(), 2);
+        assert!(matches!(result.task.status, Some(TaskStatus::Running)));
         assert!((result.task.progress - 0.7).abs() < f32::EPSILON);
         assert_eq!(result.execution_details, Some(execution_details));
 
@@ -1011,8 +1007,8 @@ mod tests {
         assert_eq!(result.attempts[2].attempt, 3);
 
         // Main task should be the successful 6th attempt
-        assert_eq!(result.task.attempt, 6);
-        assert!(matches!(result.task.status, APITaskStatus::Success));
+        assert_eq!(result.task.attempt(), 6);
+        assert!(matches!(result.task.outcome, Some(TaskOutcome::Success)));
     }
 
     #[sqlx::test]
@@ -1074,9 +1070,9 @@ mod tests {
         .unwrap();
 
         // Verify child task has parent reference
-        assert_eq!(result.task.task_id, child_task_id);
-        assert_eq!(result.task.parent_task_id, Some(parent_task_id));
-        assert_eq!(result.task_data, serde_json::json!({"type": "child"}));
+        assert_eq!(result.task.task_id(), child_task_id);
+        assert_eq!(result.task.parent_task_id(), Some(parent_task_id));
+        assert_eq!(result.data, serde_json::json!({"type": "child"}));
     }
 
     #[sqlx::test]

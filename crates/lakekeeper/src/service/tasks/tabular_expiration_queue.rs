@@ -13,7 +13,8 @@ use crate::{
         CatalogStore, CatalogTabularOps, DropTabularError, Transaction, WarehouseIdMissing,
         authz::Authorizer,
         tasks::{
-            SpecializedTask, TaskData, TaskQueueName, tabular_purge_queue::TabularPurgePayload,
+            SpecializedTask, TaskData, TaskQueueName,
+            tabular_purge_queue::TabularPurgePayload,
         },
     },
 };
@@ -89,15 +90,14 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         };
 
         let entity_id = task.task_metadata.entity_id;
-        let entity_id_uuid = entity_id
-            .as_uuid()
-            .map_or("Null".to_string(), |uuid| uuid.to_string());
+        let entity_id_uuid = entity_id.as_uuid().map_or("Null".to_string(), |id| id.to_string());
+        let entity_type = entity_id.entity_type().to_string();
 
         let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
             tracing::debug_span!(
                 QN_STR,
                 warehouse_id = %warehouse_id,
-                entity_type = %entity_id.entity_type().to_string(),
+                entity_type = %entity_type,
                 entity_id = %entity_id_uuid,
                 deletion_kind = ?task.data.deletion_kind,
                 attempt = %task.attempt(),
@@ -106,7 +106,7 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         } else {
             tracing::debug_span!(
                 QN_STR,
-                entity_type = %entity_id.entity_type().to_string(),
+                entity_type = %entity_type,
                 entity_id = %entity_id_uuid,
                 deletion_kind = ?task.data.deletion_kind,
                 attempt = %task.attempt(),
@@ -128,15 +128,15 @@ async fn instrumented_expire<C: CatalogStore, A: Authorizer>(
     let entity_id = task.task_metadata.entity_id;
     match handle_table::<C, A>(catalog_state.clone(), authorizer, task).await {
         Ok(()) => {
-            tracing::debug!("Task of `{QN_STR}` worker exited successfully. {entity_id} deleted.");
+            tracing::debug!("Task of `{QN_STR}` worker exited successfully. {entity_id:?} deleted.");
         }
         Err(err) => {
             tracing::error!(
-                "Error in `{QN_STR}` worker. Expiration of {entity_id} failed. Error: {err}"
+                "Error in `{QN_STR}` worker. Expiration of {entity_id:?} failed. Error: {err}"
             );
             task.record_failure::<C>(
                 catalog_state,
-                &format!("Failed to expire soft-deleted {entity_id}.\n{err}"),
+                &format!("Failed to expire soft-deleted {entity_id:?}.\n{err}"),
             )
             .await;
         }
@@ -153,7 +153,6 @@ where
     C: CatalogStore,
     A: Authorizer,
 {
-    let entity_id = task.task_metadata.entity_id;
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
@@ -166,7 +165,7 @@ where
         .ok_or(WarehouseIdMissing::new())
         .map_err(ErrorModel::from)?;
 
-    let tabular_location = match entity_id {
+    let tabular_location = match task.task_metadata.entity_id {
         EntityId::Table(table_id) => {
             let drop_result =
                 C::drop_tabular(warehouse_id, table_id, true, trx.transaction()).await;
@@ -227,15 +226,15 @@ where
                 })
                 .ok();
             location
-        }
+        },
         _ => {
-            let entity_type = entity_id.entity_type();
-            return Err(ErrorModel::bad_request(
-                format!("Entity type `{entity_type}` is not supported for tabular expiration.",),
-                "UnsupportedEntityType",
+            let entity_id = task.task_metadata.entity_id;
+            return Err(ErrorModel::internal(
+                format!("Entity ID {entity_id} is not valid for `{QN_STR}` task. Only tables and views can be expired."),
+                "EntityIdInvalid",
                 None,
             )
-            .into());
+            .into())
         }
     };
 

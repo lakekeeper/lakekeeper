@@ -174,13 +174,13 @@ mod test {
         server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-        service::tasks::TaskEntity,
+        service::tasks::{TaskEntity},
         tests::{create_view_request, random_request_metadata},
     };
 
     #[sqlx::test]
     async fn test_drop_view(pool: PgPool) {
-        let (api_context, namespace, whi, project_id) = setup(pool, None).await;
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
 
         let view_name = "my-view";
         let rq: CreateViewRequest = create_view_request(Some(view_name), None);
@@ -239,8 +239,7 @@ mod test {
             view_id: loaded_view.metadata.uuid().into(),
         };
         let expiration_tasks = ManagementApiServer::list_tasks(
-            Some(project_id),
-            Some(whi),
+            whi,
             ListTasksRequest::builder()
                 .entities(Some(vec![TaskEntity::View {
                     view_id: loaded_view.metadata.uuid().into(),

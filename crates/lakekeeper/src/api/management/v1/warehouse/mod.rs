@@ -25,7 +25,7 @@ use crate::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
             ListDeletedTabularsResponse,
             task_queue::{
-                GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
+                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest,
                 set_task_queue_config as set_task_queue_config_authorized,
                 get_task_queue_config as get_task_queue_config_authorized,
             },
@@ -34,7 +34,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
         ViewOrTableDeletionInfo,
         authz::{

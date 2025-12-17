@@ -27,7 +27,7 @@ pub(crate) use resolve_tasks::resolve_tasks;
 pub(crate) struct InsertResult {
     pub task_id: TaskId,
     #[cfg(test)]
-    pub entity_id: EntityId,
+    pub entity_id: Option<EntityId>,
 }
 
 #[derive(Debug, sqlx::Type, Clone, Copy)]
@@ -191,10 +191,9 @@ pub(crate) async fn queue_task_batch(
                 // queue_name: record.queue_name,
                 #[cfg(test)]
                 entity_id: match record.entity_type {
-                    EntityType::View => EntityId::View(record.entity_id.unwrap().into()),
-                    EntityType::Table => EntityId::Table(record.entity_id.unwrap().into()),
-                    EntityType::Project => EntityId::Project,
-                    EntityType::Warehouse => EntityId::Warehouse,
+                    EntityType::View => Some(EntityId::View(record.entity_id.unwrap().into())),
+                    EntityType::Table => Some(EntityId::Table(record.entity_id.unwrap().into())),
+                    EntityType::Project | EntityType::Warehouse => None,
                 },
             })
             .collect_vec()
@@ -324,32 +323,33 @@ pub(crate) async fn pick_task(
     if let Some(task) = x {
         tracing::trace!("Picked up task: {:?}", task);
         let project_id = ProjectId::try_new(task.project_id)?;
+        let entity_id = match task.entity_type {
+            EntityType::View => task
+                .entity_id
+                .ok_or(ErrorModel::internal(
+                    "EntityId is missing for view.",
+                    "InternalError",
+                    None,
+                ))
+                .map(ViewId::from)
+                .map(EntityId::View)?,
+            EntityType::Table => task
+                .entity_id
+                .ok_or(ErrorModel::internal(
+                    "EntityId is missing for table.",
+                    "InternalError",
+                    None,
+                ))
+                .map(TableId::from)
+                .map(EntityId::Table)?,
+            EntityType::Project => EntityId::Project,
+            EntityType::Warehouse => EntityId::Warehouse,
+        };
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
                 project_id,
                 warehouse_id: task.warehouse_id.map(WarehouseId::from),
-                entity_id: match task.entity_type {
-                    EntityType::View => task
-                        .entity_id
-                        .ok_or(ErrorModel::internal(
-                            "EntityId is missing for view.",
-                            "InternalError",
-                            None,
-                        ))
-                        .map(ViewId::from)
-                        .map(EntityId::View)?,
-                    EntityType::Table => task
-                        .entity_id
-                        .ok_or(ErrorModel::internal(
-                            "EntityId is missing for table.",
-                            "InternalError",
-                            None,
-                        ))
-                        .map(TableId::from)
-                        .map(EntityId::Table)?,
-                    EntityType::Project => EntityId::Project,
-                    EntityType::Warehouse => EntityId::Warehouse,
-                },
+                entity_id,
                 entity_name: task.entity_name,
                 parent_task_id: task.parent_task_id.map(TaskId::from),
                 schedule_for: Some(task.scheduled_for),
@@ -689,7 +689,10 @@ pub(crate) async fn get_task_queue_config<
     queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
     let data = match filter {
-        TaskQueueConfigFilter::WarehouseId { warehouse_id, project_id } => {
+        TaskQueueConfigFilter::WarehouseId {
+            warehouse_id,
+            project_id,
+        } => {
             sqlx::query_as!(
                 TaskConfigRow,
                 r#"
@@ -953,7 +956,7 @@ pub(crate) async fn cancel_scheduled_tasks(
     let queue_name = queue_name.map(crate::service::tasks::TaskQueueName::as_str);
     let queue_name = queue_name.unwrap_or("");
     match filter {
-        TaskFilter::WarehouseId(warehouse_id) => {
+        TaskFilter::WarehouseId { warehouse_id, .. } => {
             sqlx::query!(
                 r#"
                 WITH deleted as (
@@ -1948,7 +1951,7 @@ mod test {
         let new_id = ids_second[0].task_id;
 
         assert_eq!(ids_second.len(), 1);
-        assert_eq!(ids_second[0].entity_id, new_key);
+        assert_eq!(ids_second[0].entity_id, Some(new_key));
 
         // move both old tasks to done which will clear them from task table and move them into
         // task_log
@@ -1994,7 +1997,10 @@ mod test {
         assert!(
             get_task_queue_config(
                 &mut *conn,
-                &TaskQueueConfigFilter::WarehouseId { warehouse_id, project_id: project_id.clone() },
+                &TaskQueueConfigFilter::WarehouseId {
+                    warehouse_id,
+                    project_id: project_id.clone()
+                },
                 &tq_name
             )
             .await
@@ -2019,7 +2025,10 @@ mod test {
 
         let response = get_task_queue_config(
             &mut *conn,
-            &TaskQueueConfigFilter::WarehouseId { warehouse_id, project_id },
+            &TaskQueueConfigFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
             &tq_name,
         )
         .await
@@ -2088,7 +2097,9 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_get_task_queue_config_with_project_filter_and_all_have_same_queue_name(pool: PgPool) {
+    async fn test_get_task_queue_config_with_project_filter_and_all_have_same_queue_name(
+        pool: PgPool,
+    ) {
         let mut conn = pool.acquire().await.unwrap();
 
         let (warehouse_id, project_id) = setup_warehouse(pool).await;
@@ -2268,10 +2279,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should be marked as successful
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Success));
+        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Success)));
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
@@ -2458,10 +2469,10 @@ mod test {
         assert_eq!(task_details.attempts.len(), 0); // No retries, so no historical attempts
 
         // Should be marked as failed
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Failed));
+        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Failed)));
         // Should have no historical attempts since it failed permanently on first try
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
@@ -2663,10 +2674,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Cancelled));
+        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Cancelled)));
         // Should have no historical attempts since it was cancelled while scheduled
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
@@ -2742,10 +2753,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Cancelled));
+        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Cancelled)));
         // Should have no historical attempts since it was cancelled while running
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
@@ -2819,10 +2830,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should remain marked as successful despite later operations
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Success));
+        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Success)));
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
@@ -2903,7 +2914,7 @@ mod test {
         .expect("Task 2 should exist");
 
         // The scheduled_for should be close to our specific_time (within a few seconds tolerance)
-        let time_diff = (details2.task.scheduled_for - specific_time)
+        let time_diff = (details2.task.scheduled_for().unwrap() - specific_time)
             .num_seconds()
             .abs();
         assert!(
@@ -2919,12 +2930,12 @@ mod test {
 
         assert!(matches!(
             details1.task.status,
-            ApiTaskStatus::Running // Task was picked up
+            Some(TaskStatus::Running) // Task was picked up
         ));
-        assert!(matches!(details2.task.status, ApiTaskStatus::Scheduled));
+        assert!(matches!(details2.task.status, Some(TaskStatus::Scheduled)));
 
         // Task 2 should be scheduled for the specific time we set
-        let task2_scheduled_diff = (details2.task.scheduled_for - specific_time)
+        let task2_scheduled_diff = (details2.task.scheduled_for().unwrap() - specific_time)
             .num_seconds()
             .abs();
         assert!(
@@ -2991,7 +3002,7 @@ mod test {
         .expect("Task should exist");
 
         // Task should still be running, as rescheduling does not affect running tasks
-        assert_eq!(task_details.task.status, ApiTaskStatus::Running);
+        assert_eq!(task_details.task.status, Some(TaskStatus::Running));
 
         // Stop task.
         request_tasks_stop(&mut conn, &[task_id]).await.unwrap();
@@ -3007,10 +3018,10 @@ mod test {
                 .unwrap()
                 .expect("Task should exist");
 
-        assert_eq!(task_details.task.status, ApiTaskStatus::Scheduled);
+        assert_eq!(task_details.task.status, Some(TaskStatus::Scheduled));
 
         // Task should be rescheduled for the future time
-        let time_diff = (task_details.task.scheduled_for - future_time)
+        let time_diff = (task_details.task.scheduled_for().unwrap() - future_time)
             .num_seconds()
             .abs();
         assert!(
@@ -3034,7 +3045,7 @@ mod test {
 
         // The current task should be on attempt 2 (since the previous attempt was failed)
         assert_eq!(
-            task_details.task.attempt, 1,
+            task_details.task.attempt(), 1,
             "Task should still be on attempt 1 since it was rescheduled, not retried"
         );
 

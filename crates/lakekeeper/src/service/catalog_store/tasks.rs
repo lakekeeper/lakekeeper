@@ -9,13 +9,12 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use super::{CatalogStore, Transaction};
 use crate::{
     ProjectId, WarehouseId,
-    api::management::v1::{task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse}},
+    api::management::v1::{task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{ListTasksRequest, TaskAttempt}},
     service::{
         Result,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId, TaskInput,
-            TaskQueueName,
+            ListTask, Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId, TaskInput, TaskQueueName
         },
     },
 };
@@ -48,6 +47,20 @@ impl ResolvedTask {
     pub fn warehouse_id(&self) -> Option<WarehouseId> {
         self.entity.warehouse_id()
     }
+}
+
+#[derive(Debug)]
+pub struct TaskList {
+    pub tasks: Vec<ListTask>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct TaskDetails {
+    pub task: ListTask,
+    pub execution_details: Option<serde_json::Value>,
+    pub data: serde_json::Value,
+    pub attempts: Vec<TaskAttempt>,
 }
 
 #[async_trait::async_trait]
@@ -145,7 +158,7 @@ where
         task_id: TaskId,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<GetTaskDetailsResponse>> {
+    ) -> Result<Option<TaskDetails>> {
         Self::get_task_details_impl(project_id, warehouse_id, task_id, num_attempts, state).await
     }
 
@@ -179,12 +192,11 @@ where
 
     /// List tasks
     async fn list_tasks(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        filter: &TaskFilter,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ListTasksResponse> {
-        Self::list_tasks_impl(project_id, warehouse_id, query, transaction).await
+    ) -> Result<TaskList> {
+        Self::list_tasks_impl(filter, query, transaction).await
     }
 
     /// Resolve tasks among all known active and historical tasks.

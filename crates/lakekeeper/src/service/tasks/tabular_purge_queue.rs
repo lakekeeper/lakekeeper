@@ -82,12 +82,13 @@ pub(crate) async fn tabular_purge_worker<C: CatalogStore, S: SecretStore>(
             tracing::info!("Graceful shutdown: exiting `{QN_STR}` worker");
             return;
         };
+        let entity_type = task.task_metadata.entity_id.entity_type().to_string();
         let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
             tracing::debug_span!(
                 QN_STR,
                 location = %task.data.tabular_location,
                 warehouse_id = %warehouse_id,
-                entity_type = %task.task_metadata.entity_id.entity_type().to_string(),
+                entity_type = %entity_type,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
             )
@@ -95,7 +96,7 @@ pub(crate) async fn tabular_purge_worker<C: CatalogStore, S: SecretStore>(
             tracing::debug_span!(
                 QN_STR,
                 location = %task.data.tabular_location,
-                entity_type = %task.task_metadata.entity_id.entity_type().to_string(),
+                entity_type = %entity_type,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
             )

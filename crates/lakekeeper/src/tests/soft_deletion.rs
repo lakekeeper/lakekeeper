@@ -52,8 +52,6 @@ async fn test_soft_deletion(pool: PgPool) {
     )
     .await;
 
-    let project_id = warehouse.project_id;
-
     // Create namespace
     let ns_ident = NamespaceIdent::new(format!("test_namespace_{}", Uuid::now_v7()));
     let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
@@ -165,8 +163,7 @@ async fn test_soft_deletion(pool: PgPool) {
 
     // List tasks and check that expiration tasks are enqueued
     let tasks = ApiServer::list_tasks(
-        Some(project_id),
-        Some(warehouse.warehouse_id),
+        warehouse.warehouse_id,
         ListTasksRequest {
             status: Some(vec![TaskStatus::Scheduled]),
             queue_name: Some(vec![EXPIRATION_QUEUE_NAME.clone()]),

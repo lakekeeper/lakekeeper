@@ -20,7 +20,7 @@ use crate::{
             tables::LoadTableFilters,
         },
         management::v1::{
-            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
+            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{ListTasksRequest}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
         },
     },
     service::{
@@ -601,15 +601,14 @@ where
         task_id: TaskId,
         num_attempts: u16, // Number of attempts to retrieve in the task details
         state: Self::State,
-    ) -> Result<Option<GetTaskDetailsResponse>>;
+    ) -> Result<Option<TaskDetails>>;
 
     /// List tasks
     async fn list_tasks_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        filter: &TaskFilter,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ListTasksResponse>;
+    ) -> Result<TaskList>;
 
     /// Enqueue a batch of tasks to a task queue.
     ///

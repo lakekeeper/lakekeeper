@@ -10,8 +10,8 @@ use super::{Transaction, WarehouseId};
 use crate::{
     ProjectId,
     service::{
-        CatalogStore, CatalogTaskOps, ProjectNamed, TableId, TableNamed, TabularId, ViewId,
-        ViewNamed, WarehouseNamed, task_configs::TaskQueueConfigFilter,
+        CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId,
+        ViewNamed, task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -100,8 +100,8 @@ pub enum TaskEntity {
 pub enum TaskEntityNamed {
     Table(TableNamed),
     View(ViewNamed),
-    Project(ProjectNamed),
-    Warehouse(WarehouseNamed),
+    Project(ProjectId),
+    Warehouse(WarehouseId),
 }
 
 impl TaskEntityNamed {
@@ -111,7 +111,7 @@ impl TaskEntityNamed {
             TaskEntityNamed::Table(t) => Some(t.warehouse_id),
             TaskEntityNamed::View(v) => Some(v.warehouse_id),
             TaskEntityNamed::Project(_) => None,
-            TaskEntityNamed::Warehouse(w) => Some(w.warehouse_id),
+            TaskEntityNamed::Warehouse(w) => Some(*w),
         }
     }
 }
@@ -199,7 +199,10 @@ impl AsRef<TaskAttemptId> for TaskAttemptId {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskFilter {
-    WarehouseId(WarehouseId),
+    WarehouseId {
+        warehouse_id: WarehouseId,
+        project_id: ProjectId,
+    },
     TaskIds(Vec<TaskId>),
     ProjectId {
         project_id: ProjectId,
@@ -250,8 +253,8 @@ impl std::fmt::Display for EntityId {
         match self {
             EntityId::Table(id) => write!(f, "Table({id})"),
             EntityId::View(id) => write!(f, "View({id})"),
-            EntityId::Project => write!(f, "Project()"),
-            EntityId::Warehouse => write!(f, "Warehouse()"),
+            EntityId::Project => write!(f, "Project"),
+            EntityId::Warehouse => write!(f, "Warehouse"),
         }
     }
 }
@@ -274,7 +277,8 @@ impl EntityId {
         match self {
             EntityId::Table(id) => Some(**id),
             EntityId::View(id) => Some(**id),
-            EntityId::Project | EntityId::Warehouse => None,
+            EntityId::Project => None,
+            EntityId::Warehouse => None,
         }
     }
 }
@@ -297,6 +301,86 @@ pub struct Task {
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub(crate) config: Option<serde_json::Value>,
     pub(crate) data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListTask {
+    pub task_metadata: TaskMetadata,
+    pub queue_name: TaskQueueName,
+    pub id: TaskAttemptId,
+    pub status: Option<TaskStatus>,
+    pub outcome: Option<TaskOutcome>,
+    pub picked_up_at: Option<chrono::DateTime<Utc>>,
+    pub last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub progress: f32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl ListTask {
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
+        self.task_metadata.warehouse_id
+    }
+
+    pub fn project_id(&self) -> &ProjectId {
+        &self.task_metadata.project_id
+    }
+
+    pub fn entity_id(&self) -> &EntityId {
+        &self.task_metadata.entity_id
+    }
+
+    pub fn entity_name(&self) -> Option<&Vec<String>> {
+        self.task_metadata.entity_name.as_ref()
+    }
+
+    pub fn queue_name(&self) -> &TaskQueueName {
+        &self.queue_name
+    }
+
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    pub fn status(&self) -> Option<&TaskStatus> {
+        self.status.as_ref()
+    }
+
+    pub fn outcome(&self) -> Option<&TaskOutcome> {
+        self.outcome.as_ref()
+    }
+
+    pub fn scheduled_for(&self) -> Option<chrono::DateTime<Utc>> {
+        self.task_metadata.schedule_for
+    }
+
+    pub fn parent_task_id(&self) -> Option<TaskId> {
+        self.task_metadata.parent_task_id
+    }
+
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    pub fn picked_up_at(&self) -> Option<chrono::DateTime<Utc>> {
+        self.picked_up_at
+    }
+
+    pub fn last_heartbeat_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.last_heartbeat_at
+    }
+
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.updated_at
+    }
 }
 
 impl AsRef<TaskAttemptId> for Task {

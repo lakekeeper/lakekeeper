@@ -8,7 +8,7 @@ use utoipa::{
 use crate::{
     api::{
         endpoints::ManagementV1Endpoint,
-        management::v1::warehouse::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+        management::v1::task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
     },
     service::{authz::Authorizer, tasks::QueueApiConfig},
 };
@@ -46,6 +46,7 @@ use crate::{
         super::batch_check_actions,
         super::bootstrap,
         super::control_tasks,
+        super::control_project_tasks,
         super::create_project,
         super::create_role,
         super::create_user,
@@ -62,6 +63,8 @@ use crate::{
         super::get_project_actions,
         super::get_project_by_id_deprecated,
         super::get_project,
+        super::get_project_task_details,
+        super::get_project_task_queue_config,
         super::get_role_actions,
         super::get_role_metadata,
         super::get_role,
@@ -80,6 +83,7 @@ use crate::{
         super::get_warehouse,
         super::list_deleted_tabulars,
         super::list_projects,
+        super::list_project_tasks,
         super::list_roles,
         super::list_tasks,
         super::list_user,
@@ -91,6 +95,7 @@ use crate::{
         super::search_tabular,
         super::search_user,
         super::set_namespace_protection,
+        super::set_project_task_queue_config,
         super::set_table_protection,
         super::set_task_queue_config,
         super::set_view_protection,

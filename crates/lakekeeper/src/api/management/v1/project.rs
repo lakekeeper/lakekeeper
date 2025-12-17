@@ -25,7 +25,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        CatalogStore, CatalogTaskOps, CatalogWarehouseOps, State, Transaction,
+        CatalogStore, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction,

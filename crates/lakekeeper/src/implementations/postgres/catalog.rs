@@ -26,7 +26,7 @@ use crate::{
             tables::LoadTableFilters,
         },
         management::v1::{
-            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
+            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{ListTasksRequest}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
         },
     },
     implementations::postgres::{
@@ -50,7 +50,7 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError, CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError, CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceHierarchy, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, task_configs::TaskQueueConfigFilter, tasks::{
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError, CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError, CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceHierarchy, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, task_configs::TaskQueueConfigFilter, tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
         }
     },
@@ -687,7 +687,7 @@ impl CatalogStore for super::PostgresBackend {
         task_id: TaskId,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<GetTaskDetailsResponse>> {
+    ) -> Result<Option<TaskDetails>> {
         get_task_details(
             project_id,
             warehouse_id,
@@ -700,12 +700,11 @@ impl CatalogStore for super::PostgresBackend {
 
     /// List tasks
     async fn list_tasks_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        filter: &TaskFilter,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ListTasksResponse> {
-        list_tasks(project_id, warehouse_id, query, &mut *transaction).await
+    ) -> Result<TaskList> {
+        list_tasks(filter, query, &mut *transaction).await
     }
 
     async fn enqueue_tasks_impl(

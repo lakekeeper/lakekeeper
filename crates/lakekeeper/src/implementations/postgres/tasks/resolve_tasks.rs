@@ -7,8 +7,7 @@ use crate::{
     api::ErrorModel,
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        ProjectNamed, ResolvedTask, TableNamed, ViewNamed, WarehouseNamed,
-        build_tabular_ident_from_vec,
+        ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec,
         tasks::{TaskId, TaskQueueName},
     },
 };
@@ -117,21 +116,8 @@ where
                     view_ident: build_tabular_ident_from_vec(&record.entity_name)?,
                 }
                 .into(),
-                EntityType::Project => ProjectNamed {
-                    project_id: project_id.clone(),
-                }
-                .into(),
-                EntityType::Warehouse => WarehouseNamed {
-                    project_id: project_id.clone(),
-                    warehouse_id: record.warehouse_id.map(WarehouseId::from).ok_or(
-                        ErrorModel::internal(
-                            "warehouse_id must be set for entity of type warehouse.",
-                            "MissingWarehouseId",
-                            None,
-                        ),
-                    )?,
-                }
-                .into(),
+                EntityType::Project => project_id.clone().into(),
+                EntityType::Warehouse => WarehouseId::try_from(record.warehouse_id)?.into(),
             };
             let queue_name = TaskQueueName::from(record.queue_name);
             Ok(ResolvedTask {
@@ -159,12 +145,9 @@ mod tests {
             pick_task, record_failure, record_success,
             test::{setup_two_warehouses, setup_warehouse},
         },
-        service::{
-            TableId,
-            tasks::{
-                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskEntityNamed, TaskInput,
-                TaskMetadata, TaskQueueName,
-            },
+        service::tasks::{
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskEntityNamed, TaskInput,
+            TaskMetadata, TaskQueueName,
         },
     };
 
@@ -307,7 +290,7 @@ mod tests {
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -319,7 +302,7 @@ mod tests {
 
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity2.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -402,7 +385,7 @@ mod tests {
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -413,7 +396,7 @@ mod tests {
         assert_eq!(queue_name_result2, &tq_name2);
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity2.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -570,7 +553,7 @@ mod tests {
         let (entity_result, _) = &result[&task_id1];
         match entity_result {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -635,7 +618,7 @@ mod tests {
 
         match entity_result1 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity1.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -644,7 +627,7 @@ mod tests {
 
         match entity_result2 {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity2.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity2.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -697,7 +680,7 @@ mod tests {
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
@@ -760,7 +743,7 @@ mod tests {
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
             TaskEntityNamed::Table(table) => {
-                assert_eq!(Some(table.table_id), entity.as_uuid().map(TableId::from));
+                assert_eq!(table.table_id, entity.as_uuid().unwrap().into());
             }
             TaskEntityNamed::View(_)
             | TaskEntityNamed::Project(_)
