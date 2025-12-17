@@ -560,7 +560,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.tasks.len(), 2);
-        let task_ids: HashSet<_> = result.tasks.iter().map(|t| t.task_id()).collect();
+        let task_ids: HashSet<_> = result
+            .tasks
+            .iter()
+            .map(crate::service::tasks::ListTask::task_id)
+            .collect();
         assert!(task_ids.contains(&task_id1));
         assert!(task_ids.contains(&task_id2));
 
@@ -893,7 +897,12 @@ mod tests {
         )
         .await
         .unwrap();
-        seen_ids.extend(result.tasks.iter().map(|t| t.task_id()));
+        seen_ids.extend(
+            result
+                .tasks
+                .iter()
+                .map(crate::service::tasks::ListTask::task_id),
+        );
 
         assert_eq!(result.tasks.len(), 2);
         assert!(result.next_page_token.is_some());
@@ -914,7 +923,12 @@ mod tests {
         )
         .await
         .unwrap();
-        seen_ids.extend(result.tasks.iter().map(|t| t.task_id()));
+        seen_ids.extend(
+            result
+                .tasks
+                .iter()
+                .map(crate::service::tasks::ListTask::task_id),
+        );
 
         assert_eq!(result.tasks.len(), 2);
         assert!(result.next_page_token.is_some());
@@ -935,7 +949,12 @@ mod tests {
         )
         .await
         .unwrap();
-        seen_ids.extend(result.tasks.iter().map(|t| t.task_id()));
+        seen_ids.extend(
+            result
+                .tasks
+                .iter()
+                .map(crate::service::tasks::ListTask::task_id),
+        );
 
         assert_eq!(result.tasks.len(), 1);
         assert!(result.next_page_token.is_some());
@@ -1077,7 +1096,11 @@ mod tests {
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
-            seen_ids.extend(all_tasks.iter().map(|t| t.task_id()));
+            seen_ids.extend(
+                all_tasks
+                    .iter()
+                    .map(crate::service::tasks::ListTask::task_id),
+            );
             page_count += 1;
 
             // Prevent infinite loops in case of issues
@@ -1184,7 +1207,11 @@ mod tests {
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
-            seen_ids.extend(all_tasks.iter().map(|t| t.task_id()));
+            seen_ids.extend(
+                all_tasks
+                    .iter()
+                    .map(crate::service::tasks::ListTask::task_id),
+            );
             page_count += 1;
 
             assert!(page_count <= 5, "Too many pages, possible infinite loop");
@@ -1314,7 +1341,11 @@ mod tests {
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
-            seen_ids.extend(all_tasks.iter().map(|t| t.task_id()));
+            seen_ids.extend(
+                all_tasks
+                    .iter()
+                    .map(crate::service::tasks::ListTask::task_id),
+            );
             page_count += 1;
 
             assert!(page_count <= 6, "Too many pages, possible infinite loop");
@@ -1446,7 +1477,11 @@ mod tests {
 
             let has_more_tasks = !result.tasks.is_empty();
             all_tasks.extend(result.tasks);
-            seen_ids.extend(all_tasks.iter().map(|t| t.task_id()));
+            seen_ids.extend(
+                all_tasks
+                    .iter()
+                    .map(crate::service::tasks::ListTask::task_id),
+            );
             page_count += 1;
 
             assert!(page_count <= 5, "Too many pages, possible infinite loop");
@@ -1974,7 +2009,7 @@ mod tests {
                         warehouse_id: Some(warehouse_id),
                         project_id: project_id.clone(),
                         parent_task_id: None,
-                        entity_id: entity_id,
+                        entity_id,
                         entity_name: entity_id
                             .as_uuid()
                             .map(|id| vec![format!("entity-{}", id.to_string())]),
