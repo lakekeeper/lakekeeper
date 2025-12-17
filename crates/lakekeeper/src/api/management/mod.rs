@@ -75,9 +75,19 @@ pub mod v1 {
             endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
-                check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse}, lakekeeper_actions::GetAccessQuery, project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest}, role::{RoleMetadata, UpdateRoleSourceSystemRequest}, tabular::{SearchTabularRequest, SearchTabularResponse}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{
-                    ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery, GetTaskDetailsResponse, ListProjectTasksRequest, ListProjectTasksResponse, ListTasksRequest, ListTasksResponse, Service
-                }, user::{ListUsersQuery, ListUsersResponse}, warehouse::UndropTabularsRequest
+                check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
+                lakekeeper_actions::GetAccessQuery,
+                project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
+                role::{RoleMetadata, UpdateRoleSourceSystemRequest},
+                tabular::{SearchTabularRequest, SearchTabularResponse},
+                task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+                tasks::{
+                    ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
+                    GetTaskDetailsResponse, ListProjectTasksRequest, ListProjectTasksResponse,
+                    ListTasksRequest, ListTasksResponse, Service,
+                },
+                user::{ListUsersQuery, ListUsersResponse},
+                warehouse::UndropTabularsRequest,
             },
         },
         request_metadata::RequestMetadata,
@@ -1685,13 +1695,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ListTasksRequest>,
     ) -> Result<ListTasksResponse> {
-        ApiServer::<C, A, S>::list_tasks(
-            warehouse_id.into(),
-            request,
-            api_context,
-            metadata,
-        )
-        .await
+        ApiServer::<C, A, S>::list_tasks(warehouse_id.into(), request, api_context, metadata).await
     }
 
     /// Get Details about a specific task by its ID.
@@ -1811,12 +1815,8 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<GetTaskQueueConfigResponse> {
         let queue_name = TaskQueueName::from(queue_name);
-        ApiServer::<C, A, S>::get_project_task_queue_config(
-            &queue_name,
-            api_context,
-            metadata,
-        )
-        .await
+        ApiServer::<C, A, S>::get_project_task_queue_config(&queue_name, api_context, metadata)
+            .await
     }
 
     /// List active and historic Project-level tasks.
@@ -1835,12 +1835,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ListProjectTasksRequest>,
     ) -> Result<ListProjectTasksResponse> {
-        ApiServer::<C, A, S>::list_project_tasks(
-            request,
-            api_context,
-            metadata,
-        )
-        .await
+        ApiServer::<C, A, S>::list_project_tasks(request, api_context, metadata).await
     }
 
     /// Get Details about a specific Project-level task by its ID.

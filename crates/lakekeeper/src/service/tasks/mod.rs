@@ -10,8 +10,8 @@ use super::{Transaction, WarehouseId};
 use crate::{
     ProjectId,
     service::{
-        CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId,
-        ViewNamed, task_configs::TaskQueueConfigFilter,
+        CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+        task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -277,8 +277,7 @@ impl EntityId {
         match self {
             EntityId::Table(id) => Some(**id),
             EntityId::View(id) => Some(**id),
-            EntityId::Project => None,
-            EntityId::Warehouse => None,
+            EntityId::Project | EntityId::Warehouse => None,
         }
     }
 }
@@ -318,66 +317,82 @@ pub struct ListTask {
 }
 
 impl ListTask {
+    #[must_use]
     pub fn task_id(&self) -> TaskId {
         self.id.task_id
     }
 
+    #[must_use]
     pub fn warehouse_id(&self) -> Option<WarehouseId> {
         self.task_metadata.warehouse_id
     }
 
+    #[must_use]
     pub fn project_id(&self) -> &ProjectId {
         &self.task_metadata.project_id
     }
 
+    #[must_use]
     pub fn entity_id(&self) -> &EntityId {
         &self.task_metadata.entity_id
     }
 
+    #[must_use]
     pub fn entity_name(&self) -> Option<&Vec<String>> {
         self.task_metadata.entity_name.as_ref()
     }
 
+    #[must_use]
     pub fn queue_name(&self) -> &TaskQueueName {
         &self.queue_name
     }
 
+    #[must_use]
     pub fn attempt(&self) -> i32 {
         self.id.attempt
     }
 
+    #[must_use]
     pub fn status(&self) -> Option<&TaskStatus> {
         self.status.as_ref()
     }
 
+    #[must_use]
     pub fn outcome(&self) -> Option<&TaskOutcome> {
         self.outcome.as_ref()
     }
 
+    #[must_use]
     pub fn scheduled_for(&self) -> Option<chrono::DateTime<Utc>> {
         self.task_metadata.schedule_for
     }
 
+    #[must_use]
     pub fn parent_task_id(&self) -> Option<TaskId> {
         self.task_metadata.parent_task_id
     }
 
+    #[must_use]
     pub fn progress(&self) -> f32 {
         self.progress
     }
 
+    #[must_use]
     pub fn picked_up_at(&self) -> Option<chrono::DateTime<Utc>> {
         self.picked_up_at
     }
 
+    #[must_use]
     pub fn last_heartbeat_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.last_heartbeat_at
     }
 
+    #[must_use]
     pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.created_at
     }
 
+    #[must_use]
     pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.updated_at
     }

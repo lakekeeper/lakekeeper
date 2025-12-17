@@ -7,13 +7,11 @@ use uuid::Uuid;
 use super::EntityType;
 use crate::{
     ProjectId, WarehouseId,
-    api::management::v1::tasks::{TaskAttempt},
+    api::management::v1::tasks::TaskAttempt,
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
         TaskDetails,
-        tasks::{
-            EntityId, ListTask, TaskAttemptId, TaskId, TaskMetadata, TaskOutcome, TaskStatus
-        },
+        tasks::{EntityId, ListTask, TaskAttemptId, TaskId, TaskMetadata, TaskOutcome, TaskStatus},
     },
 };
 
@@ -136,8 +134,8 @@ fn parse_task_details(
             entity_name: most_recent.entity_name,
             schedule_for: Some(most_recent.attempt_scheduled_for),
         },
-        status: most_recent.task_status.map(Into::into),
-        outcome: most_recent.task_log_status.map(Into::into),
+        status: most_recent.task_status,
+        outcome: most_recent.task_log_status,
         picked_up_at: most_recent.started_at,
         created_at: most_recent.task_created_at,
         last_heartbeat_at: most_recent.last_heartbeat_at,

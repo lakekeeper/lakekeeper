@@ -26,17 +26,16 @@ use crate::{
             ListDeletedTabularsResponse,
             task_queue::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest,
-                set_task_queue_config as set_task_queue_config_authorized,
                 get_task_queue_config as get_task_queue_config_authorized,
+                set_task_queue_config as set_task_queue_config_authorized,
             },
         },
     },
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        NamespaceId, State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
         authz::{
             AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
             AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -1299,12 +1298,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogWarehouseAction::GetTaskQueueConfig,
             )
             .await?;
-        
+
         // ------------------- Business Logic -------------------
         let project_id = warehouse_resolved.project_id.clone();
         let filter = TaskQueueConfigFilter::WarehouseId {
             warehouse_id,
-            project_id: project_id,
+            project_id,
         };
         get_task_queue_config_authorized(&filter, queue_name, context).await
     }

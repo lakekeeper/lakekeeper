@@ -13,8 +13,7 @@ use crate::{
         CatalogStore, CatalogTabularOps, DropTabularError, Transaction, WarehouseIdMissing,
         authz::Authorizer,
         tasks::{
-            SpecializedTask, TaskData, TaskQueueName,
-            tabular_purge_queue::TabularPurgePayload,
+            SpecializedTask, TaskData, TaskQueueName, tabular_purge_queue::TabularPurgePayload,
         },
     },
 };
@@ -90,7 +89,9 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         };
 
         let entity_id = task.task_metadata.entity_id;
-        let entity_id_uuid = entity_id.as_uuid().map_or("Null".to_string(), |id| id.to_string());
+        let entity_id_uuid = entity_id
+            .as_uuid()
+            .map_or("Null".to_string(), |id| id.to_string());
         let entity_type = entity_id.entity_type().to_string();
 
         let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
@@ -128,7 +129,9 @@ async fn instrumented_expire<C: CatalogStore, A: Authorizer>(
     let entity_id = task.task_metadata.entity_id;
     match handle_table::<C, A>(catalog_state.clone(), authorizer, task).await {
         Ok(()) => {
-            tracing::debug!("Task of `{QN_STR}` worker exited successfully. {entity_id:?} deleted.");
+            tracing::debug!(
+                "Task of `{QN_STR}` worker exited successfully. {entity_id:?} deleted."
+            );
         }
         Err(err) => {
             tracing::error!(
@@ -226,7 +229,7 @@ where
                 })
                 .ok();
             location
-        },
+        }
         _ => {
             let entity_id = task.task_metadata.entity_id;
             return Err(ErrorModel::internal(
@@ -234,7 +237,7 @@ where
                 "EntityIdInvalid",
                 None,
             )
-            .into())
+            .into());
         }
     };
 

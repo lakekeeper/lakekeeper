@@ -9,12 +9,16 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use super::{CatalogStore, Transaction};
 use crate::{
     ProjectId, WarehouseId,
-    api::management::v1::{task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{ListTasksRequest, TaskAttempt}},
+    api::management::v1::{
+        task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+        tasks::{ListTasksRequest, TaskAttempt},
+    },
     service::{
         Result,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            ListTask, Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId, TaskInput, TaskQueueName
+            ListTask, Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId,
+            TaskInput, TaskQueueName,
         },
     },
 };

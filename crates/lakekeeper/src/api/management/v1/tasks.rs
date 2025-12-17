@@ -86,9 +86,9 @@ impl TryFrom<ListTask> for WarehouseListTask {
     fn try_from(value: ListTask) -> Result<Self, Self::Error> {
         let status = value
             .status()
-            .cloned()
+            .copied()
             .map(TaskStatus::from)
-            .or(value.outcome().cloned().map(TaskStatus::from))
+            .or(value.outcome().copied().map(TaskStatus::from))
             .ok_or(ErrorModel::internal(
                 "Task must have either status or outcome",
                 "StatusOrOutcomeMissing",
@@ -113,8 +113,7 @@ impl TryFrom<ListTask> for WarehouseListTask {
                         "Only Table and View entities are supported in WarehouseListTask",
                         "UnsupportedEntityType",
                         None,
-                    )
-                    .into());
+                    ));
                 }
             },
             entity_name: value.entity_name().cloned().ok_or(ErrorModel::internal(
@@ -179,9 +178,9 @@ impl TryFrom<ListTask> for ProjectListTask {
     fn try_from(value: ListTask) -> Result<Self, Self::Error> {
         let status = value
             .status()
-            .cloned()
+            .copied()
             .map(TaskStatus::from)
-            .or(value.outcome().cloned().map(TaskStatus::from))
+            .or(value.outcome().copied().map(TaskStatus::from))
             .ok_or(ErrorModel::internal(
                 "Task must have either status or outcome",
                 "StatusOrOutcomeMissing",
@@ -861,7 +860,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // -------------------- Business Logic --------------------
         let filter = TaskFilter::ProjectId {
-            project_id: project_id,
+            project_id,
             include_sub_tasks: false, // Not yet implemented, so fixed here
         };
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
@@ -910,9 +909,9 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
 
     let tabular_ids = entities
         .iter()
-        .filter_map(|entity| match entity {
-            TaskEntity::Table { table_id } => Some(TabularId::from(*table_id)),
-            TaskEntity::View { view_id } => Some(TabularId::from(*view_id)),
+        .map(|entity| match entity {
+            TaskEntity::Table { table_id } => TabularId::from(*table_id),
+            TaskEntity::View { view_id } => TabularId::from(*view_id),
         })
         .collect::<Vec<_>>();
 

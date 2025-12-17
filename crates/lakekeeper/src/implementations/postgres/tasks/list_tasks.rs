@@ -88,8 +88,8 @@ fn parse_api_task(row: TaskRow) -> Result<ListTask, IcebergErrorResponse> {
             parent_task_id: row.parent_task_id.map(TaskId::from),
             schedule_for: Some(row.attempt_scheduled_for),
         },
-        status: row.task_status.map(Into::into),
-        outcome: row.task_log_status.map(Into::into),
+        status: row.task_status,
+        outcome: row.task_log_status,
         picked_up_at: row.started_at,
         created_at: row.task_created_at,
         last_heartbeat_at: row.last_heartbeat_at,
@@ -137,7 +137,10 @@ pub(crate) async fn list_tasks(
             warehouse_id,
             project_id,
         } => (Some(warehouse_id), project_id, false),
-        TaskFilter::ProjectId { project_id, include_sub_tasks} => (None, project_id, *include_sub_tasks),
+        TaskFilter::ProjectId {
+            project_id,
+            include_sub_tasks,
+        } => (None, project_id, *include_sub_tasks),
         TaskFilter::TaskIds(_) => Err(ErrorModel::internal(
             "TaskFilter for TaskIds not implemented for list_tasks.",
             "InternalError",

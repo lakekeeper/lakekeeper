@@ -20,7 +20,13 @@ use crate::{
             tables::LoadTableFilters,
         },
         management::v1::{
-            DeleteWarehouseQuery, TabularType, project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter}, role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest}, task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest}, tasks::{ListTasksRequest}, user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType}, warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse}
+            DeleteWarehouseQuery, TabularType,
+            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
+            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+            tasks::ListTasksRequest,
+            user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
+            warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
     service::{

@@ -6,7 +6,8 @@ use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, Result},
     service::{
-        CatalogStore, CatalogTaskOps, SecretStore, State, Transaction, authz::Authorizer, task_configs::TaskQueueConfigFilter, tasks::TaskQueueName
+        CatalogStore, CatalogTaskOps, SecretStore, State, Transaction, authz::Authorizer,
+        task_configs::TaskQueueConfigFilter, tasks::TaskQueueName,
     },
 };
 
@@ -47,11 +48,7 @@ impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
     }
 }
 
-pub(crate) async fn set_task_queue_config<
-    C: CatalogStore,
-    A: Authorizer,
-    S: SecretStore,
->(
+pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: SecretStore>(
     project_id: ProjectId,
     warehouse_id: Option<WarehouseId>,
     queue_name: &TaskQueueName,
@@ -92,27 +89,19 @@ pub(crate) async fn set_task_queue_config<
     Ok(())
 }
 
-pub(crate) async fn get_task_queue_config<
-    C: CatalogStore,
-    A: Authorizer,
-    S: SecretStore,
->(
+pub(crate) async fn get_task_queue_config<C: CatalogStore, A: Authorizer, S: SecretStore>(
     filter: &TaskQueueConfigFilter,
     queue_name: &TaskQueueName,
-    context: ApiContext<State<A, C, S>>
+    context: ApiContext<State<A, C, S>>,
 ) -> Result<GetTaskQueueConfigResponse> {
-    let config = C::get_task_queue_config(
-        filter,
-        queue_name,
-        context.v1_state.catalog,
-    )
-    .await?
-    .unwrap_or_else(|| GetTaskQueueConfigResponse {
-        queue_config: QueueConfigResponse {
-            config: serde_json::json!({}),
-            queue_name: queue_name.clone(),
-        },
-        max_seconds_since_last_heartbeat: None,
-    });
+    let config = C::get_task_queue_config(filter, queue_name, context.v1_state.catalog)
+        .await?
+        .unwrap_or_else(|| GetTaskQueueConfigResponse {
+            queue_config: QueueConfigResponse {
+                config: serde_json::json!({}),
+                queue_name: queue_name.clone(),
+            },
+            max_seconds_since_last_heartbeat: None,
+        });
     Ok(config)
 }

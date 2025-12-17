@@ -2279,7 +2279,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should be marked as successful
-        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Success)));
+        assert!(matches!(
+            task_details.task.outcome,
+            Some(TaskOutcome::Success)
+        ));
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt(), 1);
@@ -2469,7 +2472,10 @@ mod test {
         assert_eq!(task_details.attempts.len(), 0); // No retries, so no historical attempts
 
         // Should be marked as failed
-        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Failed)));
+        assert!(matches!(
+            task_details.task.outcome,
+            Some(TaskOutcome::Failed)
+        ));
         // Should have no historical attempts since it failed permanently on first try
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt(), 1);
@@ -2674,7 +2680,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
-        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Cancelled)));
+        assert!(matches!(
+            task_details.task.outcome,
+            Some(TaskOutcome::Cancelled)
+        ));
         // Should have no historical attempts since it was cancelled while scheduled
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt(), 1);
@@ -2753,7 +2762,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
-        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Cancelled)));
+        assert!(matches!(
+            task_details.task.outcome,
+            Some(TaskOutcome::Cancelled)
+        ));
         // Should have no historical attempts since it was cancelled while running
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt(), 1);
@@ -2830,7 +2842,10 @@ mod test {
                 .expect("Task should exist in task_log");
 
         // Should remain marked as successful despite later operations
-        assert!(matches!(task_details.task.outcome, Some(TaskOutcome::Success)));
+        assert!(matches!(
+            task_details.task.outcome,
+            Some(TaskOutcome::Success)
+        ));
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt(), 1);
@@ -3045,7 +3060,8 @@ mod test {
 
         // The current task should be on attempt 2 (since the previous attempt was failed)
         assert_eq!(
-            task_details.task.attempt(), 1,
+            task_details.task.attempt(),
+            1,
             "Task should still be on attempt 1 since it was rescheduled, not retried"
         );
 
