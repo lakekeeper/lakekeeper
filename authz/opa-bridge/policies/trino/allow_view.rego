@@ -19,6 +19,14 @@ allow_view if {
     allow_view_drop
 }
 
+allow_view if {
+    allow_view_metadata
+}
+
+allow_view if {
+    allow_view_read
+}
+
 allow_view_create if {
     input.action.operation in ["CreateView", "CreateMaterializedView"]
     catalog := input.action.resource.table.catalogName
@@ -51,4 +59,20 @@ allow_view_drop if {
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
     trino.require_view_access(catalog, schema, table, "drop")
+}
+
+allow_view_metadata if {
+    input.action.operation in ["FilterTables", "ShowColumns", "FilterColumns"]
+    catalog := input.action.resource.table.catalogName
+    schema := input.action.resource.table.schemaName
+    table := input.action.resource.table.tableName
+    trino.require_view_access(catalog, schema, table, "get_metadata")
+}
+
+allow_view_read if {
+    input.action.operation in ["SelectFromColumns"]
+    catalog := input.action.resource.table.catalogName
+    schema := input.action.resource.table.schemaName
+    table := input.action.resource.table.tableName
+    trino.require_view_access(catalog, schema, table, "get_metadata")
 }

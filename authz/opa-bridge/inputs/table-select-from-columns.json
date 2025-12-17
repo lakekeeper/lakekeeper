@@ -1,0 +1,24 @@
+{
+    "input": {
+        "context": {
+            "identity": {
+                "user": "9410d0bf-4487-4177-a34f-af364cac0a59",
+                "groups": []
+            },
+            "softwareStack": {
+                "trinoVersion": "476"
+            }
+        },
+        "action": {
+            "operation": "SelectFromColumns",
+            "resource": {
+                "table": {
+                    "catalogName": "catalog_trino_opa",
+                    "schemaName": "test_expire_snapshots",
+                    "tableName": "my_table$snapshots",
+                    "columns": []
+                }
+            }
+        }
+    }
+}

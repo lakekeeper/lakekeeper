@@ -76,3 +76,22 @@ require_view_access(catalog_name, schema_name, view_name, action) := true if {
         action
     )
 }
+
+is_metadata_table(table_name) := true if {
+    table_name_suffixes := [
+        "$properties", "$history", "$metadata_log_entries", 
+        "$snapshots", "$manifests", "$all_manifests", 
+        "$partitions", "$files", "$entries", "$all_entries", "$refs"]
+    some suffix in table_name_suffixes
+    endswith(table_name, suffix)
+} else = false
+
+split_metadata_table_name(table_name) = base_table_name if {
+    table_name_suffixes := [
+        "$properties", "$history", "$metadata_log_entries", 
+        "$snapshots", "$manifests", "$all_manifests", 
+        "$partitions", "$files", "$entries", "$all_entries", "$refs"]
+    some suffix in table_name_suffixes
+    endswith(table_name, suffix)
+    base_table_name := substring(table_name, 0, count(table_name) - count(suffix))
+}

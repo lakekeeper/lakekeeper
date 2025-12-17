@@ -31,6 +31,10 @@ allow_schema if {
     allow_show_create_schemas
 }
 
+allow_schema if {
+    allow_show_tables_in_schema
+}
+
 allow_schema_create if {
     input.action.operation in ["CreateSchema"]
     catalog := input.action.resource.schema.catalogName
@@ -95,5 +99,12 @@ allow_show_create_schemas if {
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
     schema != "information_schema"
+    trino.require_schema_access(catalog, schema, "get_metadata")
+}
+
+allow_show_tables_in_schema if {
+    input.action.operation in ["ShowTables"]
+    catalog := input.action.resource.schema.catalogName
+    schema := input.action.resource.schema.schemaName
     trino.require_schema_access(catalog, schema, "get_metadata")
 }
