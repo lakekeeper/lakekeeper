@@ -1883,7 +1883,6 @@ pub mod v1 {
         )
     ))]
     async fn control_project_tasks<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
-        Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ControlTasksRequest>,
