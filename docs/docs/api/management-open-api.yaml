@@ -4648,7 +4648,7 @@ components:
           $ref: '#/components/schemas/TabularExpirationQueueConfig'
     GetTaskDetailsResponse:
       allOf:
-        - $ref: '#/components/schemas/WarehouseListTask'
+        - $ref: '#/components/schemas/TaskInfoAPI'
           description: Most recent task information
         - type: object
           required:
@@ -4795,6 +4795,7 @@ components:
         - modify_task_queue_config
         - get_task_queue_config
         - get_all_tasks
+        - control_all_tasks
     LakekeeperRoleAction:
       type: string
       enum:
@@ -5058,7 +5059,7 @@ components:
         tasks:
           type: array
           items:
-            $ref: '#/components/schemas/WarehouseListTask'
+            $ref: '#/components/schemas/TaskInfoAPI'
           description: List of tasks
     ListUsersResponse:
       type: object
@@ -6452,6 +6453,86 @@ components:
             view-id:
               type: string
               format: uuid
+    TaskInfoAPI:
+      type: object
+      required:
+        - task-id
+        - project-id
+        - warehouse-id
+        - queue-name
+        - entity
+        - entity-name
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        entity:
+          $ref: '#/components/schemas/TaskEntity'
+          description: Type of entity this task operates on
+        entity-name:
+          type: array
+          items:
+            type: string
+          description: Name of the entity this task operates on
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        project-id:
+          type: string
+          description: Project ID associated with the task
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
+        warehouse-id:
+          type: string
+          format: uuid
+          description: Warehouse ID associated with the task
     TaskStatus:
       type: string
       enum:
@@ -6961,86 +7042,6 @@ components:
               type: string
               enum:
                 - all
-    WarehouseListTask:
-      type: object
-      required:
-        - task-id
-        - project-id
-        - warehouse-id
-        - queue-name
-        - entity
-        - entity-name
-        - status
-        - scheduled-for
-        - attempt
-        - progress
-        - created-at
-      properties:
-        attempt:
-          type: integer
-          format: int32
-          description: Current attempt number
-        created-at:
-          type: string
-          format: date-time
-          description: When this task attempt was created
-        entity:
-          $ref: '#/components/schemas/TaskEntity'
-          description: Type of entity this task operates on
-        entity-name:
-          type: array
-          items:
-            type: string
-          description: Name of the entity this task operates on
-        last-heartbeat-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: Last heartbeat timestamp for running tasks
-        parent-task-id:
-          type:
-            - string
-            - 'null'
-          format: uuid
-          description: Parent task ID if this is a sub-task
-        picked-up-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: When the latest attempt of the task was picked up for processing by a worker.
-        progress:
-          type: number
-          format: float
-          description: Progress of the task (0.0 to 1.0)
-        project-id:
-          type: string
-          description: Project ID associated with the task
-        queue-name:
-          type: string
-          description: Name of the queue processing this task
-        scheduled-for:
-          type: string
-          format: date-time
-          description: When the latest attempt of the task is scheduled for
-        status:
-          $ref: '#/components/schemas/TaskStatus'
-          description: Current status of the task
-        task-id:
-          type: string
-          format: uuid
-          description: Unique identifier for the task
-        updated-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: When the task was last updated
-        warehouse-id:
-          type: string
-          format: uuid
-          description: Warehouse ID associated with the task
     WarehouseRelation:
       type: string
       enum:
