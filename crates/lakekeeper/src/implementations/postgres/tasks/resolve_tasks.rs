@@ -28,14 +28,11 @@ where
     }
     let project_id = scope.project_id();
 
-    let project_scoped = match scope {
-        TaskResolveScope::Project { .. } => true,
-        _ => false,
-    };
+    let project_scoped = matches!(scope, TaskResolveScope::Project { .. });
 
     let warehouse_id = match scope {
         TaskResolveScope::Warehouse { warehouse_id, .. } => warehouse_id,
-        _ => None,
+        TaskResolveScope::Project { .. } => None,
     };
 
     // Query both active tasks and historical tasks using CTE and UNION ALL
