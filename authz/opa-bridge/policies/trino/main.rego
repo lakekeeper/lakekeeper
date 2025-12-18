@@ -5,8 +5,31 @@ import future.keywords.if
 import future.keywords.in
 
 import data.trino
+import data.configuration
 
 default allow = false
+
+# Allow if catalog is not present
+# in configuration.trino_catalog array (name field).
+# These are catalogs not managed by Lakekeeper.
+allow if {
+    configuration.trino_allow_unmanaged_catalogs == true
+    catalog_name := input.action.resource.catalog.name
+    managed_catalogs := {cat.name | cat := configuration.trino_catalog[_]}
+    not catalog_name in managed_catalogs
+}
+allow if {
+    configuration.trino_allow_unmanaged_catalogs == true
+    catalog_name := input.action.resource.table.catalogName
+    managed_catalogs := {cat.name | cat := configuration.trino_catalog[_]}
+    not catalog_name in managed_catalogs
+}
+allow if {
+    configuration.trino_allow_unmanaged_catalogs == true
+    catalog_name := input.action.resource.schema.catalogName
+    managed_catalogs := {cat.name | cat := configuration.trino_catalog[_]}
+    not catalog_name in managed_catalogs
+}
 
 allow if {
 	trino.allow_default_access
