@@ -21,7 +21,7 @@ use crate::{
         },
         require_namespace_for_tabular,
         tasks::{
-            EntityId, ListTask, TaskEntity, TaskEntityNamed, TaskFilter, TaskId,
+            EntityId, TaskDetailsScope, TaskEntity, TaskEntityNamed, TaskFilter, TaskId, TaskInfo,
             TaskOutcome as TQTaskOutcome, TaskQueueName, TaskStatus as TQTaskStatus,
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
         },
@@ -42,7 +42,7 @@ const DEFAULT_ATTEMPTS: u16 = 5;
 #[derive(Debug, Serialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-pub struct WarehouseListTask {
+pub struct TaskInfoAPI {
     /// Unique identifier for the task
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub task_id: TaskId,
@@ -80,10 +80,10 @@ pub struct WarehouseListTask {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl TryFrom<ListTask> for WarehouseListTask {
+impl TryFrom<TaskInfo> for TaskInfoAPI {
     type Error = ErrorModel;
 
-    fn try_from(value: ListTask) -> Result<Self, Self::Error> {
+    fn try_from(value: TaskInfo) -> Result<Self, Self::Error> {
         let status = value
             .status()
             .copied()
@@ -94,7 +94,7 @@ impl TryFrom<ListTask> for WarehouseListTask {
                 "StatusOrOutcomeMissing",
                 None,
             ))?;
-        Ok(WarehouseListTask {
+        Ok(TaskInfoAPI {
             task_id: value.task_id(),
             project_id: value.project_id().clone(),
             warehouse_id: value.warehouse_id().ok_or(ErrorModel::internal(
@@ -172,10 +172,10 @@ pub struct ProjectListTask {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl TryFrom<ListTask> for ProjectListTask {
+impl TryFrom<TaskInfo> for ProjectListTask {
     type Error = ErrorModel;
 
-    fn try_from(value: ListTask) -> Result<Self, Self::Error> {
+    fn try_from(value: TaskInfo) -> Result<Self, Self::Error> {
         let status = value
             .status()
             .copied()
@@ -213,7 +213,7 @@ impl TryFrom<ListTask> for ProjectListTask {
 pub struct GetTaskDetailsResponse {
     /// Most recent task information
     #[serde(flatten)]
-    pub task: WarehouseListTask,
+    pub task: TaskInfoAPI,
     /// Task-specific data
     #[cfg_attr(feature = "open-api", schema(value_type = Object))]
     pub task_data: serde_json::Value,
@@ -229,7 +229,7 @@ impl TryFrom<TaskDetails> for GetTaskDetailsResponse {
 
     fn try_from(value: TaskDetails) -> Result<Self, Self::Error> {
         Ok(Self {
-            task: WarehouseListTask::try_from(value.task.clone())?,
+            task: TaskInfoAPI::try_from(value.task.clone())?,
             task_data: value.data,
             execution_details: value.execution_details,
             attempts: value.attempts,
@@ -257,6 +257,19 @@ pub struct GetProjectTaskDetailsResponse {
 impl IntoResponse for GetProjectTaskDetailsResponse {
     fn into_response(self) -> axum::response::Response {
         (http::StatusCode::OK, Json(self)).into_response()
+    }
+}
+
+impl TryFrom<TaskDetails> for GetProjectTaskDetailsResponse {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskDetails) -> Result<Self, Self::Error> {
+        Ok(Self {
+            task: ProjectListTask::try_from(value.task)?,
+            task_data: value.data,
+            execution_details: value.execution_details,
+            attempts: value.attempts,
+        })
     }
 }
 
@@ -344,7 +357,7 @@ impl TaskStatus {
 #[serde(rename_all = "kebab-case")]
 pub struct ListTasksResponse {
     /// List of tasks
-    pub tasks: Vec<WarehouseListTask>,
+    pub tasks: Vec<TaskInfoAPI>,
     /// Token for the next page of results
     pub next_page_token: Option<String>,
 }
@@ -357,7 +370,7 @@ impl TryFrom<TaskList> for ListTasksResponse {
             tasks: value
                 .tasks
                 .into_iter()
-                .map(WarehouseListTask::try_from)
+                .map(TaskInfoAPI::try_from)
                 .collect::<Result<Vec<_>, _>>()?,
             next_page_token: value.next_page_token,
         })
@@ -620,8 +633,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
     /// Get detailed information about a specific task including attempt history
     async fn get_task_details(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        warehouse_id: WarehouseId,
         task_id: TaskId,
         query: GetTaskDetailsQuery,
         context: ApiContext<State<A, C, S>>,
@@ -629,76 +641,62 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetTaskDetailsResponse> {
         let authorizer = context.v1_state.authz;
 
-        if let Some(warehouse_id) = warehouse_id {
-            // -------------------- AUTHZ --------------------
-            let warehouse =
-                C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-            let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        // -------------------- AUTHZ --------------------
+        let warehouse =
+            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
+        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
-            let [authz_can_use, authz_get_all_warehouse] = authorizer
-                .are_allowed_warehouse_actions_arr(
-                    &request_metadata,
-                    None,
-                    &[
-                        (&warehouse, CatalogWarehouseAction::Use),
-                        (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
-                    ],
-                )
-                .await?
-                .into_inner();
+        let [authz_can_use, authz_get_all_warehouse] = authorizer
+            .are_allowed_warehouse_actions_arr(
+                &request_metadata,
+                None,
+                &[
+                    (&warehouse, CatalogWarehouseAction::Use),
+                    (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
+                ],
+            )
+            .await?
+            .into_inner();
 
-            if !authz_can_use {
-                return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
-            }
+        if !authz_can_use {
+            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        }
 
-            // -------------------- Business Logic --------------------
-            let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
-            let r = C::get_task_details(
-                project_id,
-                Some(warehouse_id),
-                task_id,
-                num_attempts,
-                context.v1_state.catalog.clone(),
+        // -------------------- Business Logic --------------------
+        let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
+        let r = C::get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id: warehouse.project_id.clone(),
+                warehouse_id,
+            },
+            num_attempts,
+            context.v1_state.catalog.clone(),
+        )
+        .await?;
+
+        let task_details = r.ok_or_else(|| {
+            ErrorModel::not_found(
+                format!("Task with id {task_id} not found"),
+                "TaskNotFound",
+                None,
+            )
+        })?;
+
+        let task_details = GetTaskDetailsResponse::try_from(task_details)?;
+
+        if !authz_get_all_warehouse {
+            authorize_get_task_details::<A, C>(
+                context.v1_state.catalog,
+                &authorizer,
+                &request_metadata,
+                &warehouse,
+                &task_details,
             )
             .await?;
-
-            let task_details = r.ok_or_else(|| {
-                ErrorModel::not_found(
-                    format!("Task with id {task_id} not found"),
-                    "TaskNotFound",
-                    None,
-                )
-            })?;
-
-            let task_details = GetTaskDetailsResponse::try_from(task_details)?;
-
-            if !authz_get_all_warehouse {
-                authorize_get_task_details::<A, C>(
-                    context.v1_state.catalog,
-                    &authorizer,
-                    &request_metadata,
-                    &warehouse,
-                    &task_details,
-                )
-                .await?;
-            }
-
-            Ok(task_details)
-        } else if let Some(_project_id) = project_id {
-            return Err(ErrorModel::internal(
-                "Project-level tasks are not yet supported",
-                "ProjectLevelTasksNotSupported",
-                None,
-            )
-            .into());
-        } else {
-            return Err(ErrorModel::bad_request(
-                "Either ProjectId or WarehouseId must be provided.",
-                "MissingNecessaryId",
-                None,
-            )
-            .into());
         }
+
+        Ok(task_details)
     }
 
     /// Control a task (stop or cancel)
@@ -867,6 +865,46 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let tasks = C::list_tasks(&filter, query.into(), t.transaction()).await?;
         t.commit().await?;
         Ok(ListProjectTasksResponse::try_from(tasks)?)
+    }
+
+    async fn get_project_task_details(
+        task_id: TaskId,
+        query: GetTaskDetailsQuery,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetProjectTaskDetailsResponse> {
+        let authorizer = context.v1_state.authz;
+
+        // -------------------- AUTHZ --------------------
+        let project_id = request_metadata.require_project_id(None)?;
+
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::GetAllTasks,
+            )
+            .await?;
+
+        // -------------------- Business Logic --------------------
+        let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
+        let r = C::get_task_details(
+            task_id,
+            TaskDetailsScope::Project { project_id },
+            num_attempts,
+            context.v1_state.catalog.clone(),
+        )
+        .await?;
+
+        let task_details = r.ok_or_else(|| {
+            ErrorModel::not_found(
+                format!("Task with id {task_id} not found"),
+                "TaskNotFound",
+                None,
+            )
+        })?;
+
+        Ok(GetProjectTaskDetailsResponse::try_from(task_details)?)
     }
 }
 

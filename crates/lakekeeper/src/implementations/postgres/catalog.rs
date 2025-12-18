@@ -79,7 +79,7 @@ use crate::{
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName
         },
     },
 };
@@ -710,16 +710,14 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn get_task_details_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
         task_id: TaskId,
+        scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
     ) -> Result<Option<TaskDetails>> {
         get_task_details(
-            project_id,
-            warehouse_id,
             task_id,
+            scope,
             num_attempts,
             &state.read_pool(),
         )

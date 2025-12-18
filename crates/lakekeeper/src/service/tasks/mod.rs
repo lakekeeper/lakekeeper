@@ -210,6 +210,33 @@ pub enum TaskFilter {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskDetailsScope {
+    Warehouse {
+        project_id: ProjectId,
+        warehouse_id: WarehouseId,
+    },
+    Project {
+        project_id: ProjectId,
+    },
+}
+
+impl TaskDetailsScope {
+    pub fn project_id(&self) -> ProjectId {
+        match self {
+            TaskDetailsScope::Warehouse { project_id, .. } => project_id.clone(),
+            TaskDetailsScope::Project { project_id } => project_id.clone(),
+        }
+    }
+
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
+        match self {
+            TaskDetailsScope::Warehouse { warehouse_id, .. } => Some(*warehouse_id),
+            TaskDetailsScope::Project { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskInput {
     /// Metadata for this task instance.
@@ -303,7 +330,7 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ListTask {
+pub struct TaskInfo {
     pub task_metadata: TaskMetadata,
     pub queue_name: TaskQueueName,
     pub id: TaskAttemptId,
@@ -316,7 +343,7 @@ pub struct ListTask {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl ListTask {
+impl TaskInfo {
     #[must_use]
     pub fn task_id(&self) -> TaskId {
         self.id.task_id

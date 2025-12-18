@@ -35,7 +35,7 @@ use crate::{
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName
         },
     },
 };
@@ -602,9 +602,8 @@ where
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
     async fn get_task_details_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
         task_id: TaskId,
+        scope: TaskDetailsScope,
         num_attempts: u16, // Number of attempts to retrieve in the task details
         state: Self::State,
     ) -> Result<Option<TaskDetails>>;

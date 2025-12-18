@@ -17,8 +17,7 @@ use crate::{
         Result,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            ListTask, Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId,
-            TaskInput, TaskQueueName,
+            TaskInfo, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskEntityNamed, TaskFilter, TaskId, TaskInput, TaskQueueName
         },
     },
 };
@@ -55,13 +54,13 @@ impl ResolvedTask {
 
 #[derive(Debug)]
 pub struct TaskList {
-    pub tasks: Vec<ListTask>,
+    pub tasks: Vec<TaskInfo>,
     pub next_page_token: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct TaskDetails {
-    pub task: ListTask,
+    pub task: TaskInfo,
     pub execution_details: Option<serde_json::Value>,
     pub data: serde_json::Value,
     pub attempts: Vec<TaskAttempt>,
@@ -157,13 +156,12 @@ where
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
     async fn get_task_details(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
         task_id: TaskId,
+        scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
     ) -> Result<Option<TaskDetails>> {
-        Self::get_task_details_impl(project_id, warehouse_id, task_id, num_attempts, state).await
+        Self::get_task_details_impl(task_id, scope, num_attempts, state).await
     }
 
     /// Enqueue a single task to a task queue.

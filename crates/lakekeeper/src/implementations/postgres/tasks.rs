@@ -1193,7 +1193,8 @@ mod test {
             CatalogStore, Transaction,
             authz::AllowAllAuthorizer,
             tasks::{
-                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskId, TaskInput, TaskStatus,
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskDetailsScope, TaskId,
+                TaskInput, TaskStatus,
             },
         },
         tests::SetupTestCatalog,
@@ -2272,11 +2273,18 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should be marked as successful
         assert!(matches!(
@@ -2463,11 +2471,18 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         assert_eq!(task_details.attempts.len(), 0); // No retries, so no historical attempts
 
@@ -2514,11 +2529,18 @@ mod test {
             .await
             .unwrap();
         // Get original task details, assert last_heartbeat is reset
-        let original_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist in task_log");
+        let original_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
         assert_eq!(original_details.task.last_heartbeat_at, None);
 
         // Task should be rescheduled for retry since max_retries=2 > attempt=1
@@ -2673,11 +2695,18 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
         assert!(matches!(
@@ -2755,11 +2784,18 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
         assert!(matches!(
@@ -2835,11 +2871,18 @@ mod test {
         .unwrap();
 
         // Verify task is still marked as successful using get_task_details
-        let task_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should remain marked as successful despite later operations
         assert!(matches!(
@@ -2918,9 +2961,11 @@ mod test {
 
         // Verify the task's scheduled_for was updated to the specific time
         let details2 = get_task_details(
-            Some(project_id.clone()),
-            Some(warehouse_id),
             task_id2,
+            TaskDetailsScope::Warehouse {
+                project_id: project_id.clone(),
+                warehouse_id,
+            },
             10,
             &pool,
         )
@@ -2938,10 +2983,18 @@ mod test {
         );
 
         // Test 3: Verify using get_task_details shows the updated scheduling
-        let details1 = get_task_details(Some(project_id), Some(warehouse_id), task_id1, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task 1 should exist");
+        let details1 = get_task_details(
+            task_id1,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task 1 should exist");
 
         assert!(matches!(
             details1.task.status,
@@ -3006,9 +3059,11 @@ mod test {
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
         let task_details = get_task_details(
-            Some(project_id.clone()),
-            Some(warehouse_id),
             task_id,
+            TaskDetailsScope::Warehouse {
+                project_id: project_id.clone(),
+                warehouse_id,
+            },
             10,
             &pool,
         )
@@ -3027,11 +3082,18 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details =
-            get_task_details(Some(project_id), Some(warehouse_id), task_id, 10, &pool)
-                .await
-                .unwrap()
-                .expect("Task should exist");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist");
 
         assert_eq!(task_details.task.status, Some(TaskStatus::Scheduled));
 

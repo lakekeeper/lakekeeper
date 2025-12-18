@@ -17,7 +17,7 @@ use crate::{
     service::{
         TaskList,
         tasks::{
-            EntityId, ListTask, TaskAttemptId, TaskEntity, TaskFilter, TaskId, TaskMetadata,
+            EntityId, TaskInfo, TaskAttemptId, TaskEntity, TaskFilter, TaskId, TaskMetadata,
             TaskOutcome, TaskStatus,
         },
     },
@@ -44,7 +44,7 @@ struct TaskRow {
     updated_at: Option<DateTime<chrono::Utc>>,
 }
 
-fn parse_api_task(row: TaskRow) -> Result<ListTask, IcebergErrorResponse> {
+fn parse_api_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
     let entity_id = match row.entity_type {
         EntityType::Table => EntityId::Table(
             row.entity_id
@@ -74,7 +74,7 @@ fn parse_api_task(row: TaskRow) -> Result<ListTask, IcebergErrorResponse> {
             .into());
         }
     };
-    Ok(ListTask {
+    Ok(TaskInfo {
         id: TaskAttemptId {
             task_id: row.task_id.into(),
             attempt: row.attempt,
@@ -563,7 +563,7 @@ mod tests {
         let task_ids: HashSet<_> = result
             .tasks
             .iter()
-            .map(crate::service::tasks::ListTask::task_id)
+            .map(crate::service::tasks::TaskInfo::task_id)
             .collect();
         assert!(task_ids.contains(&task_id1));
         assert!(task_ids.contains(&task_id2));
@@ -901,7 +901,7 @@ mod tests {
             result
                 .tasks
                 .iter()
-                .map(crate::service::tasks::ListTask::task_id),
+                .map(crate::service::tasks::TaskInfo::task_id),
         );
 
         assert_eq!(result.tasks.len(), 2);
@@ -927,7 +927,7 @@ mod tests {
             result
                 .tasks
                 .iter()
-                .map(crate::service::tasks::ListTask::task_id),
+                .map(crate::service::tasks::TaskInfo::task_id),
         );
 
         assert_eq!(result.tasks.len(), 2);
@@ -953,7 +953,7 @@ mod tests {
             result
                 .tasks
                 .iter()
-                .map(crate::service::tasks::ListTask::task_id),
+                .map(crate::service::tasks::TaskInfo::task_id),
         );
 
         assert_eq!(result.tasks.len(), 1);
@@ -1099,7 +1099,7 @@ mod tests {
             seen_ids.extend(
                 all_tasks
                     .iter()
-                    .map(crate::service::tasks::ListTask::task_id),
+                    .map(crate::service::tasks::TaskInfo::task_id),
             );
             page_count += 1;
 
@@ -1210,7 +1210,7 @@ mod tests {
             seen_ids.extend(
                 all_tasks
                     .iter()
-                    .map(crate::service::tasks::ListTask::task_id),
+                    .map(crate::service::tasks::TaskInfo::task_id),
             );
             page_count += 1;
 
@@ -1344,7 +1344,7 @@ mod tests {
             seen_ids.extend(
                 all_tasks
                     .iter()
-                    .map(crate::service::tasks::ListTask::task_id),
+                    .map(crate::service::tasks::TaskInfo::task_id),
             );
             page_count += 1;
 
@@ -1480,7 +1480,7 @@ mod tests {
             seen_ids.extend(
                 all_tasks
                     .iter()
-                    .map(crate::service::tasks::ListTask::task_id),
+                    .map(crate::service::tasks::TaskInfo::task_id),
             );
             page_count += 1;
 
