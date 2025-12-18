@@ -222,6 +222,7 @@ pub enum TaskResolveScope {
 }
 
 impl TaskResolveScope {
+    #[must_use]
     pub fn project_id(&self) -> ProjectId {
         match self {
             TaskResolveScope::Warehouse { project_id, .. }

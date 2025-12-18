@@ -215,10 +215,10 @@ where
         }
         let mut cached_results = HashMap::new();
         for id in task_ids {
-            if let Some(cached_value) = TASKS_CACHE.get(id).await {
-                if task_matches_scope(&cached_value, &scope) {
-                    cached_results.insert(*id, cached_value);
-                }
+            if let Some(cached_value) = TASKS_CACHE.get(id).await
+                && task_matches_scope(&cached_value, &scope)
+            {
+                cached_results.insert(*id, cached_value);
             }
         }
         let not_cached_ids: Vec<TaskId> = task_ids

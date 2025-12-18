@@ -1741,13 +1741,8 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ControlTasksRequest>,
     ) -> Result<StatusCode> {
-        ApiServer::<C, A, S>::control_tasks(
-            warehouse_id.into(),
-            request,
-            api_context,
-            metadata,
-        )
-        .await?;
+        ApiServer::<C, A, S>::control_tasks(warehouse_id.into(), request, api_context, metadata)
+            .await?;
         Ok(StatusCode::NO_CONTENT)
     }
     /// Set the configuration for a Project-level Task Queue.
@@ -1869,12 +1864,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ControlTasksRequest>,
     ) -> Result<StatusCode> {
-        ApiServer::<C, A, S>::control_project_tasks(
-            request,
-            api_context,
-            metadata,
-        )
-        .await?;
+        ApiServer::<C, A, S>::control_project_tasks(request, api_context, metadata).await?;
         Ok(StatusCode::NO_CONTENT)
     }
 
