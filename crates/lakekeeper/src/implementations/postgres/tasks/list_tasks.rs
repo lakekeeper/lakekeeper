@@ -17,7 +17,7 @@ use crate::{
     service::{
         TaskList,
         tasks::{
-            EntityId, TaskInfo, TaskAttemptId, TaskEntity, TaskFilter, TaskId, TaskMetadata,
+            EntityId, TaskAttemptId, TaskEntity, TaskFilter, TaskId, TaskInfo, TaskMetadata,
             TaskOutcome, TaskStatus,
         },
     },

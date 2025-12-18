@@ -222,13 +222,15 @@ pub enum TaskDetailsScope {
 }
 
 impl TaskDetailsScope {
+    #[must_use]
     pub fn project_id(&self) -> ProjectId {
         match self {
-            TaskDetailsScope::Warehouse { project_id, .. } => project_id.clone(),
-            TaskDetailsScope::Project { project_id } => project_id.clone(),
+            TaskDetailsScope::Warehouse { project_id, .. }
+            | TaskDetailsScope::Project { project_id } => project_id.clone(),
         }
     }
 
+    #[must_use]
     pub fn warehouse_id(&self) -> Option<WarehouseId> {
         match self {
             TaskDetailsScope::Warehouse { warehouse_id, .. } => Some(*warehouse_id),

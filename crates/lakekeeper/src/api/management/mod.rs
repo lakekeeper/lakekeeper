@@ -1717,14 +1717,8 @@ pub mod v1 {
     ) -> Result<GetTaskDetailsResponse> {
         let warehouse_id = WarehouseId::from(warehouse_id);
         let task_id = TaskId::from(task_id);
-        ApiServer::<C, A, S>::get_task_details(
-            warehouse_id,
-            task_id,
-            query,
-            api_context,
-            metadata,
-        )
-        .await
+        ApiServer::<C, A, S>::get_task_details(warehouse_id, task_id, query, api_context, metadata)
+            .await
     }
 
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
@@ -1855,13 +1849,7 @@ pub mod v1 {
         Query(query): Query<GetTaskDetailsQuery>,
     ) -> Result<GetProjectTaskDetailsResponse> {
         let task_id = TaskId::from(task_id);
-        ApiServer::<C, A, S>::get_project_task_details(
-            task_id,
-            query,
-            api_context,
-            metadata,
-        )
-        .await
+        ApiServer::<C, A, S>::get_project_task_details(task_id, query, api_context, metadata).await
     }
 
     /// Control a set of Project-level tasks by their IDs (e.g., cancel, request stop, run now)
