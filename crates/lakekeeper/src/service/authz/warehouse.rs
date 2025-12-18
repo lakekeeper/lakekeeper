@@ -10,8 +10,8 @@ use crate::{
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
-            MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogWarehouseAction, MustUse, UserOrRole,
         },
     },
 };
@@ -20,7 +20,7 @@ const CAN_SEE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::Use;
 
 pub trait WarehouseAction
 where
-    Self: std::fmt::Display + Send + Sync + Copy + From<CatalogWarehouseAction> + PartialEq,
+    Self: CatalogAction + Clone + From<CatalogWarehouseAction> + Eq + PartialEq,
 {
 }
 
@@ -62,7 +62,7 @@ impl AuthZWarehouseActionForbidden {
     pub fn new(warehouse_id: WarehouseId, action: impl WarehouseAction, actor: Actor) -> Self {
         Self {
             warehouse_id,
-            action: action.to_string(),
+            action: action.as_log_str(),
             actor,
         }
     }
@@ -224,7 +224,7 @@ pub trait AuthzWarehouseOps: Authorizer {
                     None,
                     &[
                         (&warehouse, CAN_SEE_PERMISSION.into()),
-                        (&warehouse, action),
+                        (&warehouse, action.clone()),
                     ],
                 )
                 .await?
@@ -249,7 +249,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        action: impl Into<Self::WarehouseAction> + Send + Sync + Copy,
+        action: impl Into<Self::WarehouseAction> + Clone + Send + Sync,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         let [decision] = self
             .are_allowed_warehouse_actions_arr(metadata, for_user, &[(warehouse, action)])
@@ -260,7 +260,7 @@ pub trait AuthzWarehouseOps: Authorizer {
 
     async fn are_allowed_warehouse_actions_arr<
         const N: usize,
-        A: Into<Self::WarehouseAction> + Send + Copy + Sync,
+        A: Into<Self::WarehouseAction> + Clone + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -279,7 +279,7 @@ pub trait AuthzWarehouseOps: Authorizer {
     }
 
     async fn are_allowed_warehouse_actions_vec<
-        A: Into<Self::WarehouseAction> + Send + Copy + Sync,
+        A: Into<Self::WarehouseAction> + Clone + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -296,7 +296,7 @@ pub trait AuthzWarehouseOps: Authorizer {
             let converted: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =
                 warehouses_with_actions
                     .iter()
-                    .map(|(id, action)| (*id, (*action).into()))
+                    .map(|(id, action)| (*id, action.clone().into()))
                     .collect();
             let decisions = self
                 .are_allowed_warehouse_actions_impl(metadata, for_user, &converted)

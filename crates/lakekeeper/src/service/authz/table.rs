@@ -18,8 +18,8 @@ use crate::{
         authz::{
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogTableAction,
-            MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogTableAction, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -254,14 +254,7 @@ pub(super) fn validate_namespace_hierarchy(
 
 pub trait TableAction
 where
-    Self: std::hash::Hash
-        + std::fmt::Display
-        + Send
-        + Sync
-        + Copy
-        + PartialEq
-        + Eq
-        + From<CatalogTableAction>,
+    Self: std::hash::Hash + CatalogAction + Clone + PartialEq + Eq + From<CatalogTableAction>,
 {
 }
 
@@ -317,7 +310,7 @@ impl AuthZTableActionForbidden {
         Self {
             warehouse_id,
             table: table.into(),
-            action: action.to_string(),
+            action: action.as_log_str(),
             actor: Box::new(actor),
         }
     }
@@ -519,7 +512,7 @@ pub trait AuthZTableOps: Authorizer {
                     warehouse,
                     namespace,
                     &table,
-                    &[CAN_SEE_PERMISSION.into(), action],
+                    &[CAN_SEE_PERMISSION.into(), action.clone()],
                 )
                 .await?
                 .into_inner();
@@ -655,7 +648,7 @@ pub trait AuthZTableOps: Authorizer {
         tables_with_actions: &[(
             &NamespaceWithParent,
             &T,
-            impl Into<Self::TableAction> + Send + Sync + Copy,
+            impl Into<Self::TableAction> + Send + Sync + Clone,
         )],
         // OK Output is a sideproduct that caller may use
     ) -> Result<(), RequireTableActionError> {
@@ -670,7 +663,7 @@ pub trait AuthZTableOps: Authorizer {
                 acc.entry((table.warehouse_id(), table.table_id()))
                     .or_insert_with(|| (ns, table, HashSet::new()))
                     .2
-                    .insert((*action).into());
+                    .insert(action.clone().into());
                 acc
             });
 
@@ -708,7 +701,7 @@ pub trait AuthZTableOps: Authorizer {
                 return Err(AuthZTableActionForbidden::new(
                     table.warehouse_id(),
                     table.table_ident().clone(),
-                    *action,
+                    action.clone(),
                     actor.clone(),
                 )
                 .into());
@@ -743,7 +736,7 @@ pub trait AuthZTableOps: Authorizer {
 
     async fn are_allowed_table_actions_arr<
         const N: usize,
-        A: Into<Self::TableAction> + Send + Copy + Sync,
+        A: Into<Self::TableAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -755,7 +748,7 @@ pub trait AuthZTableOps: Authorizer {
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let actions = actions
             .iter()
-            .map(|a| (&namespace_hierarchy.namespace, table, (*a).into()))
+            .map(|a| (&namespace_hierarchy.namespace, table, a.clone().into()))
             .collect::<Vec<_>>();
         let result = self
             .are_allowed_table_actions_vec(
@@ -778,7 +771,7 @@ pub trait AuthZTableOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
-    async fn are_allowed_table_actions_vec<A: Into<Self::TableAction> + Send + Copy + Sync>(
+    async fn are_allowed_table_actions_vec<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
@@ -817,7 +810,7 @@ pub trait AuthZTableOps: Authorizer {
         } else {
             let converted = actions
                 .iter()
-                .map(|(ns, id, action)| (*ns, *id, (*action).into()))
+                .map(|(ns, id, action)| (*ns, *id, action.clone().into()))
                 .collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_table_actions_impl(
@@ -850,8 +843,8 @@ pub trait AuthZTableOps: Authorizer {
     }
 
     async fn are_allowed_tabular_actions_vec<
-        AT: Into<Self::TableAction> + Send + Copy + Sync,
-        AV: Into<Self::ViewAction> + Send + Copy + Sync,
+        AT: Into<Self::TableAction> + Send + Clone + Sync,
+        AV: Into<Self::ViewAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -864,8 +857,12 @@ pub trait AuthZTableOps: Authorizer {
         )],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|(ns, a)| match a {
-            ActionOnTableOrView::Table((t, a)) => itertools::Either::Left((*ns, *t, (*a).into())),
-            ActionOnTableOrView::View((v, a)) => itertools::Either::Right((*ns, *v, (*a).into())),
+            ActionOnTableOrView::Table((t, a)) => {
+                itertools::Either::Left((*ns, *t, a.clone().into()))
+            }
+            ActionOnTableOrView::View((v, a)) => {
+                itertools::Either::Right((*ns, *v, a.clone().into()))
+            }
         });
 
         let table_results = if tables.is_empty() {
@@ -944,8 +941,8 @@ pub trait AuthZTableOps: Authorizer {
     }
 
     async fn require_tabular_actions<
-        AT: Into<Self::TableAction> + Send + Copy + Sync,
-        AV: Into<Self::ViewAction> + Send + Copy + Sync,
+        AT: Into<Self::TableAction> + Send + Clone + Sync,
+        AV: Into<Self::ViewAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -968,7 +965,7 @@ pub trait AuthZTableOps: Authorizer {
                         return Err(AuthZViewActionForbidden::new(
                             info.warehouse_id(),
                             info.view_id(),
-                            (*action).into(),
+                            action.clone().into(),
                             metadata.actor().clone(),
                         )
                         .into());
@@ -977,7 +974,7 @@ pub trait AuthZTableOps: Authorizer {
                         return Err(AuthZTableActionForbidden::new(
                             info.warehouse_id(),
                             info.table_id(),
-                            (*action).into(),
+                            action.clone().into(),
                             metadata.actor().clone(),
                         )
                         .into());

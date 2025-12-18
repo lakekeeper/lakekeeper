@@ -298,10 +298,7 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<
-        PaginatedMapping<NamespaceId, NamespaceHierarchy>,
-        CatalogListNamespaceError,
-    >;
+    ) -> std::result::Result<CatalogListNamespacesResponse, CatalogListNamespaceError>;
 
     async fn create_namespace_impl<'a>(
         warehouse_id: WarehouseId,

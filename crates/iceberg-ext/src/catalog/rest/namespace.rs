@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use iceberg::NamespaceIdent;
 
 #[cfg(feature = "axum")]
@@ -67,7 +69,7 @@ impl_into_response!(CreateNamespaceResponse);
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateNamespacePropertiesRequest {
     pub removals: Option<Vec<String>>,
-    pub updates: Option<std::collections::HashMap<String, String>>,
+    pub updates: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

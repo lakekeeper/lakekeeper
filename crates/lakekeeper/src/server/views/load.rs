@@ -1,4 +1,4 @@
-use std::str::FromStr as _;
+use std::{str::FromStr as _, sync::Arc};
 
 use iceberg_ext::catalog::rest::LoadViewResult;
 use lakekeeper_io::Location;
@@ -77,7 +77,12 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             &warehouse,
             &namespace,
             &view_info,
-            &[CatalogViewAction::GetMetadata, CatalogViewAction::Commit],
+            &[
+                CatalogViewAction::GetMetadata,
+                CatalogViewAction::Commit {
+                    properties: Arc::new(Default::default()),
+                },
+            ],
         )
         .await?
         .into_inner();

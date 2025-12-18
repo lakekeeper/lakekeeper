@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
@@ -6,13 +6,14 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        Actor, CachePolicy, CatalogBackendError, CatalogGetNamespaceError, CatalogNamespaceOps,
-        CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier, NamespaceHierarchy,
-        NamespaceIdentOrId, NamespaceNotFound, ResolvedWarehouse, SerializationError,
+        Actor, AuthZNamespaceInfo, CachePolicy, CatalogBackendError, CatalogGetNamespaceError,
+        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier,
+        NamespaceHierarchy, NamespaceId, NamespaceIdentOrId, NamespaceNotFound,
+        NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogNamespaceAction, IsAllowedActionError, MustUse, UserOrRole,
+            CatalogAction, CatalogNamespaceAction, IsAllowedActionError, MustUse, UserOrRole,
         },
     },
 };
@@ -21,7 +22,7 @@ const CAN_SEE_PERMISSION: CatalogNamespaceAction = CatalogNamespaceAction::GetMe
 
 pub trait NamespaceAction
 where
-    Self: std::fmt::Display + Send + Sync + Copy + PartialEq + Eq + From<CatalogNamespaceAction>,
+    Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogNamespaceAction>,
 {
 }
 
@@ -86,7 +87,7 @@ impl AuthZNamespaceActionForbidden {
         Self {
             warehouse_id,
             namespace: namespace.into(),
-            action: action.to_string(),
+            action: action.as_log_str(),
             actor: Box::new(actor),
         }
     }
@@ -270,20 +271,36 @@ pub trait AuthzNamespaceOps: Authorizer {
             }
         }
 
+        let namespace_authz_context = namespace.namespace.clone();
         if action == CAN_SEE_PERMISSION.into() {
             let is_allowed = self
-                .is_allowed_namespace_action(metadata, None, warehouse, &namespace, action)
+                .is_allowed_namespace_action(
+                    metadata,
+                    None,
+                    warehouse,
+                    &namespace.parents,
+                    &namespace_authz_context,
+                    action,
+                )
                 .await?
                 .into_inner();
             is_allowed.then_some(namespace).ok_or(cant_see_err)
         } else {
+            let parents_map = namespace
+                .parents
+                .iter()
+                .map(|ns| (ns.namespace_id(), ns.clone()))
+                .collect();
             let [can_see_namespace, is_allowed] = self
                 .are_allowed_namespace_actions_arr(
                     metadata,
                     None,
                     warehouse,
-                    &namespace,
-                    &[CAN_SEE_PERMISSION.into(), action],
+                    &parents_map,
+                    &[
+                        (&namespace_authz_context, CAN_SEE_PERMISSION.into()),
+                        (&namespace_authz_context, action.clone()),
+                    ],
                 )
                 .await?
                 .into_inner();
@@ -308,8 +325,9 @@ pub trait AuthzNamespaceOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        namespace: &NamespaceHierarchy,
-        action: impl Into<Self::NamespaceAction> + Send + Sync + Copy,
+        parent_namespaces: &[NamespaceWithParent],
+        namespace: &impl AuthZNamespaceInfo,
+        action: impl Into<Self::NamespaceAction> + Send + Sync + Clone,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
         if namespace.warehouse_id() != warehouse.warehouse_id {
             tracing::debug!(
@@ -319,9 +337,18 @@ pub trait AuthzNamespaceOps: Authorizer {
             );
             return Ok(MustUse::from(false));
         }
-
+        let namespace_parents_map = parent_namespaces
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
         let [decision] = self
-            .are_allowed_namespace_actions_arr(metadata, for_user, warehouse, namespace, &[action])
+            .are_allowed_namespace_actions_arr(
+                metadata,
+                for_user,
+                warehouse,
+                &namespace_parents_map,
+                &[(namespace, action)],
+            )
             .await?
             .into_inner();
 
@@ -330,21 +357,23 @@ pub trait AuthzNamespaceOps: Authorizer {
 
     async fn are_allowed_namespace_actions_arr<
         const N: usize,
-        A: Into<Self::NamespaceAction> + Send + Copy + Sync,
+        A: Into<Self::NamespaceAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        namespace: &NamespaceHierarchy,
-        actions: &[A; N],
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&impl AuthZNamespaceInfo, A); N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
-        let actions = actions
-            .iter()
-            .map(|a| (namespace, (*a).into()))
-            .collect::<Vec<_>>();
         let result = self
-            .are_allowed_namespace_actions_vec(metadata, for_user, warehouse, &actions)
+            .are_allowed_namespace_actions_vec(
+                metadata,
+                for_user,
+                warehouse,
+                parent_namespaces,
+                actions,
+            )
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -355,13 +384,14 @@ pub trait AuthzNamespaceOps: Authorizer {
     }
 
     async fn are_allowed_namespace_actions_vec<
-        A: Into<Self::NamespaceAction> + Send + Copy + Sync,
+        A: Into<Self::NamespaceAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        actions: &[(&NamespaceHierarchy, A)],
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&impl AuthZNamespaceInfo, A)],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
@@ -387,10 +417,16 @@ pub trait AuthzNamespaceOps: Authorizer {
         } else {
             let converted = actions
                 .iter()
-                .map(|(id, action)| (*id, (*action).into()))
+                .map(|(id, action)| (*id, action.clone().into()))
                 .collect::<Vec<_>>();
             let authz_results = self
-                .are_allowed_namespace_actions_impl(metadata, for_user, warehouse, &converted)
+                .are_allowed_namespace_actions_impl(
+                    metadata,
+                    for_user,
+                    warehouse,
+                    parent_namespaces,
+                    &converted,
+                )
                 .await?;
 
             if warehouse_matches.len() != actions.len() {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[cfg(feature = "axum")]
 use axum::{
     http::header::{self, HeaderMap, HeaderValue},
@@ -59,7 +61,7 @@ pub struct CreateTableRequest {
     pub partition_spec: Option<UnboundPartitionSpec>,
     pub write_order: Option<SortOrder>,
     pub stage_create: Option<bool>,
-    pub properties: Option<std::collections::HashMap<String, String>>,
+    pub properties: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypedBuilder)]

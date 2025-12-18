@@ -16,14 +16,14 @@ use crate::{
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
         CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
-        CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
-        CatalogUpdateNamespacePropertiesError, ChildNamespaceProtected, ChildTabularProtected,
-        CreateNamespaceRequest, InternalParseLocationError, InvalidNamespaceIdentifier,
-        ListNamespacesQuery, Namespace, NamespaceAlreadyExists, NamespaceDropInfo,
-        NamespaceHasRunningTabularExpirations, NamespaceHierarchy, NamespaceId, NamespaceIdent,
-        NamespaceNotEmpty, NamespaceNotFound, NamespacePropertiesSerializationError,
-        NamespaceProtected, NamespaceWithParent, Result, SerializationError, TabularId,
-        WarehouseIdNotFound, storage::join_location, tasks::TaskId,
+        CatalogListNamespacesResponse, CatalogNamespaceDropError,
+        CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
+        ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
+        InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
+        NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
+        NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
+        NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
+        SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
 
@@ -282,20 +282,19 @@ impl From<ListNamespaceRow> for NamespaceWithParentVersionRow {
 fn list_rows_into_hierarchy(
     rows: Vec<ListNamespaceRow>,
     warehouse_id: WarehouseId,
-) -> std::result::Result<
-    PaginatedMapping<NamespaceId, NamespaceHierarchy>,
-    InvalidNamespaceIdentifier,
-> {
+) -> std::result::Result<CatalogListNamespacesResponse, InvalidNamespaceIdentifier> {
     if rows.is_empty() {
-        return Ok(PaginatedMapping::with_capacity(0));
+        return Ok(CatalogListNamespacesResponse {
+            parent_namespaces: HashMap::new(),
+            namespaces: PaginatedMapping::with_capacity(0),
+        });
     }
 
-    // Step 1: Convert all rows to Arc<Namespace> and collect target IDs in order
     let mut namespace_by_id: HashMap<NamespaceId, NamespaceWithParent> =
         HashMap::with_capacity(rows.len());
 
     // Track which namespaces should be included in the result, in order
-    let mut include_in_list = Vec::new();
+    let mut result = PaginatedMapping::new();
 
     for row in rows {
         let include_this_row_in_list = row.include_in_list;
@@ -304,63 +303,25 @@ fn list_rows_into_hierarchy(
             .into_namespace_with_parent_version(warehouse_id)?;
 
         if include_this_row_in_list {
-            include_in_list.push(namespace.clone());
+            let namespace_id = namespace.namespace_id();
+            let created_at = namespace.created_at();
+
+            let token = PaginateToken::V1(V1PaginateToken {
+                id: namespace_id,
+                created_at,
+            })
+            .to_string();
+
+            result.insert(namespace_id, namespace.clone(), token);
         }
 
-        namespace_by_id.insert(namespace.namespace.namespace_id, namespace);
+        namespace_by_id.insert(namespace.namespace_id(), namespace);
     }
 
-    // Step 2: Build hierarchies by iterating over include_in_list_ids
-    let mut result = PaginatedMapping::with_capacity(include_in_list.len());
-
-    for namespace in include_in_list {
-        // Build parents from immediate parent down to root
-        let expected_n_parents = namespace.namespace_ident().len().saturating_sub(1);
-        let mut parents = Vec::with_capacity(expected_n_parents);
-        let mut parent = &namespace.parent;
-        while let Some((parent_id, _parent_version)) = parent {
-            if let Some(parent_ns) = namespace_by_id.get(parent_id) {
-                parents.push(parent_ns.clone());
-                parent = &parent_ns.parent;
-            } else {
-                debug_assert!(
-                    false,
-                    "Missing parent namespace in list_namespaces result for namespace {namespace:?}",
-                );
-                break;
-            }
-            // Avoid infinite loops in case of corrupted data
-            if parents.len() > expected_n_parents {
-                debug_assert!(
-                    false,
-                    "Expected at most {expected_n_parents} parents but found more for namespace {namespace:?}",
-                );
-                break;
-            }
-        }
-        debug_assert!(
-            parents.len() == expected_n_parents,
-            "Expected {} parents but found {} for namespace {:?}",
-            expected_n_parents,
-            parents.len(),
-            namespace,
-        );
-
-        let namespace_id = namespace.namespace_id();
-        let created_at = namespace.created_at();
-
-        let hierarchy = NamespaceHierarchy { namespace, parents };
-
-        let token = PaginateToken::V1(V1PaginateToken {
-            id: namespace_id,
-            created_at,
-        })
-        .to_string();
-
-        result.insert(namespace_id, hierarchy, token);
-    }
-
-    Ok(result)
+    Ok(CatalogListNamespacesResponse {
+        parent_namespaces: namespace_by_id,
+        namespaces: result,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -374,8 +335,7 @@ pub(crate) async fn list_namespaces(
         return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<PaginatedMapping<NamespaceId, NamespaceHierarchy>, CatalogListNamespaceError>
-{
+) -> std::result::Result<CatalogListNamespacesResponse, CatalogListNamespaceError> {
     let page_size = CONFIG.page_size_or_pagination_max(*page_size);
 
     // Treat empty parent as None

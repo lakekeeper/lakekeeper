@@ -1068,7 +1068,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 None,
                 &[
                     (&warehouse, CatalogWarehouseAction::Use),
-                    (&warehouse, CatalogWarehouseAction::ListDeletedTabulars),
+                    (
+                        &warehouse,
+                        CatalogWarehouseAction::ListDeletedTabulars,
+                    ),
                     (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
@@ -1098,7 +1101,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     &request_metadata,
                     None,
                     &warehouse,
-                    &namespace,
+                    &namespace.parents,
+                    &namespace.namespace,
                     CatalogNamespaceAction::ListEverything,
                 )
                 .await?

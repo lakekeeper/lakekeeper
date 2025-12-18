@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr as _,
     sync::Arc,
 };
@@ -60,8 +60,8 @@ use crate::{
         TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
-            refresh_warehouse_and_namespace_if_needed,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         require_namespace_for_tabular,
@@ -196,19 +196,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
             C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
         );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace = authorizer
-            .require_namespace_action(
+        let warehouse = authorizer
+            .require_warehouse_action(
                 &request_metadata,
-                &warehouse,
-                provided_ns,
-                namespace,
-                CatalogNamespaceAction::CreateTable,
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::Use,
             )
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id();
+
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
@@ -222,6 +220,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
+
+        let namespace = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                &warehouse,
+                provided_ns,
+                namespace,
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::new(BTreeMap::from_iter(
+                        table_metadata
+                            .properties()
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone())),
+                    )),
+                },
+            )
+            .await?;
+        let namespace_id = namespace.namespace_id();
 
         let table_metadata = Arc::new(table_metadata);
 
@@ -738,7 +754,21 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 user_provided_namespace,
                 destination_namespace,
-                CatalogNamespaceAction::CreateTable,
+                CatalogNamespaceAction::CreateTable {
+                    // Properties from source table are inherited
+                    properties: Arc::new(
+                        source_table_info
+                            .as_ref()
+                            .ok()
+                            .and_then(|opt| opt.as_ref())
+                            .map(|tab| tab
+                                .properties
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect())
+                            .unwrap_or_else(BTreeMap::new)
+                    )
+                },
             ),
             // Check 2)
             authorizer.require_table_action(

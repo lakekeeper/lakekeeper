@@ -1,8 +1,11 @@
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use axum::Router;
 use serde::{Deserialize, Serialize};
-use strum::{EnumIter, IntoEnumIterator, VariantArray};
+use strum::{EnumIter, VariantArray};
 use strum_macros::EnumString;
 
 use super::{
@@ -13,7 +16,7 @@ use crate::{
     api::{iceberg::v1::Result, management::v1::role::Role},
     request_metadata::RequestMetadata,
     service::{
-        Actor, AuthZTableInfo, AuthZViewInfo, NamespaceHierarchy, NamespaceWithParent,
+        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
         ResolvedWarehouse, ServerId, TableInfo,
     },
 };
@@ -96,8 +99,11 @@ pub enum UserOrRole {
 
 pub trait CatalogAction
 where
-    Self: std::fmt::Debug + Copy + Send + Sync + 'static + IntoEnumIterator,
+    Self: std::fmt::Debug + Send + Sync,
 {
+    fn as_log_str(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 #[derive(
@@ -214,26 +220,15 @@ pub enum CatalogRoleAction {
 }
 impl CatalogAction for CatalogRoleAction {}
 
-#[derive(
-    Debug,
-    Hash,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    Serialize,
-    Deserialize,
-    VariantArray,
-)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
-#[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogWarehouseAction {
-    CreateNamespace,
+    CreateNamespace {
+        #[serde(default)]
+        properties: Arc<BTreeMap<String, String>>,
+    },
     Delete,
     UpdateStorage,
     UpdateStorageCredential,
@@ -257,30 +252,30 @@ pub enum CatalogWarehouseAction {
 }
 impl CatalogAction for CatalogWarehouseAction {}
 
-#[derive(
-    Debug,
-    Hash,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    Serialize,
-    Deserialize,
-    VariantArray,
-)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
-#[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogNamespaceAction {
-    CreateTable,
-    CreateView,
-    CreateNamespace,
+    CreateTable {
+        #[serde(default)]
+        properties: Arc<BTreeMap<String, String>>,
+    },
+    CreateView {
+        #[serde(default)]
+        properties: Arc<BTreeMap<String, String>>,
+    },
+    CreateNamespace {
+        #[serde(default)]
+        properties: Arc<BTreeMap<String, String>>,
+    },
     Delete,
-    UpdateProperties,
+    UpdateProperties {
+        #[serde(default)]
+        removed: Arc<Vec<String>>,
+        #[serde(default)]
+        updated: Arc<BTreeMap<String, String>>,
+    },
     GetMetadata,
     ListTables,
     ListViews,
@@ -291,30 +286,16 @@ pub enum CatalogNamespaceAction {
 }
 impl CatalogAction for CatalogNamespaceAction {}
 
-#[derive(
-    Debug,
-    Hash,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    Serialize,
-    Deserialize,
-    VariantArray,
-)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
-#[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogTableAction {
     Drop,
     WriteData,
     ReadData,
     GetMetadata,
-    Commit,
+    Commit { foo: u64 },
     Rename,
     IncludeInList,
     Undrop,
@@ -324,28 +305,14 @@ pub enum CatalogTableAction {
 }
 impl CatalogAction for CatalogTableAction {}
 
-#[derive(
-    Debug,
-    Hash,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    Serialize,
-    Deserialize,
-    VariantArray,
-)]
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
-#[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogViewAction {
     Drop,
     GetMetadata,
-    Commit,
+    Commit { foo: u64 },
     IncludeInList,
     Rename,
     Undrop,
@@ -509,7 +476,8 @@ where
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
@@ -661,6 +629,80 @@ pub(crate) mod tests {
         api::management::v1::role::Role,
         service::{Namespace, health::Health},
     };
+
+    #[test]
+    fn test_catalog_namespace_action_serde_no_properties() {
+        for (action, expected) in [
+            (CatalogNamespaceAction::GetMetadata, "GetMetadata"),
+            (CatalogNamespaceAction::ListTables, "ListTables"),
+            (CatalogNamespaceAction::ListViews, "ListViews"),
+            (CatalogNamespaceAction::ListNamespaces, "ListNamespaces"),
+            (CatalogNamespaceAction::ListEverything, "ListEverything"),
+            (CatalogNamespaceAction::Delete, "Delete"),
+            (CatalogNamespaceAction::SetProtection, "SetProtection"),
+            (CatalogNamespaceAction::IncludeInList, "IncludeInList"),
+            (
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::new(BTreeMap::new()),
+                },
+                "CreateTable",
+            ),
+            (
+                CatalogNamespaceAction::CreateView {
+                    properties: Arc::new(BTreeMap::new()),
+                },
+                "CreateView",
+            ),
+            (
+                CatalogNamespaceAction::CreateNamespace {
+                    properties: Arc::new(BTreeMap::new()),
+                },
+                "CreateNamespace",
+            ),
+            (
+                CatalogNamespaceAction::UpdateProperties {
+                    removed: Arc::new(Vec::new()),
+                    updated: Arc::new(BTreeMap::new()),
+                },
+                "UpdateProperties",
+            ),
+        ] {
+            let serialized = serde_json::to_value(&action).expect("Failed to serialize");
+            let expected_serialized =
+                serde_json::to_value(&expected).expect("Failed to serialize expected");
+            assert_eq!(serialized, expected_serialized);
+
+            let deserialized: CatalogNamespaceAction =
+                serde_json::from_value(&serialized).expect("Failed to deserialize");
+            assert_eq!(deserialized, action);
+        }
+    }
+
+    #[test]
+    fn test_catalog_table_action_serde_no_properties() {
+        for (action, expected) in [
+            (CatalogTableAction::Drop, "Drop"),
+            (CatalogTableAction::WriteData, "WriteData"),
+            (CatalogTableAction::ReadData, "ReadData"),
+            (CatalogTableAction::GetMetadata, "GetMetadata"),
+            (CatalogTableAction::Rename, "Rename"),
+            (CatalogTableAction::IncludeInList, "IncludeInList"),
+            (CatalogTableAction::Undrop, "Undrop"),
+            (CatalogTableAction::GetTasks, "GetTasks"),
+            (CatalogTableAction::ControlTasks, "ControlTasks"),
+            (CatalogTableAction::SetProtection, "SetProtection"),
+            (CatalogTableAction::Commit { foo: 0 }, "Commit"),
+        ] {
+            let serialized = serde_json::to_value(&action).expect("Failed to serialize");
+            let expected_serialized =
+                serde_json::to_value(&expected).expect("Failed to serialize expected");
+            assert_eq!(serialized, expected_serialized);
+
+            let deserialized: CatalogTableAction =
+                serde_json::from_value(&serialized).expect("Failed to deserialize");
+            assert_eq!(deserialized, action);
+        }
+    }
 
     #[derive(Clone, Debug)]
     /// A mock of the [`Authorizer`] that allows to hide objects.
@@ -1088,22 +1130,17 @@ pub(crate) mod tests {
         namespace,
         CatalogNamespaceAction::ListViews,
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
-        &NamespaceHierarchy {
-            namespace: NamespaceWithParent {
-                namespace: Arc::new(Namespace {
-                    namespace_ident: NamespaceIdent::new("test".to_string()),
-                    namespace_id: NamespaceId::new_random(),
-                    warehouse_id: Uuid::nil().into(),
-                    protected: false,
-                    properties: None,
-                    created_at: chrono::Utc::now(),
-                    updated_at: Some(chrono::Utc::now()),
-                    version: 0.into(),
-                }),
-                parent: None,
-            },
-            parents: vec![]
-        }
+        &[],
+        &Arc::new(Namespace {
+            namespace_ident: NamespaceIdent::new("test".to_string()),
+            namespace_id: NamespaceId::new_random(),
+            warehouse_id: Uuid::nil().into(),
+            protected: false,
+            properties: None,
+            created_at: chrono::Utc::now(),
+            updated_at: Some(chrono::Utc::now()),
+            version: 0.into(),
+        })
     );
     test_block_action!(
         table,

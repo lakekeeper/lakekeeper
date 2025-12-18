@@ -13,7 +13,7 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogViewAction, MustUse, UserOrRole,
+            CannotInspectPermissions, CatalogAction, CatalogViewAction, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -27,7 +27,7 @@ const CAN_SEE_PERMISSION: CatalogViewAction = CatalogViewAction::GetMetadata;
 
 pub trait ViewAction
 where
-    Self: std::fmt::Display + Send + Sync + Copy + PartialEq + Eq + From<CatalogViewAction>,
+    Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogViewAction>,
 {
 }
 
@@ -80,7 +80,7 @@ impl AuthZViewActionForbidden {
         Self {
             warehouse_id,
             view: view.into(),
-            action: action.to_string(),
+            action: action.as_log_str(),
             actor: Box::new(actor),
         }
     }
@@ -237,7 +237,7 @@ pub trait AuthZViewOps: Authorizer {
                     warehouse,
                     namespace,
                     &view,
-                    &[CAN_SEE_PERMISSION.into(), action],
+                    &[CAN_SEE_PERMISSION.clone().into(), action.clone()],
                 )
                 .await?
                 .into_inner();
@@ -390,7 +390,7 @@ pub trait AuthZViewOps: Authorizer {
 
     async fn are_allowed_view_actions_arr<
         const N: usize,
-        A: Into<Self::ViewAction> + Send + Copy + Sync,
+        A: Into<Self::ViewAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -402,7 +402,7 @@ pub trait AuthZViewOps: Authorizer {
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
         let actions = actions
             .iter()
-            .map(|a| (&namespace_hierarchy.namespace, view, (*a).into()))
+            .map(|a| (&namespace_hierarchy.namespace, view, a.clone().into()))
             .collect::<Vec<_>>();
         let result = self
             .are_allowed_view_actions_vec(
@@ -425,7 +425,7 @@ pub trait AuthZViewOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
-    async fn are_allowed_view_actions_vec<A: Into<Self::ViewAction> + Send + Copy + Sync>(
+    async fn are_allowed_view_actions_vec<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
@@ -464,7 +464,7 @@ pub trait AuthZViewOps: Authorizer {
         } else {
             let converted = actions
                 .iter()
-                .map(|(ns, id, action)| (*ns, *id, (*action).into()))
+                .map(|(ns, id, action)| (*ns, *id, action.clone().into()))
                 .collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_view_actions_impl(

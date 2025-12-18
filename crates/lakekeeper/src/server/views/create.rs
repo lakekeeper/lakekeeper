@@ -63,7 +63,9 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             provided_ns,
-            CatalogNamespaceAction::CreateView,
+            CatalogNamespaceAction::CreateView {
+                properties: Arc::new(request.properties.clone().into_iter().collect()),
+            },
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )

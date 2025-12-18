@@ -81,7 +81,8 @@ macro_rules! list_entities {
                         &request_metadata,
                         None,
                         &resolved_warehouse,
-                        &namespace_response,
+                        &namespace_response.parents,
+                        &namespace_response.namespace,
                         CatalogNamespaceAction::ListEverything,
                     )
                     .await?

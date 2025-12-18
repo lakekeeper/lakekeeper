@@ -160,7 +160,9 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &request_metadata,
             warehouse_id,
             provided_ns,
-            CatalogNamespaceAction::CreateTable,
+            CatalogNamespaceAction::CreateTable {
+                properties: Arc::new(request.properties.clone().unwrap_or_default().into_iter().collect()),
+            },
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )

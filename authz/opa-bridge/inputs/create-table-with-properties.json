@@ -1,0 +1,31 @@
+    {
+        "input": {
+            "context": {
+                "identity": {
+                    "user": "cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8",
+                    "groups": []
+                },
+                "softwareStack": {
+                    "trinoVersion": "476"
+                }
+            },
+            "action": {
+                "operation": "CreateTable",
+                "resource": {
+                    "table": {
+                        "catalogName": "lakekeeper",
+                        "schemaName": "finance",
+                        "tableName": "revenue_properties",
+                        "properties": {
+                            "format": "PARQUET",
+                            "extra_properties": {
+                                "key1": "v1",
+                                "key2": "v2",
+                                "key3": "v3"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
