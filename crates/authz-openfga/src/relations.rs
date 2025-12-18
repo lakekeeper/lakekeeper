@@ -443,6 +443,7 @@ pub enum ProjectRelation {
     CanModifyTaskQueueConfig,
     CanGetTaskQueueConfig,
     CanGetAllTasks,
+    CanControlAllTasks,
 }
 
 impl ProjectAction for ProjectRelation {}
@@ -669,6 +670,7 @@ impl ReducedRelation for CatalogProjectAction {
             }
             CatalogProjectAction::GetTaskQueueConfig => ProjectRelation::CanGetTaskQueueConfig,
             CatalogProjectAction::GetAllTasks => ProjectRelation::CanGetAllTasks,
+            CatalogProjectAction::ControlAllTasks => ProjectRelation::CanControlAllTasks,
         }
     }
 }

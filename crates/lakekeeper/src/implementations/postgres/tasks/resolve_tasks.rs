@@ -1,5 +1,4 @@
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use uuid::Uuid;
 
 use super::EntityType;
 use crate::{
@@ -7,8 +6,8 @@ use crate::{
     api::ErrorModel,
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec,
-        tasks::{TaskId, TaskQueueName},
+        ResolvedTask, TableId, TableNamed, ViewId, ViewNamed, build_tabular_ident_from_vec,
+        tasks::{TaskId, TaskQueueName, TaskResolveScope},
     },
 };
 
@@ -17,8 +16,7 @@ use crate::{
 /// Only includes task IDs that exist - missing task IDs are not included in the result.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn resolve_tasks<'e, 'c: 'e, E>(
-    project_id: Option<ProjectId>,
-    warehouse_id: Option<WarehouseId>,
+    scope: TaskResolveScope,
     task_ids: &[TaskId],
     state: E,
 ) -> Result<Vec<ResolvedTask>, IcebergErrorResponse>
@@ -28,11 +26,17 @@ where
     if task_ids.is_empty() {
         return Ok(Vec::new());
     }
+    let project_id = scope.project_id();
 
-    let project_id_is_none = project_id.is_none();
+    let project_scoped = match scope {
+        TaskResolveScope::Project { .. } => true,
+        _ => false,
+    };
 
-    let warehouse_id_is_none = warehouse_id.is_none();
-    let warehouse_id = warehouse_id.map_or_else(Uuid::nil, |id| *id);
+    let warehouse_id = match scope {
+        TaskResolveScope::Warehouse { warehouse_id, .. } => warehouse_id,
+        _ => None,
+    };
 
     // Query both active tasks and historical tasks using CTE and UNION ALL
     let tasks = sqlx::query!(
@@ -47,7 +51,12 @@ where
                 entity_type,
                 queue_name
             FROM task
-            WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3) AND (project_id = $4 OR $5)
+            WHERE task_id = ANY($1)
+                AND project_id = $3
+                AND CASE
+                        WHEN $4 THEN warehouse_id IS NULL -- project-level
+                        ELSE ($2::uuid IS NULL OR warehouse_id = $2) -- warehouse-level
+                    END
         ),
         missing_task_ids AS (
             SELECT unnest($1::uuid[]) as task_id
@@ -64,16 +73,20 @@ where
                 entity_type,
                 queue_name
             FROM task_log
-            WHERE task_id IN (SELECT task_id FROM missing_task_ids) 
-              AND (warehouse_id = $2 OR $3) AND (project_id = $4 OR $5)
+            WHERE task_id IN (SELECT task_id FROM missing_task_ids)
+                AND project_id = $3
+                AND CASE
+                        WHEN $4 THEN warehouse_id IS NULL -- project-level
+                        ELSE ($2::uuid IS NULL OR warehouse_id = $2) -- warehouse-level
+                    END
             ORDER BY task_id, attempt DESC
         )
         SELECT 
             task_id as "task_id!",
             project_id as "project_id!",
-            warehouse_id as "warehouse_id",
-            entity_name as "entity_name!",
-            entity_id as "entity_id!",
+            warehouse_id,
+            entity_name,
+            entity_id,
             entity_type as "entity_type!: EntityType",
             queue_name as "queue_name!"
         FROM active_tasks
@@ -81,18 +94,17 @@ where
         SELECT 
             task_id as "task_id!",
             project_id as "project_id!",
-            warehouse_id as "warehouse_id",
-            entity_name as "entity_name!",
-            entity_id as "entity_id!",
+            warehouse_id,
+            entity_name,
+            entity_id,
             entity_type as "entity_type!: EntityType",
             queue_name as "queue_name!"
         FROM historical_tasks
         "#,
-        &task_ids.iter().map(|id| **id).collect::<Vec<_>>()[..],
-        warehouse_id,
-        warehouse_id_is_none,
-        project_id.map(|id| id.to_string()),
-        project_id_is_none,
+        &task_ids.iter().map(|id| **id).collect::<Vec<_>>()[..], // $1
+        warehouse_id.map(|id| *id),                              // $2
+        project_id.as_str(),                                     // $3
+        project_scoped,                                          // $4
     )
     .fetch_all(state)
     .await
@@ -105,15 +117,45 @@ where
             let task_id = TaskId::from(record.task_id);
             let entity = match record.entity_type {
                 EntityType::Table => TableNamed {
-                    table_id: record.entity_id.into(),
+                    table_id: record
+                        .entity_id
+                        .map(TableId::from)
+                        .ok_or(ErrorModel::internal(
+                            "Entity of type Table is missing entity_id",
+                            "EntityIdMissing",
+                            None,
+                        ))?,
                     warehouse_id: WarehouseId::try_from(record.warehouse_id)?,
-                    table_ident: build_tabular_ident_from_vec(&record.entity_name)?,
+                    table_ident: record
+                        .entity_name
+                        .map(|name| build_tabular_ident_from_vec(&name))
+                        .transpose()?
+                        .ok_or(ErrorModel::internal(
+                            "Entity of type Table is missing entity_name",
+                            "EntityNameMissing",
+                            None,
+                        ))?,
                 }
                 .into(),
                 EntityType::View => ViewNamed {
-                    view_id: record.entity_id.into(),
+                    view_id: record
+                        .entity_id
+                        .map(ViewId::from)
+                        .ok_or(ErrorModel::internal(
+                            "Entity of type View is missing entity_id",
+                            "EntityIdMissing",
+                            None,
+                        ))?,
                     warehouse_id: WarehouseId::try_from(record.warehouse_id)?,
-                    view_ident: build_tabular_ident_from_vec(&record.entity_name)?,
+                    view_ident: record
+                        .entity_name
+                        .map(|name| build_tabular_ident_from_vec(&name))
+                        .transpose()?
+                        .ok_or(ErrorModel::internal(
+                            "Entity of type View is missing entity_name",
+                            "EntityNameMissing",
+                            None,
+                        ))?,
                 }
                 .into(),
                 EntityType::Project => project_id.clone().into(),
@@ -135,6 +177,7 @@ where
 #[cfg(test)]
 mod tests {
 
+    use chrono::{Duration, Utc};
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -142,7 +185,7 @@ mod tests {
     use crate::{
         ProjectId, WarehouseId,
         implementations::postgres::tasks::{
-            pick_task, record_failure, record_success,
+            pick_task, queue_task_batch, record_failure, record_success,
             test::{setup_two_warehouses, setup_warehouse},
         },
         service::tasks::{
@@ -192,9 +235,16 @@ mod tests {
     async fn test_resolve_tasks_empty_input(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &[], &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &[],
+            &pool,
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_empty());
     }
@@ -210,8 +260,10 @@ mod tests {
         ];
 
         let result = resolve_tasks(
-            Some(project_id),
-            Some(warehouse_id),
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
             &nonexistent_task_ids,
             &pool,
         )
@@ -272,9 +324,16 @@ mod tests {
 
         // Resolve both tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
         let result = result
             .into_iter()
             .map(|t| (t.task_id, (t.entity, t.queue_name)))
@@ -367,9 +426,16 @@ mod tests {
 
         // Resolve both completed tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Verify both tasks are resolved from task_log
         assert_eq!(result.len(), 2);
@@ -472,9 +538,16 @@ mod tests {
 
         // Resolve all three tasks
         let task_ids = vec![task_id1, task_id2, task_id3];
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // All tasks should be resolved
         assert_eq!(result.len(), 3);
@@ -499,8 +572,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_with_specific_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (project_id1, warehouse_id1, project_id2, warehouse_id2) =
-            setup_two_warehouses(pool.clone()).await;
+        let (project_id, warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
@@ -511,7 +583,7 @@ mod tests {
             &tq_name,
             None,
             entity1,
-            project_id1.clone(),
+            project_id.clone(),
             warehouse_id1,
             None,
             Some(serde_json::json!({"warehouse": "1"})),
@@ -525,7 +597,7 @@ mod tests {
             &tq_name,
             None,
             entity2,
-            project_id2,
+            project_id.clone(),
             warehouse_id2,
             None,
             Some(serde_json::json!({"warehouse": "2"})),
@@ -536,9 +608,16 @@ mod tests {
 
         // Resolve tasks with warehouse_id1 filter
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(project_id1), Some(warehouse_id1), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id1),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Only task from warehouse_id1 should be found
         assert_eq!(result.len(), 1);
@@ -564,8 +643,7 @@ mod tests {
     #[sqlx::test]
     async fn test_resolve_tasks_without_warehouse_filter(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let (project_id1, warehouse_id1, project_id2, warehouse_id2) =
-            setup_two_warehouses(pool.clone()).await;
+        let (project_id, warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Table(Uuid::now_v7().into());
         let entity2 = EntityId::Table(Uuid::now_v7().into());
         let tq_name = generate_test_queue_name();
@@ -576,7 +654,7 @@ mod tests {
             &tq_name,
             None,
             entity1,
-            project_id1,
+            project_id.clone(),
             warehouse_id1,
             None,
             Some(serde_json::json!({"warehouse": "1"})),
@@ -590,7 +668,7 @@ mod tests {
             &tq_name,
             None,
             entity2,
-            project_id2,
+            project_id.clone(),
             warehouse_id2,
             None,
             Some(serde_json::json!({"warehouse": "2"})),
@@ -601,7 +679,16 @@ mod tests {
 
         // Resolve tasks without warehouse filter (None)
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(None, None, &task_ids, &pool).await.unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: None,
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Both tasks should be found regardless of warehouse
         assert_eq!(result.len(), 2);
@@ -662,9 +749,16 @@ mod tests {
 
         // Resolve both existing and non-existing tasks
         let task_ids = vec![existing_task_id, nonexistent_task_id];
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Should only have the existing task
         assert_eq!(result.len(), 1);
@@ -727,9 +821,16 @@ mod tests {
 
         // Resolve the task (should find it in active tasks, not task_log)
         let task_ids = vec![task_id];
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
         let result = result
             .into_iter()
             .map(|t| (t.task_id, (t.entity, t.queue_name)))
@@ -749,6 +850,81 @@ mod tests {
             | TaskEntityNamed::Project(_)
             | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
+    }
+
+    #[sqlx::test]
+    async fn test_resolve_tasks_with_project_filter(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        let (project_id, warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
+
+        let tq_name = generate_test_queue_name();
+
+        let entity_uuid_1 = Uuid::now_v7().into();
+        let entity_id_1 = EntityId::Table(entity_uuid_1);
+        let entity_name_1 = vec!["ns".to_string(), format!("table{}", entity_uuid_1)];
+
+        let entity_uuid_2 = Uuid::now_v7().into();
+        let entity_id_2 = EntityId::Table(entity_uuid_2);
+        let entity_name_2 = vec!["ns".to_string(), format!("table{}", entity_uuid_2)];
+        let schedule_for = Some(Utc::now() + Duration::minutes(5));
+        let parent_task_id = None;
+
+        let project_payload = serde_json::json!({"data": "project_task"});
+        let warehouse_payload = serde_json::json!({"data": "warehouse_task"});
+
+        let results = queue_task_batch(
+            &mut conn,
+            &tq_name,
+            vec![
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        warehouse_id: Some(warehouse_id1),
+                        project_id: project_id.clone(),
+                        parent_task_id,
+                        entity_id: entity_id_1,
+                        entity_name: Some(entity_name_1),
+                        schedule_for,
+                    },
+
+                    payload: warehouse_payload.clone(),
+                },
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        warehouse_id: None,
+                        project_id: project_id.clone(),
+                        parent_task_id,
+                        entity_id: EntityId::Project,
+                        entity_name: None,
+                        schedule_for,
+                    },
+
+                    payload: project_payload.clone(),
+                },
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        warehouse_id: Some(warehouse_id2),
+                        project_id: project_id.clone(),
+                        parent_task_id,
+                        entity_id: entity_id_2,
+                        entity_name: Some(entity_name_2),
+                        schedule_for,
+                    },
+
+                    payload: warehouse_payload,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let task_ids = results.iter().map(|r| r.task_id).collect::<Vec<_>>();
+        let result = resolve_tasks(TaskResolveScope::Project { project_id }, &task_ids, &pool)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].task_id, task_ids[1]);
     }
 
     #[sqlx::test]
@@ -797,9 +973,16 @@ mod tests {
         task_ids.extend(nonexistent_ids.iter());
 
         // Resolve all tasks
-        let result = resolve_tasks(Some(project_id), Some(warehouse_id), &task_ids, &pool)
-            .await
-            .unwrap();
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &task_ids,
+            &pool,
+        )
+        .await
+        .unwrap();
 
         // Should have results for the 20 existing tasks only
         assert_eq!(result.len(), 20);

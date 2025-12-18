@@ -18,7 +18,7 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskEntityNamed, TaskFilter,
-            TaskId, TaskInfo, TaskInput, TaskQueueName,
+            TaskId, TaskInfo, TaskInput, TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -206,8 +206,7 @@ where
     /// Returns a map of `task_id` to `(TaskEntity, queue_name)`.
     /// If a task does not exist, it is not included in the map.
     async fn resolve_tasks(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
@@ -217,12 +216,9 @@ where
         let mut cached_results = HashMap::new();
         for id in task_ids {
             if let Some(cached_value) = TASKS_CACHE.get(id).await {
-                if cached_value.warehouse_id() != warehouse_id
-                    || (project_id.is_some() && Some(cached_value.project_id.clone()) != project_id)
-                {
-                    continue;
+                if task_matches_scope(&cached_value, &scope) {
+                    cached_results.insert(*id, cached_value);
                 }
-                cached_results.insert(*id, cached_value);
             }
         }
         let not_cached_ids: Vec<TaskId> = task_ids
@@ -234,7 +230,7 @@ where
             return Ok(cached_results);
         }
         let resolve_uncached_result =
-            Self::resolve_tasks_impl(project_id, warehouse_id, &not_cached_ids, state).await?;
+            Self::resolve_tasks_impl(scope, &not_cached_ids, state).await?;
         for value in resolve_uncached_result {
             let value = Arc::new(value);
             cached_results.insert(value.task_id, value.clone());
@@ -244,12 +240,11 @@ where
     }
 
     async fn resolve_required_tasks(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
-        let tasks = Self::resolve_tasks(project_id, warehouse_id, task_ids, state).await?;
+        let tasks = Self::resolve_tasks(scope, task_ids, state).await?;
 
         for task_id in task_ids {
             if !tasks.contains_key(task_id) {
@@ -286,3 +281,24 @@ where
 }
 
 impl<T> CatalogTaskOps for T where T: CatalogStore {}
+
+fn task_matches_scope(task: &ResolvedTask, scope: &TaskResolveScope) -> bool {
+    match scope {
+        TaskResolveScope::Warehouse {
+            warehouse_id,
+            project_id,
+        } => {
+            if task.project_id != *project_id {
+                return false;
+            }
+            match (warehouse_id, task.warehouse_id()) {
+                (None, Some(_)) => true,               // Alle Warehouses im Projekt
+                (Some(wid), Some(tid)) => wid == &tid, // Spezifisches Warehouse
+                _ => false,
+            }
+        }
+        TaskResolveScope::Project { project_id } => {
+            task.project_id == *project_id && task.warehouse_id().is_none()
+        }
+    }
+}

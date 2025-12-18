@@ -211,6 +211,26 @@ pub enum TaskFilter {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TaskResolveScope {
+    Warehouse {
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
+    },
+    Project {
+        project_id: ProjectId,
+    },
+}
+
+impl TaskResolveScope {
+    pub fn project_id(&self) -> ProjectId {
+        match self {
+            TaskResolveScope::Warehouse { project_id, .. }
+            | TaskResolveScope::Project { project_id } => project_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TaskDetailsScope {
     Warehouse {
         project_id: ProjectId,

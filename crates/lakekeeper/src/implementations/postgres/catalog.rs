@@ -80,7 +80,7 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName,
+            TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -685,12 +685,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn resolve_tasks_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<Vec<ResolvedTask>> {
-        resolve_tasks(project_id, warehouse_id, task_ids, &state.read_pool()).await
+        resolve_tasks(scope, task_ids, &state.read_pool()).await
     }
 
     async fn record_task_success_impl(

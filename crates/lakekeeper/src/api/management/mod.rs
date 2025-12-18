@@ -1742,8 +1742,7 @@ pub mod v1 {
         Json(request): Json<ControlTasksRequest>,
     ) -> Result<StatusCode> {
         ApiServer::<C, A, S>::control_tasks(
-            None,
-            Some(warehouse_id.into()),
+            warehouse_id.into(),
             request,
             api_context,
             metadata,
@@ -1870,17 +1869,13 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<ControlTasksRequest>,
     ) -> Result<StatusCode> {
-        // TODO
-        // ApiServer::<C, A, S>::control_tasks(
-        //     None,
-        //     Some(warehouse_id.into()),
-        //     request,
-        //     api_context,
-        //     metadata,
-        // )
-        // .await?;
-        // Ok(StatusCode::NO_CONTENT)
-        Err(ErrorModel::internal("Not implemented yet.", "NotImplemented", None).into())
+        ApiServer::<C, A, S>::control_project_tasks(
+            request,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
     }
 
     /// Batch Check Catalog Actions

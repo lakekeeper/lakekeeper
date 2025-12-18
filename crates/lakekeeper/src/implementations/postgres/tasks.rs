@@ -1305,7 +1305,7 @@ mod test {
 
     pub(crate) async fn setup_two_warehouses(
         pool: PgPool,
-    ) -> (ProjectId, WarehouseId, ProjectId, WarehouseId) {
+    ) -> (ProjectId, WarehouseId, WarehouseId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -1321,7 +1321,6 @@ mod test {
         (
             wh.project_id,
             wh.warehouse_id,
-            wh.additional_warehouses[0].0.clone(),
             wh.additional_warehouses[0].1,
         )
     }

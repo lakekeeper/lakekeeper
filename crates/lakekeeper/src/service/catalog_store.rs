@@ -36,7 +36,7 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName,
+            TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -581,8 +581,7 @@ where
     ) -> Result<Option<Task>>;
 
     async fn resolve_tasks_impl(
-        project_id: Option<ProjectId>,
-        warehouse_id: Option<WarehouseId>,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<Vec<ResolvedTask>>;
