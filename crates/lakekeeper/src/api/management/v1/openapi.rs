@@ -137,6 +137,7 @@ impl utoipa::Modify for SecurityAddon {
 /// # Errors
 /// Never fails, but returns warnings if components cannot be patched.
 #[allow(clippy::too_many_lines)]
+#[must_use]
 pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::openapi::OpenApi {
     let mut doc = ManagementApiDoc::openapi();
     doc.merge(A::api_doc());
@@ -147,6 +148,7 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
     doc
 }
 
+#[allow(clippy::too_many_lines)]
 fn fix_warehouse_task_queue_config_paths(
     doc: &mut utoipa::openapi::OpenApi,
     queue_api_configs: &[&QueueApiConfig],
@@ -336,8 +338,12 @@ fn fix_warehouse_task_queue_config_paths(
 
 fn fix_project_task_queue_config_paths(doc: &mut utoipa::openapi::OpenApi) {
     let paths = &mut doc.paths.paths;
-    if paths.remove(ManagementV1Endpoint::SetProjectTaskQueueConfig.path()).is_none() {
-        tracing::warn!("No path found for SetProjectTaskQueueConfig, not patching queue configs in.");
-        return;
-    };
+    if paths
+        .remove(ManagementV1Endpoint::SetProjectTaskQueueConfig.path())
+        .is_none()
+    {
+        tracing::warn!(
+            "No path found for SetProjectTaskQueueConfig, not patching queue configs in."
+        );
+    }
 }
