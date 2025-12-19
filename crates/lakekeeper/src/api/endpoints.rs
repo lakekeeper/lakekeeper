@@ -510,7 +510,7 @@ mod test {
                 // registered queues
                 !path.starts_with(
                     "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
-                )
+                ) && !path.starts_with("management/v1/project/task-queue/{queue_name}/config")
             })
             .collect_vec();
         if !extra_endpoints.is_empty() {
