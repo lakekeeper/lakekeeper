@@ -2320,6 +2320,7 @@ mod tests {
 
     #[test]
     fn test_table_action_update_property_serde() {
+        // Trino may send non-string properties (such as int `format_version`) to OPA, which then forwards to lakekeeper.
         let expected = serde_json::json!({
             "checks":[
                 {

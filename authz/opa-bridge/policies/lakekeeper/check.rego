@@ -9,7 +9,7 @@ lakekeeper_by_id[lakekeeper_id] := lakekeeper if {
 }
 
 # Check access to a warehouse
-require_warehouse_acces_simple(lakekeeper_id, warehouse_name, user, action) := true if {
+require_warehouse_access_simple(lakekeeper_id, warehouse_name, user, action) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
         "POST", "/management/v1/action/batch-check",

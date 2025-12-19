@@ -38,7 +38,7 @@ parent_schema(schema_name) = parent_schema if {
 
 require_catalog_access_simple(catalog_name, action) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
-    lakekeeper.require_warehouse_acces_simple(
+    lakekeeper.require_warehouse_access_simple(
         trino_catalog.lakekeeper_id,
         trino_catalog.lakekeeper_warehouse, 
         trino.lakekeeper_user_id,
