@@ -345,5 +345,6 @@ fn fix_project_task_queue_config_paths(doc: &mut utoipa::openapi::OpenApi) {
         tracing::warn!(
             "No path found for SetProjectTaskQueueConfig, not patching queue configs in."
         );
+        // return;
     }
 }
