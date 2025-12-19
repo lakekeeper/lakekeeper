@@ -193,7 +193,7 @@ impl TryFrom<TaskInfo> for ProjectListTask {
             queue_name: value.queue_name().clone(),
             status,
             scheduled_for: value.scheduled_for().ok_or(ErrorModel::internal(
-                "WarehouseListTask needs to be scheduled",
+                "ProjectListTask needs to be scheduled",
                 "ScheduledForMissing",
                 None,
             ))?,
