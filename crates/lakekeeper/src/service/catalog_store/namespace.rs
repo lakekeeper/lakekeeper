@@ -977,12 +977,12 @@ where
     ) -> Result<CatalogListNamespacesResponse, CatalogListNamespaceError> {
         let list_response = Self::list_namespaces_impl(warehouse_id, query, transaction).await?;
 
-        let namespaces_dedup = list_response
+        let namespaces_for_cache = list_response
             .namespaces
             .iter()
             .map(|(_, ns)| ns.clone())
             .collect::<Vec<_>>();
-        namespace_cache_insert_multiple(namespaces_dedup).await;
+        namespace_cache_insert_multiple(namespaces_for_cache).await;
 
         Ok(list_response)
     }
