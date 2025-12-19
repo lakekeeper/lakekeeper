@@ -65,14 +65,7 @@ fn parse_api_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
                 .into(),
         ),
         EntityType::Project => EntityId::Project,
-        EntityType::Warehouse => {
-            return Err(ErrorModel::internal(
-                "Listing tasks for Warehouse entity types is not yet supported.",
-                "InternalError",
-                None,
-            )
-            .into());
-        }
+        EntityType::Warehouse => EntityId::Warehouse,
     };
     Ok(TaskInfo {
         id: TaskAttemptId {
