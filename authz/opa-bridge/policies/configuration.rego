@@ -39,7 +39,7 @@ lakekeeper := [
 # Each configuration must contain the following fields:
 #
 # - name: The name of the catalog in Trino.
-# - lakekeeper_id: The name of the Lakekeeper project that manages the warehouse. (Reference to "id" field in the "lakekeeper" array above)
+# - lakekeeper_id: The id of the Lakekeeper project that manages the warehouse. (Reference to "id" field in the "lakekeeper" array above)
 # - lakekeeper_warehouse: The name of the warehouse in Lakekeeper.
 
 # Allow access to unmanaged catalogs (catalogs not in the trino_catalog array).
