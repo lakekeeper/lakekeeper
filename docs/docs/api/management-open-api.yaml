@@ -4687,11 +4687,11 @@ components:
               type: string
               enum:
                 - update_properties
-            removed:
+            removed_properties:
               type: array
               items:
                 type: string
-            updated:
+            updated_properties:
               type: object
               additionalProperties:
                 type: string
