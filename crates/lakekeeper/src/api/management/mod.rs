@@ -1752,7 +1752,7 @@ pub mod v1 {
         post,
         tag = "tasks",
         path = ManagementV1Endpoint::SetProjectTaskQueueConfig.path(),
-        params(("queue_name" = String,)),
+        params(("queue_name" = String,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 204, description = "Project-level Task queue config set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1786,7 +1786,7 @@ pub mod v1 {
         get,
         tag = "tasks",
         path = ManagementV1Endpoint::GetProjectTaskQueueConfig.path(),
-        params(("queue_name" = String,)),
+        params(("queue_name" = String,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, body = GetTaskQueueConfigResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1812,8 +1812,9 @@ pub mod v1 {
         tag = "tasks",
         path = ManagementV1Endpoint::ListProjectTasks.path(),
         request_body = ListProjectTasksRequest,
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
-            (status = 200, body = ListTasksResponse),
+            (status = 200, body = ListProjectTasksResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1830,9 +1831,9 @@ pub mod v1 {
         get,
         tag = "tasks",
         path = ManagementV1Endpoint::GetProjectTaskDetails.path(),
-        params(("task_id" = Uuid,), GetTaskDetailsQuery),
+        params(("task_id" = Uuid,), GetTaskDetailsQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
-            (status = 200, body = GetTaskDetailsResponse),
+            (status = 200, body = GetProjectTaskDetailsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1854,6 +1855,7 @@ pub mod v1 {
         tag = "tasks",
         path = ManagementV1Endpoint::ControlProjectTasks.path(),
         request_body = ControlTasksRequest,
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 204, description = "All requested actions were successful"),
             (status = "4XX", body = IcebergErrorResponse),
