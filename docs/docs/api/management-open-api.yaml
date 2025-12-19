@@ -1502,13 +1502,21 @@ paths:
             format: int32
             default: 5
             minimum: 0
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetTaskDetailsResponse'
+                $ref: '#/components/schemas/GetProjectTaskDetailsResponse'
         4XX:
           description: ''
           content:
@@ -1522,6 +1530,15 @@ paths:
       summary: Control a set of Project-level tasks by their IDs (e.g., cancel, request stop, run now)
       description: Accepts at most 100 task IDs in one request.
       operationId: control_project_tasks
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1543,6 +1560,15 @@ paths:
         - tasks
       summary: List active and historic Project-level tasks.
       operationId: list_project_tasks
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -1555,7 +1581,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListTasksResponse'
+                $ref: '#/components/schemas/ListProjectTasksResponse'
         4XX:
           description: ''
           content:
@@ -4515,6 +4541,28 @@ components:
         project-name:
           type: string
           description: Name of the project
+    GetProjectTaskDetailsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ProjectListTask'
+          description: Most recent task information
+        - type: object
+          required:
+            - task-data
+            - attempts
+          properties:
+            attempts:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskAttempt'
+              description: History of past attempts
+            execution-details:
+              type:
+                - object
+                - 'null'
+              description: Execution details for the current attempt
+            task-data:
+              type: object
+              description: Task-specific data
     GetPurgeQueueConfig:
       type: object
       required:
@@ -4918,6 +4966,21 @@ components:
           items:
             $ref: '#/components/schemas/TaskStatus'
           description: Filter by task status
+    ListProjectTasksResponse:
+      type: object
+      required:
+        - tasks
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token for the next page of results
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectListTask'
+          description: List of tasks
     ListProjectsResponse:
       type: object
       required:
@@ -5337,6 +5400,71 @@ components:
                   enum:
                     - modify
           title: ProjectAssignmentModify
+    ProjectListTask:
+      type: object
+      required:
+        - task-id
+        - project-id
+        - queue-name
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        project-id:
+          type: string
+          description: Project ID associated with the task
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
     ProjectRelation:
       type: string
       enum:
