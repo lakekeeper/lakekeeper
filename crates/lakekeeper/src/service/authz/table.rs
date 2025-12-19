@@ -325,7 +325,7 @@ impl From<AuthZTableActionForbidden> for ErrorModel {
         } = err;
         ErrorModel::forbidden(
             format!(
-                "able action `{action}` forbidden for `{actor}` on table {table} in warehouse `{warehouse_id}`"
+                "Table action `{action}` forbidden for `{actor}` on table {table} in warehouse `{warehouse_id}`"
             ),
             "TableActionForbidden",
             None,

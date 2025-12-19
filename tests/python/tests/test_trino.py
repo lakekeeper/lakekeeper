@@ -747,6 +747,6 @@ def test_table_extra_properties(trino, warehouse: conftest.Warehouse):
     )
     # Verify extra properties are set
     r = cur.execute(
-        f"SELECT key, value FROM test_table_extra_properties.\"my_table$properties\" WHERE key = 'extra.property.one'"
+        "SELECT key, value FROM test_table_extra_properties.\"my_table$properties\" WHERE key = 'extra.property.one'"
     ).fetchall()
     assert r == [["extra.property.one", "foo"]]

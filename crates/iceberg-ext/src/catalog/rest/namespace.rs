@@ -10,7 +10,7 @@ pub struct CreateNamespaceRequest {
     /// Reference to one or more levels of a namespace
     pub namespace: NamespaceIdent,
     /// Configured string to string map of properties for the namespace
-    pub properties: Option<std::collections::HashMap<String, String>>,
+    pub properties: Option<HashMap<String, String>>,
 }
 
 impl TryFrom<CreateNamespaceRequest> for iceberg::Namespace {
@@ -49,7 +49,7 @@ pub struct CreateNamespaceResponse {
     pub namespace: NamespaceIdent,
     /// Properties stored on the namespace, if supported by the server.
     #[serde(rename = "properties", skip_serializing_if = "Option::is_none")]
-    pub properties: Option<std::collections::HashMap<String, String>>,
+    pub properties: Option<HashMap<String, String>>,
 }
 
 impl CreateNamespaceResponse {
@@ -99,7 +99,7 @@ pub struct GetNamespaceResponse {
     /// If the server does not support namespace properties, it should return
     /// null for this field. If namespace properties are supported, but none are
     /// set, it should return an empty object.
-    pub properties: Option<std::collections::HashMap<String, String>>,
+    pub properties: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

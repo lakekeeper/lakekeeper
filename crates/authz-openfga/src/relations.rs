@@ -32,7 +32,7 @@ pub(super) trait OpenFgaRelation:
 
 /// Trait for a subset of relations (i.e. actions)
 /// that can be converted to the corresponding full type
-pub(super) trait ReducedRelation: Clone + Sized + Clone + Eq + PartialEq {
+pub(super) trait ReducedRelation: Clone + Sized + Eq + PartialEq {
     type OpenFgaRelation: OpenFgaRelation;
 
     fn to_openfga(&self) -> Self::OpenFgaRelation;

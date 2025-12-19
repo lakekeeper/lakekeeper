@@ -1772,8 +1772,8 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
 /// Parse property updates and removals from a list of table updates
 ///
 /// Returns a tuple of (updates, removals) where:
-/// - updates: `HashMap` of property key-value pairs to set
-/// - removals: `HashSet` of property keys to remove
+/// - updates: `BtreeMap` of property key-value pairs to set
+/// - removals: `Vec` of property keys to remove
 pub(crate) fn parse_table_property_updates(
     updates: &[TableUpdate],
 ) -> (BTreeMap<String, String>, Vec<String>) {

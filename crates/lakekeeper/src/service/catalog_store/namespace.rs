@@ -980,9 +980,9 @@ where
         let namespaces_dedup = list_response
             .namespaces
             .iter()
-            .map(|(ns_id, ns)| (ns_id, ns.clone()))
-            .collect::<HashMap<_, _>>();
-        namespace_cache_insert_multiple(namespaces_dedup.into_values()).await;
+            .map(|(_, ns)| ns.clone())
+            .collect::<Vec<_>>();
+        namespace_cache_insert_multiple(namespaces_dedup).await;
 
         Ok(list_response)
     }
