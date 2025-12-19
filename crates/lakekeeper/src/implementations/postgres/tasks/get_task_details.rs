@@ -114,14 +114,7 @@ fn parse_task_details(
                 .into(),
         ),
         EntityType::Project => EntityId::Project,
-        EntityType::Warehouse => {
-            return Err(ErrorModel::internal(
-                "Listing tasks for Project or Warehouse entity types is not yet supported.",
-                "InternalError",
-                None,
-            )
-            .into());
-        }
+        EntityType::Warehouse => EntityId::Warehouse,
     };
 
     let task = TaskInfo {
