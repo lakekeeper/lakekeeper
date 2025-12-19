@@ -423,7 +423,7 @@ mod tests {
             vec![TaskInput {
                 task_metadata: TaskMetadata {
                     project_id,
-                    warehouse_id: warehouse_id.into(),
+                    warehouse_id: Some(warehouse_id),
                     parent_task_id: None,
                     entity_id,
                     entity_name: Some(entity_name),
