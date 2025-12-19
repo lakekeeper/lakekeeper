@@ -495,8 +495,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 warehouse_id,
                 parameters.namespace,
                 CatalogNamespaceAction::UpdateProperties {
-                    updated: Arc::new(updates.clone().into_iter().collect()),
-                    removed: Arc::new(removals.clone().unwrap_or_default()),
+                    updated_properties: Arc::new(updates.clone().into_iter().collect()),
+                    removed_properties: Arc::new(removals.clone().unwrap_or_default()),
                 },
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),

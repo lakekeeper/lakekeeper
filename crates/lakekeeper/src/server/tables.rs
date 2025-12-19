@@ -228,12 +228,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 provided_ns,
                 namespace,
                 CatalogNamespaceAction::CreateTable {
-                    properties: Arc::new(BTreeMap::from_iter(
+                    properties: Arc::new(
                         table_metadata
                             .properties()
                             .iter()
-                            .map(|(k, v)| (k.clone(), v.clone())),
-                    )),
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<BTreeMap<_, _>>(),
+                    ),
                 },
             )
             .await?;
@@ -761,12 +762,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             .as_ref()
                             .ok()
                             .and_then(|opt| opt.as_ref())
-                            .map(|tab| tab
+                            .map_or_else(BTreeMap::new, |tab| tab
                                 .properties
                                 .iter()
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect())
-                            .unwrap_or_else(BTreeMap::new)
                     )
                 },
             ),
@@ -1091,6 +1091,27 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .into_iter()
         .map(|ti| (ti.tabular_ident.clone(), ti))
         .collect::<HashMap<_, _>>();
+
+    let table_info_with_actions = request
+        .table_changes
+        .iter()
+        .filter_map(|change| {
+            change.identifier.as_ref().map(|ti| {
+                let table_info = table_ident_to_info
+                    .get(ti)
+                    .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, ti.clone()))?;
+                let (updates, removals) = parse_table_property_updates(&change.updates);
+                Ok((
+                    table_info,
+                    CatalogTableAction::Commit {
+                        updated_properties: Arc::new(updates),
+                        removed_properties: Arc::new(removals),
+                    },
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()?;
+
     for user_provided_ident in identifiers {
         if !table_ident_to_info.contains_key(user_provided_ident) {
             return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
@@ -1120,14 +1141,10 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             &request_metadata,
             &warehouse,
             &namespaces,
-            &table_ident_to_info
-                .values()
-                .map(|ti| {
-                    Ok::<_, ErrorModel>((
-                        require_namespace_for_tabular(&namespaces, ti)?,
-                        ti,
-                        CatalogTableAction::Commit,
-                    ))
+            &table_info_with_actions
+                .into_iter()
+                .map(|(ti, a)| {
+                    Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         )
@@ -1752,6 +1769,32 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
     }
 }
 
+/// Parse property updates and removals from a list of table updates
+///
+/// Returns a tuple of (updates, removals) where:
+/// - updates: `HashMap` of property key-value pairs to set
+/// - removals: `HashSet` of property keys to remove
+pub(crate) fn parse_table_property_updates(
+    updates: &[TableUpdate],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut property_updates = BTreeMap::new();
+    let mut property_removals = Vec::new();
+
+    for update in updates {
+        match update {
+            TableUpdate::SetProperties { updates } => {
+                property_updates.extend(updates.clone());
+            }
+            TableUpdate::RemoveProperties { removals } => {
+                property_removals.extend(removals.clone());
+            }
+            _ => {}
+        }
+    }
+
+    (property_updates, property_removals)
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use std::{collections::HashMap, str::FromStr};
@@ -1775,6 +1818,7 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         WarehouseId,
         api::{
@@ -1798,11 +1842,10 @@ pub(crate) mod test {
         request_metadata::RequestMetadata,
         server::{
             CatalogServer, CatalogStore,
-            tables::validate_table_properties,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            CatalogTabularOps as _, SecretStore, State, TableId, TabularListFlags, UserId,
+            SecretStore, State, TableId, TabularListFlags, UserId,
             authz::{
                 AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
                 tests::HidingAuthorizer,
@@ -1810,6 +1853,97 @@ pub(crate) mod test {
         },
         tests::{create_table_request as create_request, random_request_metadata},
     };
+
+    #[test]
+    fn test_parse_table_property_updates() {
+        // Test empty updates
+        let updates = vec![];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert!(property_updates.is_empty());
+        assert!(property_removals.is_empty());
+
+        // Test only SetProperties
+        let updates = vec![TableUpdate::SetProperties {
+            updates: HashMap::from([
+                ("key1".to_string(), "value1".to_string()),
+                ("key2".to_string(), "value2".to_string()),
+            ]),
+        }];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 2);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_updates.get("key2"), Some(&"value2".to_string()));
+        assert!(property_removals.is_empty());
+
+        // Test only RemoveProperties
+        let updates = vec![TableUpdate::RemoveProperties {
+            removals: vec!["key1".to_string(), "key2".to_string()],
+        }];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert!(property_updates.is_empty());
+        assert_eq!(property_removals.len(), 2);
+        assert!(property_removals.contains(&"key1".to_string()));
+        assert!(property_removals.contains(&"key2".to_string()));
+
+        // Test mixed updates
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([
+                    ("key1".to_string(), "value1".to_string()),
+                    ("key2".to_string(), "value2".to_string()),
+                ]),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["key3".to_string(), "key4".to_string()],
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key5".to_string(), "value5".to_string())]),
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 3);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_updates.get("key2"), Some(&"value2".to_string()));
+        assert_eq!(property_updates.get("key5"), Some(&"value5".to_string()));
+        assert_eq!(property_removals.len(), 2);
+        assert!(property_removals.contains(&"key3".to_string()));
+        assert!(property_removals.contains(&"key4".to_string()));
+
+        // Test with other update types (should be ignored)
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value1".to_string())]),
+            },
+            TableUpdate::AssignUuid {
+                uuid: Uuid::now_v7(),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["key2".to_string()],
+            },
+            TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V2,
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 1);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_removals.len(), 1);
+        assert!(property_removals.contains(&"key2".to_string()));
+
+        // Test property override (later SetProperties should override earlier ones)
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value1".to_string())]),
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value2".to_string())]),
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 1);
+        assert_eq!(property_updates.get("key1"), Some(&"value2".to_string()));
+        assert!(property_removals.is_empty());
+    }
 
     #[test]
     fn test_mixed_case_properties() {
@@ -3999,7 +4133,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to rename the source table
-        authz.block_action(format!("table:{}", CatalogTableAction::Rename).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::Rename).as_str());
         let rename_table_request = RenameTableRequest {
             source: TableIdent {
                 namespace: ns_params.namespace.clone(),
@@ -4023,7 +4157,7 @@ pub(crate) mod test {
 
         // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
         // thus, we should get a 404 instead.
-        authz.block_action(format!("table:{}", CatalogTableAction::GetMetadata).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::GetMetadata).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             rename_table_request,
@@ -4081,7 +4215,15 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(format!("namespace:{}", CatalogNamespaceAction::CreateTable).as_str());
+        authz.block_action(
+            format!(
+                "namespace:{:?}",
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::default(),
+                }
+            )
+            .as_str(),
+        );
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {

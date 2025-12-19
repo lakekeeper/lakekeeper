@@ -1,4 +1,4 @@
-use std::{str::FromStr as _, sync::Arc};
+use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
 
 use iceberg_ext::catalog::rest::LoadViewResult;
 use lakekeeper_io::Location;
@@ -80,7 +80,8 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             &[
                 CatalogViewAction::GetMetadata,
                 CatalogViewAction::Commit {
-                    properties: Arc::new(Default::default()),
+                    updated_properties: Arc::new(BTreeMap::default()),
+                    removed_properties: Arc::new(Vec::default()),
                 },
             ],
         )

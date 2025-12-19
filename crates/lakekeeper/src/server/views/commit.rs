@@ -1,4 +1,4 @@
-use std::{str::FromStr as _, sync::Arc};
+use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
 
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
@@ -60,13 +60,17 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
+    let (property_updates, property_removals) = parse_view_property_updates(updates);
     let (warehouse, _namespace, view_info) = authorizer
         .load_and_authorize_view_operation::<C>(
             &request_metadata,
             warehouse_id,
             view_ident,
             TabularListFlags::active(),
-            CatalogViewAction::Commit,
+            CatalogViewAction::Commit {
+                updated_properties: Arc::new(property_updates),
+                removed_properties: Arc::new(property_removals),
+            },
             state.v1_state.catalog.clone(),
         )
         .await?;
@@ -381,6 +385,27 @@ fn build_new_metadata(
         )
     })?;
     Ok((requested_update_metadata.metadata, delete_old_location))
+}
+
+pub(crate) fn parse_view_property_updates(
+    updates: &[ViewUpdate],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut property_updates = BTreeMap::new();
+    let mut property_removals = Vec::new();
+
+    for update in updates {
+        match update {
+            ViewUpdate::SetProperties { updates } => {
+                property_updates.extend(updates.clone());
+            }
+            ViewUpdate::RemoveProperties { removals } => {
+                property_removals.extend(removals.clone());
+            }
+            _ => {}
+        }
+    }
+
+    (property_updates, property_removals)
 }
 
 #[cfg(test)]

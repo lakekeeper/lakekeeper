@@ -39,23 +39,27 @@ allow_schema_create if {
     input.action.operation in ["CreateSchema"]
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
+    properties := object.get(input.action.resource.schema, "properties", {})
+    flattended_properties := flatten_properties(properties)
     is_nested_schema(schema) == false
-    trino.require_catalog_access(catalog, "create_namespace")
+    trino.require_catalog_create_namespace_access(catalog, flattended_properties)
 }
 
 allow_schema_create if {
     input.action.operation in ["CreateSchema"]
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
+    properties := object.get(input.action.resource.schema, "properties", {})
+    flattended_properties := flatten_properties(properties)
     is_nested_schema(schema) == true
-    trino.require_schema_access(catalog, parent_schema(schema), "create_namespace")
+    trino.require_schema_access_create(catalog, parent_schema(schema), "create_namespace", flattended_properties)
 }
 
 allow_schema_drop if {
     input.action.operation in ["DropSchema"]
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
-    trino.require_schema_access(catalog, schema, "delete")
+    trino.require_schema_access_simple(catalog, schema, "delete")
 }
 
 # renameNamespace is not supported for Iceberg REST catalog in trino.
@@ -69,7 +73,7 @@ allow_schema_rename if {
 allow_show_schemas if {
     input.action.operation in ["ShowSchemas"]
     catalog := input.action.resource.catalog.name
-    trino.require_catalog_access(catalog, "list_namespaces")
+    trino.require_catalog_access_simple(catalog, "list_namespaces")
 }
 
 allow_select_from_columns_schemata if {
@@ -91,7 +95,7 @@ allow_filter_schemas if {
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
     schema != "information_schema"
-    trino.require_schema_access(catalog, schema, "get_metadata")
+    trino.require_schema_access_simple(catalog, schema, "get_metadata")
 }
 
 allow_show_create_schemas if {
@@ -99,12 +103,12 @@ allow_show_create_schemas if {
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
     schema != "information_schema"
-    trino.require_schema_access(catalog, schema, "get_metadata")
+    trino.require_schema_access_simple(catalog, schema, "get_metadata")
 }
 
 allow_show_tables_in_schema if {
     input.action.operation in ["ShowTables"]
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
-    trino.require_schema_access(catalog, schema, "get_metadata")
+    trino.require_schema_access_simple(catalog, schema, "get_metadata")
 }

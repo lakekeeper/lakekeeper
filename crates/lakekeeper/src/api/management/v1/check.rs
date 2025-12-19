@@ -25,7 +25,6 @@ use crate::{
             CatalogViewAction, CatalogWarehouseAction, MustUse, RequireTableActionError,
             RequireWarehouseActionError, UserOrRole,
         },
-        build_namespace_hierarchy,
         namespace_cache::namespace_ident_to_cache_key,
     },
 };
@@ -920,13 +919,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
                 .get(&warehouse_id)
                 .and_then(|m| m.get(&namespace_id))
             {
-                let namespace_hierarchy = build_namespace_hierarchy(
-                    namespace,
-                    namespaces_by_id
-                        .get(&warehouse_id)
-                        .unwrap_or(&HashMap::new()),
-                );
-                checks.push((namespace_hierarchy, actions));
+                checks.push((namespace.clone(), actions));
             } else {
                 // Namespace not found
                 if error_on_not_found {
@@ -939,18 +932,21 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
             }
         }
 
+        let parent_namespaces = namespaces_by_id
+            .get(&warehouse_id)
+            .cloned()
+            .unwrap_or_default();
         authz_tasks.spawn(async move {
             let (original_indices, namespace_with_actions): (Vec<_>, Vec<_>) = checks
                 .iter()
-                .flat_map(|(ns_hierarchy, actions)| {
-                    actions.iter().map(move |(i, a)| (i, (ns_hierarchy, *a)))
-                })
+                .flat_map(|(ns, actions)| actions.iter().map(move |(i, a)| (i, (ns, a.clone()))))
                 .unzip();
             let allowed = authorizer
                 .are_allowed_namespace_actions_vec(
                     &metadata,
                     for_user.as_ref(),
                     &warehouse,
+                    &parent_namespaces,
                     &namespace_with_actions,
                 )
                 .await?;
@@ -1029,20 +1025,20 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
                     None,
                 ));
             };
-            let namespace_hierarchy = build_namespace_hierarchy(
-                namespace,
-                namespaces_by_id
-                    .get(&warehouse_id)
-                    .unwrap_or(&HashMap::new()),
-            );
-            checks.push((namespace_hierarchy, actions));
+            checks.push((namespace.clone(), actions));
         }
 
+        let parent_namespaces = namespaces_by_id
+            .get(&warehouse_id)
+            .cloned()
+            .unwrap_or_default();
         authz_tasks.spawn(async move {
             let (original_indices, namespace_with_actions): (Vec<_>, Vec<_>) = checks
                 .iter()
                 .flat_map(|(ns_hierarchy, actions)| {
-                    actions.iter().map(move |(i, a)| (i, (ns_hierarchy, *a)))
+                    actions
+                        .iter()
+                        .map(move |(i, a)| (i, (ns_hierarchy, a.clone())))
                 })
                 .unzip();
             let allowed = authorizer
@@ -1050,6 +1046,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
                     &metadata,
                     for_user.as_ref(),
                     &warehouse,
+                    &parent_namespaces,
                     &namespace_with_actions,
                 )
                 .await?;
@@ -1134,7 +1131,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, *table_action, *view_action) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1238,7 +1235,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, *table_action, *view_action) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1448,6 +1445,8 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::{
         api::{
@@ -1460,9 +1459,12 @@ mod tests {
         implementations::{CatalogState, postgres::PostgresBackend},
         request_metadata::RequestMetadata,
         server::CatalogServer,
-        service::authz::{
-            CatalogNamespaceAction, CatalogServerAction, CatalogTableAction,
-            CatalogWarehouseAction, tests::HidingAuthorizer,
+        service::{
+            UserId,
+            authz::{
+                CatalogNamespaceAction, CatalogServerAction, CatalogTableAction,
+                CatalogWarehouseAction, tests::HidingAuthorizer,
+            },
         },
         tests::create_table_request,
     };
@@ -1574,7 +1576,9 @@ mod tests {
                 id: Some("namespace-check-1".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable,
+                    action: CatalogNamespaceAction::CreateTable {
+                        properties: Arc::default(),
+                    },
                     namespace: NamespaceIdentOrUuid::Id {
                         namespace_id,
                         warehouse_id: test_warehouse.warehouse_id,
@@ -1601,7 +1605,9 @@ mod tests {
                 id: Some("namespace-check-2".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable,
+                    action: CatalogNamespaceAction::CreateTable {
+                        properties: Arc::default(),
+                    },
                     namespace: NamespaceIdentOrUuid::Name {
                         namespace: create_ns_resp.namespace.clone(),
                         warehouse_id: test_warehouse.warehouse_id,
@@ -1820,7 +1826,9 @@ mod tests {
                 id: Some("visible-namespace-id".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable,
+                    action: CatalogNamespaceAction::CreateTable {
+                        properties: Arc::default(),
+                    },
                     namespace: NamespaceIdentOrUuid::Id {
                         namespace_id,
                         warehouse_id: test_warehouse.warehouse_id,
@@ -1843,7 +1851,9 @@ mod tests {
                 id: Some("visible-namespace-name".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable,
+                    action: CatalogNamespaceAction::CreateTable {
+                        properties: Arc::default(),
+                    },
                     namespace: NamespaceIdentOrUuid::Name {
                         namespace: create_ns_resp.namespace.clone(),
                         warehouse_id: test_warehouse.warehouse_id,
@@ -1869,7 +1879,9 @@ mod tests {
                 id: Some("hidden-namespace-id".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable,
+                    action: CatalogNamespaceAction::CreateTable {
+                        properties: Arc::default(),
+                    },
                     namespace: NamespaceIdentOrUuid::Id {
                         namespace_id,
                         warehouse_id: test_warehouse.warehouse_id,
@@ -1892,7 +1904,9 @@ mod tests {
                 id: Some("hidden-namespace-name".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable,
+                    action: CatalogNamespaceAction::CreateTable {
+                        properties: Arc::default(),
+                    },
                     namespace: NamespaceIdentOrUuid::Name {
                         namespace: create_ns_resp.namespace.clone(),
                         warehouse_id: test_warehouse.warehouse_id,
@@ -2117,7 +2131,9 @@ mod tests {
                     id: Some("visible".to_string()),
                     identity: None,
                     operation: CatalogActionCheckOperation::Namespace {
-                        action: CatalogNamespaceAction::CreateTable,
+                        action: CatalogNamespaceAction::CreateTable {
+                            properties: Arc::default(),
+                        },
                         namespace: NamespaceIdentOrUuid::Id {
                             namespace_id: ns1_hierarchy.namespace_id(),
                             warehouse_id: test_warehouse.warehouse_id,
@@ -2128,7 +2144,9 @@ mod tests {
                     id: Some("hidden".to_string()),
                     identity: None,
                     operation: CatalogActionCheckOperation::Namespace {
-                        action: CatalogNamespaceAction::CreateTable,
+                        action: CatalogNamespaceAction::CreateTable {
+                            properties: Arc::default(),
+                        },
                         namespace: NamespaceIdentOrUuid::Id {
                             namespace_id: ns2_hierarchy.namespace_id(),
                             warehouse_id: test_warehouse.warehouse_id,
@@ -2298,5 +2316,64 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.r#type, "TooManyChecks");
+    }
+
+    #[test]
+    fn test_table_action_update_property_serde() {
+        let expected = serde_json::json!({
+            "checks":[
+                {
+                    "identity":{
+                        "user":"oidc~9410d0bf-4487-4177-a34f-af364cac0a59"
+                    },
+                    "operation":{
+                        "table":{
+                            "action":{
+                                "action":"commit",
+                                "removed_properties":[],
+                                "updated_properties":{"format_version":2}
+                            },
+                            "namespace":["test_set_properties_trino"],
+                            "table":"my_table",
+                            "warehouse-id":"e2c21690-dce9-11f0-9036-c3bdc0f3ba79"
+                        }
+                    }
+                }],
+                "error-on-not-found":false});
+        let action = CatalogTableAction::Commit {
+            removed_properties: Arc::new(vec![]),
+            updated_properties: Arc::new({
+                let mut map = BTreeMap::new();
+                map.insert("format_version".to_string(), "2".to_string());
+                map
+            }),
+        };
+        let item = CatalogActionCheckItem {
+            id: None,
+            identity: Some(UserOrRole::User(UserId::new_unchecked(
+                "oidc",
+                "9410d0bf-4487-4177-a34f-af364cac0a59",
+            ))),
+            operation: CatalogActionCheckOperation::Table {
+                action,
+                table: TabularIdentOrUuid::Name {
+                    namespace: NamespaceIdent::from_strs(vec![
+                        "test_set_properties_trino".to_string(),
+                    ])
+                    .unwrap(),
+                    table: "my_table".to_string(),
+                    warehouse_id: uuid::Uuid::parse_str("e2c21690-dce9-11f0-9036-c3bdc0f3ba79")
+                        .unwrap()
+                        .into(),
+                },
+            },
+        };
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![item],
+            error_on_not_found: false,
+        };
+        let deserialized: CatalogActionsBatchCheckRequest =
+            serde_json::from_value(expected).unwrap();
+        assert_eq!(request, deserialized);
     }
 }

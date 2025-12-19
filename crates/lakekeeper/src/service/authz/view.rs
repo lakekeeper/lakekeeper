@@ -74,7 +74,7 @@ impl AuthZViewActionForbidden {
     pub fn new(
         warehouse_id: WarehouseId,
         view: impl Into<ViewIdentOrId>,
-        action: impl ViewAction,
+        action: &impl ViewAction,
         actor: Actor,
     ) -> Self {
         Self {
@@ -246,7 +246,7 @@ pub trait AuthZViewOps: Authorizer {
                     AuthZViewActionForbidden::new(
                         warehouse_id,
                         view_ident.clone(),
-                        action,
+                        &action,
                         actor.clone(),
                     )
                     .into()

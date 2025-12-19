@@ -65,6 +65,7 @@ services:
       - LAKEKEEPER__OPENFGA__CLIENT_ID=openfga
       - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
       - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
+      - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
       - RUST_LOG=info,lakekeeper=trace,middle=trace
     command: ["serve"]
     healthcheck:

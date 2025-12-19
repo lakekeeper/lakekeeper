@@ -304,7 +304,7 @@ impl AuthZTableActionForbidden {
     pub fn new(
         warehouse_id: WarehouseId,
         table: impl Into<TableIdentOrId>,
-        action: impl TableAction,
+        action: &impl TableAction,
         actor: Actor,
     ) -> Self {
         Self {
@@ -521,7 +521,7 @@ pub trait AuthZTableOps: Authorizer {
                     AuthZTableActionForbidden::new(
                         warehouse_id,
                         table_ident.clone(),
-                        action,
+                        &action,
                         actor.clone(),
                     )
                     .into()
@@ -701,7 +701,7 @@ pub trait AuthZTableOps: Authorizer {
                 return Err(AuthZTableActionForbidden::new(
                     table.warehouse_id(),
                     table.table_ident().clone(),
-                    action.clone(),
+                    action,
                     actor.clone(),
                 )
                 .into());
@@ -965,7 +965,7 @@ pub trait AuthZTableOps: Authorizer {
                         return Err(AuthZViewActionForbidden::new(
                             info.warehouse_id(),
                             info.view_id(),
-                            action.clone().into(),
+                            &action.clone().into(),
                             metadata.actor().clone(),
                         )
                         .into());
@@ -974,7 +974,7 @@ pub trait AuthZTableOps: Authorizer {
                         return Err(AuthZTableActionForbidden::new(
                             info.warehouse_id(),
                             info.table_id(),
-                            action.clone().into(),
+                            &action.clone().into(),
                             metadata.actor().clone(),
                         )
                         .into());
@@ -1297,7 +1297,7 @@ mod tests {
             "table:{}/{}",
             warehouse_resp.warehouse_id, table2_info.tabular_id
         ));
-        authz.block_action(&format!("view:{}", CatalogViewAction::Drop));
+        authz.block_action(&format!("view:{:?}", CatalogViewAction::Drop));
 
         let warehouse = PostgresBackend::get_active_warehouse_by_id(
             warehouse_resp.warehouse_id,

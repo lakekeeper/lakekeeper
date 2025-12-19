@@ -651,6 +651,7 @@ def trino(warehouse: Warehouse, storage_config, trino_token):
             "iceberg.rest-catalog.oauth2.server-uri" = '{settings.token_endpoint}',
             "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
             "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
+            "iceberg.allowed-extra-properties" = '*',
             "iceberg.unique-table-location" = 'true'
             {extra_config}
         )

@@ -81,7 +81,7 @@ impl AuthZNamespaceActionForbidden {
     pub fn new(
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId>,
-        action: impl NamespaceAction,
+        action: &impl NamespaceAction,
         actor: Actor,
     ) -> Self {
         Self {
@@ -309,7 +309,7 @@ pub trait AuthzNamespaceOps: Authorizer {
                     AuthZNamespaceActionForbidden::new(
                         warehouse.warehouse_id,
                         namespace_name.clone(),
-                        action,
+                        &action,
                         actor.clone(),
                     )
                     .into()

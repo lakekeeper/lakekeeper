@@ -4628,104 +4628,675 @@ components:
         error:
           $ref: '#/components/schemas/ErrorModel'
     LakekeeperNamespaceAction:
-      type: string
-      enum:
-        - create_table
-        - create_view
-        - create_namespace
-        - delete
-        - update_properties
-        - get_metadata
-        - list_tables
-        - list_views
-        - list_namespaces
-        - list_everything
-        - set_protection
-        - include_in_list
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_table
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_view
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_properties
+            removed:
+              type: array
+              items:
+                type: string
+            updated:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_tables
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_views
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
     LakekeeperProjectAction:
-      type: string
-      enum:
-        - create_warehouse
-        - delete
-        - rename
-        - get_metadata
-        - list_warehouses
-        - include_in_list
-        - create_role
-        - list_roles
-        - search_roles
-        - get_endpoint_statistics
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_warehouse
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_warehouses
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_role
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - search_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
     LakekeeperRoleAction:
-      type: string
-      enum:
-        - read
-        - read_metadata
-        - delete
-        - update
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update
     LakekeeperServerAction:
-      type: string
-      enum:
-        - create_project
-        - update_users
-        - delete_users
-        - list_users
-        - provision_users
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_project
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - provision_users
     LakekeeperTableAction:
-      type: string
-      enum:
-        - drop
-        - write_data
-        - read_data
-        - get_metadata
-        - commit
-        - rename
-        - include_in_list
-        - undrop
-        - get_tasks
-        - control_tasks
-        - set_protection
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - write_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+            removed_properties:
+              type: array
+              items:
+                type: string
+            updated_properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperUserAction:
-      type: string
-      enum:
-        - read
-        - update
-        - delete
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
     LakekeeperViewAction:
-      type: string
-      enum:
-        - drop
-        - get_metadata
-        - commit
-        - include_in_list
-        - rename
-        - undrop
-        - get_tasks
-        - control_tasks
-        - set_protection
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+            removed_properties:
+              type: array
+              items:
+                type: string
+            updated_properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperWarehouseAction:
-      type: string
-      enum:
-        - create_namespace
-        - delete
-        - update_storage
-        - update_storage_credential
-        - get_metadata
-        - get_config
-        - list_namespaces
-        - list_everything
-        - use
-        - include_in_list
-        - deactivate
-        - activate
-        - rename
-        - list_deleted_tabulars
-        - modify_soft_deletion
-        - get_task_queue_config
-        - modify_task_queue_config
-        - get_all_tasks
-        - control_all_tasks
-        - set_protection
-        - get_endpoint_statistics
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage_credential
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - use
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - deactivate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - activate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_deleted_tabulars
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_soft_deletion
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
     LicenseStatus:
       type: object
       description: Status of license validation

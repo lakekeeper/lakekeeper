@@ -11,6 +11,13 @@ trino_catalog_by_name[catalog_name] = trino_catalog if {
     catalog_name := trino_catalog.name
 }
 
+# flatten properties by merging extra_properties into the main properties object
+flatten_properties(properties) = flattened if {
+    extra := object.get(properties, "extra_properties", {})
+    base := object.remove(properties, ["extra_properties"])
+    flattened := object.union(base,extra)
+}
+
 # Iceberg REST Namespaces are multi part identifiers (arrays).
 # Trino schemas are strings separated by dots.
 namespace_for_schema(schema_name) = namespace_name if {
@@ -29,9 +36,9 @@ parent_schema(schema_name) = parent_schema if {
     parent_schema := concat(".", parent_namespace)
 }
 
-require_catalog_access(catalog_name, action) := true if {
+require_catalog_access_simple(catalog_name, action) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
-    lakekeeper.require_warehouse_access(
+    lakekeeper.require_warehouse_acces_simple(
         trino_catalog.lakekeeper_id,
         trino_catalog.lakekeeper_warehouse, 
         trino.lakekeeper_user_id,
@@ -39,10 +46,20 @@ require_catalog_access(catalog_name, action) := true if {
     )
 }
 
-require_schema_access(catalog_name, schema_name, action) := true if {
+require_catalog_create_namespace_access(catalog_name, properties) := true if {
+    trino_catalog := trino.trino_catalog_by_name[catalog_name]
+    lakekeeper.require_warehouse_create_namespace_access(
+        trino_catalog.lakekeeper_id,
+        trino_catalog.lakekeeper_warehouse, 
+        trino.lakekeeper_user_id,
+        properties
+    )
+}
+
+require_schema_access_simple(catalog_name, schema_name, action) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
     namespace_name := trino.namespace_for_schema(schema_name)
-    lakekeeper.require_namespace_access(
+    lakekeeper.require_namespace_access_simple(
         trino_catalog.lakekeeper_id,
         trino_catalog.lakekeeper_warehouse, 
         namespace_name,
@@ -50,11 +67,36 @@ require_schema_access(catalog_name, schema_name, action) := true if {
         action
     )
 }
-
-require_table_access(catalog_name, schema_name, table_name, action) := true if {
+require_schema_access_create(catalog_name, schema_name, action, properties) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
     namespace_name := trino.namespace_for_schema(schema_name)
-    lakekeeper.require_table_access(
+    lakekeeper.require_namespace_access_create(
+        trino_catalog.lakekeeper_id,
+        trino_catalog.lakekeeper_warehouse, 
+        namespace_name,
+        trino.lakekeeper_user_id,
+        action,
+        properties
+    )
+}
+# Not used yet
+require_schema_access_update_properties(catalog_name, schema_name, removed_properties, updated_properties) := true if {
+    trino_catalog := trino.trino_catalog_by_name[catalog_name]
+    namespace_name := trino.namespace_for_schema(schema_name)
+    lakekeeper.require_namespace_access_update_properties(
+        trino_catalog.lakekeeper_id,
+        trino_catalog.lakekeeper_warehouse, 
+        namespace_name,
+        trino.lakekeeper_user_id,
+        removed_properties,
+        updated_properties
+    )
+}
+
+require_table_access_simple(catalog_name, schema_name, table_name, action) := true if {
+    trino_catalog := trino.trino_catalog_by_name[catalog_name]
+    namespace_name := trino.namespace_for_schema(schema_name)
+    lakekeeper.require_table_access_simple(
         trino_catalog.lakekeeper_id,
         trino_catalog.lakekeeper_warehouse, 
         namespace_name,
@@ -64,10 +106,24 @@ require_table_access(catalog_name, schema_name, table_name, action) := true if {
     )
 }
 
-require_view_access(catalog_name, schema_name, view_name, action) := true if {
+require_table_access_commit(catalog_name, schema_name, table_name, updated_properties, removed_properties) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
     namespace_name := trino.namespace_for_schema(schema_name)
-    lakekeeper.require_view_access(
+    lakekeeper.require_table_access_commit(
+        trino_catalog.lakekeeper_id,
+        trino_catalog.lakekeeper_warehouse, 
+        namespace_name,
+        table_name,
+        trino.lakekeeper_user_id,
+        updated_properties,
+        removed_properties
+    )
+}
+
+require_view_access_simple(catalog_name, schema_name, view_name, action) := true if {
+    trino_catalog := trino.trino_catalog_by_name[catalog_name]
+    namespace_name := trino.namespace_for_schema(schema_name)
+    lakekeeper.require_view_access_simple(
         trino_catalog.lakekeeper_id,
         trino_catalog.lakekeeper_warehouse, 
         namespace_name,
@@ -76,6 +132,7 @@ require_view_access(catalog_name, schema_name, view_name, action) := true if {
         action
     )
 }
+
 
 is_metadata_table(table_name) := true if {
     table_name_suffixes := [

@@ -733,3 +733,20 @@ def test_metadata_table_files_with_partition_filter(
 
     # Verify we have files
     assert len(r) >= 2
+
+
+def test_table_extra_properties(trino, warehouse: conftest.Warehouse):
+    cur = trino.cursor()
+    cur.execute("CREATE SCHEMA test_table_extra_properties")
+    cur.execute(
+        "CREATE TABLE test_table_extra_properties.my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    # Set extra properties
+    cur.execute(
+        """ALTER TABLE test_table_extra_properties.my_table SET PROPERTIES extra_properties = MAP(ARRAY['extra.property.one'], ARRAY['foo'])"""
+    )
+    # Verify extra properties are set
+    r = cur.execute(
+        f"SELECT key, value FROM test_table_extra_properties.\"my_table$properties\" WHERE key = 'extra.property.one'"
+    ).fetchall()
+    assert r == [["extra.property.one", "foo"]]

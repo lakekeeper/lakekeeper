@@ -1892,7 +1892,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
         let allowed = authorizer.clone().check(key).await?;
 
-        OpenFGAResult::Ok(Some(*action).filter(|_| allowed))
+        OpenFGAResult::Ok(Some(action.clone()).filter(|_| allowed))
     });
     let actions = futures::future::try_join_all(actions)
         .await?
@@ -2095,6 +2095,8 @@ mod tests {
     }
 
     mod openfga_integration_tests {
+        use std::collections::HashMap;
+
         use lakekeeper::{
             service::{
                 ResolvedWarehouse,
@@ -2220,9 +2222,10 @@ mod tests {
                     &RequestMetadata::test_user(user_id_assignee.clone()),
                     None,
                     &ResolvedWarehouse::new_random(),
+                    &HashMap::new(),
                     &namespaces
                         .iter()
-                        .map(|id| (id, AllNamespaceRelations::CanDelete))
+                        .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                         .collect::<Vec<_>>(),
                 )
                 .await
@@ -2243,9 +2246,10 @@ mod tests {
                     &RequestMetadata::test_user(user_id_assignee.clone()),
                     None,
                     &ResolvedWarehouse::new_random(),
+                    &HashMap::new(),
                     &namespaces
                         .iter()
-                        .map(|id| (id, AllNamespaceRelations::CanDelete))
+                        .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                         .collect::<Vec<_>>(),
                 )
                 .await
@@ -2693,11 +2697,17 @@ mod tests {
 
             let actions: Vec<_> = namespaces
                 .iter()
-                .map(|ns| (ns, AllNamespaceRelations::CanDelete))
+                .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &HashMap::new(),
+                    &actions,
+                )
                 .await
                 .unwrap();
 
@@ -2776,11 +2786,17 @@ mod tests {
 
             let actions: Vec<_> = namespaces
                 .iter()
-                .map(|ns| (ns, AllNamespaceRelations::CanDelete))
+                .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &HashMap::new(),
+                    &actions,
+                )
                 .await
                 .unwrap();
 
@@ -2827,11 +2843,17 @@ mod tests {
 
             let actions: Vec<_> = namespaces
                 .iter()
-                .map(|ns| (ns, AllNamespaceRelations::CanGetMetadata))
+                .map(|ns| (&ns.namespace, AllNamespaceRelations::CanGetMetadata))
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &HashMap::new(),
+                    &actions,
+                )
                 .await
                 .unwrap();
 

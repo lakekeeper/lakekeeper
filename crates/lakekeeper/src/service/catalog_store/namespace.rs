@@ -46,6 +46,9 @@ pub struct NamespaceWithParent {
 }
 pub trait AuthZNamespaceInfo: Send + Sync {
     fn namespace(&self) -> &Namespace;
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace().namespace_id
+    }
     fn parent(&self) -> Option<(NamespaceId, NamespaceVersion)>;
     fn warehouse_id(&self) -> WarehouseId {
         self.namespace().warehouse_id
@@ -104,6 +107,11 @@ impl NamespaceWithParent {
     #[must_use]
     pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.namespace.created_at
+    }
+
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.parent.is_none()
     }
 }
 

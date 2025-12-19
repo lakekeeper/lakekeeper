@@ -1068,10 +1068,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 None,
                 &[
                     (&warehouse, CatalogWarehouseAction::Use),
-                    (
-                        &warehouse,
-                        CatalogWarehouseAction::ListDeletedTabulars,
-                    ),
+                    (&warehouse, CatalogWarehouseAction::ListDeletedTabulars),
                     (&warehouse, CatalogWarehouseAction::ListEverything),
                 ],
             )
@@ -1084,7 +1081,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         if !can_list_deleted_tabulars {
             return Err(AuthZWarehouseActionForbidden::new(
                 warehouse_id,
-                CatalogWarehouseAction::ListDeletedTabulars,
+                &CatalogWarehouseAction::ListDeletedTabulars,
                 request_metadata.actor().clone(),
             )
             .into());

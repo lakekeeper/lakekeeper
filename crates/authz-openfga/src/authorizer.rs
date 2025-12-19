@@ -10,7 +10,7 @@ use lakekeeper::{
     async_trait,
     axum::Router,
     service::{
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
+        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel,
         NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
         TableId, UserId, ViewId,
         authz::{
@@ -449,7 +449,8 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
-        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         let user =
             for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);

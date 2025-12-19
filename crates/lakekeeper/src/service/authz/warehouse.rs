@@ -59,7 +59,7 @@ pub struct AuthZWarehouseActionForbidden {
 }
 impl AuthZWarehouseActionForbidden {
     #[must_use]
-    pub fn new(warehouse_id: WarehouseId, action: impl WarehouseAction, actor: Actor) -> Self {
+    pub fn new(warehouse_id: WarehouseId, action: &impl WarehouseAction, actor: Actor) -> Self {
         Self {
             warehouse_id,
             action: action.as_log_str(),
@@ -233,7 +233,7 @@ pub trait AuthzWarehouseOps: Authorizer {
                 is_allowed.then_some(warehouse).ok_or_else(|| {
                     AuthZWarehouseActionForbidden::new(
                         user_provided_warehouse,
-                        action,
+                        &action,
                         actor.clone(),
                     )
                     .into()
