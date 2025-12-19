@@ -1478,59 +1478,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/project/task-queue/{queue_name}/config:
-    get:
-      tags:
-        - tasks
-      summary: Get the configuration for a Project-level Task Queue.
-      description: These configurations are global per project and shared across all instances of this kind of task.
-      operationId: get_project_task_queue_config
-      parameters:
-        - name: queue_name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetTaskQueueConfigResponse'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-    post:
-      tags:
-        - tasks
-      summary: Set the configuration for a Project-level Task Queue.
-      description: These configurations are global per project and shared across all instances of this kind of task.
-      operationId: set_project_task_queue_config
-      parameters:
-        - name: queue_name
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SetTaskQueueConfigRequest'
-        required: true
-      responses:
-        '204':
-          description: Project-level Task queue config set successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/task/by-id/{task_id}:
     get:
       tags:
