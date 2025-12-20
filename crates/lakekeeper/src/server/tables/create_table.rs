@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     super::{io::write_file, require_warehouse_id},
-    validate_table_or_view_ident, validate_table_properties,
+    validate_table_properties,
 };
 use crate::{
     WarehouseId,
@@ -19,7 +19,10 @@ use crate::{
         TableIdent, tables::DataAccessMode,
     },
     request_metadata::RequestMetadata,
-    server::{compression_codec::CompressionCodec, tabular::determine_tabular_location},
+    server::{
+        compression_codec::CompressionCodec, tables::validate_table_or_view_ident_creation,
+        tabular::determine_tabular_location,
+    },
     service::{
         CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
         Transaction,
@@ -146,7 +149,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = guard.warehouse_id();
     let table = TableIdent::new(provided_ns.clone(), request.name.clone());
-    validate_table_or_view_ident(&table)?;
+    validate_table_or_view_ident_creation(&table)?;
 
     if let Some(properties) = &request.properties {
         validate_table_properties(properties.keys())?;

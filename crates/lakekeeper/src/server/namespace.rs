@@ -227,11 +227,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             namespace,
             properties,
         } = &request;
-
-        tracing::debug!("Creating namespace: {:?}", namespace);
-
-        validate_namespace_ident(namespace)?;
-
+        validate_namespace_ident_creation(namespace)?;
         properties
             .as_ref()
             .map(|p| validate_namespace_properties_keys(p.keys()))
@@ -714,6 +710,23 @@ pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()>
             None,
         )
         .append_detail(format!("Namespace: {namespace:?}"))
+        .into());
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_namespace_ident_creation(namespace: &NamespaceIdent) -> Result<()> {
+    validate_namespace_ident(namespace)?;
+
+    // Deny a "+" in in namespace, since some clients (spark, trino) encode space as "+" in URLs and supporting
+    // space is more important. Other clients properly encode space as "%20".
+    if namespace.as_ref().iter().any(|part| part.contains('+')) {
+        return Err(ErrorModel::bad_request(
+            "Namespace cannot contain '+' character.",
+            "InvalidNamespace",
+            None,
+        )
         .into());
     }
 

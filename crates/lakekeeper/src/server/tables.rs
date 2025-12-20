@@ -186,7 +186,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let table_ident = TableIdent::new(provided_ns.clone(), request.name.clone());
-        validate_table_or_view_ident(&table_ident)?;
+        validate_table_or_view_ident_creation(&table_ident)?;
         let metadata_location =
             parse_location(&request.metadata_location, StatusCode::BAD_REQUEST)?;
 
@@ -512,6 +512,18 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+
+        // Deny a "+" in in table name, since some clients (spark, trino) encode space as "+" in URLs and supporting
+        // space is more important. Other clients properly encode space as "%20".
+        if table.name.contains('+') {
+            return Err(ErrorModel::bad_request(
+                "Table name cannot contain '+' character.",
+                "InvalidTableName",
+                None,
+            )
+            .into());
+        }
+
         validate_table_or_view_ident(table)?;
 
         // ------------------- AUTHZ -------------------
@@ -1746,6 +1758,21 @@ pub(crate) fn validate_table_or_view_ident(table: &TableIdent) -> Result<()> {
         return Err(ErrorModel::bad_request(
             "name of the identifier cannot be empty",
             "IdentifierNameEmpty",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_table_or_view_ident_creation(table: &TableIdent) -> Result<()> {
+    validate_table_or_view_ident(table)?;
+    // Deny a "+" in names, since some clients (spark, trino) encode space as "+" in URLs and supporting
+    // space is more important. Other clients properly encode space as "%20".
+    if table.name.contains('+') {
+        return Err(ErrorModel::bad_request(
+            "Table name cannot contain '+' character.",
+            "InvalidTableName",
             None,
         )
         .into());
