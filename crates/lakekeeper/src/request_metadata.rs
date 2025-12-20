@@ -328,8 +328,7 @@ impl RequestMetadata {
             percent_encoding::utf8_percent_encode(
                 &table_ident.name,
                 percent_encoding::NON_ALPHANUMERIC
-            )
-            .to_string(),
+            ),
         )
     }
 

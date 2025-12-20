@@ -121,13 +121,6 @@ impl NamespaceIdentUrl {
         )
         .to_string()
     }
-
-    pub fn from_raw_url_str(s: &str) -> Self {
-        let decoded = percent_encoding::percent_decode_str(s)
-            .decode_utf8()
-            .expect("Invalid percent-encoded string");
-        NamespaceIdentUrl(decoded.split('\u{1f}').map(ToString::to_string).collect())
-    }
 }
 
 impl From<NamespaceIdentUrl> for NamespaceIdent {
