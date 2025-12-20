@@ -208,7 +208,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let (_table_info, staged_table_id) = C::create_table(
+    let (table_info, staged_table_id) = C::create_table(
         TableCreation {
             warehouse_id: warehouse.warehouse_id,
             namespace_id: ns_hierarchy.namespace_id(),
@@ -267,8 +267,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &table_location,
             StoragePermissions::ReadWriteDelete,
             &request_metadata,
-            warehouse_id,
-            table_id.into(),
+            &table_info,
         )
         .await?;
 

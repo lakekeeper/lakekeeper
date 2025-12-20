@@ -104,6 +104,16 @@ impl ParseFromStr for bool {
     }
 }
 
+impl ParseFromStr for i64 {
+    fn parse_value(value: &str) -> Result<Self, ParseError> {
+        value.parse::<i64>().map_err(|_| ParseError {
+            value: value.to_string(),
+            typ: "i64".to_string(),
+            reasoning: String::new(),
+        })
+    }
+}
+
 impl ParseFromStr for url::Url {
     fn parse_value(value: &str) -> Result<Self, ParseError> {
         value.parse().map_err(|_| ParseError {

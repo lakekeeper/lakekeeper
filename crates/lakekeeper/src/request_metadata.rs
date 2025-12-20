@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::{HeaderMap, HeaderName, Method, StatusCode};
+use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
@@ -281,6 +282,19 @@ impl RequestMetadata {
         table_id: TabularId,
     ) -> String {
         format!("v1/signer/{warehouse_id}/tabular-id/{table_id}/v1/aws/s3/sign")
+    }
+
+    #[must_use]
+    pub fn refresh_client_credentials_endpoint_for_table(
+        &self,
+        warehouse_id: WarehouseId,
+        table_ident: &TableIdent,
+    ) -> String {
+        format!(
+            "v1/{warehouse_id}/namespaces/{}/tables/{}/credentials",
+            table_ident.namespace().to_url_string(),
+            table_ident.name
+        )
     }
 
     #[must_use]

@@ -15,7 +15,7 @@ use azure_storage::{
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::ADLS_AUTHORITY_HOST;
-use iceberg_ext::configs::table::{TableProperties, custom};
+use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
     InvalidLocationError, Location,
     adls::{
@@ -31,18 +31,21 @@ use veil::Redact;
 use crate::{
     CONFIG, WarehouseId,
     api::{
-        CatalogConfig, Result,
+        CatalogConfig, RequestMetadata, Result,
         iceberg::{supported_endpoints, v1::tables::DataAccessMode},
     },
-    service::storage::{
-        ShortTermCredentialsRequest, StoragePermissions, TableConfig,
-        cache::{
-            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-            insert_stc_into_cache,
-        },
-        error::{
-            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-            UpdateError, ValidationError,
+    service::{
+        BasicTabularInfo,
+        storage::{
+            ShortTermCredentialsRequest, StoragePermissions, TableConfig,
+            cache::{
+                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+                insert_stc_into_cache,
+            },
+            error::{
+                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+                UpdateError, ValidationError,
+            },
         },
     },
 };
@@ -257,6 +260,8 @@ impl AdlsProfile {
         data_access: DataAccessMode,
         credential: &AzCredential,
         stc_request: ShortTermCredentialsRequest,
+        tabular_info: &impl BasicTabularInfo,
+        request_metadata: &RequestMetadata,
     ) -> Result<TableConfig, TableConfigError> {
         if !data_access.provide_credentials() || !self.sas_enabled {
             tracing::debug!(
@@ -271,10 +276,10 @@ impl AdlsProfile {
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
-        let cached_sas_token = self.load_sas_token_from_cache(&cache_key).await;
+        let cached_result = self.load_sas_token_from_cache(&cache_key).await;
 
-        let sas = if let Some(sas_token) = cached_sas_token {
-            sas_token
+        let (sas, expiration) = if let Some((sas_token, exp)) = cached_result {
+            (sas_token, exp)
         } else {
             let (sas_token_start, sas_token_end) = self.sas_token_validity_period();
             let sas = match credential {
@@ -318,11 +323,17 @@ impl AdlsProfile {
                         .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS),
                 );
                 let valid_until = Instant::now().checked_add(sts_validity_duration);
-                let cache_value = STCCacheValue::new(sas.clone(), valid_until);
+                let cache_value = STCCacheValue::new(
+                    ShortTermCredential::Adls {
+                        sas_token: sas.clone(),
+                        expiration: sas_token_end,
+                    },
+                    valid_until,
+                );
                 insert_stc_into_cache(cache_key, cache_value).await;
             }
 
-            sas
+            (sas, sas_token_end)
         };
 
         let mut creds = TableProperties::default();
@@ -331,6 +342,15 @@ impl AdlsProfile {
             key: self.iceberg_sas_property_key(),
             value: sas,
         });
+        creds.insert(&creds::ExpirationTimeMs(
+            expiration.unix_timestamp().saturating_mul(1000),
+        ));
+        creds.insert(&adls::RefreshClientCredentialsEndpoint(
+            request_metadata.refresh_client_credentials_endpoint_for_table(
+                tabular_info.warehouse_id(),
+                tabular_info.tabular_ident(),
+            ),
+        ));
 
         Ok(TableConfig {
             // Due to backwards compat reasons we still return creds within config too
@@ -356,16 +376,23 @@ impl AdlsProfile {
         (start, end)
     }
 
-    async fn load_sas_token_from_cache(&self, cache_key: &STCCacheKey) -> Option<String> {
+    async fn load_sas_token_from_cache(
+        &self,
+        cache_key: &STCCacheKey,
+    ) -> Option<(String, OffsetDateTime)> {
         let stc_request = &cache_key.request;
         if CONFIG.cache.stc.enabled {
             if let Some(STCCacheValue {
-                credentials: ShortTermCredential::Adls(sas_token),
+                credentials:
+                    ShortTermCredential::Adls {
+                        sas_token,
+                        expiration,
+                    },
                 ..
             }) = get_stc_from_cache(cache_key).await
             {
                 tracing::debug!("Using cached short term credentials for request: {stc_request}");
-                return Some(sas_token);
+                return Some((sas_token, expiration));
             }
             tracing::debug!(
                 "No cached SAS token found for request: {stc_request}, fetching new credentials"

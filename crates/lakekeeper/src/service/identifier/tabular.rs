@@ -30,6 +30,16 @@ impl TabularId {
             TabularId::View(_) => "View",
         }
     }
+
+    #[must_use]
+    pub fn is_table(&self) -> bool {
+        matches!(self, TabularId::Table(_))
+    }
+
+    #[must_use]
+    pub fn is_view(&self) -> bool {
+        matches!(self, TabularId::View(_))
+    }
 }
 
 impl AsRef<Uuid> for TabularId {

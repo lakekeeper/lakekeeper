@@ -70,6 +70,13 @@ macro_rules! define_version_newtype {
         #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, derive_more::From)]
         pub struct $name(i64);
 
+        impl $name {
+            #[must_use]
+            pub fn new(value: i64) -> Self {
+                Self(value)
+            }
+        }
+
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}", self.0)

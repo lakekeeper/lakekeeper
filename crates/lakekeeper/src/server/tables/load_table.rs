@@ -89,7 +89,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
     let CatalogLoadTableResult {
-        table_id,
+        table_id: _,
         namespace_id: _,
         table_metadata,
         metadata_location,
@@ -135,8 +135,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
                     &table_location,
                     storage_permissions,
                     &request_metadata,
-                    warehouse_id,
-                    table_id.into(),
+                    &table_info,
                 )
                 .await?,
         )
