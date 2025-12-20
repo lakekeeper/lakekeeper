@@ -340,7 +340,10 @@ impl AdlsProfile {
 
         let mut creds = TableProperties::default();
 
-        let expiration_ms = expiration.unix_timestamp().saturating_mul(1000);
+        let expiration_ms = expiration
+            .unix_timestamp()
+            .saturating_sub(60) // Allow for some clock drift
+            .saturating_mul(1000);
         creds.insert(&creds::ExpirationTimeMs(expiration_ms));
         creds.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
@@ -386,16 +389,16 @@ impl AdlsProfile {
 
     fn sas_token_validity_period(&self) -> (OffsetDateTime, OffsetDateTime) {
         // allow for some clock drift
-        let start = OffsetDateTime::now_utc() - time::Duration::minutes(5);
-        // Add 5 minutes to validity to account for clock drift
+        let start = OffsetDateTime::now_utc() - time::Duration::minutes(1);
+        // Add 1 minutes to validity to account for clock drift
         let validity = self
             .sas_token_validity_seconds
             .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS)
-            + 300;
+            + 60;
 
         let clamped_validity_seconds = i64::try_from(validity)
             .unwrap_or(MAX_SAS_TOKEN_VALIDITY_SECONDS_I64)
-            .clamp(0, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
+            .clamp(60, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
 
         let end = start.saturating_add(time::Duration::seconds(clamped_validity_seconds));
         (start, end)
