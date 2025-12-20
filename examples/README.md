@@ -13,4 +13,3 @@ Running `docker compose up` for each example starts the `latest-main` release of
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose-build.yaml up --build
 ```
-

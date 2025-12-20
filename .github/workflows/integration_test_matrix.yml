@@ -52,7 +52,7 @@ jobs:
           - spark_aws_sts-1.9.2
           - spark_aws_sts-1.10.0
           - spark_gcs-1.8.0
-          - spark_gcs-1.9.2
+          # - spark_gcs-1.9.2 # Broken due to https://github.com/apache/iceberg/issues/14634
           - spark_gcs-1.10.0
           - spark_minio_sts-1.8.0
           - spark_minio_sts-1.9.2

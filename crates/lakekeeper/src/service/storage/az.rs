@@ -34,6 +34,7 @@ use crate::{
         CatalogConfig, RequestMetadata, Result,
         iceberg::{supported_endpoints, v1::tables::DataAccessMode},
     },
+    request_metadata::UserAgent,
     service::{
         BasicTabularInfo,
         storage::{
@@ -255,6 +256,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Fails if sas token cannot be generated.
+    #[allow(clippy::too_many_lines)]
     pub async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
@@ -338,19 +340,42 @@ impl AdlsProfile {
 
         let mut creds = TableProperties::default();
 
+        let expiration_ms = expiration.unix_timestamp().saturating_mul(1000);
+        creds.insert(&creds::ExpirationTimeMs(expiration_ms));
         creds.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
             value: sas,
         });
-        creds.insert(&creds::ExpirationTimeMs(
-            expiration.unix_timestamp().saturating_mul(1000),
-        ));
         creds.insert(&adls::RefreshClientCredentialsEndpoint(
             request_metadata.refresh_client_credentials_endpoint_for_table(
                 tabular_info.warehouse_id(),
                 tabular_info.tabular_ident(),
             ),
         ));
+
+        // Note: PyIceberg versions up to 0.10.0 have a bug parsing ADLS vended credentials.
+        // The client incorrectly extracts the account name from *any* property starting with
+        // "adls.sas-token", including "adls.sas-token-expires-at-ms.*", which breaks endpoint detection.
+        let pyiceberg_version = match request_metadata.user_agent() {
+            Some(UserAgent::PyIceberg { version }) => Some(version),
+            _ => None,
+        };
+        let can_handle_sas_expiry_key = pyiceberg_version
+            .as_ref()
+            .and_then(|v| semver::Version::parse(v).ok())
+            .is_some_and(|v| v > semver::Version::new(0, 10, 0));
+        if pyiceberg_version.is_none() || can_handle_sas_expiry_key {
+            creds.insert(&custom::CustomConfig {
+                key: self.iceberg_sas_expires_at_property_key(),
+                value: expiration_ms.to_string(),
+            });
+        } else {
+            tracing::debug!(
+                "Not inserting '{}' property for PyIceberg version {:?} due to known parsing issues.",
+                self.iceberg_sas_expires_at_property_key(),
+                pyiceberg_version,
+            );
+        }
 
         Ok(TableConfig {
             // Due to backwards compat reasons we still return creds within config too
@@ -480,6 +505,13 @@ impl AdlsProfile {
         )
     }
 
+    fn iceberg_sas_expires_at_property_key(&self) -> String {
+        iceberg_expiration_property_key(
+            &self.account_name,
+            self.host.as_deref().unwrap_or(DEFAULT_HOST),
+        )
+    }
+
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {
         if let Some(key_prefix) = self.key_prefix.as_mut() {
             *key_prefix = key_prefix.trim_matches('/').to_string();
@@ -604,6 +636,10 @@ impl From<StoragePermissions> for BlobSasPermissions {
 
 fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String {
     format!("adls.sas-token.{account_name}.{endpoint_suffix}")
+}
+
+fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) -> String {
+    format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
 pub(super) fn get_file_io_from_table_config(

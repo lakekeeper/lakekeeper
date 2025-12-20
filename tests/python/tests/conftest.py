@@ -235,6 +235,7 @@ def storage_config(request) -> dict:
                 "filesystem": settings.azure_storage_filesystem,
                 **extra_config,
                 "key-prefix": test_id,
+                "sas-token-validity-seconds": 5,
             },
             "storage-credential": {
                 "type": "az",
@@ -570,7 +571,6 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.warehouse": f"{warehouse.project_id}/{warehouse.warehouse_name}",
         f"spark.sql.catalog.{catalog_name}.scope": settings.openid_scope,
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.token_endpoint}",
-        f"spark.sql.catalog.{catalog_name}.cache-enabled": "false",
     }
     if (
         storage_config["storage-profile"]["type"] == "s3"

@@ -88,6 +88,7 @@ percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
 rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_norway = { workspace = true, optional = true }

@@ -3872,6 +3872,7 @@ dependencies = [
  "quick-xml 0.38.3",
  "rdkafka",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "serde_norway",
