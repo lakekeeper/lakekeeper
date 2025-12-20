@@ -46,6 +46,7 @@ pub enum UserAgent {
 }
 
 impl UserAgent {
+    #[cfg(feature = "router")]
     fn parse(user_agent: &str) -> Self {
         if let Some(version) = user_agent.strip_prefix("PyIceberg/") {
             Self::PyIceberg {
