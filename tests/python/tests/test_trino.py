@@ -750,3 +750,17 @@ def test_table_extra_properties(trino, warehouse: conftest.Warehouse):
         "SELECT key, value FROM test_table_extra_properties.\"my_table$properties\" WHERE key = 'extra.property.one'"
     ).fetchall()
     assert r == [["extra.property.one", "foo"]]
+
+
+def test_create_view_security_invoker(trino, warehouse: conftest.Warehouse):
+    cur = trino.cursor()
+    cur.execute("CREATE SCHEMA test_create_view_security_invoker_trino")
+    cur.execute(
+        "CREATE TABLE test_create_view_security_invoker_trino.my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(
+        "CREATE OR REPLACE VIEW test_create_view_security_invoker_trino.my_view SECURITY INVOKER AS SELECT strings FROM test_create_view_security_invoker_trino.my_table"
+    )
+    assert ["my_view"] in cur.execute(
+        f"SHOW TABLES IN test_create_view_security_invoker_trino"
+    ).fetchall()
