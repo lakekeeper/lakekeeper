@@ -126,7 +126,7 @@ impl<'de> Deserialize<'de> for NamespaceIdentUrl {
     {
         let s = String::deserialize(deserializer)?;
         Ok(NamespaceIdentUrl(
-            s.split('\u{1f}').map(|s| s.replace("+", " ")).collect(),
+            s.split('\u{1f}').map(|s| s.replace('+', " ")).collect(),
         ))
     }
 }
@@ -596,7 +596,7 @@ mod tests {
         req.extensions_mut()
             .insert(RequestMetadata::new_unauthenticated());
 
-        let r = router.oneshot(req).await.unwrap();
+        let r = router.clone().oneshot(req).await.unwrap();
         assert_eq!(r.status().as_u16(), 406);
         let bytes = r.collect().await.unwrap().to_bytes();
         let r = String::from_utf8(bytes.to_vec()).unwrap();
