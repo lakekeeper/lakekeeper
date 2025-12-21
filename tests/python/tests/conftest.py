@@ -235,7 +235,7 @@ def storage_config(request) -> dict:
                 "filesystem": settings.azure_storage_filesystem,
                 **extra_config,
                 "key-prefix": test_id,
-                "sas-token-validity-seconds": 5,
+                "sas-token-validity-seconds": 60,
             },
             "storage-credential": {
                 "type": "az",

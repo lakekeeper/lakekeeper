@@ -283,28 +283,36 @@ impl AdlsProfile {
         let (sas, expiration) = if let Some((sas_token, exp)) = cached_result {
             (sas_token, exp)
         } else {
-            let (sas_token_start, sas_token_end) = self.sas_token_validity_period();
-            let sas = match credential {
+            let (sas_token_start, requested_sas_token_end) = self.sas_token_validity_period();
+            tracing::debug!(
+                "Generating SAS token with requested validity - start: {}, end: {}",
+                sas_token_start,
+                requested_sas_token_end
+            );
+            let (sas, expiration) = match credential {
                 AzCredential::ClientCredentials { .. } => {
                     let client = self.blob_service_client(credential).await?;
                     self.sas_via_delegation_key(
                         sas_token_start,
-                        sas_token_end,
+                        requested_sas_token_end,
                         &stc_request,
                         client,
                     )
                     .await?
                 }
-                AzCredential::SharedAccessKey { key } => self.sas(
-                    &stc_request,
-                    sas_token_end,
-                    azure_core::auth::Secret::new(key.clone()),
-                )?,
+                AzCredential::SharedAccessKey { key } => {
+                    let sas = self.sas(
+                        &stc_request,
+                        requested_sas_token_end,
+                        azure_core::auth::Secret::new(key.clone()),
+                    )?;
+                    (sas, requested_sas_token_end)
+                }
                 AzCredential::AzureSystemIdentity {} => {
                     let client = self.blob_service_client(credential).await?;
                     self.sas_via_delegation_key(
                         sas_token_start,
-                        sas_token_end,
+                        requested_sas_token_end,
                         &stc_request,
                         client,
                     )
@@ -328,22 +336,19 @@ impl AdlsProfile {
                 let cache_value = STCCacheValue::new(
                     ShortTermCredential::Adls {
                         sas_token: sas.clone(),
-                        expiration: sas_token_end,
+                        expiration,
                     },
                     valid_until,
                 );
                 insert_stc_into_cache(cache_key, cache_value).await;
             }
 
-            (sas, sas_token_end)
+            (sas, expiration)
         };
 
         let mut creds = TableProperties::default();
 
-        let expiration_ms = expiration
-            .unix_timestamp()
-            .saturating_sub(60) // Allow for some clock drift
-            .saturating_mul(1000);
+        let expiration_ms = expiration.unix_timestamp().saturating_mul(1000);
         creds.insert(&creds::ExpirationTimeMs(expiration_ms));
         creds.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
@@ -390,6 +395,9 @@ impl AdlsProfile {
     fn sas_token_validity_period(&self) -> (OffsetDateTime, OffsetDateTime) {
         // allow for some clock drift
         let start = OffsetDateTime::now_utc() - time::Duration::minutes(1);
+        let configured_validity = self.sas_token_validity_seconds;
+        let default_validity = SAS_TOKEN_DEFAULT_VALIDITY_SECONDS;
+
         // Add 1 minutes to validity to account for clock drift
         let validity = self
             .sas_token_validity_seconds
@@ -398,9 +406,10 @@ impl AdlsProfile {
 
         let clamped_validity_seconds = i64::try_from(validity)
             .unwrap_or(MAX_SAS_TOKEN_VALIDITY_SECONDS_I64)
-            .clamp(60, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
+            .clamp(120, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
 
         let end = start.saturating_add(time::Duration::seconds(clamped_validity_seconds));
+
         (start, end)
     }
 
@@ -440,7 +449,7 @@ impl AdlsProfile {
         sas_token_end: OffsetDateTime,
         stc_request: &ShortTermCredentialsRequest,
         client: BlobServiceClient,
-    ) -> Result<String, CredentialsError> {
+    ) -> Result<(String, OffsetDateTime), CredentialsError> {
         tracing::debug!(
             "Requesting user delegation key from azure for sas token generation - Valid from {sas_token_start} to {sas_token_end}",
         );
@@ -460,7 +469,8 @@ impl AdlsProfile {
 
         let key = delegation_key.user_deligation_key;
 
-        self.sas(stc_request, signed_expiry, key)
+        let sas = self.sas(stc_request, signed_expiry, key)?;
+        Ok((sas, signed_expiry))
     }
 
     fn sas(
