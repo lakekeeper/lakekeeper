@@ -291,7 +291,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let tabular_id = TableId::from(table_metadata.uuid());
 
-        let (_table_info, staged_table_id) = C::create_table(
+        let (table_info, staged_table_id) = C::create_table(
             TableCreation {
                 warehouse_id: warehouse.warehouse_id,
                 namespace_id,
@@ -310,8 +310,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
                 &request_metadata,
-                warehouse_id,
-                tabular_id.into(),
+                &table_info,
             )
             .await?;
 
@@ -408,7 +407,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
-        let (warehouse, tabular_details, storage_permissions) = authorize_load_table::<C, A>(
+        let (warehouse, tabular_info, storage_permissions) = authorize_load_table::<C, A>(
             &request_metadata,
             table.clone(),
             warehouse_id,
@@ -432,13 +431,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 data_access.into(),
                 storage_secret_ref,
                 &parse_location(
-                    tabular_details.location.as_str(),
+                    tabular_info.location.as_str(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 )?,
                 storage_permission,
                 &request_metadata,
-                warehouse_id,
-                tabular_details.table_id().into(),
+                &tabular_info,
             )
             .await?;
 
@@ -446,7 +444,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             vec![]
         } else {
             vec![StorageCredential {
-                prefix: tabular_details.location.to_string(),
+                prefix: tabular_info.location.to_string(),
                 config: storage_config.creds.into(),
             }]
         };

@@ -56,7 +56,10 @@ pub(super) struct STCCacheKey {
 #[derive(Debug, Clone, derive_more::From)]
 pub(super) enum ShortTermCredential {
     S3(aws_sdk_sts::types::Credentials),
-    Adls(String), // SAS Token
+    Adls {
+        sas_token: String,
+        expiration: time::OffsetDateTime,
+    },
     Gcs(CachedSTSResponse),
 }
 

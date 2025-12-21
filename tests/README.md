@@ -19,9 +19,9 @@ docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.s
 # S3a (alternative protocol)
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_s3a-1.7.1"
 # ADLS 
-docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_adls-1.8.0"
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_adls-1.9.2"
 # WASBS (alternative protocol)
-docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_wasbs-1.8.1"
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_wasbs-1.10.0"
 # Pyiceberg
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh pyiceberg"
 # With Authorization

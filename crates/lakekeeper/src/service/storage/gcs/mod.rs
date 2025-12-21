@@ -11,7 +11,7 @@ use google_cloud_auth::{
     token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
-use iceberg_ext::configs::table::{TableProperties, gcs};
+use iceberg_ext::configs::table::{TableProperties, creds, gcs};
 use lakekeeper_io::{
     InvalidLocationError, Location,
     gcs::{CredentialsFile, GCSSettings, GcsAuth, GcsStorage, validate_bucket_name},
@@ -24,18 +24,21 @@ use veil::Redact;
 use crate::{
     CONFIG, WarehouseId,
     api::{
-        CatalogConfig,
+        CatalogConfig, RequestMetadata,
         iceberg::{supported_endpoints, v1::tables::DataAccessMode},
     },
-    service::storage::{
-        ShortTermCredentialsRequest, TableConfig,
-        cache::{
-            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-            insert_stc_into_cache,
-        },
-        error::{
-            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-            UpdateError, ValidationError,
+    service::{
+        BasicTabularInfo,
+        storage::{
+            ShortTermCredentialsRequest, TableConfig,
+            cache::{
+                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+                insert_stc_into_cache,
+            },
+            error::{
+                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+                UpdateError, ValidationError,
+            },
         },
     },
 };
@@ -342,6 +345,8 @@ impl GcsProfile {
         data_access: DataAccessMode,
         credential: &GcsCredential,
         stc_request: &ShortTermCredentialsRequest,
+        tabular_info: &impl BasicTabularInfo,
+        request_metadata: &RequestMetadata,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
@@ -405,6 +410,16 @@ impl GcsProfile {
                     table_properties.insert(&gcs::TokenExpiresAt(
                         expiry_since_epoch.as_millis().to_string(),
                     ));
+                    match i64::try_from(expiry_since_epoch.as_millis()) {
+                        Ok(expiration) => {
+                            table_properties.insert(&creds::ExpirationTimeMs(expiration));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Calculated expiry time for STS token is outside of valid range: {e:?}. SystemTime: {expiry:?}.",
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -413,6 +428,13 @@ impl GcsProfile {
                 }
             }
         }
+
+        table_properties.insert(&gcs::RefreshCredentialsEndpoint(
+            request_metadata.refresh_client_credentials_endpoint_for_table(
+                tabular_info.warehouse_id(),
+                tabular_info.tabular_ident(),
+            ),
+        ));
 
         Ok(TableConfig {
             // Due to backwards compat reasons we still return creds within config too

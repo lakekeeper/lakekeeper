@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
@@ -107,15 +105,27 @@ where
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceIdentUrl(Vec<String>);
 
-impl From<NamespaceIdentUrl> for NamespaceIdent {
-    fn from(param: NamespaceIdentUrl) -> Self {
-        NamespaceIdent::from_vec(param.0).unwrap()
+impl From<NamespaceIdent> for NamespaceIdentUrl {
+    fn from(param: NamespaceIdent) -> Self {
+        NamespaceIdentUrl(param.inner())
     }
 }
 
-impl From<NamespaceIdent> for NamespaceIdentUrl {
-    fn from(param: NamespaceIdent) -> Self {
-        NamespaceIdentUrl(param.deref().to_owned())
+impl NamespaceIdentUrl {
+    /// Get the inner parts of the namespace
+    #[must_use]
+    pub fn to_url_string(&self) -> String {
+        percent_encoding::utf8_percent_encode(
+            &self.0.join("\u{1f}"),
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string()
+    }
+}
+
+impl From<NamespaceIdentUrl> for NamespaceIdent {
+    fn from(param: NamespaceIdentUrl) -> Self {
+        NamespaceIdent::from_vec(param.0).unwrap()
     }
 }
 

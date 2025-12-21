@@ -129,8 +129,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             &view_location,
             storage_permissions,
             &request_metadata,
-            warehouse_id,
-            view_id.into(),
+            &view_info,
         )
         .await?;
     let load_table_result = LoadViewResult {
