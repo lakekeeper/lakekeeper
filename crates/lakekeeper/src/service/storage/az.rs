@@ -395,8 +395,6 @@ impl AdlsProfile {
     fn sas_token_validity_period(&self) -> (OffsetDateTime, OffsetDateTime) {
         // allow for some clock drift
         let start = OffsetDateTime::now_utc() - time::Duration::minutes(1);
-        let configured_validity = self.sas_token_validity_seconds;
-        let default_validity = SAS_TOKEN_DEFAULT_VALIDITY_SECONDS;
 
         // Add 1 minutes to validity to account for clock drift
         let validity = self
