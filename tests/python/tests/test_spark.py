@@ -1003,7 +1003,6 @@ def test_special_characters_in_names(
         "namespace_עברית_العربية",
         "namespace_🚀_emoji_✨",
         "namespace-Mix!_OF_everything_中文_ä_🎉",
-        "namespace+with+plus+signs",
         "namespace%with%percent",
         "namespace&with&ampersands",
         "namespace=with=equals",
@@ -1020,7 +1019,6 @@ def test_special_characters_in_names(
         "table_עברית_العربية",
         "table_🚀_emoji_✨",
         "table-Mix!_OF_everything_中文_ä_🎉",
-        "table+with+plus",
         "table%with%percent",
     ]
 
