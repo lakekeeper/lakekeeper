@@ -4967,6 +4967,38 @@ components:
               type: string
               enum:
                 - get_endpoint_statistics
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_all_tasks
     LakekeeperRoleAction:
       oneOf:
         - type: object
