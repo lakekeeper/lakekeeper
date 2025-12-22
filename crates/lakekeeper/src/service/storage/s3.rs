@@ -14,7 +14,7 @@ use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{
         ConfigProperty,
-        table::{TableProperties, client, custom, s3},
+        table::{TableProperties, client, creds, custom, s3},
     },
 };
 use lakekeeper_io::{
@@ -39,15 +39,18 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
-    service::storage::{
-        StoragePermissions, TableConfig,
-        cache::{
-            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-            insert_stc_into_cache,
-        },
-        error::{
-            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-            UpdateError, ValidationError,
+    service::{
+        BasicTabularInfo,
+        storage::{
+            StoragePermissions, TableConfig,
+            cache::{
+                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+                insert_stc_into_cache,
+            },
+            error::{
+                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+                UpdateError, ValidationError,
+            },
         },
     },
 };
@@ -406,12 +409,13 @@ impl S3Profile {
     ///
     /// # Errors
     /// Fails if vended credentials are used - currently not supported.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     pub async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
         s3_credential: Option<&S3Credential>,
         stc_request: super::ShortTermCredentialsRequest,
+        tabular_info: &impl BasicTabularInfo,
         request_metadata: &RequestMetadata,
     ) -> Result<TableConfig, TableConfigError> {
         let (remote_signing, vended_credentials) = match data_access {
@@ -460,17 +464,21 @@ impl S3Profile {
 
         if let Some(true) = self.path_style_access {
             config.insert(&s3::PathStyleAccess(true));
+            creds.insert(&s3::PathStyleAccess(true));
         }
 
         config.insert(&s3::Region(self.region.clone()));
+        creds.insert(&s3::Region(self.region.clone()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
             value: self.region.clone(),
         });
         config.insert(&client::Region(self.region.clone()));
+        creds.insert(&client::Region(self.region.clone()));
 
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));
+            creds.insert(&s3::Endpoint(endpoint.clone()));
         }
 
         if vended_credentials {
@@ -488,9 +496,17 @@ impl S3Profile {
                 access_key_id,
                 secret_access_key,
                 session_token,
-                expiration: _,
+                expiration,
                 ..
             } = temporary_credential;
+            let expiration_ms_since_epoch = expiration
+                .to_millis()
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "Failed to convert expiration time to milliseconds since epoch: {e}"
+                    );
+                })
+                .ok();
 
             config.insert(&s3::AccessKeyId(access_key_id.clone()));
             config.insert(&s3::SecretAccessKey(secret_access_key.clone()));
@@ -498,6 +514,18 @@ impl S3Profile {
             creds.insert(&s3::AccessKeyId(access_key_id));
             creds.insert(&s3::SecretAccessKey(secret_access_key));
             creds.insert(&s3::SessionToken(session_token));
+            if let Some(expiration) = expiration_ms_since_epoch {
+                creds.insert(&s3::SesionTokenExpiresAtMs(expiration));
+                creds.insert(&creds::ExpirationTimeMs(expiration));
+            }
+            if tabular_info.tabular_id().is_table() {
+                creds.insert(&client::RefreshClientCredentialsEndpoint(
+                    request_metadata.refresh_client_credentials_endpoint_for_table(
+                        tabular_info.warehouse_id(),
+                        tabular_info.tabular_ident(),
+                    ),
+                ));
+            }
         }
 
         if remote_signing {

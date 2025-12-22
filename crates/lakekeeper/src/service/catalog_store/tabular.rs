@@ -464,7 +464,6 @@ pub trait BasicTabularInfo: Send + Sync {
     }
     fn namespace_version(&self) -> NamespaceVersion;
 }
-
 impl BasicTabularInfo for ViewOrTableInfo {
     fn namespace_version(&self) -> NamespaceVersion {
         match self {

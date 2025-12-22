@@ -63,7 +63,9 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &request_metadata,
             warehouse_id,
             provided_ns,
-            CatalogNamespaceAction::CreateView,
+            CatalogNamespaceAction::CreateView {
+                properties: Arc::new(request.properties.clone().into_iter().collect()),
+            },
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )
@@ -115,7 +117,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         )
     })?;
 
-    C::create_view(
+    let view_info = C::create_view(
         warehouse_id,
         ns_hierarchy.namespace_id(),
         &view,
@@ -158,8 +160,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &view_location,
             StoragePermissions::Read,
             &request_metadata,
-            warehouse_id,
-            ViewId::from(metadata_build_result.metadata.uuid()).into(),
+            &view_info,
         )
         .await?;
 

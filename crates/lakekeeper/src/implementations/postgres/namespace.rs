@@ -16,14 +16,14 @@ use crate::{
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
         CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
-        CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
-        CatalogUpdateNamespacePropertiesError, ChildNamespaceProtected, ChildTabularProtected,
-        CreateNamespaceRequest, InternalParseLocationError, InvalidNamespaceIdentifier,
-        ListNamespacesQuery, Namespace, NamespaceAlreadyExists, NamespaceDropInfo,
-        NamespaceHasRunningTabularExpirations, NamespaceHierarchy, NamespaceId, NamespaceIdent,
-        NamespaceNotEmpty, NamespaceNotFound, NamespacePropertiesSerializationError,
-        NamespaceProtected, NamespaceWithParent, Result, SerializationError, TabularId,
-        WarehouseIdNotFound, storage::join_location, tasks::TaskId,
+        CatalogListNamespacesResponse, CatalogNamespaceDropError,
+        CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
+        ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
+        InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
+        NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
+        NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
+        NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
+        SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
 
@@ -282,20 +282,19 @@ impl From<ListNamespaceRow> for NamespaceWithParentVersionRow {
 fn list_rows_into_hierarchy(
     rows: Vec<ListNamespaceRow>,
     warehouse_id: WarehouseId,
-) -> std::result::Result<
-    PaginatedMapping<NamespaceId, NamespaceHierarchy>,
-    InvalidNamespaceIdentifier,
-> {
+) -> std::result::Result<CatalogListNamespacesResponse, InvalidNamespaceIdentifier> {
     if rows.is_empty() {
-        return Ok(PaginatedMapping::with_capacity(0));
+        return Ok(CatalogListNamespacesResponse {
+            parent_namespaces: HashMap::new(),
+            namespaces: PaginatedMapping::with_capacity(0),
+        });
     }
 
-    // Step 1: Convert all rows to Arc<Namespace> and collect target IDs in order
     let mut namespace_by_id: HashMap<NamespaceId, NamespaceWithParent> =
         HashMap::with_capacity(rows.len());
 
     // Track which namespaces should be included in the result, in order
-    let mut include_in_list = Vec::new();
+    let mut result = PaginatedMapping::new();
 
     for row in rows {
         let include_this_row_in_list = row.include_in_list;
@@ -304,63 +303,25 @@ fn list_rows_into_hierarchy(
             .into_namespace_with_parent_version(warehouse_id)?;
 
         if include_this_row_in_list {
-            include_in_list.push(namespace.clone());
+            let namespace_id = namespace.namespace_id();
+            let created_at = namespace.created_at();
+
+            let token = PaginateToken::V1(V1PaginateToken {
+                id: namespace_id,
+                created_at,
+            })
+            .to_string();
+
+            result.insert(namespace_id, namespace.clone(), token);
         }
 
-        namespace_by_id.insert(namespace.namespace.namespace_id, namespace);
+        namespace_by_id.insert(namespace.namespace_id(), namespace);
     }
 
-    // Step 2: Build hierarchies by iterating over include_in_list_ids
-    let mut result = PaginatedMapping::with_capacity(include_in_list.len());
-
-    for namespace in include_in_list {
-        // Build parents from immediate parent down to root
-        let expected_n_parents = namespace.namespace_ident().len().saturating_sub(1);
-        let mut parents = Vec::with_capacity(expected_n_parents);
-        let mut parent = &namespace.parent;
-        while let Some((parent_id, _parent_version)) = parent {
-            if let Some(parent_ns) = namespace_by_id.get(parent_id) {
-                parents.push(parent_ns.clone());
-                parent = &parent_ns.parent;
-            } else {
-                debug_assert!(
-                    false,
-                    "Missing parent namespace in list_namespaces result for namespace {namespace:?}",
-                );
-                break;
-            }
-            // Avoid infinite loops in case of corrupted data
-            if parents.len() > expected_n_parents {
-                debug_assert!(
-                    false,
-                    "Expected at most {expected_n_parents} parents but found more for namespace {namespace:?}",
-                );
-                break;
-            }
-        }
-        debug_assert!(
-            parents.len() == expected_n_parents,
-            "Expected {} parents but found {} for namespace {:?}",
-            expected_n_parents,
-            parents.len(),
-            namespace,
-        );
-
-        let namespace_id = namespace.namespace_id();
-        let created_at = namespace.created_at();
-
-        let hierarchy = NamespaceHierarchy { namespace, parents };
-
-        let token = PaginateToken::V1(V1PaginateToken {
-            id: namespace_id,
-            created_at,
-        })
-        .to_string();
-
-        result.insert(namespace_id, hierarchy, token);
-    }
-
-    Ok(result)
+    Ok(CatalogListNamespacesResponse {
+        parent_namespaces: namespace_by_id,
+        namespaces: result,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -374,8 +335,7 @@ pub(crate) async fn list_namespaces(
         return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<PaginatedMapping<NamespaceId, NamespaceHierarchy>, CatalogListNamespaceError>
-{
+) -> std::result::Result<CatalogListNamespacesResponse, CatalogListNamespaceError> {
     let page_size = CONFIG.page_size_or_pagination_max(*page_size);
 
     // Treat empty parent as None
@@ -1129,6 +1089,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap()
+        .namespaces
         .into_hashmap();
 
         assert_eq!(response.len(), 1);
@@ -1223,7 +1184,8 @@ pub(crate) mod tests {
             t.transaction(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .namespaces;
         let next_page_token = namespaces.next_token().map(ToString::to_string);
         assert_eq!(namespaces.len(), 1);
         let namespaces = namespaces.into_hashmap();
@@ -1234,7 +1196,6 @@ pub(crate) mod tests {
         assert!(!namespaces[&namespace_info_1.namespace_id()].is_protected());
         // Root namespaces should have no parents
         assert!(namespaces[&namespace_info_1.namespace_id()].is_root());
-        assert_eq!(namespaces[&namespace_info_1.namespace_id()].depth(), 0);
 
         let mut t = PostgresTransaction::begin_read(state.clone())
             .await
@@ -1255,7 +1216,8 @@ pub(crate) mod tests {
             t.transaction(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .namespaces;
         let next_page_token = namespaces.next_token().map(ToString::to_string);
         assert_eq!(namespaces.len(), 2);
         assert!(next_page_token.is_some());
@@ -1290,7 +1252,8 @@ pub(crate) mod tests {
             t.transaction(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .namespaces;
 
         assert_eq!(namespaces.next_token(), None);
         assert_eq!(namespaces.into_hashmap(), HashMap::new());
@@ -1566,7 +1529,8 @@ pub(crate) mod tests {
             transaction.transaction(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .namespaces;
         transaction.commit().await.unwrap();
 
         assert_eq!(ns.len(), 0);
@@ -1876,14 +1840,14 @@ pub(crate) mod tests {
         .unwrap();
 
         // Should only return root namespace
+        assert_eq!(result.parent_namespaces.len(), 1);
+        let result = result.namespaces;
         assert_eq!(result.len(), 1);
         let result_map = result.into_hashmap();
 
         let root_hierarchy = &result_map[&root_ns.namespace_id()];
         assert_eq!(root_hierarchy.namespace_ident(), &root);
         assert!(root_hierarchy.is_root());
-        assert_eq!(root_hierarchy.depth(), 0);
-        assert_eq!(root_hierarchy.parents.len(), 0);
 
         // List children of root
         let mut transaction = PostgresTransaction::begin_read(state.clone())
@@ -1905,16 +1869,14 @@ pub(crate) mod tests {
         .unwrap();
 
         // Should return child with root as parent
+        assert_eq!(result.parent_namespaces.len(), 2);
+        let result = result.namespaces;
         assert_eq!(result.len(), 1);
         let result_map = result.into_hashmap();
 
         let child_hierarchy = &result_map[&child_ns.namespace_id()];
         assert_eq!(child_hierarchy.namespace_ident(), &child);
         assert!(!child_hierarchy.is_root());
-        assert_eq!(child_hierarchy.depth(), 1);
-        assert_eq!(child_hierarchy.parents.len(), 1);
-        assert_eq!(child_hierarchy.parent().unwrap(), &root_ns);
-        assert_eq!(child_hierarchy.root(), &root_ns);
 
         // List children of root.child
         let mut transaction = PostgresTransaction::begin_read(state.clone())
@@ -1936,20 +1898,14 @@ pub(crate) mod tests {
         .unwrap();
 
         // Should return grandchild with full hierarchy
+        assert_eq!(result.parent_namespaces.len(), 3);
+        let result = result.namespaces;
         assert_eq!(result.len(), 1);
         let result_map = result.into_hashmap();
 
         let grandchild_hierarchy = &result_map[&grandchild_ns.namespace_id()];
         assert_eq!(grandchild_hierarchy.namespace_ident(), &grandchild);
         assert!(!grandchild_hierarchy.is_root());
-        assert_eq!(grandchild_hierarchy.depth(), 2);
-        assert_eq!(grandchild_hierarchy.parents.len(), 2);
-
-        // Parents should be ordered: immediate parent first, then root
-        assert_eq!(grandchild_hierarchy.parent().unwrap(), &child_ns);
-        assert_eq!(&grandchild_hierarchy.parents[0], &child_ns);
-        assert_eq!(&grandchild_hierarchy.parents[1], &root_ns);
-        assert_eq!(grandchild_hierarchy.root(), &root_ns);
     }
 
     #[sqlx::test]
@@ -1992,13 +1948,13 @@ pub(crate) mod tests {
         .unwrap();
 
         // Should return both roots, both with no parents
+        assert_eq!(result.parent_namespaces.len(), 2);
+        let result = result.namespaces;
         assert_eq!(result.len(), 2);
         let result_map = result.into_hashmap();
 
         assert!(result_map[&root_a_ns.namespace_id()].is_root());
         assert!(result_map[&root_b_ns.namespace_id()].is_root());
-        assert_eq!(result_map[&root_a_ns.namespace_id()].parents.len(), 0);
-        assert_eq!(result_map[&root_b_ns.namespace_id()].parents.len(), 0);
 
         // List children of root A
         let mut transaction = PostgresTransaction::begin_read(state.clone())
@@ -2020,13 +1976,16 @@ pub(crate) mod tests {
         .unwrap();
 
         // Should only return A.1 with correct parent
+        assert_eq!(result.parent_namespaces.len(), 2);
+        let result = result.namespaces;
         assert_eq!(result.len(), 1);
         let result_map = result.into_hashmap();
 
         let a1_hierarchy = &result_map[&child_a1_ns.namespace_id()];
-        assert_eq!(a1_hierarchy.depth(), 1);
-        assert_eq!(a1_hierarchy.parent().unwrap(), &root_a_ns);
-        assert_eq!(a1_hierarchy.root(), &root_a_ns);
+        assert_eq!(
+            a1_hierarchy.parent.unwrap(),
+            (root_a_ns.namespace_id(), root_a_ns.version())
+        );
 
         // List children of root B
         let mut transaction = PostgresTransaction::begin_read(state.clone())
@@ -2048,13 +2007,16 @@ pub(crate) mod tests {
         .unwrap();
 
         // Should only return B.1 with correct parent
+        assert_eq!(result.parent_namespaces.len(), 2);
+        let result = result.namespaces;
         assert_eq!(result.len(), 1);
         let result_map = result.into_hashmap();
 
         let b1_hierarchy = &result_map[&child_b1_ns.namespace_id()];
-        assert_eq!(b1_hierarchy.depth(), 1);
-        assert_eq!(b1_hierarchy.parent().unwrap(), &root_b_ns);
-        assert_eq!(b1_hierarchy.root(), &root_b_ns);
+        assert_eq!(
+            b1_hierarchy.parent.unwrap(),
+            (root_b_ns.namespace_id(), root_b_ns.version())
+        );
     }
 
     #[sqlx::test]
@@ -2098,6 +2060,8 @@ pub(crate) mod tests {
         .unwrap();
 
         // First page: 2 children
+        assert_eq!(result.parent_namespaces.len(), 3);
+        let result = result.namespaces;
         assert_eq!(result.len(), 2);
         let next_token = result.next_token().map(ToString::to_string);
         assert!(next_token.is_some());
@@ -2112,9 +2076,10 @@ pub(crate) mod tests {
         );
 
         for hierarchy in result_map.values() {
-            assert_eq!(hierarchy.depth(), 1);
-            assert_eq!(hierarchy.parent().unwrap(), &parent_ns);
-            assert_eq!(hierarchy.root(), &parent_ns);
+            assert_eq!(
+                hierarchy.parent.unwrap(),
+                (parent_ns.namespace_id(), parent_ns.version())
+            );
         }
 
         // Get second page
@@ -2134,7 +2099,8 @@ pub(crate) mod tests {
             transaction.transaction(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .namespaces;
 
         // Second page: 1 child
         assert_eq!(result.len(), 1);
@@ -2142,8 +2108,10 @@ pub(crate) mod tests {
 
         // This child should also have parent hierarchy
         for hierarchy in result_map.values() {
-            assert_eq!(hierarchy.depth(), 1);
-            assert_eq!(hierarchy.parent().unwrap(), &parent_ns);
+            assert_eq!(
+                hierarchy.parent.unwrap(),
+                (parent_ns.namespace_id(), parent_ns.version())
+            );
         }
     }
 
@@ -2154,11 +2122,11 @@ pub(crate) mod tests {
 
         // Create a 4-level deep hierarchy
         let level1 = NamespaceIdent::from_vec(vec!["level1".to_string()]).unwrap();
-        let level1_ns = initialize_namespace(state.clone(), warehouse_id, &level1, None).await;
+        let _level1_ns = initialize_namespace(state.clone(), warehouse_id, &level1, None).await;
 
         let level2 =
             NamespaceIdent::from_vec(vec!["level1".to_string(), "level2".to_string()]).unwrap();
-        let level2_ns = initialize_namespace(state.clone(), warehouse_id, &level2, None).await;
+        let _level2_ns = initialize_namespace(state.clone(), warehouse_id, &level2, None).await;
 
         let level3 = NamespaceIdent::from_vec(vec![
             "level1".to_string(),
@@ -2166,7 +2134,7 @@ pub(crate) mod tests {
             "level3".to_string(),
         ])
         .unwrap();
-        let level3_ns = initialize_namespace(state.clone(), warehouse_id, &level3, None).await;
+        let _level3_ns = initialize_namespace(state.clone(), warehouse_id, &level3, None).await;
 
         let level4 = NamespaceIdent::from_vec(vec![
             "level1".to_string(),
@@ -2196,21 +2164,27 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
+        let parents = result.parent_namespaces;
+        let result = result.namespaces;
         assert_eq!(result.len(), 1);
         let result_map = result.into_hashmap();
 
         let level4_hierarchy = &result_map[&level4_ns.namespace_id()];
-        assert_eq!(level4_hierarchy.depth(), 3);
-        assert_eq!(level4_hierarchy.parents.len(), 3);
 
         // Verify parent chain: level3 -> level2 -> level1
-        assert_eq!(&level4_hierarchy.parents[0], &level3_ns);
-        assert_eq!(&level4_hierarchy.parents[1], &level2_ns);
-        assert_eq!(&level4_hierarchy.parents[2], &level1_ns);
-
-        // Verify convenience methods
-        assert_eq!(level4_hierarchy.parent().unwrap(), &level3_ns);
-        assert_eq!(level4_hierarchy.root(), &level1_ns);
-        assert!(!level4_hierarchy.is_root());
+        assert_eq!(parents.len(), 4);
+        let parent3 = parents
+            .get(&level4_hierarchy.parent_namespaces_id().unwrap())
+            .unwrap();
+        assert_eq!(parent3.namespace_ident(), &level3);
+        let parent2 = parents
+            .get(&parent3.parent_namespaces_id().unwrap())
+            .unwrap();
+        assert_eq!(parent2.namespace_ident(), &level2);
+        let parent1 = parents
+            .get(&parent2.parent_namespaces_id().unwrap())
+            .unwrap();
+        assert_eq!(parent1.namespace_ident(), &level1);
+        assert!(parent1.is_root());
     }
 }

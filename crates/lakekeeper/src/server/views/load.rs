@@ -1,4 +1,4 @@
-use std::str::FromStr as _;
+use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
 
 use iceberg_ext::catalog::rest::LoadViewResult;
 use lakekeeper_io::Location;
@@ -77,7 +77,13 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             &warehouse,
             &namespace,
             &view_info,
-            &[CatalogViewAction::GetMetadata, CatalogViewAction::Commit],
+            &[
+                CatalogViewAction::GetMetadata,
+                CatalogViewAction::Commit {
+                    updated_properties: Arc::new(BTreeMap::default()),
+                    removed_properties: Arc::new(Vec::default()),
+                },
+            ],
         )
         .await?
         .into_inner();
@@ -123,8 +129,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             &view_location,
             storage_permissions,
             &request_metadata,
-            warehouse_id,
-            view_id.into(),
+            &view_info,
         )
         .await?;
     let load_table_result = LoadViewResult {

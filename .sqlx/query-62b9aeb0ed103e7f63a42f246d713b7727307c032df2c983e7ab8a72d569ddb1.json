@@ -121,12 +121,7 @@
                       "management-v1-get-view-actions",
                       "management-v1-batch-check-actions",
                       "management-v1-get-role-metadata",
-                      "management-v1-update-role-source-system",
-                      "management-v1-set-project-task-queue-config",
-                      "management-v1-get-project-task-queue-config",
-                      "management-v1-control-project-tasks",
-                      "management-v1-get-project-task-details",
-                      "management-v1-list-project-tasks"
+                      "management-v1-update-role-source-system"
                     ]
                   }
                 }

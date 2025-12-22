@@ -15,7 +15,7 @@ use azure_storage::{
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::ADLS_AUTHORITY_HOST;
-use iceberg_ext::configs::table::{TableProperties, custom};
+use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
     InvalidLocationError, Location,
     adls::{
@@ -31,18 +31,22 @@ use veil::Redact;
 use crate::{
     CONFIG, WarehouseId,
     api::{
-        CatalogConfig, Result,
+        CatalogConfig, RequestMetadata, Result,
         iceberg::{supported_endpoints, v1::tables::DataAccessMode},
     },
-    service::storage::{
-        ShortTermCredentialsRequest, StoragePermissions, TableConfig,
-        cache::{
-            STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-            insert_stc_into_cache,
-        },
-        error::{
-            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-            UpdateError, ValidationError,
+    request_metadata::UserAgent,
+    service::{
+        BasicTabularInfo,
+        storage::{
+            ShortTermCredentialsRequest, StoragePermissions, TableConfig,
+            cache::{
+                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
+                insert_stc_into_cache,
+            },
+            error::{
+                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+                UpdateError, ValidationError,
+            },
         },
     },
 };
@@ -252,11 +256,14 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Fails if sas token cannot be generated.
+    #[allow(clippy::too_many_lines)]
     pub async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
         credential: &AzCredential,
         stc_request: ShortTermCredentialsRequest,
+        tabular_info: &impl BasicTabularInfo,
+        request_metadata: &RequestMetadata,
     ) -> Result<TableConfig, TableConfigError> {
         if !data_access.provide_credentials() || !self.sas_enabled {
             tracing::debug!(
@@ -271,33 +278,41 @@ impl AdlsProfile {
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
-        let cached_sas_token = self.load_sas_token_from_cache(&cache_key).await;
+        let cached_result = self.load_sas_token_from_cache(&cache_key).await;
 
-        let sas = if let Some(sas_token) = cached_sas_token {
-            sas_token
+        let (sas, expiration) = if let Some((sas_token, exp)) = cached_result {
+            (sas_token, exp)
         } else {
-            let (sas_token_start, sas_token_end) = self.sas_token_validity_period();
-            let sas = match credential {
+            let (sas_token_start, requested_sas_token_end) = self.sas_token_validity_period();
+            tracing::debug!(
+                "Generating SAS token with requested validity - start: {}, end: {}",
+                sas_token_start,
+                requested_sas_token_end
+            );
+            let (sas, expiration) = match credential {
                 AzCredential::ClientCredentials { .. } => {
                     let client = self.blob_service_client(credential).await?;
                     self.sas_via_delegation_key(
                         sas_token_start,
-                        sas_token_end,
+                        requested_sas_token_end,
                         &stc_request,
                         client,
                     )
                     .await?
                 }
-                AzCredential::SharedAccessKey { key } => self.sas(
-                    &stc_request,
-                    sas_token_end,
-                    azure_core::auth::Secret::new(key.clone()),
-                )?,
+                AzCredential::SharedAccessKey { key } => {
+                    let sas = self.sas(
+                        &stc_request,
+                        requested_sas_token_end,
+                        azure_core::auth::Secret::new(key.clone()),
+                    )?;
+                    (sas, requested_sas_token_end)
+                }
                 AzCredential::AzureSystemIdentity {} => {
                     let client = self.blob_service_client(credential).await?;
                     self.sas_via_delegation_key(
                         sas_token_start,
-                        sas_token_end,
+                        requested_sas_token_end,
                         &stc_request,
                         client,
                     )
@@ -318,19 +333,57 @@ impl AdlsProfile {
                         .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS),
                 );
                 let valid_until = Instant::now().checked_add(sts_validity_duration);
-                let cache_value = STCCacheValue::new(sas.clone(), valid_until);
+                let cache_value = STCCacheValue::new(
+                    ShortTermCredential::Adls {
+                        sas_token: sas.clone(),
+                        expiration,
+                    },
+                    valid_until,
+                );
                 insert_stc_into_cache(cache_key, cache_value).await;
             }
 
-            sas
+            (sas, expiration)
         };
 
         let mut creds = TableProperties::default();
 
+        let expiration_ms = expiration.unix_timestamp().saturating_mul(1000);
+        creds.insert(&creds::ExpirationTimeMs(expiration_ms));
         creds.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
             value: sas,
         });
+        creds.insert(&adls::RefreshClientCredentialsEndpoint(
+            request_metadata.refresh_client_credentials_endpoint_for_table(
+                tabular_info.warehouse_id(),
+                tabular_info.tabular_ident(),
+            ),
+        ));
+
+        // Note: PyIceberg versions up to 0.10.0 have a bug parsing ADLS vended credentials.
+        // The client incorrectly extracts the account name from *any* property starting with
+        // "adls.sas-token", including "adls.sas-token-expires-at-ms.*", which breaks endpoint detection.
+        let pyiceberg_version = match request_metadata.user_agent() {
+            Some(UserAgent::PyIceberg { version }) => Some(version),
+            _ => None,
+        };
+        let can_handle_sas_expiry_key = pyiceberg_version
+            .as_ref()
+            .and_then(|v| semver::Version::parse(v).ok())
+            .is_some_and(|v| v > semver::Version::new(0, 10, 0));
+        if pyiceberg_version.is_none() || can_handle_sas_expiry_key {
+            creds.insert(&custom::CustomConfig {
+                key: self.iceberg_sas_expires_at_property_key(),
+                value: expiration_ms.to_string(),
+            });
+        } else {
+            tracing::debug!(
+                "Not inserting '{}' property for PyIceberg version {:?} due to known parsing issues.",
+                self.iceberg_sas_expires_at_property_key(),
+                pyiceberg_version,
+            );
+        }
 
         Ok(TableConfig {
             // Due to backwards compat reasons we still return creds within config too
@@ -341,31 +394,40 @@ impl AdlsProfile {
 
     fn sas_token_validity_period(&self) -> (OffsetDateTime, OffsetDateTime) {
         // allow for some clock drift
-        let start = OffsetDateTime::now_utc() - time::Duration::minutes(5);
-        // Add 5 minutes to validity to account for clock drift
+        let start = OffsetDateTime::now_utc() - time::Duration::minutes(1);
+
+        // Add 1 minutes to validity to account for clock drift
         let validity = self
             .sas_token_validity_seconds
             .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS)
-            + 300;
+            + 60;
 
         let clamped_validity_seconds = i64::try_from(validity)
             .unwrap_or(MAX_SAS_TOKEN_VALIDITY_SECONDS_I64)
-            .clamp(0, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
+            .clamp(120, MAX_SAS_TOKEN_VALIDITY_SECONDS_I64);
 
         let end = start.saturating_add(time::Duration::seconds(clamped_validity_seconds));
+
         (start, end)
     }
 
-    async fn load_sas_token_from_cache(&self, cache_key: &STCCacheKey) -> Option<String> {
+    async fn load_sas_token_from_cache(
+        &self,
+        cache_key: &STCCacheKey,
+    ) -> Option<(String, OffsetDateTime)> {
         let stc_request = &cache_key.request;
         if CONFIG.cache.stc.enabled {
             if let Some(STCCacheValue {
-                credentials: ShortTermCredential::Adls(sas_token),
+                credentials:
+                    ShortTermCredential::Adls {
+                        sas_token,
+                        expiration,
+                    },
                 ..
             }) = get_stc_from_cache(cache_key).await
             {
                 tracing::debug!("Using cached short term credentials for request: {stc_request}");
-                return Some(sas_token);
+                return Some((sas_token, expiration));
             }
             tracing::debug!(
                 "No cached SAS token found for request: {stc_request}, fetching new credentials"
@@ -385,7 +447,7 @@ impl AdlsProfile {
         sas_token_end: OffsetDateTime,
         stc_request: &ShortTermCredentialsRequest,
         client: BlobServiceClient,
-    ) -> Result<String, CredentialsError> {
+    ) -> Result<(String, OffsetDateTime), CredentialsError> {
         tracing::debug!(
             "Requesting user delegation key from azure for sas token generation - Valid from {sas_token_start} to {sas_token_end}",
         );
@@ -405,7 +467,8 @@ impl AdlsProfile {
 
         let key = delegation_key.user_deligation_key;
 
-        self.sas(stc_request, signed_expiry, key)
+        let sas = self.sas(stc_request, signed_expiry, key)?;
+        Ok((sas, signed_expiry))
     }
 
     fn sas(
@@ -448,6 +511,13 @@ impl AdlsProfile {
 
     fn iceberg_sas_property_key(&self) -> String {
         iceberg_sas_property_key(
+            &self.account_name,
+            self.host.as_deref().unwrap_or(DEFAULT_HOST),
+        )
+    }
+
+    fn iceberg_sas_expires_at_property_key(&self) -> String {
+        iceberg_expiration_property_key(
             &self.account_name,
             self.host.as_deref().unwrap_or(DEFAULT_HOST),
         )
@@ -577,6 +647,10 @@ impl From<StoragePermissions> for BlobSasPermissions {
 
 fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String {
     format!("adls.sas-token.{account_name}.{endpoint_suffix}")
+}
+
+fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) -> String {
+    format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
 pub(super) fn get_file_io_from_table_config(

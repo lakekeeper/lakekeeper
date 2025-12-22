@@ -56,32 +56,10 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError,
-        CatalogRenameWarehouseError, CatalogSearchTabularResponse,
-        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
-        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
-        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
-        CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError,
-        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceHierarchy, NamespaceId, NamespaceWithParent, ProjectId,
-        RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError,
-        SearchTabularError, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
-        authn::UserId,
-        storage::StorageProfile,
-        task_configs::TaskQueueConfigFilter,
-        tasks::{
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError, CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError, CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, task_configs::TaskQueueConfigFilter, tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
             TaskQueueName, TaskResolveScope,
-        },
+        }
     },
 };
 
@@ -116,10 +94,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<
-        PaginatedMapping<NamespaceId, NamespaceHierarchy>,
-        CatalogListNamespaceError,
-    > {
+    ) -> std::result::Result<CatalogListNamespacesResponse, CatalogListNamespaceError> {
         list_namespaces(warehouse_id, query, transaction).await
     }
 

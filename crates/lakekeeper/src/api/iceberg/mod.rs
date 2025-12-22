@@ -167,6 +167,15 @@ pub mod v1 {
             }
         }
 
+        #[must_use]
+        pub fn new() -> Self {
+            Self {
+                entities: HashMap::new(),
+                next_page_tokens: Vec::new(),
+                ordering: Vec::new(),
+            }
+        }
+
         pub fn insert(&mut self, key: T, value: V, next_page_token: String) {
             if self.entities.insert(key.clone(), value).is_some() {
                 let position = self

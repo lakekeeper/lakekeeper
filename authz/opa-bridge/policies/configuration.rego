@@ -39,12 +39,18 @@ lakekeeper := [
 # Each configuration must contain the following fields:
 #
 # - name: The name of the catalog in Trino.
-# - lakekeeper_name: The name of the Lakekeeper project that manages the warehouse. (Reference to "name" field in the "lakekeeper" array above)
+# - lakekeeper_id: The id of the Lakekeeper project that manages the warehouse. (Reference to "id" field in the "lakekeeper" array above)
 # - lakekeeper_warehouse: The name of the warehouse in Lakekeeper.
-#
-# A handful commonly used catalogs are pre-defined and can be configured via environment variables. Both of the use
-# the default Lakekeeper project defined above.
-# If trino does not use a catalog defined below, it is simply ignored.
+
+# Allow access to unmanaged catalogs (catalogs not in the trino_catalog array).
+# When Trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed.
+# If Trino uses catalogs managed by other authorizers (not Lakekeeper), such as a connected PostgreSQL catalog,
+# set this to true to allow this OPA bridge to permit access to those catalogs.
+# Default: false
+trino_allow_unmanaged_catalogs := object.get(env, "TRINO_ALLOW_UNMANAGED_CATALOGS", "false") == "true"
+
+# A handful commonly used catalogs are pre-defined and can be configured via environment variables.
+# All pre-defined catalogs use the "default" lakekeeper instance defined above.
 trino_catalog := [
     {
         "name": object.get(env, "TRINO_DEV_CATALOG_NAME", "dev"),

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr as _,
     sync::Arc,
 };
@@ -60,8 +60,8 @@ use crate::{
         TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
-            refresh_warehouse_and_namespace_if_needed,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         require_namespace_for_tabular,
@@ -196,19 +196,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
             C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
         );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace = authorizer
-            .require_namespace_action(
+        let warehouse = authorizer
+            .require_warehouse_action(
                 &request_metadata,
-                &warehouse,
-                provided_ns,
-                namespace,
-                CatalogNamespaceAction::CreateTable,
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::Use,
             )
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id();
+
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
@@ -222,6 +220,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
+
+        let namespace = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                &warehouse,
+                provided_ns,
+                namespace,
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::new(
+                        table_metadata
+                            .properties()
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<BTreeMap<_, _>>(),
+                    ),
+                },
+            )
+            .await?;
+        let namespace_id = namespace.namespace_id();
 
         let table_metadata = Arc::new(table_metadata);
 
@@ -274,7 +291,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let tabular_id = TableId::from(table_metadata.uuid());
 
-        let (_table_info, staged_table_id) = C::create_table(
+        let (table_info, staged_table_id) = C::create_table(
             TableCreation {
                 warehouse_id: warehouse.warehouse_id,
                 namespace_id,
@@ -293,8 +310,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
                 &request_metadata,
-                warehouse_id,
-                tabular_id.into(),
+                &table_info,
             )
             .await?;
 
@@ -391,7 +407,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
-        let (warehouse, tabular_details, storage_permissions) = authorize_load_table::<C, A>(
+        let (warehouse, tabular_info, storage_permissions) = authorize_load_table::<C, A>(
             &request_metadata,
             table.clone(),
             warehouse_id,
@@ -415,13 +431,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 data_access.into(),
                 storage_secret_ref,
                 &parse_location(
-                    tabular_details.location.as_str(),
+                    tabular_info.location.as_str(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 )?,
                 storage_permission,
                 &request_metadata,
-                warehouse_id,
-                tabular_details.table_id().into(),
+                &tabular_info,
             )
             .await?;
 
@@ -429,7 +444,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             vec![]
         } else {
             vec![StorageCredential {
-                prefix: tabular_details.location.to_string(),
+                prefix: tabular_info.location.to_string(),
                 config: storage_config.creds.into(),
             }]
         };
@@ -741,7 +756,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 user_provided_namespace,
                 destination_namespace,
-                CatalogNamespaceAction::CreateTable,
+                CatalogNamespaceAction::CreateTable {
+                    // Properties from source table are inherited
+                    properties: Arc::new(
+                        source_table_info
+                            .as_ref()
+                            .ok()
+                            .and_then(|opt| opt.as_ref())
+                            .map_or_else(BTreeMap::new, |tab| tab
+                                .properties
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect())
+                    )
+                },
             ),
             // Check 2)
             authorizer.require_table_action(
@@ -1064,6 +1092,27 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .into_iter()
         .map(|ti| (ti.tabular_ident.clone(), ti))
         .collect::<HashMap<_, _>>();
+
+    let table_info_with_actions = request
+        .table_changes
+        .iter()
+        .filter_map(|change| {
+            change.identifier.as_ref().map(|ti| {
+                let table_info = table_ident_to_info
+                    .get(ti)
+                    .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, ti.clone()))?;
+                let (updates, removals) = parse_table_property_updates(&change.updates);
+                Ok((
+                    table_info,
+                    CatalogTableAction::Commit {
+                        updated_properties: Arc::new(updates),
+                        removed_properties: Arc::new(removals),
+                    },
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()?;
+
     for user_provided_ident in identifiers {
         if !table_ident_to_info.contains_key(user_provided_ident) {
             return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
@@ -1093,14 +1142,10 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             &request_metadata,
             &warehouse,
             &namespaces,
-            &table_ident_to_info
-                .values()
-                .map(|ti| {
-                    Ok::<_, ErrorModel>((
-                        require_namespace_for_tabular(&namespaces, ti)?,
-                        ti,
-                        CatalogTableAction::Commit,
-                    ))
+            &table_info_with_actions
+                .into_iter()
+                .map(|(ti, a)| {
+                    Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         )
@@ -1725,6 +1770,32 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
     }
 }
 
+/// Parse property updates and removals from a list of table updates
+///
+/// Returns a tuple of (updates, removals) where:
+/// - updates: `BtreeMap` of property key-value pairs to set
+/// - removals: `Vec` of property keys to remove
+pub(crate) fn parse_table_property_updates(
+    updates: &[TableUpdate],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut property_updates = BTreeMap::new();
+    let mut property_removals = Vec::new();
+
+    for update in updates {
+        match update {
+            TableUpdate::SetProperties { updates } => {
+                property_updates.extend(updates.clone());
+            }
+            TableUpdate::RemoveProperties { removals } => {
+                property_removals.extend(removals.clone());
+            }
+            _ => {}
+        }
+    }
+
+    (property_updates, property_removals)
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use std::{collections::HashMap, str::FromStr};
@@ -1748,6 +1819,7 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         WarehouseId,
         api::{
@@ -1771,11 +1843,10 @@ pub(crate) mod test {
         request_metadata::RequestMetadata,
         server::{
             CatalogServer, CatalogStore,
-            tables::validate_table_properties,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            CatalogTabularOps as _, SecretStore, State, TableId, TabularListFlags, UserId,
+            SecretStore, State, TableId, TabularListFlags, UserId,
             authz::{
                 AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
                 tests::HidingAuthorizer,
@@ -1783,6 +1854,97 @@ pub(crate) mod test {
         },
         tests::{create_table_request as create_request, random_request_metadata},
     };
+
+    #[test]
+    fn test_parse_table_property_updates() {
+        // Test empty updates
+        let updates = vec![];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert!(property_updates.is_empty());
+        assert!(property_removals.is_empty());
+
+        // Test only SetProperties
+        let updates = vec![TableUpdate::SetProperties {
+            updates: HashMap::from([
+                ("key1".to_string(), "value1".to_string()),
+                ("key2".to_string(), "value2".to_string()),
+            ]),
+        }];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 2);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_updates.get("key2"), Some(&"value2".to_string()));
+        assert!(property_removals.is_empty());
+
+        // Test only RemoveProperties
+        let updates = vec![TableUpdate::RemoveProperties {
+            removals: vec!["key1".to_string(), "key2".to_string()],
+        }];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert!(property_updates.is_empty());
+        assert_eq!(property_removals.len(), 2);
+        assert!(property_removals.contains(&"key1".to_string()));
+        assert!(property_removals.contains(&"key2".to_string()));
+
+        // Test mixed updates
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([
+                    ("key1".to_string(), "value1".to_string()),
+                    ("key2".to_string(), "value2".to_string()),
+                ]),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["key3".to_string(), "key4".to_string()],
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key5".to_string(), "value5".to_string())]),
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 3);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_updates.get("key2"), Some(&"value2".to_string()));
+        assert_eq!(property_updates.get("key5"), Some(&"value5".to_string()));
+        assert_eq!(property_removals.len(), 2);
+        assert!(property_removals.contains(&"key3".to_string()));
+        assert!(property_removals.contains(&"key4".to_string()));
+
+        // Test with other update types (should be ignored)
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value1".to_string())]),
+            },
+            TableUpdate::AssignUuid {
+                uuid: Uuid::now_v7(),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["key2".to_string()],
+            },
+            TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V2,
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 1);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_removals.len(), 1);
+        assert!(property_removals.contains(&"key2".to_string()));
+
+        // Test property override (later SetProperties should override earlier ones)
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value1".to_string())]),
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value2".to_string())]),
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 1);
+        assert_eq!(property_updates.get("key1"), Some(&"value2".to_string()));
+        assert!(property_removals.is_empty());
+    }
 
     #[test]
     fn test_mixed_case_properties() {
@@ -3972,7 +4134,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to rename the source table
-        authz.block_action(format!("table:{}", CatalogTableAction::Rename).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::Rename).as_str());
         let rename_table_request = RenameTableRequest {
             source: TableIdent {
                 namespace: ns_params.namespace.clone(),
@@ -3996,7 +4158,7 @@ pub(crate) mod test {
 
         // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
         // thus, we should get a 404 instead.
-        authz.block_action(format!("table:{}", CatalogTableAction::GetMetadata).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::GetMetadata).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             rename_table_request,
@@ -4054,7 +4216,15 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(format!("namespace:{}", CatalogNamespaceAction::CreateTable).as_str());
+        authz.block_action(
+            format!(
+                "namespace:{:?}",
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::default(),
+                }
+            )
+            .as_str(),
+        );
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {

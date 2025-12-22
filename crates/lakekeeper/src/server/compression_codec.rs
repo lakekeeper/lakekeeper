@@ -1,12 +1,35 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io::{Read as _, Write},
+    sync::Arc,
 };
 
 use flate2::{Compression, write::GzEncoder};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{MetadataProperties, io::IOErrorExt};
+
+pub trait PropertyMap {
+    fn get_property(&self, key: &str) -> Option<&String>;
+}
+
+impl PropertyMap for HashMap<String, String> {
+    fn get_property(&self, key: &str) -> Option<&String> {
+        self.get(key)
+    }
+}
+
+impl PropertyMap for BTreeMap<String, String> {
+    fn get_property(&self, key: &str) -> Option<&String> {
+        self.get(key)
+    }
+}
+
+impl<T: PropertyMap> PropertyMap for Arc<T> {
+    fn get_property(&self, key: &str) -> Option<&String> {
+        self.as_ref().get_property(key)
+    }
+}
 
 pub(crate) const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
 
@@ -74,11 +97,12 @@ impl CompressionCodec {
         }
     }
 
-    pub fn try_from_properties(
-        properties: &HashMap<String, String>,
-    ) -> Result<Self, UnsupportedCompressionCodec> {
+    pub fn try_from_properties<M>(properties: &M) -> Result<Self, UnsupportedCompressionCodec>
+    where
+        M: PropertyMap + ?Sized,
+    {
         properties
-            .get(PROPERTY_METADATA_COMPRESSION_CODEC)
+            .get_property(PROPERTY_METADATA_COMPRESSION_CODEC)
             .map(String::as_str)
             .map_or(Ok(Self::default()), |value| match value {
                 "gzip" => Ok(Self::Gzip),
@@ -87,9 +111,12 @@ impl CompressionCodec {
             })
     }
 
-    pub fn try_from_maybe_properties(
-        maybe_properties: Option<&HashMap<String, String>>,
-    ) -> Result<Self, UnsupportedCompressionCodec> {
+    pub fn try_from_maybe_properties<M>(
+        maybe_properties: Option<&M>,
+    ) -> Result<Self, UnsupportedCompressionCodec>
+    where
+        M: PropertyMap + ?Sized,
+    {
         match maybe_properties {
             Some(properties) => Self::try_from_properties(properties),
             None => Ok(Self::default()),

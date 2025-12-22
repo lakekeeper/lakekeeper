@@ -44,6 +44,24 @@ pub struct NamespaceWithParent {
     pub namespace: Arc<Namespace>,
     pub parent: Option<(NamespaceId, NamespaceVersion)>,
 }
+pub trait AuthZNamespaceInfo: Send + Sync {
+    fn namespace(&self) -> &Namespace;
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace().namespace_id
+    }
+    fn parent(&self) -> Option<(NamespaceId, NamespaceVersion)>;
+    fn warehouse_id(&self) -> WarehouseId {
+        self.namespace().warehouse_id
+    }
+}
+impl AuthZNamespaceInfo for NamespaceWithParent {
+    fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+    fn parent(&self) -> Option<(NamespaceId, NamespaceVersion)> {
+        self.parent
+    }
+}
 
 impl NamespaceWithParent {
     #[must_use]
@@ -89,6 +107,11 @@ impl NamespaceWithParent {
     #[must_use]
     pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.namespace.created_at
+    }
+
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.parent.is_none()
     }
 }
 
@@ -190,10 +213,10 @@ impl NamespaceHierarchy {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ListNamespacesResponse {
-    pub next_page_tokens: Vec<(NamespaceId, String)>,
-    pub namespaces: HashMap<NamespaceId, NamespaceIdent>,
+#[derive(Debug)]
+pub struct CatalogListNamespacesResponse {
+    pub parent_namespaces: HashMap<NamespaceId, NamespaceWithParent>,
+    pub namespaces: PaginatedMapping<NamespaceId, NamespaceWithParent>,
 }
 
 #[derive(Debug)]
@@ -951,22 +974,17 @@ where
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceId, NamespaceHierarchy>, CatalogListNamespaceError> {
-        let namespaces = Self::list_namespaces_impl(warehouse_id, query, transaction).await?;
+    ) -> Result<CatalogListNamespacesResponse, CatalogListNamespaceError> {
+        let list_response = Self::list_namespaces_impl(warehouse_id, query, transaction).await?;
 
-        let namespaces_dedup = namespaces
+        let namespaces_for_cache = list_response
+            .namespaces
             .iter()
-            .flat_map(|(_, hierarchy)| {
-                hierarchy
-                    .parents
-                    .iter()
-                    .chain(std::iter::once(&hierarchy.namespace))
-            })
-            .map(|ns| (ns.namespace_id(), ns.clone()))
-            .collect::<HashMap<_, _>>();
-        namespace_cache_insert_multiple(namespaces_dedup.into_values()).await;
+            .map(|(_, ns)| ns.clone())
+            .collect::<Vec<_>>();
+        namespace_cache_insert_multiple(namespaces_for_cache).await;
 
-        Ok(namespaces)
+        Ok(list_response)
     }
 
     async fn create_namespace<'a>(

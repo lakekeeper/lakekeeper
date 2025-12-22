@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
@@ -107,15 +105,27 @@ where
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceIdentUrl(Vec<String>);
 
-impl From<NamespaceIdentUrl> for NamespaceIdent {
-    fn from(param: NamespaceIdentUrl) -> Self {
-        NamespaceIdent::from_vec(param.0).unwrap()
+impl From<NamespaceIdent> for NamespaceIdentUrl {
+    fn from(param: NamespaceIdent) -> Self {
+        NamespaceIdentUrl(param.inner())
     }
 }
 
-impl From<NamespaceIdent> for NamespaceIdentUrl {
-    fn from(param: NamespaceIdent) -> Self {
-        NamespaceIdentUrl(param.deref().to_owned())
+impl NamespaceIdentUrl {
+    /// Get the inner parts of the namespace
+    #[must_use]
+    pub fn to_url_string(&self) -> String {
+        percent_encoding::utf8_percent_encode(
+            &self.0.join("\u{1f}"),
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string()
+    }
+}
+
+impl From<NamespaceIdentUrl> for NamespaceIdent {
+    fn from(param: NamespaceIdentUrl) -> Self {
+        NamespaceIdent::from_vec(param.0).unwrap()
     }
 }
 
@@ -597,11 +607,28 @@ mod tests {
         req.extensions_mut()
             .insert(RequestMetadata::new_unauthenticated());
 
-        let r = router.oneshot(req).await.unwrap();
+        let r = router.clone().oneshot(req).await.unwrap();
         assert_eq!(r.status().as_u16(), 406);
         let bytes = r.collect().await.unwrap().to_bytes();
         let r = String::from_utf8(bytes.to_vec()).unwrap();
         let error = serde_json::from_str::<IcebergErrorResponse>(&r).unwrap();
         assert_eq!(error.error.message, "[\"accounting\",\"tax\"]");
+
+        // Test 3: Composed identifier with special characters (name: "namespace with spaces and a+plus")
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/namespace%20with%20spaces%20and%20a%2Bplus%1Ftax?pageToken&pageSize=10")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = r.collect().await.unwrap().to_bytes();
+        let r = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&r).unwrap();
+        assert_eq!(
+            error.error.message,
+            "[\"namespace with spaces and a+plus\",\"tax\"]"
+        );
     }
 }
