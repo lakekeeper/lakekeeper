@@ -73,7 +73,6 @@ google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-fe
     "rustls-tls",
     "auth",
 ] }
-semver = "1.0.27"
 google-cloud-token = { package = "token-source", version = "1.0" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
@@ -115,6 +114,7 @@ reqwest = { version = "0.12.23", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
+semver = "1.0.27"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_json = { version = "^1.0", features = ["raw_value"] }

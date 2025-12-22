@@ -605,6 +605,7 @@ async fn setup_drop_test(
         delete_profile,
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         1,
+        None,
     )
     .await;
     let mut ns_names = Vec::new();

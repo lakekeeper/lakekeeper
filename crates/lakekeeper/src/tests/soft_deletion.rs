@@ -48,6 +48,7 @@ async fn test_soft_deletion(pool: PgPool) {
         },
         None,
         1,
+        None,
     )
     .await;
 

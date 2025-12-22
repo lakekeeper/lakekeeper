@@ -575,6 +575,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         } else {
             warehouse.tabular_delete_profile
         };
+        let project_id = &warehouse.project_id;
 
         match delete_profile {
             TabularDeleteProfile::Hard {} => {
@@ -584,11 +585,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
                         TaskMetadata {
-                            warehouse_id,
+                            project_id: project_id.clone(),
+                            warehouse_id: warehouse_id.into(),
                             entity_id: EntityId::from(table_id),
                             parent_task_id: None,
                             schedule_for: None,
-                            entity_name: table.clone().into_name_parts(),
+                            entity_name: Some(table.clone().into_name_parts()),
                         },
                         TabularPurgePayload {
                             tabular_location: location.to_string(),
@@ -611,11 +613,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
                     TaskMetadata {
+                        project_id: project_id.clone(),
                         entity_id: EntityId::from(table_id),
-                        warehouse_id,
+                        warehouse_id: warehouse_id.into(),
                         parent_task_id: None,
                         schedule_for: Some(chrono::Utc::now() + expiration_seconds),
-                        entity_name: table.clone().into_name_parts(),
+                        entity_name: Some(table.clone().into_name_parts()),
                     },
                     TabularExpirationPayload {
                         deletion_kind: if purge_requested {

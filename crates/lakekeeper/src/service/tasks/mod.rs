@@ -7,8 +7,12 @@ use strum::EnumIter;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{
-    CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+use crate::{
+    ProjectId,
+    service::{
+        CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+        task_configs::TaskQueueConfigFilter,
+    },
 };
 
 mod task_queues_runner;
@@ -76,7 +80,7 @@ impl TaskQueueName {
     }
 }
 
-#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TaskEntity {
@@ -96,14 +100,18 @@ pub enum TaskEntity {
 pub enum TaskEntityNamed {
     Table(TableNamed),
     View(ViewNamed),
+    Project(ProjectId),
+    Warehouse(WarehouseId),
 }
 
 impl TaskEntityNamed {
     #[must_use]
-    pub fn warehouse_id(&self) -> WarehouseId {
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
         match self {
-            TaskEntityNamed::Table(t) => t.warehouse_id,
-            TaskEntityNamed::View(v) => v.warehouse_id,
+            TaskEntityNamed::Table(t) => Some(t.warehouse_id),
+            TaskEntityNamed::View(v) => Some(v.warehouse_id),
+            TaskEntityNamed::Project(_) => None,
+            TaskEntityNamed::Warehouse(w) => Some(*w),
         }
     }
 }
@@ -191,8 +199,65 @@ impl AsRef<TaskAttemptId> for TaskAttemptId {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskFilter {
-    WarehouseId(WarehouseId),
+    WarehouseId {
+        warehouse_id: WarehouseId,
+        project_id: ProjectId,
+    },
     TaskIds(Vec<TaskId>),
+    ProjectId {
+        project_id: ProjectId,
+        include_sub_tasks: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskResolveScope {
+    Warehouse {
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
+    },
+    Project {
+        project_id: ProjectId,
+    },
+}
+
+impl TaskResolveScope {
+    #[must_use]
+    pub fn project_id(&self) -> ProjectId {
+        match self {
+            TaskResolveScope::Warehouse { project_id, .. }
+            | TaskResolveScope::Project { project_id } => project_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskDetailsScope {
+    Warehouse {
+        project_id: ProjectId,
+        warehouse_id: WarehouseId,
+    },
+    Project {
+        project_id: ProjectId,
+    },
+}
+
+impl TaskDetailsScope {
+    #[must_use]
+    pub fn project_id(&self) -> ProjectId {
+        match self {
+            TaskDetailsScope::Warehouse { project_id, .. }
+            | TaskDetailsScope::Project { project_id } => project_id.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
+        match self {
+            TaskDetailsScope::Warehouse { warehouse_id, .. } => Some(*warehouse_id),
+            TaskDetailsScope::Project { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -208,10 +273,11 @@ pub struct TaskInput {
 /// Metadata stored for each task in the database backend.
 /// This is separate from the task payload, which is specific to each task type.
 pub struct TaskMetadata {
-    pub warehouse_id: WarehouseId,
+    pub warehouse_id: Option<WarehouseId>,
+    pub project_id: ProjectId,
     pub parent_task_id: Option<TaskId>,
     pub entity_id: EntityId,
-    pub entity_name: Vec<String>,
+    pub entity_name: Option<Vec<String>>,
     pub schedule_for: Option<chrono::DateTime<Utc>>,
 }
 
@@ -220,12 +286,16 @@ pub struct TaskMetadata {
 pub enum EntityType {
     Table,
     View,
+    Project,
+    Warehouse,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, derive_more::From)]
+#[derive(Debug, Clone, Copy, PartialEq, derive_more::From)]
 pub enum EntityId {
     Table(TableId),
     View(ViewId),
+    Project,
+    Warehouse,
 }
 
 impl std::fmt::Display for EntityId {
@@ -233,6 +303,8 @@ impl std::fmt::Display for EntityId {
         match self {
             EntityId::Table(id) => write!(f, "Table({id})"),
             EntityId::View(id) => write!(f, "View({id})"),
+            EntityId::Project => write!(f, "Project"),
+            EntityId::Warehouse => write!(f, "Warehouse"),
         }
     }
 }
@@ -243,16 +315,19 @@ impl EntityId {
         match self {
             EntityId::Table(_) => EntityType::Table,
             EntityId::View(_) => EntityType::View,
+            EntityId::Project => EntityType::Project,
+            EntityId::Warehouse => EntityType::Warehouse,
         }
     }
 }
 
 impl EntityId {
     #[must_use]
-    pub fn as_uuid(&self) -> Uuid {
+    pub fn as_uuid(&self) -> Option<Uuid> {
         match self {
-            EntityId::Table(id) => **id,
-            EntityId::View(id) => **id,
+            EntityId::Table(id) => Some(**id),
+            EntityId::View(id) => Some(**id),
+            EntityId::Project | EntityId::Warehouse => None,
         }
     }
 }
@@ -275,6 +350,102 @@ pub struct Task {
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub(crate) config: Option<serde_json::Value>,
     pub(crate) data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskInfo {
+    pub task_metadata: TaskMetadata,
+    pub queue_name: TaskQueueName,
+    pub id: TaskAttemptId,
+    pub status: Option<TaskStatus>,
+    pub outcome: Option<TaskOutcome>,
+    pub picked_up_at: Option<chrono::DateTime<Utc>>,
+    pub last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub progress: f32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl TaskInfo {
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    #[must_use]
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
+        self.task_metadata.warehouse_id
+    }
+
+    #[must_use]
+    pub fn project_id(&self) -> &ProjectId {
+        &self.task_metadata.project_id
+    }
+
+    #[must_use]
+    pub fn entity_id(&self) -> &EntityId {
+        &self.task_metadata.entity_id
+    }
+
+    #[must_use]
+    pub fn entity_name(&self) -> Option<&Vec<String>> {
+        self.task_metadata.entity_name.as_ref()
+    }
+
+    #[must_use]
+    pub fn queue_name(&self) -> &TaskQueueName {
+        &self.queue_name
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    #[must_use]
+    pub fn status(&self) -> Option<&TaskStatus> {
+        self.status.as_ref()
+    }
+
+    #[must_use]
+    pub fn outcome(&self) -> Option<&TaskOutcome> {
+        self.outcome.as_ref()
+    }
+
+    #[must_use]
+    pub fn scheduled_for(&self) -> Option<chrono::DateTime<Utc>> {
+        self.task_metadata.schedule_for
+    }
+
+    #[must_use]
+    pub fn parent_task_id(&self) -> Option<TaskId> {
+        self.task_metadata.parent_task_id
+    }
+
+    #[must_use]
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    #[must_use]
+    pub fn picked_up_at(&self) -> Option<chrono::DateTime<Utc>> {
+        self.picked_up_at
+    }
+
+    #[must_use]
+    pub fn last_heartbeat_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.last_heartbeat_at
+    }
+
+    #[must_use]
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    #[must_use]
+    pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.updated_at
+    }
 }
 
 impl AsRef<TaskAttemptId> for Task {
@@ -405,11 +576,19 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the configuration cannot be fetched or deserialized.
     pub async fn get_queue_config<C: CatalogStore>(
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Q>> {
-        let config =
-            C::get_task_queue_config(warehouse_id, Self::queue_name(), catalog_state).await?;
+        let config = C::get_task_queue_config(
+            &TaskQueueConfigFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            Self::queue_name(),
+            catalog_state,
+        )
+        .await?;
 
         config
             .map(|cfg| {

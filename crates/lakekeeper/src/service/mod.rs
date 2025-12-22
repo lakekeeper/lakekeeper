@@ -8,6 +8,7 @@ pub mod event_publisher;
 pub mod health;
 pub mod secrets;
 pub mod storage;
+pub mod task_configs;
 pub mod tasks;
 pub use authn::{Actor, UserId};
 pub use catalog_store::*;
