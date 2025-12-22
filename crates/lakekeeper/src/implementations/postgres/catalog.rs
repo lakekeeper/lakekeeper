@@ -56,10 +56,32 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError, CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError, CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError, ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, task_configs::TaskQueueConfigFilter, tasks::{
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
+        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
+        CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError,
+        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse,
+        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
+        CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError,
+        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
+        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError,
+        ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit,
+        TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed,
+        TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError,
+        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        authn::UserId,
+        storage::StorageProfile,
+        task_configs::TaskQueueConfigFilter,
+        tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
             TaskQueueName, TaskResolveScope,
-        }
+        },
     },
 };
 
