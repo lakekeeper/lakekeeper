@@ -4,3 +4,44 @@ Dockerfile
 **/Dockerfile
 !target/release/lakekeeper
 **/ui
+
+# Node modules (from NVM/npm installations)
+**/node_modules
+node_modules
+
+# Git directory
+.git
+.github
+
+# Documentation
+docs
+**/docs
+
+# Test fixtures and data
+**/tests/fixtures
+**/test-data
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# CI/CD artifacts
+.gitlab
+.circleci
+
+# Examples (already being copied selectively)
+examples
+
+# Python cache (if any Python tooling)
+**/__pycache__
+**/*.pyc
+
+# Rust documentation
+**/doc
+
+# Coverage reports
+coverage
+**/coverage

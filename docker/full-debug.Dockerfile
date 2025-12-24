@@ -35,7 +35,7 @@ RUN $NO_CHEF || cargo chef cook --recipe-path recipe.json
 COPY . .
 
 ENV SQLX_OFFLINE=true
-RUN cargo build --all-features --bin lakekeeper
+RUN cargo build --all-features --locked --bin lakekeeper
 
 # our final base
 FROM gcr.io/distroless/cc-debian12:nonroot AS base
