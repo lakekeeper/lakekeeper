@@ -16,6 +16,8 @@ node_modules
 # Documentation
 docs
 **/docs
+# But include the API specs needed for the build
+!docs/docs/api
 
 # Test fixtures and data
 **/tests/fixtures
