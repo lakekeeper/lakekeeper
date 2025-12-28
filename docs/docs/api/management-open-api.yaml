@@ -4990,7 +4990,7 @@ components:
             action:
               type: string
               enum:
-                - get_all_tasks
+                - get_project_tasks
         - type: object
           required:
             - action
@@ -4998,7 +4998,7 @@ components:
             action:
               type: string
               enum:
-                - control_all_tasks
+                - control_project_tasks
     LakekeeperRoleAction:
       oneOf:
         - type: object
