@@ -135,9 +135,8 @@ impl<'de> Deserialize<'de> for NamespaceIdentUrl {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        // Split on multipart \u001f
         Ok(NamespaceIdentUrl(
-            s.split('\u{1f}').map(ToString::to_string).collect(),
+            s.split('\u{1f}').map(|s| s.replace('+', " ")).collect(),
         ))
     }
 }
@@ -616,7 +615,7 @@ mod tests {
 
         // Test 3: Composed identifier with special characters (name: "namespace with spaces and a+plus")
         let mut req = http::Request::builder()
-            .uri("/test/namespaces/namespace%20with%20spaces%20and%20a%2Bplus%1Ftax?pageToken&pageSize=10")
+            .uri("/test/namespaces/namespace%20with%20spaces%1Ftax?pageToken&pageSize=10")
             .body(axum::body::Body::empty())
             .unwrap();
         req.extensions_mut()
@@ -626,9 +625,20 @@ mod tests {
         let bytes = r.collect().await.unwrap().to_bytes();
         let r = String::from_utf8(bytes.to_vec()).unwrap();
         let error = serde_json::from_str::<IcebergErrorResponse>(&r).unwrap();
-        assert_eq!(
-            error.error.message,
-            "[\"namespace with spaces and a+plus\",\"tax\"]"
-        );
+        assert_eq!(error.error.message, "[\"namespace with spaces\",\"tax\"]");
+
+        // Test 4: Literal + character is a space
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/namespace+with+spaces%1Ftax?pageToken&pageSize=10")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = r.collect().await.unwrap().to_bytes();
+        let r = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&r).unwrap();
+        assert_eq!(error.error.message, "[\"namespace with spaces\",\"tax\"]");
     }
 }

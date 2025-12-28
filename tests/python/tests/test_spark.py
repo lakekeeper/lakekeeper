@@ -993,6 +993,7 @@ def test_special_characters_in_names(
     # Test various UTF-8 special characters in namespace and table names
 
     special_namespace_names = [
+        "namespace with spaces",
         "namespace-with-hyphens",
         "namespace_with_underscores",
         "namespace!with@special#chars$",
@@ -1002,13 +1003,13 @@ def test_special_characters_in_names(
         "namespace_עברית_العربية",
         "namespace_🚀_emoji_✨",
         "namespace-Mix!_OF_everything_中文_ä_🎉",
-        "namespace+with+plus+signs",
         "namespace%with%percent",
         "namespace&with&ampersands",
         "namespace=with=equals",
     ]
 
     special_table_names = [
+        "table with spaces",
         "table-with-hyphens",
         "table_with_underscores",
         "table!with@special#chars$",
@@ -1018,7 +1019,6 @@ def test_special_characters_in_names(
         "table_עברית_العربية",
         "table_🚀_emoji_✨",
         "table-Mix!_OF_everything_中文_ä_🎉",
-        "table+with+plus",
         "table%with%percent",
     ]
 

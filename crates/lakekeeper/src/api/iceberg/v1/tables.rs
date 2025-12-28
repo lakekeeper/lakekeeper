@@ -24,6 +24,12 @@ use crate::{
     request_metadata::RequestMetadata,
 };
 
+/// Normalize table name by replacing `+` with space.
+/// This is needed because `+` in URLs is decoded to space by some clients.
+pub(super) fn normalize_tabular_name(table: &str) -> String {
+    table.replace('+', " ")
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ListTablesQuery {
@@ -274,7 +280,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             prefix: Some(prefix),
                             table: TableIdent {
                                 namespace: namespace.into(),
-                                name: table,
+                                name: normalize_tabular_name(&table),
                             },
                         },
                         parse_data_access(&headers),
@@ -296,7 +302,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             prefix: Some(prefix),
                             table: TableIdent {
                                 namespace: namespace.into(),
-                                name: table,
+                                name: normalize_tabular_name(&table),
                             },
                         },
                         request,
@@ -310,13 +316,13 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  Query(drop_params): Query<DropParams>,
                  State(api_context): State<ApiContext<S>>,
-                 Extension(metadata): Extension<RequestMetadata>| async {
+                 Extension(metadata): Extension<RequestMetadata>| async move {
                     I::drop_table(
                         TableParameters {
                             prefix: Some(prefix),
                             table: TableIdent {
                                 namespace: namespace.into(),
-                                name: table,
+                                name: normalize_tabular_name(&table),
                             },
                         },
                         drop_params,
@@ -331,13 +337,13 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             .head(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
-                 Extension(metadata): Extension<RequestMetadata>| async {
+                 Extension(metadata): Extension<RequestMetadata>| async move {
                     I::table_exists(
                         TableParameters {
                             prefix: Some(prefix),
                             table: TableIdent {
                                 namespace: namespace.into(),
-                                name: table,
+                                name: normalize_tabular_name(&table),
                             },
                         },
                         api_context,
@@ -362,7 +368,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             prefix: Some(prefix),
                             table: TableIdent {
                                 namespace: namespace.into(),
-                                name: table,
+                                name: normalize_tabular_name(&table),
                             },
                         },
                         match parse_data_access(&headers) {

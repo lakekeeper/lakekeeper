@@ -12,7 +12,10 @@ use super::namespace::NamespaceIdentUrl;
 use crate::{
     api::{
         ApiContext, Result,
-        iceberg::{types::Prefix, v1::tables::TableParameters},
+        iceberg::{
+            types::Prefix,
+            v1::tables::{TableParameters, normalize_tabular_name},
+        },
     },
     request_metadata::RequestMetadata,
 };
@@ -40,14 +43,14 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>,
-                 Json(request): Json<serde_json::Value>| async {
+                 Json(request): Json<serde_json::Value>| async move {
                     {
                         I::report_metrics(
                             TableParameters {
                                 prefix: Some(prefix),
                                 table: TableIdent {
                                     namespace: namespace.into(),
-                                    name: table,
+                                    name: normalize_tabular_name(&table),
                                 },
                             },
                             request,

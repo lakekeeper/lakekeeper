@@ -20,7 +20,7 @@ All docker compose examples come with batteries included (Identity Provider, Sto
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd examples/access-control-advanced
+    cd lakekeeper/examples/access-control-advanced
     docker compose up -d
     ```
 
@@ -29,7 +29,7 @@ All docker compose examples come with batteries included (Identity Provider, Sto
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd examples/access-control-simple
+    cd lakekeeper/examples/access-control-simple
     docker compose up -d
     ```
 
@@ -37,7 +37,7 @@ All docker compose examples come with batteries included (Identity Provider, Sto
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd examples/minimal
+    cd lakekeeper/examples/minimal
     docker compose up -d
     ```
 
@@ -53,7 +53,7 @@ While you can start the "🐳 Unsecured" variant without any external dependenci
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd docker-compose
+    cd lakekeeper/docker-compose
     docker compose up -d
     ```
 
@@ -63,7 +63,7 @@ While you can start the "🐳 Unsecured" variant without any external dependenci
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd docker-compose
+    cd lakekeeper/docker-compose
     export LAKEKEEPER__OPENID_PROVIDER_URI=... (required)
     export LAKEKEEPER__OPENID_AUDIENCE=... (recommended)
     export LAKEKEEPER__UI__OPENID_CLIENT_ID=... (required if UI is used)
