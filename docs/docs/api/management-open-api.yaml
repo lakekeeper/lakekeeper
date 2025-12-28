@@ -4543,7 +4543,7 @@ components:
           description: Name of the project
     GetProjectTaskDetailsResponse:
       allOf:
-        - $ref: '#/components/schemas/ProjectListTask'
+        - $ref: '#/components/schemas/ProjectTaskInfo'
           description: Most recent task information
         - type: object
           required:
@@ -4643,7 +4643,7 @@ components:
           $ref: '#/components/schemas/TabularExpirationQueueConfig'
     GetTaskDetailsResponse:
       allOf:
-        - $ref: '#/components/schemas/TaskInfoAPI'
+        - $ref: '#/components/schemas/WarehouseTaskInfo'
           description: Most recent task information
         - type: object
           required:
@@ -5578,7 +5578,7 @@ components:
         tasks:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectListTask'
+            $ref: '#/components/schemas/ProjectTaskInfo'
           description: List of tasks
     ListProjectsResponse:
       type: object
@@ -5625,7 +5625,7 @@ components:
             - array
             - 'null'
           items:
-            $ref: '#/components/schemas/TaskEntity'
+            $ref: '#/components/schemas/WarehouseTaskEntityFilter'
           description: Filter by specific entity
         page-size:
           type:
@@ -5668,7 +5668,7 @@ components:
         tasks:
           type: array
           items:
-            $ref: '#/components/schemas/TaskInfoAPI'
+            $ref: '#/components/schemas/WarehouseTaskInfo'
           description: List of tasks
     ListUsersResponse:
       type: object
@@ -5999,7 +5999,18 @@ components:
                   enum:
                     - modify
           title: ProjectAssignmentModify
-    ProjectListTask:
+    ProjectRelation:
+      type: string
+      enum:
+        - project_admin
+        - security_admin
+        - data_admin
+        - role_creator
+        - describe
+        - select
+        - create
+        - modify
+    ProjectTaskInfo:
       type: object
       required:
         - task-id
@@ -6064,17 +6075,6 @@ components:
             - 'null'
           format: date-time
           description: When the task was last updated
-    ProjectRelation:
-      type: string
-      enum:
-        - project_admin
-        - security_admin
-        - data_admin
-        - role_creator
-        - describe
-        - select
-        - create
-        - modify
     ProtectionResponse:
       type: object
       required:
@@ -7101,112 +7101,6 @@ components:
         status:
           $ref: '#/components/schemas/TaskStatus'
           description: Status of this attempt
-    TaskEntity:
-      oneOf:
-        - type: object
-          required:
-            - table-id
-            - type
-          properties:
-            table-id:
-              type: string
-              format: uuid
-            type:
-              type: string
-              enum:
-                - table
-        - type: object
-          required:
-            - view-id
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - view
-            view-id:
-              type: string
-              format: uuid
-    TaskInfoAPI:
-      type: object
-      required:
-        - task-id
-        - project-id
-        - warehouse-id
-        - queue-name
-        - entity
-        - entity-name
-        - status
-        - scheduled-for
-        - attempt
-        - progress
-        - created-at
-      properties:
-        attempt:
-          type: integer
-          format: int32
-          description: Current attempt number
-        created-at:
-          type: string
-          format: date-time
-          description: When this task attempt was created
-        entity:
-          $ref: '#/components/schemas/TaskEntity'
-          description: Type of entity this task operates on
-        entity-name:
-          type: array
-          items:
-            type: string
-          description: Name of the entity this task operates on
-        last-heartbeat-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: Last heartbeat timestamp for running tasks
-        parent-task-id:
-          type:
-            - string
-            - 'null'
-          format: uuid
-          description: Parent task ID if this is a sub-task
-        picked-up-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: When the latest attempt of the task was picked up for processing by a worker.
-        progress:
-          type: number
-          format: float
-          description: Progress of the task (0.0 to 1.0)
-        project-id:
-          type: string
-          description: Project ID associated with the task
-        queue-name:
-          type: string
-          description: Name of the queue processing this task
-        scheduled-for:
-          type: string
-          format: date-time
-          description: When the latest attempt of the task is scheduled for
-        status:
-          $ref: '#/components/schemas/TaskStatus'
-          description: Current status of the task
-        task-id:
-          type: string
-          format: uuid
-          description: Unique identifier for the task
-        updated-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: When the task was last updated
-        warehouse-id:
-          type: string
-          format: uuid
-          description: Warehouse ID associated with the task
     TaskStatus:
       type: string
       enum:
@@ -7781,6 +7675,153 @@ components:
       enum:
         - active
         - inactive
+    WarehouseTaskEntityFilter:
+      oneOf:
+        - type: object
+          description: Get tasks for a specific table
+          required:
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+        - type: object
+          description: Get tasks for a specific view
+          required:
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+        - type: object
+          description: |-
+            Get Warehouse-level tasks which are not associated with a specific entity
+            inside the warehouse
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+    WarehouseTaskEntityId:
+      oneOf:
+        - type: object
+          required:
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+        - type: object
+          required:
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+    WarehouseTaskInfo:
+      type: object
+      required:
+        - task-id
+        - project-id
+        - warehouse-id
+        - queue-name
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        entity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WarehouseTaskEntityId'
+              description: Type of the sub-entity this task operates on. None if this is a warehouse-level task.
+        entity-name:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: Name of the entity this task operates on. None if this is a warehouse-level task.
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        project-id:
+          type: string
+          description: Project ID associated with the task
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
+        warehouse-id:
+          type: string
+          format: uuid
+          description: Warehouse ID associated with the task
   securitySchemes:
     bearerAuth:
       type: http

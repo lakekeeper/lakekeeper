@@ -763,7 +763,7 @@ pub(crate) mod tests {
             CreateTableError, NamedEntity, NamespaceId, RenameTabularError, TableCreation,
             TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
             tasks::{
-                EntityId, TaskMetadata,
+                ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             },
         },
@@ -1802,13 +1802,17 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
 
         let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
-            TaskMetadata {
+            ScheduleTaskMetadata {
                 project_id,
-                entity_id: EntityId::Table(table.table_id),
-                warehouse_id: Some(warehouse_id),
                 parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: Some(table.table_ident.into_name_parts()),
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    entity_id: WarehouseTaskEntityId::Table {
+                        table_id: table.table_id,
+                    },
+                    warehouse_id,
+                    entity_name: table.table_ident.into_name_parts(),
+                },
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

@@ -12,8 +12,8 @@ use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
     service::{
-        CatalogStore, CatalogWarehouseOps, SecretStore, WarehouseIdMissing, WarehouseIdNotFound,
-        WarehouseStatus, tasks::TaskQueueName,
+        CatalogStore, CatalogWarehouseOps, SecretStore, WarehouseIdNotFound, WarehouseStatus,
+        tasks::{TaskEntity, TaskQueueName},
     },
 };
 
@@ -82,21 +82,26 @@ pub(crate) async fn tabular_purge_worker<C: CatalogStore, S: SecretStore>(
             tracing::info!("Graceful shutdown: exiting `{QN_STR}` worker");
             return;
         };
-        let entity_type = task.task_metadata.entity_id.entity_type().to_string();
-        let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
+
+        let span = if let Some((warehouse_id, entity_id, entity_name)) =
+            task.task_metadata.warehouse_task_sub_entity()
+        {
+            let entity_id_uuid = entity_id.as_uuid();
+            let entity_type = entity_id.entity_type().to_string();
+            let entity_name = entity_name.join(".");
             tracing::debug_span!(
                 QN_STR,
-                location = %task.data.tabular_location,
                 warehouse_id = %warehouse_id,
                 entity_type = %entity_type,
+                entity_id = %entity_id_uuid,
+                entity_name = %entity_name,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
             )
         } else {
             tracing::debug_span!(
                 QN_STR,
-                location = %task.data.tabular_location,
-                entity_type = %entity_type,
+                entity_type = "Not Specified",
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
             )
@@ -149,11 +154,23 @@ where
     S: SecretStore,
 {
     let tabular_location_str = &task.data.tabular_location;
-    let warehouse_id = task
-        .task_metadata
-        .warehouse_id
-        .ok_or(WarehouseIdMissing::new())
-        .map_err(ErrorModel::from)?;
+
+    let warehouse_id = match &task.task_metadata.entity {
+        TaskEntity::Warehouse { .. } | TaskEntity::Project => {
+            return Err(ErrorModel::internal(
+                format!("Unexpected task scope for `{QN_STR}` task. Task must have a table or view scope."),
+                "UnexpectedTaskScopeForPurge",
+                None,
+            )
+            .into());
+        }
+        TaskEntity::EntityInWarehouse {
+            warehouse_id,
+            entity_id: _,
+            entity_name: _,
+        } => *warehouse_id,
+    };
+
     let warehouse = C::get_warehouse_by_id(
         warehouse_id,
         WarehouseStatus::active_and_inactive(),

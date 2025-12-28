@@ -18,8 +18,8 @@ use crate::{
             ApiServer,
             task_queue::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest,
-                get_task_queue_config as get_task_queue_config_authorized,
-                set_task_queue_config as set_task_queue_config_authorized,
+                get_task_queue_config as get_task_queue_config_from_store,
+                set_task_queue_config as set_task_queue_config_in_store,
             },
         },
     },
@@ -337,7 +337,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        set_task_queue_config_authorized(project_id, None, queue_name, request, context).await
+        set_task_queue_config_in_store(project_id, None, queue_name, request, context).await
     }
 
     async fn get_project_task_queue_config(
@@ -359,7 +359,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let filter = TaskQueueConfigFilter::ProjectId { project_id };
-        get_task_queue_config_authorized(&filter, queue_name, context).await
+        get_task_queue_config_from_store(&filter, queue_name, context).await
     }
 }
 

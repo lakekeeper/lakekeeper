@@ -17,7 +17,7 @@ use crate::{
         Result,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskEntityNamed, TaskFilter,
+            ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
             TaskId, TaskInfo, TaskInput, TaskQueueName, TaskResolveScope,
         },
     },
@@ -42,7 +42,7 @@ static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, Arc<ResolvedTask>>> =
 pub struct ResolvedTask {
     pub task_id: TaskId,
     pub project_id: ProjectId,
-    pub entity: TaskEntityNamed,
+    pub entity: ResolvedTaskEntity,
     pub queue_name: TaskQueueName,
 }
 

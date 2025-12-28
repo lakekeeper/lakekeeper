@@ -5,15 +5,16 @@ use tracing::Instrument;
 #[cfg(feature = "open-api")]
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{EntityId, TaskConfig, TaskExecutionDetails, TaskMetadata};
+use super::{TaskConfig, TaskExecutionDetails, WarehouseTaskEntityId};
 use crate::{
     CancellationToken,
     api::{ErrorModel, Result, management::v1::DeleteKind},
     service::{
-        CatalogStore, CatalogTabularOps, DropTabularError, Transaction, WarehouseIdMissing,
+        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
         authz::Authorizer,
         tasks::{
-            SpecializedTask, TaskData, TaskQueueName, tabular_purge_queue::TabularPurgePayload,
+            ScheduleTaskMetadata, SpecializedTask, TaskData, TaskEntity, TaskQueueName,
+            tabular_purge_queue::TabularPurgePayload,
         },
     },
 };
@@ -84,22 +85,22 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         .await;
 
         let Some(task) = task else {
-            tracing::info!("Graceful shutdown: exiting tabular expiration worker");
+            tracing::info!("Graceful shutdown: exiting `{QN_STR}` worker");
             return;
         };
 
-        let entity_id = task.task_metadata.entity_id;
-        let entity_id_uuid = entity_id
-            .as_uuid()
-            .map_or("Null".to_string(), |id| id.to_string());
-        let entity_type = entity_id.entity_type().to_string();
-
-        let span = if let Some(warehouse_id) = task.task_metadata.warehouse_id {
+        let span = if let Some((warehouse_id, entity_id, entity_name)) =
+            task.task_metadata.warehouse_task_sub_entity()
+        {
+            let entity_id_uuid = entity_id.as_uuid();
+            let entity_type = entity_id.entity_type().to_string();
+            let entity_name = entity_name.join(".");
             tracing::debug_span!(
                 QN_STR,
                 warehouse_id = %warehouse_id,
                 entity_type = %entity_type,
                 entity_id = %entity_id_uuid,
+                entity_name = %entity_name,
                 deletion_kind = ?task.data.deletion_kind,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
@@ -107,8 +108,7 @@ pub(crate) async fn tabular_expiration_worker<C: CatalogStore, A: Authorizer>(
         } else {
             tracing::debug_span!(
                 QN_STR,
-                entity_type = %entity_type,
-                entity_id = %entity_id_uuid,
+                entity_type = "Not Specified",
                 deletion_kind = ?task.data.deletion_kind,
                 attempt = %task.attempt(),
                 task_id = %task.task_id(),
@@ -126,20 +126,23 @@ async fn instrumented_expire<C: CatalogStore, A: Authorizer>(
     authorizer: A,
     task: &TabularExpirationTask,
 ) {
-    let entity_id = task.task_metadata.entity_id;
+    let entity_id_str = task.task_metadata.warehouse_task_sub_entity().map_or_else(
+        || "Unknown Entity".to_string(),
+        |(_, entity_id, _)| entity_id.to_string(),
+    );
     match handle_table::<C, A>(catalog_state.clone(), authorizer, task).await {
         Ok(()) => {
             tracing::debug!(
-                "Task of `{QN_STR}` worker exited successfully. {entity_id:?} deleted."
+                "Task of `{QN_STR}` worker exited successfully. {entity_id_str} deleted."
             );
         }
         Err(err) => {
             tracing::error!(
-                "Error in `{QN_STR}` worker. Expiration of {entity_id:?} failed. Error: {err}"
+                "Error in `{QN_STR}` worker. Expiration of {entity_id_str} failed. Error: {err}"
             );
             task.record_failure::<C>(
                 catalog_state,
-                &format!("Failed to expire soft-deleted {entity_id:?}.\n{err}"),
+                &format!("Failed to expire soft-deleted {entity_id_str}.\n{err}"),
             )
             .await;
         }
@@ -162,14 +165,24 @@ where
             e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue.",))
         })?;
 
-    let warehouse_id = task
-        .task_metadata
-        .warehouse_id
-        .ok_or(WarehouseIdMissing::new())
-        .map_err(ErrorModel::from)?;
+    let (warehouse_id, entity_id) = match &task.task_metadata.entity {
+        TaskEntity::Warehouse { .. } | TaskEntity::Project => {
+            return Err(ErrorModel::internal(
+                format!("Unexpected task scope for `{QN_STR}` task. Task must have a table or view scope."),
+                "UnexpectedTaskScopeForExpiration",
+                None,
+            )
+            .into());
+        }
+        TaskEntity::EntityInWarehouse {
+            warehouse_id,
+            entity_id,
+            entity_name: _,
+        } => (*warehouse_id, *entity_id),
+    };
 
-    let tabular_location = match task.task_metadata.entity_id {
-        EntityId::Table(table_id) => {
+    let tabular_location = match entity_id {
+        WarehouseTaskEntityId::Table { table_id } => {
             let drop_result =
                 C::drop_tabular(warehouse_id, table_id, true, trx.transaction()).await;
 
@@ -201,7 +214,7 @@ where
                 .ok();
             location
         }
-        EntityId::View(view_id) => {
+        WarehouseTaskEntityId::View { view_id } => {
             let location = match C::drop_tabular(warehouse_id, view_id, true, trx.transaction())
                 .await
             {
@@ -230,28 +243,17 @@ where
                 .ok();
             location
         }
-        _ => {
-            let entity_id = task.task_metadata.entity_id;
-            return Err(ErrorModel::internal(
-                format!("Entity ID {entity_id} is not valid for `{QN_STR}` task. Only tables and views can be expired."),
-                "EntityIdInvalid",
-                None,
-            )
-            .into());
-        }
     };
 
     if let Some(tabular_location) = tabular_location
         && matches!(task.data.deletion_kind, DeleteKind::Purge)
     {
         super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
-            TaskMetadata {
+            ScheduleTaskMetadata {
                 project_id: task.task_metadata.project_id.clone(),
-                entity_id: task.task_metadata.entity_id,
-                warehouse_id: task.task_metadata.warehouse_id,
                 parent_task_id: Some(task.task_id()),
-                schedule_for: None,
-                entity_name: task.task_metadata.entity_name.clone(),
+                scheduled_for: None,
+                entity: task.task_metadata.entity.clone(),
             },
             TabularPurgePayload::new(tabular_location.to_string()),
             trx.transaction(),
@@ -365,13 +367,17 @@ mod test {
                 .await
                 .unwrap();
         TabularExpirationTask::schedule_task::<PostgresBackend>(
-            TaskMetadata {
+            ScheduleTaskMetadata {
                 project_id,
-                warehouse_id: warehouse_id.into(),
-                entity_id: EntityId::Table(table.table_id),
                 parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: Some(table.table_ident.into_name_parts()),
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    warehouse_id,
+                    entity_id: WarehouseTaskEntityId::Table {
+                        table_id: table.table_id,
+                    },
+                    entity_name: table.table_ident.into_name_parts(),
+                },
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

@@ -22,9 +22,9 @@ mod test {
         service::{
             CatalogStore, CatalogTaskOps, Transaction,
             tasks::{
-                EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
-                TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
-                TaskQueueRegistry,
+                QueueRegistration, ScheduleTaskMetadata, SpecializedTask,
+                TaskConfig as QueueConfigTrait, TaskData, TaskEntity, TaskExecutionDetails,
+                TaskInput, TaskQueueName, TaskQueueRegistry, WarehouseTaskEntityId,
             },
         },
     };
@@ -132,13 +132,17 @@ mod test {
         let task_id = PostgresBackend::enqueue_task(
             &QUEUE_NAME,
             TaskInput {
-                task_metadata: TaskMetadata {
+                task_metadata: ScheduleTaskMetadata {
                     project_id: setup.warehouse.project_id.clone(),
-                    warehouse_id: setup.warehouse.warehouse_id.into(),
                     parent_task_id: None,
-                    entity_id: EntityId::Table(Uuid::now_v7().into()),
-                    schedule_for: None,
-                    entity_name: Some(vec!["mytable".to_string()]),
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id: setup.warehouse.warehouse_id,
+                        entity_id: WarehouseTaskEntityId::Table {
+                            table_id: Uuid::now_v7().into(),
+                        },
+                        entity_name: vec!["mytable".to_string()],
+                    },
+                    scheduled_for: None,
                 },
                 payload: serde_json::to_value(task_state).unwrap(),
             },

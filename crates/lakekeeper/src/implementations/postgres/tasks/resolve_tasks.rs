@@ -1,13 +1,15 @@
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 
-use super::EntityType;
+use super::TaskEntityTypeDB;
 use crate::{
-    ProjectId, WarehouseId,
+    ProjectId,
     api::ErrorModel,
-    implementations::postgres::dbutils::DBErrorHandler,
+    implementations::postgres::{dbutils::DBErrorHandler, tasks::task_entity_from_db},
     service::{
-        ResolvedTask, TableId, TableNamed, ViewId, ViewNamed, build_tabular_ident_from_vec,
-        tasks::{TaskId, TaskQueueName, TaskResolveScope},
+        ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec,
+        tasks::{
+            ResolvedTaskEntity, TaskId, TaskQueueName, TaskResolveScope, WarehouseTaskEntityId,
+        },
     },
 };
 
@@ -84,7 +86,7 @@ where
             warehouse_id,
             entity_name,
             entity_id,
-            entity_type as "entity_type!: EntityType",
+            entity_type as "entity_type!: TaskEntityTypeDB",
             queue_name as "queue_name!"
         FROM active_tasks
         UNION ALL
@@ -94,7 +96,7 @@ where
             warehouse_id,
             entity_name,
             entity_id,
-            entity_type as "entity_type!: EntityType",
+            entity_type as "entity_type!: TaskEntityTypeDB",
             queue_name as "queue_name!"
         FROM historical_tasks
         "#,
@@ -110,59 +112,49 @@ where
     let result = tasks
         .into_iter()
         .map(|record| {
+            let entity = task_entity_from_db(
+                record.entity_type,
+                record.warehouse_id,
+                record.entity_id,
+                record.entity_name,
+            )?;
+
             let project_id = ProjectId::from(record.project_id);
             let task_id = TaskId::from(record.task_id);
-            let entity = match record.entity_type {
-                EntityType::Table => TableNamed {
-                    table_id: record
-                        .entity_id
-                        .map(TableId::from)
-                        .ok_or(ErrorModel::internal(
-                            "Entity of type Table is missing entity_id",
-                            "EntityIdMissing",
-                            None,
-                        ))?,
-                    warehouse_id: WarehouseId::try_from(record.warehouse_id)?,
-                    table_ident: record
-                        .entity_name
-                        .map(|name| build_tabular_ident_from_vec(&name))
-                        .transpose()?
-                        .ok_or(ErrorModel::internal(
-                            "Entity of type Table is missing entity_name",
-                            "EntityNameMissing",
-                            None,
-                        ))?,
+
+            let resolved_entity = match entity {
+                crate::service::tasks::TaskEntity::Project => ResolvedTaskEntity::Project,
+                crate::service::tasks::TaskEntity::Warehouse { warehouse_id } => {
+                    warehouse_id.into()
                 }
-                .into(),
-                EntityType::View => ViewNamed {
-                    view_id: record
-                        .entity_id
-                        .map(ViewId::from)
-                        .ok_or(ErrorModel::internal(
-                            "Entity of type View is missing entity_id",
-                            "EntityIdMissing",
-                            None,
-                        ))?,
-                    warehouse_id: WarehouseId::try_from(record.warehouse_id)?,
-                    view_ident: record
-                        .entity_name
-                        .map(|name| build_tabular_ident_from_vec(&name))
-                        .transpose()?
-                        .ok_or(ErrorModel::internal(
-                            "Entity of type View is missing entity_name",
-                            "EntityNameMissing",
-                            None,
-                        ))?,
+                crate::service::tasks::TaskEntity::EntityInWarehouse {
+                    warehouse_id,
+                    entity_id,
+                    entity_name,
+                } => {
+                    let ident = build_tabular_ident_from_vec(&entity_name)?;
+                    match entity_id {
+                        WarehouseTaskEntityId::Table { table_id } => TableNamed {
+                            warehouse_id,
+                            table_ident: ident,
+                            table_id,
+                        }
+                        .into(),
+                        WarehouseTaskEntityId::View { view_id } => ViewNamed {
+                            warehouse_id,
+                            view_ident: ident,
+                            view_id,
+                        }
+                        .into(),
+                    }
                 }
-                .into(),
-                EntityType::Project => project_id.clone().into(),
-                EntityType::Warehouse => WarehouseId::try_from(record.warehouse_id)?.into(),
             };
+
             let queue_name = TaskQueueName::from(record.queue_name);
             Ok(ResolvedTask {
                 task_id,
                 project_id,
-                entity,
+                entity: resolved_entity,
                 queue_name,
             })
         })
@@ -186,8 +178,8 @@ mod tests {
             test::{setup_two_warehouses, setup_warehouse},
         },
         service::tasks::{
-            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskEntityNamed, TaskInput,
-            TaskMetadata, TaskQueueName,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ResolvedTaskEntity, ScheduleTaskMetadata,
+            TaskEntity, TaskInput, TaskQueueName, WarehouseTaskEntityId,
         },
     };
 
@@ -196,25 +188,28 @@ mod tests {
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
-        entity_id: EntityId,
+        entity_id: WarehouseTaskEntityId,
         project_id: ProjectId,
         warehouse_id: WarehouseId,
-        schedule_for: Option<chrono::DateTime<chrono::Utc>>,
+        scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         payload: Option<serde_json::Value>,
     ) -> Result<Option<TaskId>, IcebergErrorResponse> {
         Ok(super::super::queue_task_batch(
             conn,
             queue_name,
             vec![TaskInput {
-                task_metadata: TaskMetadata {
+                task_metadata: ScheduleTaskMetadata {
                     project_id,
-                    warehouse_id: warehouse_id.into(),
                     parent_task_id,
-                    entity_id,
-                    entity_name: entity_id
-                        .as_uuid()
-                        .map(|id| vec!["ns".to_string(), format!("table{}", id)]),
-                    schedule_for,
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id,
+                        entity_name: vec![
+                            "ns".to_string(),
+                            format!("table{}", entity_id.as_uuid()),
+                        ],
+                    },
+                    scheduled_for,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
             }],
@@ -275,8 +270,12 @@ mod tests {
     async fn test_resolve_tasks_active_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
-        let entity1 = EntityId::Table(Uuid::now_v7().into());
-        let entity2 = EntityId::Table(Uuid::now_v7().into());
+        let entity1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name1 = generate_test_queue_name();
         let tq_name2 = generate_test_queue_name();
 
@@ -345,24 +344,24 @@ mod tests {
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity1.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
 
         match entity_result2 {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity2.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity2.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -370,8 +369,12 @@ mod tests {
     async fn test_resolve_tasks_completed_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
-        let entity1 = EntityId::Table(Uuid::now_v7().into());
-        let entity2 = EntityId::Table(Uuid::now_v7().into());
+        let entity1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name1 = generate_test_queue_name();
         let tq_name2 = generate_test_queue_name();
 
@@ -447,23 +450,23 @@ mod tests {
         // Verify first task
         assert_eq!(queue_name_result1, &tq_name1);
         match entity_result1 {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity1.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task
         assert_eq!(queue_name_result2, &tq_name2);
         match entity_result2 {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity2.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity2.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -471,9 +474,15 @@ mod tests {
     async fn test_resolve_tasks_mixed_active_and_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
-        let entity1 = EntityId::Table(Uuid::now_v7().into());
-        let entity2 = EntityId::Table(Uuid::now_v7().into());
-        let entity3 = EntityId::Table(Uuid::now_v7().into());
+        let entity1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity3 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_test_queue_name();
 
         // Queue three tasks
@@ -570,8 +579,12 @@ mod tests {
     async fn test_resolve_tasks_with_specific_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (project_id, warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
-        let entity1 = EntityId::Table(Uuid::now_v7().into());
-        let entity2 = EntityId::Table(Uuid::now_v7().into());
+        let entity1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_test_queue_name();
 
         // Queue tasks in different warehouses
@@ -628,12 +641,12 @@ mod tests {
         // Verify the found task has correct warehouse_id
         let (entity_result, _) = &result[&task_id1];
         match entity_result {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity1.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -641,8 +654,12 @@ mod tests {
     async fn test_resolve_tasks_without_warehouse_filter(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (project_id, warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
-        let entity1 = EntityId::Table(Uuid::now_v7().into());
-        let entity2 = EntityId::Table(Uuid::now_v7().into());
+        let entity1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_test_queue_name();
 
         // Queue tasks in different warehouses
@@ -701,21 +718,21 @@ mod tests {
         let (entity_result2, _) = &result[&task_id2];
 
         match entity_result1 {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity1.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity1.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         match entity_result2 {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity2.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity2.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -723,7 +740,9 @@ mod tests {
     async fn test_resolve_tasks_partial_match(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Table(Uuid::now_v7().into());
+        let entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_test_queue_name();
 
         // Queue one task
@@ -770,12 +789,12 @@ mod tests {
         let (entity_result, queue_name_result) = &result[&existing_task_id];
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -783,7 +802,9 @@ mod tests {
     async fn test_resolve_tasks_with_retried_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Table(Uuid::now_v7().into());
+        let entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_test_queue_name();
 
         // Queue a task that will be retried
@@ -840,12 +861,12 @@ mod tests {
         let (entity_result, queue_name_result) = &result[&task_id];
         assert_eq!(queue_name_result, &tq_name);
         match entity_result {
-            TaskEntityNamed::Table(table) => {
-                assert_eq!(table.table_id, entity.as_uuid().unwrap().into());
+            ResolvedTaskEntity::Table(table) => {
+                assert_eq!(table.table_id, entity.as_uuid().into());
             }
-            TaskEntityNamed::View(_)
-            | TaskEntityNamed::Project(_)
-            | TaskEntityNamed::Warehouse(_) => panic!("Expected TaskEntity::Table"),
+            ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::Project
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
     }
 
@@ -858,11 +879,15 @@ mod tests {
         let tq_name = generate_test_queue_name();
 
         let entity_uuid_1 = Uuid::now_v7().into();
-        let entity_id_1 = EntityId::Table(entity_uuid_1);
+        let entity_id_1 = WarehouseTaskEntityId::Table {
+            table_id: entity_uuid_1,
+        };
         let entity_name_1 = vec!["ns".to_string(), format!("table{}", entity_uuid_1)];
 
         let entity_uuid_2 = Uuid::now_v7().into();
-        let entity_id_2 = EntityId::Table(entity_uuid_2);
+        let entity_id_2 = WarehouseTaskEntityId::Table {
+            table_id: entity_uuid_2,
+        };
         let entity_name_2 = vec!["ns".to_string(), format!("table{}", entity_uuid_2)];
         let schedule_for = Some(Utc::now() + Duration::minutes(5));
         let parent_task_id = None;
@@ -875,37 +900,39 @@ mod tests {
             &tq_name,
             vec![
                 TaskInput {
-                    task_metadata: TaskMetadata {
-                        warehouse_id: Some(warehouse_id1),
+                    task_metadata: ScheduleTaskMetadata {
                         project_id: project_id.clone(),
                         parent_task_id,
-                        entity_id: entity_id_1,
-                        entity_name: Some(entity_name_1),
-                        schedule_for,
+                        entity: TaskEntity::EntityInWarehouse {
+                            warehouse_id: warehouse_id1,
+                            entity_id: entity_id_1,
+                            entity_name: entity_name_1,
+                        },
+                        scheduled_for: schedule_for,
                     },
 
                     payload: warehouse_payload.clone(),
                 },
                 TaskInput {
-                    task_metadata: TaskMetadata {
-                        warehouse_id: None,
+                    task_metadata: ScheduleTaskMetadata {
                         project_id: project_id.clone(),
                         parent_task_id,
-                        entity_id: EntityId::Project,
-                        entity_name: None,
-                        schedule_for,
+                        entity: TaskEntity::Project,
+                        scheduled_for: schedule_for,
                     },
 
                     payload: project_payload.clone(),
                 },
                 TaskInput {
-                    task_metadata: TaskMetadata {
-                        warehouse_id: Some(warehouse_id2),
+                    task_metadata: ScheduleTaskMetadata {
                         project_id: project_id.clone(),
                         parent_task_id,
-                        entity_id: entity_id_2,
-                        entity_name: Some(entity_name_2),
-                        schedule_for,
+                        entity: TaskEntity::EntityInWarehouse {
+                            warehouse_id: warehouse_id2,
+                            entity_id: entity_id_2,
+                            entity_name: entity_name_2,
+                        },
+                        scheduled_for: schedule_for,
                     },
 
                     payload: warehouse_payload,
@@ -933,7 +960,9 @@ mod tests {
         // Create a moderate number of tasks for performance testing
         let mut task_ids = Vec::new();
         for i in 0..20 {
-            let entity = EntityId::Table(Uuid::now_v7().into());
+            let entity = WarehouseTaskEntityId::Table {
+                table_id: Uuid::now_v7().into(),
+            };
             let task_id = queue_task_helper(
                 &mut conn,
                 &tq_name,

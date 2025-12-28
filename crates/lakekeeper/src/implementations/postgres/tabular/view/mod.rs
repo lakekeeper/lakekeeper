@@ -421,7 +421,7 @@ pub(crate) mod tests {
             CreateViewError, DropTabularError, LoadViewError, TabularId, TabularIdentBorrowed,
             TabularListFlags, ViewId,
             tasks::{
-                EntityId, TaskMetadata,
+                ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             },
         },
@@ -727,13 +727,17 @@ pub(crate) mod tests {
         let mut tx = state.write_pool().begin().await.unwrap();
 
         let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
-            TaskMetadata {
+            ScheduleTaskMetadata {
                 project_id,
-                entity_id: EntityId::View(created_meta.uuid().into()),
-                warehouse_id: warehouse_id.into(),
                 parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: Some(vec!["myview".to_string()]),
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    entity_name: vec!["myview".to_string()],
+                    entity_id: WarehouseTaskEntityId::View {
+                        view_id: created_meta.uuid().into(),
+                    },
+                    warehouse_id,
+                },
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

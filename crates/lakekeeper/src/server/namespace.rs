@@ -30,7 +30,7 @@ use crate::{
         },
         secrets::SecretStore,
         tasks::{
-            EntityId, TaskFilter, TaskMetadata,
+            ScheduleTaskMetadata, TaskEntity, TaskFilter, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
     },
@@ -566,13 +566,15 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
                 TabularPurgeTask::schedule_task::<C>(
-                    TaskMetadata {
+                    ScheduleTaskMetadata {
                         project_id: project_id.clone(),
-                        warehouse_id: warehouse.warehouse_id.into(),
-                        entity_id: EntityId::from(*tabular_id),
                         parent_task_id: None,
-                        schedule_for: None,
-                        entity_name: Some(tabular_ident.clone().into_name_parts()),
+                        scheduled_for: None,
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_name: tabular_ident.clone().into_name_parts(),
+                            warehouse_id: warehouse.warehouse_id,
+                            entity_id: WarehouseTaskEntityId::from(*tabular_id),
+                        },
                     },
                     TabularPurgePayload {
                         tabular_location: tabular_location.to_string(),

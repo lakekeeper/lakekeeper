@@ -14,7 +14,7 @@ use crate::{
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         tasks::{
-            EntityId, TaskMetadata,
+            ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
@@ -67,13 +67,15 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
             if purge_requested {
                 TabularPurgeTask::schedule_task::<C>(
-                    TaskMetadata {
+                    ScheduleTaskMetadata {
                         project_id: project_id.clone(),
-                        warehouse_id: warehouse_id.into(),
-                        entity_id: EntityId::View(view_id),
                         parent_task_id: None,
-                        schedule_for: None,
-                        entity_name: Some(view.clone().into_name_parts()),
+                        scheduled_for: None,
+                        entity: TaskEntity::EntityInWarehouse {
+                            warehouse_id,
+                            entity_id: WarehouseTaskEntityId::View { view_id },
+                            entity_name: view.clone().into_name_parts(),
+                        },
                     },
                     TabularPurgePayload {
                         tabular_location: location.to_string(),
@@ -98,13 +100,15 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
-                TaskMetadata {
+                ScheduleTaskMetadata {
                     project_id: project_id.clone(),
-                    entity_id: EntityId::View(view_info.view_id()),
-                    warehouse_id: warehouse_id.into(),
                     parent_task_id: None,
-                    schedule_for: Some(chrono::Utc::now() + expiration_seconds),
-                    entity_name: Some(view.clone().into_name_parts()),
+                    scheduled_for: Some(chrono::Utc::now() + expiration_seconds),
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id: WarehouseTaskEntityId::View { view_id },
+                        entity_name: view.clone().into_name_parts(),
+                    },
                 },
                 TabularExpirationPayload {
                     deletion_kind: if purge_requested {
@@ -166,7 +170,7 @@ mod test {
             },
             management::v1::{
                 ApiServer as ManagementApiServer,
-                tasks::{ListTasksRequest, Service},
+                tasks::{ListTasksRequest, Service, WarehouseTaskEntityFilter},
                 view::ViewManagementService,
             },
         },
@@ -174,7 +178,7 @@ mod test {
         server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-        service::tasks::TaskEntity,
+        service::tasks::WarehouseTaskEntityId,
         tests::{create_view_request, random_request_metadata},
     };
 
@@ -235,13 +239,13 @@ mod test {
         assert_eq!(error.error.code, StatusCode::NOT_FOUND);
 
         // Load expiration task
-        let entity = TaskEntity::View {
+        let entity = WarehouseTaskEntityId::View {
             view_id: loaded_view.metadata.uuid().into(),
         };
         let expiration_tasks = ManagementApiServer::list_tasks(
             whi,
             ListTasksRequest::builder()
-                .entities(Some(vec![TaskEntity::View {
+                .entities(Some(vec![WarehouseTaskEntityFilter::View {
                     view_id: loaded_view.metadata.uuid().into(),
                 }]))
                 .build(),
@@ -252,7 +256,7 @@ mod test {
         .unwrap();
         assert_eq!(expiration_tasks.tasks.len(), 1);
         let task = &expiration_tasks.tasks[0];
-        assert_eq!(task.entity, entity);
+        assert_eq!(task.entity, Some(entity));
     }
 
     #[sqlx::test]
