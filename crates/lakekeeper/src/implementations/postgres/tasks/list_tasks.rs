@@ -62,7 +62,7 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         },
         queue_name: row.queue_name.into(),
         task_metadata: TaskMetadata {
-            project_id: ProjectId::from(row.project_id),
+            project_id: ProjectId::from_db_unchecked(row.project_id),
             entity: scope,
             parent_task_id: row.parent_task_id.map(TaskId::from),
             scheduled_for: row.attempt_scheduled_for,

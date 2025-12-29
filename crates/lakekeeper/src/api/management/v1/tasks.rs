@@ -187,6 +187,15 @@ impl TryFrom<TaskInfo> for ProjectTaskInfo {
     type Error = ErrorModel;
 
     fn try_from(value: TaskInfo) -> Result<Self, Self::Error> {
+        // Validate that this is actually a project-scoped task
+        if !matches!(value.task_metadata.entity, TaskEntity::Project) {
+            return Err(ErrorModel::internal(
+                "Expected Project task but received warehouse or entity task",
+                "ProjectTaskExpected",
+                None,
+            ));
+        }
+
         Ok(ProjectTaskInfo {
             task_id: value.task_id(),
             status: value.status(),

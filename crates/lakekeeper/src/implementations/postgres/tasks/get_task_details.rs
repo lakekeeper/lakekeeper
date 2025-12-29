@@ -101,7 +101,7 @@ fn parse_task_details(
             attempt: most_recent.attempt,
         },
         task_metadata: TaskMetadata {
-            project_id: ProjectId::from(most_recent.project_id),
+            project_id: ProjectId::from_db_unchecked(most_recent.project_id),
             parent_task_id: most_recent.parent_task_id.map(TaskId::from),
             scheduled_for: most_recent.attempt_scheduled_for,
             entity: scope,

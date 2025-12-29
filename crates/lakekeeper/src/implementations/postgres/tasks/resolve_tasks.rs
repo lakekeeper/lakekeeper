@@ -119,7 +119,7 @@ where
                 record.entity_name,
             )?;
 
-            let project_id = ProjectId::from(record.project_id);
+            let project_id = ProjectId::from_db_unchecked(record.project_id);
             let task_id = TaskId::from(record.task_id);
 
             let resolved_entity = match entity {

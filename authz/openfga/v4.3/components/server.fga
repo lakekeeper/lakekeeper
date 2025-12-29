@@ -21,7 +21,7 @@ type server
     define can_create_project: admin or operator
 
     # Anyone can list projects, they are however filtered by can_include_in_list of the project.
-    # Only admin can list all projects.
+    # Only admin / operator can list all projects.
     define can_list_all_projects: admin or operator
     define can_list_users: admin or operator
     define can_provision_users: admin or operator

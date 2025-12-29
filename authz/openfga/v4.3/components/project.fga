@@ -46,6 +46,8 @@ type project
     # Tasks
     define can_get_project_tasks: describe or admin from server
     define can_control_project_tasks: modify or admin from server
+    define can_get_task_queue_config: can_get_metadata
+    define can_modify_task_queue_config: modify 
 
     # GRANT Permissions
     define can_grant_role_creator: security_admin or admin from server

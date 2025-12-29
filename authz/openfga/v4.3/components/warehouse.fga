@@ -21,7 +21,7 @@ type warehouse
 
     # ------------------ Actions ------------------
     define can_create_namespace: create
-    # Delete this warehouse premanently
+    # Delete this warehouse permanently
     define can_delete: modify
     define can_update_storage: modify
     define can_update_storage_credential: modify
