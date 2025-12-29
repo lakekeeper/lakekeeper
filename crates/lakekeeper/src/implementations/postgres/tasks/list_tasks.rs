@@ -203,7 +203,7 @@ pub(crate) async fn list_tasks(
                 AND ((created_at < $3 OR $3 IS NULL) OR (created_at = $3 AND task_id < $4))
                 AND ($6 OR queue_name = ANY($5))
                 AND ($9 OR status = ANY($7::task_intermediate_status[]))
-                AND ($12 OR se.entity_id IS NOT NULL)
+                AND ($12 OR se.entity_type IS NOT NULL)
                 AND (created_at >= $13 OR $13 IS NULL)
                 AND (created_at <= $14 OR $14 IS NULL)
             ORDER BY task_created_at DESC, task_id DESC
@@ -242,7 +242,7 @@ pub(crate) async fn list_tasks(
                 AND ((task_created_at < $3 OR $3 IS NULL) OR (task_created_at = $3 AND task_id < $4))
                 AND ($6 OR queue_name = ANY($5))
                 AND ($9 OR status = ANY($8::task_final_status[]))
-                AND ($12 OR se.entity_id IS NOT NULL)
+                AND ($12 OR se.entity_type IS NOT NULL)
                 AND (task_created_at >= $13 OR $13 IS NULL)
                 AND (task_created_at <= $14 OR $14 IS NULL)
             ORDER BY task_created_at DESC, task_id DESC, attempt DESC

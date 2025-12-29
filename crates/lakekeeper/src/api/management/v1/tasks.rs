@@ -234,11 +234,18 @@ impl TryFrom<TaskDetails> for GetTaskDetailsResponse {
     type Error = ErrorModel;
 
     fn try_from(value: TaskDetails) -> Result<Self, Self::Error> {
+        let TaskDetails {
+            task,
+            data,
+            execution_details,
+            attempts,
+        } = value;
+
         Ok(Self {
-            task: WarehouseTaskInfo::try_from(value.task.clone())?,
-            task_data: value.data,
-            execution_details: value.execution_details,
-            attempts: value.attempts,
+            task: WarehouseTaskInfo::try_from(task)?,
+            task_data: data,
+            execution_details,
+            attempts,
         })
     }
 }
@@ -270,11 +277,18 @@ impl TryFrom<TaskDetails> for GetProjectTaskDetailsResponse {
     type Error = ErrorModel;
 
     fn try_from(value: TaskDetails) -> Result<Self, Self::Error> {
+        let TaskDetails {
+            task,
+            data,
+            execution_details,
+            attempts,
+        } = value;
+
         Ok(Self {
-            task: ProjectTaskInfo::try_from(value.task)?,
-            task_data: value.data,
-            execution_details: value.execution_details,
-            attempts: value.attempts,
+            task: ProjectTaskInfo::try_from(task)?,
+            task_data: data,
+            execution_details,
+            attempts,
         })
     }
 }
