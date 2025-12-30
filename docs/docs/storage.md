@@ -76,6 +76,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | `remote-signing-url-style`    | String  | No       | `auto`                     | S3 URL style detection mode for remote signing. Options: `auto`, `path-style`, or `virtual-host`. When set to `auto`, Lakekeeper tries virtual-host style first, then path style. |
 | `push-s3-delete-disabled`     | Boolean | No       | `true`                     | Controls whether the `s3.delete-enabled=false` flag is sent to clients. Only has an effect if "soft-deletion" is enabled for this Warehouse. This prevents clients like Spark from directly deleting files during operations like `DROP TABLE xxx PURGE`, ensuring soft-deletion works properly. However, it also affects operations like `expire_snapshots` that require file deletion. For more information, please check the [Soft Deletion Documentation](./concepts.md#soft-deletion). |
 | `aws-kms-key-arn`             | String  | No       | None                       | ARN of the AWS KMS Key that is used to encrypt the bucket. Vended Credentials is granted `kms:Decrypt` and `kms:GenerateDataKey` on the key. |
+| `legacy-md5-behavior`         | Boolean | No       | `false`                    | A flag to enable the legacy behavior of using MD5 checksums for operations that require checksums. |
 
 
 ### AWS
