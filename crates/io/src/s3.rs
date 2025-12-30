@@ -8,6 +8,7 @@ use aws_config::{
     timeout::TimeoutConfig,
 };
 use aws_sdk_s3::config::{
+    http::HttpRequest, 
     IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
     SharedIdentityCache,
 };
@@ -15,6 +16,17 @@ use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
     time::SharedTimeSource,
 };
+use aws_smithy_types::{
+    base64, config_bag::ConfigBag,
+};
+use aws_smithy_runtime_api::box_error::BoxError;
+use aws_smithy_runtime_api::client::{
+    interceptors::Intercept, 
+    interceptors::context::BeforeTransmitInterceptorContextMut,
+    orchestrator::Metadata,
+    runtime_components::RuntimeComponents,
+};
+
 use veil::Redact;
 
 mod s3_error;
@@ -112,6 +124,8 @@ pub struct S3Settings {
     pub path_style_access: Option<bool>,
     #[builder(default)]
     pub aws_kms_key_arn: Option<String>,
+    #[builder(default)]
+    pub legacy_md5_behaviour: Option<bool>,
 }
 
 impl S3Settings {
@@ -122,6 +136,10 @@ impl S3Settings {
 
         if self.path_style_access.unwrap_or(false) {
             s3_builder.set_force_path_style(Some(true));
+        }
+
+        if self.legacy_md5_behaviour.unwrap_or(false) {
+            s3_builder = s3_builder.interceptor(LegacyMD5Interceptor::default());
         }
 
         let client = aws_sdk_s3::Client::from_conf(s3_builder.build());
@@ -137,6 +155,7 @@ impl S3Settings {
             // S3 specific settings
             path_style_access: _,
             aws_kms_key_arn: _,
+            legacy_md5_behaviour: _,
         } = self;
 
         let region = aws_config::Region::new(region.clone());
@@ -204,6 +223,59 @@ impl S3Settings {
         }
     }
 }
+
+#[derive(Debug, Default)]
+struct LegacyMD5Interceptor;
+
+impl LegacyMD5Interceptor {
+   /// This function mutates the request to insert a Content-MD5 header and remove
+    /// any existing flexible checksum headers
+    fn calculate_md5_checksum_and_remove_other_checksums(http_request: &mut HttpRequest) {
+        // Remove the flexibile checksum headers
+        let remove_headers = http_request.headers().clone();
+        let remove_headers: Vec<(&str, &str)> = remove_headers
+            .iter()
+            .filter(|(name, _)| {
+                name.starts_with("x-amz-checksum") || name.starts_with("x-amz-sdk-checksum")
+            })
+            .collect();
+
+        for (name, _) in remove_headers {
+            http_request.headers_mut().remove(name);
+        }
+
+        // Check if the body is present if it isn't (streaming request) we skip adding the header
+        if let Some(bytes) = http_request.body().bytes() {
+            let md5 = md5::compute(bytes);
+            let checksum_value = base64::encode(md5.as_slice());
+            http_request
+                .headers_mut()
+                .append("Content-MD5", checksum_value);
+        }
+    }
+}
+
+impl Intercept for LegacyMD5Interceptor {
+    fn name(&self) -> &'static str {
+        "LegacyMD5Interceptor"
+    }
+
+    fn modify_before_signing(
+        &self,
+        ctx: &mut BeforeTransmitInterceptorContextMut<'_>,
+        _runtime_components: &RuntimeComponents,
+        cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        if let Some(metadata) = cfg.load::<Metadata>() {
+            if metadata.service().eq("S3") && metadata.name().eq("DeleteObjects") {
+                Self::calculate_md5_checksum_and_remove_other_checksums(ctx.request_mut());
+            }
+        }
+
+        Ok(())
+    }
+}
+
 
 /// Validate the S3 region.
 ///

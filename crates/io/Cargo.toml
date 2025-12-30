@@ -48,6 +48,8 @@ aws-sdk-s3 = { workspace = true, optional = true }
 aws-sdk-sts = { workspace = true, optional = true }
 aws-smithy-async = { workspace = true, optional = true }
 aws-smithy-http-client = { workspace = true, optional = true }
+aws-smithy-runtime-api = { workspace = true }
+aws-smithy-types = { workspace = true }
 azure_core = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
 azure_storage = { workspace = true, optional = true }
@@ -58,6 +60,7 @@ chrono = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
+md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 reqwest-middleware = { version = "0.4", optional = true }

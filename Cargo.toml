@@ -33,6 +33,7 @@ aws-smithy-async = { version = "1.2.5" }
 aws-smithy-http = "0.62.3"
 aws-smithy-http-client = { version = "1.0.6" }
 aws-smithy-runtime-api = { version = "1.8.7" }
+aws-smithy-types = { version = "1.2.13" }
 axum = { version = "0.8.1" }
 axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.5.0" }
@@ -93,6 +94,7 @@ lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
 limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
 maplit = "1.0.2"
+md5 = "0.8.0"
 middle = { version = "0.3", features = ["tonic"] }
 mockall = "0.13.0"
 moka = { version = "^0.12", features = ["future"] }

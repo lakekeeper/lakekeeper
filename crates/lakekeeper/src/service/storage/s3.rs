@@ -158,6 +158,11 @@ pub struct S3Profile {
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub remote_signing_enabled: bool,
+    /// Legacy MD5 behaviour for S3 delete objects call.
+    /// When enabled, Lakekeeper will use the the legacy MD5 checksum.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub legacy_md5_behaviour: Option<bool>,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1123,6 +1128,7 @@ fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
         assume_role_arn: profile.assume_role_arn.clone(),
         aws_kms_key_arn: profile.aws_kms_key_arn.clone(),
         sts_session_tags: profile.sts_session_tags.clone(),
+        legacy_md5_behaviour: profile.legacy_md5_behaviour,
     }
 }
 
@@ -1397,6 +1403,7 @@ pub(crate) mod test {
             sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: false,
             aws_kms_key_arn: None,
+            legacy_md5_behaviour: Some(false),
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -1443,6 +1450,7 @@ pub(crate) mod test {
             sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: false,
             aws_kms_key_arn: None,
+            legacy_md5_behaviour: Some(false),
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1501,6 +1509,7 @@ pub(crate) mod test {
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
+                legacy_md5_behaviour: Some(false),
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1561,6 +1570,7 @@ pub(crate) mod test {
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
+                legacy_md5_behaviour: Some(false),
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1657,6 +1667,7 @@ pub(crate) mod test {
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: Some(std::env::var("AWS_S3_KMS_ARN").unwrap()),
+                legacy_md5_behaviour: Some(false),
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1721,6 +1732,7 @@ pub(crate) mod test {
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
+                legacy_md5_behaviour: Some(false),
             };
             let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),
@@ -1805,6 +1817,7 @@ mod is_overlapping_location_tests {
             sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: true,
             aws_kms_key_arn: None,
+            legacy_md5_behaviour: Some(false),
         }
     }
 
