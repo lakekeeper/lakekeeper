@@ -270,7 +270,7 @@ impl Intercept for LegacyMD5Interceptor {
 /// Check if a checksum is required for the given S3 operation.
 /// The list of operations requiring a checksum is based on the AWS S3 model definition,
 /// see https://github.com/smithy-lang/smithy-rs/blob/main/aws/sdk/aws-models/s3.json
-pub fn is_checksum_required(operation: &str) -> bool {
+pub(crate) fn is_checksum_required(operation: &str) -> bool {
     matches!(operation, 
         "CreateBucketMetadataTableConfiguration" 
         | "DeleteObjects" 

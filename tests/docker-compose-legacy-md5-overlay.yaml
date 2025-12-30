@@ -4,4 +4,4 @@ services:
 
   spark:
     environment:
-      - LAKEKEEPER_TEST__S3_LEGACY_MD5_behavior=1
+      - LAKEKEEPER_TEST__S3_LEGACY_MD5_BEHAVIOR=1

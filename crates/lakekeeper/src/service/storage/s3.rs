@@ -158,8 +158,8 @@ pub struct S3Profile {
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub remote_signing_enabled: bool,
-    /// Legacy MD5 behavior for S3 delete objects call.
-    /// When enabled, Lakekeeper will use the the legacy MD5 checksum.
+    /// Legacy MD5 behavior for S3 operations requiring checksums.
+    /// When enabled, Lakekeeper will use the legacy MD5 checksum for operations like DeleteObjects.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub legacy_md5_behavior: Option<bool>,
