@@ -1,0 +1,7 @@
+services:
+  minio:
+    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
+
+  spark:
+    environment:
+      - LAKEKEEPER_TEST__S3_LEGACY_MD5_BEHAVIOUR=1
