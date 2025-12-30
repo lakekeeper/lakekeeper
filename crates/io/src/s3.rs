@@ -228,22 +228,13 @@ impl S3Settings {
 struct LegacyMD5Interceptor;
 
 impl LegacyMD5Interceptor {
-   /// This function mutates the request to insert a Content-MD5 header and remove
-    /// any existing flexible checksum headers
+    /// This function mutates the request to insert a Content-MD5 header if one is not present.
     fn calculate_md5_checksum_and_remove_other_checksums(http_request: &mut HttpRequest) {
-        // Remove the flexibile checksum headers
-        let remove_headers = http_request.headers().clone();
-        let remove_headers: Vec<(&str, &str)> = remove_headers
-            .iter()
-            .filter(|(name, _)| {
-                name.starts_with("x-amz-checksum") || name.starts_with("x-amz-sdk-checksum")
-            })
-            .collect();
-
-        for (name, _) in remove_headers {
-            http_request.headers_mut().remove(name);
+        // Return early if a Content-MD5 header is already present
+        if http_request.headers().contains_key("Content-MD5") {
+            return;
         }
-
+        
         // Check if the body is present if it isn't (streaming request) we skip adding the header
         if let Some(bytes) = http_request.body().bytes() {
             let md5 = md5::compute(bytes);
