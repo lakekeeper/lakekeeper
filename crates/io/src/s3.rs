@@ -8,25 +8,22 @@ use aws_config::{
     timeout::TimeoutConfig,
 };
 use aws_sdk_s3::config::{
-    http::HttpRequest, 
     IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
-    SharedIdentityCache,
+    SharedIdentityCache, http::HttpRequest,
 };
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
     time::SharedTimeSource,
 };
-use aws_smithy_types::{
-    base64, config_bag::ConfigBag,
+use aws_smithy_runtime_api::{
+    box_error::BoxError,
+    client::{
+        interceptors::{Intercept, context::BeforeTransmitInterceptorContextMut},
+        orchestrator::Metadata,
+        runtime_components::RuntimeComponents,
+    },
 };
-use aws_smithy_runtime_api::box_error::BoxError;
-use aws_smithy_runtime_api::client::{
-    interceptors::Intercept, 
-    interceptors::context::BeforeTransmitInterceptorContextMut,
-    orchestrator::Metadata,
-    runtime_components::RuntimeComponents,
-};
-
+use aws_smithy_types::{base64, config_bag::ConfigBag};
 use veil::Redact;
 
 mod s3_error;
@@ -139,7 +136,7 @@ impl S3Settings {
         }
 
         if self.legacy_md5_behavior.unwrap_or(false) {
-            s3_builder = s3_builder.interceptor(LegacyMD5Interceptor::default());
+            s3_builder = s3_builder.interceptor(LegacyMD5Interceptor);
         }
 
         let client = aws_sdk_s3::Client::from_conf(s3_builder.build());
@@ -234,7 +231,7 @@ impl LegacyMD5Interceptor {
         if http_request.headers().contains_key("Content-MD5") {
             return;
         }
-        
+
         // Check if the body is present if it isn't (streaming request) we skip adding the header
         if let Some(bytes) = http_request.body().bytes() {
             let md5 = md5::compute(bytes);
@@ -257,10 +254,11 @@ impl Intercept for LegacyMD5Interceptor {
         _runtime_components: &RuntimeComponents,
         cfg: &mut ConfigBag,
     ) -> Result<(), BoxError> {
-        if let Some(metadata) = cfg.load::<Metadata>() {
-            if metadata.service().eq("S3") && is_checksum_required(metadata.name()) {
-                Self::calculate_md5_checksum(ctx.request_mut());
-            }
+        if let Some(metadata) = cfg.load::<Metadata>()
+            && metadata.service().eq("S3")
+            && is_checksum_required(metadata.name())
+        {
+            Self::calculate_md5_checksum(ctx.request_mut());
         }
 
         Ok(())
@@ -269,31 +267,32 @@ impl Intercept for LegacyMD5Interceptor {
 
 /// Check if a checksum is required for the given S3 operation.
 /// The list of operations requiring a checksum is based on the AWS S3 model definition,
-/// see https://github.com/smithy-lang/smithy-rs/blob/main/aws/sdk/aws-models/s3.json
+/// see `https://github.com/smithy-lang/smithy-rs/blob/main/aws/sdk/aws-models/s3.json`
 pub(crate) fn is_checksum_required(operation: &str) -> bool {
-    matches!(operation, 
-        "CreateBucketMetadataTableConfiguration" 
-        | "DeleteObjects" 
-        | "PutBucketAcl" 
-        | "PutBucketCors" 
-        | "PutBucketEncryption" 
-        | "PutBucketLifecycleConfiguration" 
-        | "PutBucketLogging" 
-        | "PutBucketOwnershipControls" 
-        | "PutBucketPolicy" 
-        | "PutBucketReplication" 
-        | "PutBucketRequestPayment" 
-        | "PutBucketTagging" 
-        | "PutBucketVersioning" 
-        | "PutBucketWebsite" 
-        | "PutObjectAcl" 
-        | "PutObjectLegalHold" 
-        | "PutObjectLockConfiguration" 
-        | "PutObjectRetention" 
-        | "PutObjectTagging" 
-        | "PutPublicAccessBlock" 
-        | "UpdateBucketMetadataInventoryTableConfiguration" 
-        | "UpdateBucketMetadataJournalTableConfiguration"
+    matches!(
+        operation,
+        "CreateBucketMetadataTableConfiguration"
+            | "DeleteObjects"
+            | "PutBucketAcl"
+            | "PutBucketCors"
+            | "PutBucketEncryption"
+            | "PutBucketLifecycleConfiguration"
+            | "PutBucketLogging"
+            | "PutBucketOwnershipControls"
+            | "PutBucketPolicy"
+            | "PutBucketReplication"
+            | "PutBucketRequestPayment"
+            | "PutBucketTagging"
+            | "PutBucketVersioning"
+            | "PutBucketWebsite"
+            | "PutObjectAcl"
+            | "PutObjectLegalHold"
+            | "PutObjectLockConfiguration"
+            | "PutObjectRetention"
+            | "PutObjectTagging"
+            | "PutPublicAccessBlock"
+            | "UpdateBucketMetadataInventoryTableConfiguration"
+            | "UpdateBucketMetadataJournalTableConfiguration"
     )
 }
 
