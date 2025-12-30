@@ -763,7 +763,7 @@ pub(crate) mod tests {
             CreateTableError, NamedEntity, NamespaceId, RenameTabularError, TableCreation,
             TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
             tasks::{
-                EntityId, TaskMetadata,
+                ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             },
         },
@@ -946,7 +946,7 @@ pub(crate) mod tests {
     async fn test_final_create(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
@@ -1030,7 +1030,7 @@ pub(crate) mod tests {
     async fn test_stage_create(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
@@ -1135,7 +1135,7 @@ pub(crate) mod tests {
     async fn test_to_id(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
 
@@ -1188,7 +1188,7 @@ pub(crate) mod tests {
     async fn test_to_ids(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
 
@@ -1278,7 +1278,7 @@ pub(crate) mod tests {
     async fn test_to_ids_case_insensitivity(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace_parent = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_lower =
             NamespaceIdent::from_vec(vec!["my_namespace".to_string(), "child".to_string()])
@@ -1355,7 +1355,7 @@ pub(crate) mod tests {
     async fn test_rename_without_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_table_ident = TableIdent {
@@ -1402,7 +1402,7 @@ pub(crate) mod tests {
     async fn test_rename_with_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
@@ -1451,7 +1451,7 @@ pub(crate) mod tests {
     async fn test_rename_to_non_existent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
@@ -1483,7 +1483,7 @@ pub(crate) mod tests {
     async fn test_list_tables(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await
@@ -1554,7 +1554,7 @@ pub(crate) mod tests {
     async fn test_list_tables_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await
@@ -1670,7 +1670,7 @@ pub(crate) mod tests {
     async fn test_get_id_by_location(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let table_info = get_tabular_infos_by_ids(
@@ -1772,7 +1772,7 @@ pub(crate) mod tests {
     async fn test_cannot_get_table_of_inactive_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
         let mut transaction = pool.begin().await.expect("Failed to start transaction");
         set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut transaction)
@@ -1795,18 +1795,24 @@ pub(crate) mod tests {
     async fn test_drop_table(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let mut transaction = pool.begin().await.unwrap();
 
         let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
-            TaskMetadata {
-                entity_id: EntityId::Table(table.table_id),
-                warehouse_id,
+            ScheduleTaskMetadata {
+                project_id,
                 parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: table.table_ident.into_name_parts(),
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    entity_id: WarehouseTaskEntityId::Table {
+                        table_id: table.table_id,
+                    },
+                    warehouse_id,
+                    entity_name: table.table_ident.into_name_parts(),
+                },
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,

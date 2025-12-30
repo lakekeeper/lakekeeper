@@ -231,6 +231,11 @@ generate_endpoints! {
         ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
         GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
         ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
+        SetProjectTaskQueueConfig(POST, "/management/v1/project/task-queue/{queue_name}/config"),
+        GetProjectTaskQueueConfig(GET, "/management/v1/project/task-queue/{queue_name}/config"),
+        ListProjectTasks(POST, "/management/v1/project/task/list"),
+        GetProjectTaskDetails(GET, "/management/v1/project/task/by-id/{task_id}"),
+        ControlProjectTasks(POST, "/management/v1/project/task/control"),
         BatchCheckActions(POST, "/management/v1/action/batch-check"),
         // --------- Deprecated endpoints ---------
         GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
@@ -505,7 +510,7 @@ mod test {
                 // registered queues
                 !path.starts_with(
                     "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
-                )
+                ) && !path.starts_with("management/v1/project/task-queue/{queue_name}/config")
             })
             .collect_vec();
         if !extra_endpoints.is_empty() {

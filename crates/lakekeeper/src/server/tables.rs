@@ -68,7 +68,7 @@ use crate::{
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
         tasks::{
-            EntityId, TaskMetadata,
+            ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
@@ -575,6 +575,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         } else {
             warehouse.tabular_delete_profile
         };
+        let project_id = &warehouse.project_id;
 
         match delete_profile {
             TabularDeleteProfile::Hard {} => {
@@ -583,12 +584,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
-                        TaskMetadata {
-                            warehouse_id,
-                            entity_id: EntityId::from(table_id),
+                        ScheduleTaskMetadata {
+                            project_id: project_id.clone(),
+
                             parent_task_id: None,
-                            schedule_for: None,
-                            entity_name: table.clone().into_name_parts(),
+                            scheduled_for: None,
+                            entity: TaskEntity::EntityInWarehouse {
+                                entity_name: table.clone().into_name_parts(),
+                                warehouse_id,
+                                entity_id: WarehouseTaskEntityId::Table { table_id },
+                            },
                         },
                         TabularPurgePayload {
                             tabular_location: location.to_string(),
@@ -610,12 +615,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
-                    TaskMetadata {
-                        entity_id: EntityId::from(table_id),
-                        warehouse_id,
+                    ScheduleTaskMetadata {
+                        project_id: project_id.clone(),
                         parent_task_id: None,
-                        schedule_for: Some(chrono::Utc::now() + expiration_seconds),
-                        entity_name: table.clone().into_name_parts(),
+                        scheduled_for: Some(chrono::Utc::now() + expiration_seconds),
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_name: table.clone().into_name_parts(),
+                            entity_id: WarehouseTaskEntityId::Table { table_id },
+                            warehouse_id,
+                        },
                     },
                     TabularExpirationPayload {
                         deletion_kind: if purge_requested {

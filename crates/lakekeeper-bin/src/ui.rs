@@ -140,6 +140,8 @@ pub(crate) fn get_ui_router() -> Router {
         .route("/ui/index.html", get(redirect_to_ui))
         .route("/ui/", get(index_handler))
         .route("/ui/favicon.ico", get(favicon_handler))
+        .route("/ui/duckdb-worker-wrapper.js", get(static_handler))
+        .route("/ui/duckdb/{*file}", get(static_handler))
         .route("/ui/assets/{*file}", get(static_handler))
         .route("/ui/{*file}", get(index_handler))
         .layer(

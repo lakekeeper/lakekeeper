@@ -8,7 +8,7 @@ use utoipa::{
 use crate::{
     api::{
         endpoints::ManagementV1Endpoint,
-        management::v1::warehouse::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+        management::v1::task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
     },
     service::{authz::Authorizer, tasks::QueueApiConfig},
 };
@@ -46,6 +46,7 @@ use crate::{
         super::batch_check_actions,
         super::bootstrap,
         super::control_tasks,
+        super::control_project_tasks,
         super::create_project,
         super::create_role,
         super::create_user,
@@ -62,6 +63,8 @@ use crate::{
         super::get_project_actions,
         super::get_project_by_id_deprecated,
         super::get_project,
+        super::get_project_task_details,
+        super::get_project_task_queue_config,
         super::get_role_actions,
         super::get_role_metadata,
         super::get_role,
@@ -80,6 +83,7 @@ use crate::{
         super::get_warehouse,
         super::list_deleted_tabulars,
         super::list_projects,
+        super::list_project_tasks,
         super::list_roles,
         super::list_tasks,
         super::list_user,
@@ -91,6 +95,7 @@ use crate::{
         super::search_tabular,
         super::search_user,
         super::set_namespace_protection,
+        super::set_project_task_queue_config,
         super::set_table_protection,
         super::set_task_queue_config,
         super::set_view_protection,
@@ -132,20 +137,32 @@ impl utoipa::Modify for SecurityAddon {
 /// # Errors
 /// Never fails, but returns warnings if components cannot be patched.
 #[allow(clippy::too_many_lines)]
+#[must_use]
 pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::openapi::OpenApi {
     let mut doc = ManagementApiDoc::openapi();
     doc.merge(A::api_doc());
 
+    fix_warehouse_task_queue_config_paths(&mut doc, queue_api_configs);
+    fix_project_task_queue_config_paths(&mut doc);
+
+    doc
+}
+
+#[allow(clippy::too_many_lines)]
+fn fix_warehouse_task_queue_config_paths(
+    doc: &mut utoipa::openapi::OpenApi,
+    queue_api_configs: &[&QueueApiConfig],
+) {
     let Some(comps) = doc.components.as_mut() else {
         tracing::warn!(
             "No components found in the OpenAPI document, not patching queue configs in."
         );
-        return doc;
+        return;
     };
     let paths = &mut doc.paths.paths;
     let Some(config_path) = paths.remove(ManagementV1Endpoint::SetTaskQueueConfig.path()) else {
         tracing::warn!("No path found for SetTaskQueueConfig, not patching queue configs in.");
-        return doc;
+        return;
     };
 
     for QueueApiConfig {
@@ -229,7 +246,7 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                 "No post method found for '{}', not patching queue configs into the ApiDoc.",
                 ManagementV1Endpoint::SetTaskQueueConfig.path()
             );
-            return doc;
+            return;
         };
         post.parameters = post.parameters.take().map(|params| {
             params
@@ -246,7 +263,7 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                 "No request body found for the '{}', not patching queue configs into the ApiDoc.",
                 ManagementV1Endpoint::SetTaskQueueConfig.path()
             );
-            return doc;
+            return;
         };
         body.content.insert(
             "application/json".to_string(),
@@ -259,7 +276,7 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
                 "No get method found for '{}', not patching queue configs into the ApiDoc.",
                 ManagementV1Endpoint::SetTaskQueueConfig.path()
             );
-            return doc;
+            return;
         };
         get.parameters = get.parameters.take().map(|params| {
             params
@@ -317,6 +334,17 @@ pub fn api_doc<A: Authorizer>(queue_api_configs: &[&QueueApiConfig]) -> utoipa::
             .schemas
             .remove(&GetTaskQueueConfigResponse::name().to_string());
     }
+}
 
-    doc
+fn fix_project_task_queue_config_paths(doc: &mut utoipa::openapi::OpenApi) {
+    let paths = &mut doc.paths.paths;
+    if paths
+        .remove(ManagementV1Endpoint::SetProjectTaskQueueConfig.path())
+        .is_none()
+    {
+        tracing::warn!(
+            "No path found for SetProjectTaskQueueConfig, not patching queue configs in."
+        );
+        // return;
+    }
 }

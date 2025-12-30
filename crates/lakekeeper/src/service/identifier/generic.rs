@@ -4,9 +4,10 @@ use http::StatusCode;
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub use self::named_entity::NamedEntity;
-use crate::api::iceberg::v1::Prefix;
+use crate::{api::iceberg::v1::Prefix, service::DatabaseIntegrityError};
 
 mod named_entity {
     use super::TableIdent;
@@ -175,6 +176,17 @@ impl TryFrom<Prefix> for WarehouseId {
     }
 }
 
+impl TryFrom<Option<Uuid>> for WarehouseId {
+    type Error = ErrorModel;
+
+    fn try_from(value: Option<Uuid>) -> Result<Self, Self::Error> {
+        match value {
+            Some(id) => Ok(WarehouseId(id)),
+            None => Err(DatabaseIntegrityError::new("WarehouseId must not be null.").into()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +208,18 @@ mod tests {
         assert_eq!(err.r#type, "TableIdIsNotUUID");
         assert!(err.message.contains("TableId"));
         assert!(err.source.is_some());
+    }
+
+    #[test]
+    fn test_try_from_option_uuid_to_warehouse_id_with_valid_uuid() {
+        let uuid = Uuid::new_v4();
+        let warehouse_id = WarehouseId::try_from(Some(uuid)).unwrap();
+        assert_eq!(warehouse_id, WarehouseId::new(uuid));
+    }
+
+    #[test]
+    fn test_try_from_option_uuid_to_warehouse_id_with_none_uuid() {
+        let warehouse_id_error = WarehouseId::try_from(None).unwrap_err();
+        assert_eq!(warehouse_id_error.r#type, "DatabaseIntegrityError");
     }
 }

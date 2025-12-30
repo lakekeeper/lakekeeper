@@ -23,20 +23,20 @@ use crate::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
-            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
+            task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+            tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
-            warehouse::{
-                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
-                WarehouseStatisticsResponse,
-            },
+            warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
     service::{
         TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
+        task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
+            TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -585,7 +585,7 @@ where
     ) -> Result<Option<Task>>;
 
     async fn resolve_tasks_impl(
-        warehouse_id: WarehouseId,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<Vec<ResolvedTask>>;
@@ -606,18 +606,18 @@ where
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
     async fn get_task_details_impl(
-        warehouse_id: WarehouseId,
         task_id: TaskId,
+        scope: TaskDetailsScope,
         num_attempts: u16, // Number of attempts to retrieve in the task details
         state: Self::State,
-    ) -> Result<Option<GetTaskDetailsResponse>>;
+    ) -> Result<Option<TaskDetails>>;
 
     /// List tasks
     async fn list_tasks_impl(
-        warehouse_id: WarehouseId,
+        filter: &TaskFilter,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ListTasksResponse>;
+    ) -> Result<TaskList>;
 
     /// Enqueue a batch of tasks to a task queue.
     ///
@@ -669,14 +669,15 @@ where
     ) -> Result<()>;
 
     async fn set_task_queue_config_impl(
-        warehouse_id: WarehouseId,
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
     async fn get_task_queue_config_impl(
-        warehouse_id: WarehouseId,
+        filter: &TaskQueueConfigFilter,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;

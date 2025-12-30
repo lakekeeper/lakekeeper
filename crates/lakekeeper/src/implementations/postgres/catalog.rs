@@ -29,12 +29,10 @@ use crate::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
-            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
+            task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+            tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
-            warehouse::{
-                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
-                WarehouseStatisticsResponse,
-            },
+            warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
     implementations::postgres::{
@@ -74,13 +72,15 @@ use crate::{
         ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
         SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit,
         TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularListFlags, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
-        WarehouseStatus,
+        TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError,
+        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
+        task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
+            TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -682,11 +682,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn resolve_tasks_impl(
-        warehouse_id: WarehouseId,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<Vec<ResolvedTask>> {
-        resolve_tasks(Some(warehouse_id), task_ids, &state.read_pool()).await
+        resolve_tasks(scope, task_ids, &state.read_pool()).await
     }
 
     async fn record_task_success_impl(
@@ -707,21 +707,21 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn get_task_details_impl(
-        warehouse_id: WarehouseId,
         task_id: TaskId,
+        scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<GetTaskDetailsResponse>> {
-        get_task_details(warehouse_id, task_id, num_attempts, &state.read_pool()).await
+    ) -> Result<Option<TaskDetails>> {
+        get_task_details(task_id, scope, num_attempts, &state.read_pool()).await
     }
 
     /// List tasks
     async fn list_tasks_impl(
-        warehouse_id: WarehouseId,
+        filter: &TaskFilter,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ListTasksResponse> {
-        list_tasks(warehouse_id, query, &mut *transaction).await
+    ) -> Result<TaskList> {
+        list_tasks(filter, query, &mut *transaction).await
     }
 
     async fn enqueue_tasks_impl(
@@ -773,19 +773,20 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn set_task_queue_config_impl(
-        warehouse_id: WarehouseId,
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        set_task_queue_config(transaction, queue_name, warehouse_id, config).await
+        set_task_queue_config(transaction, queue_name, project_id, warehouse_id, config).await
     }
 
     async fn get_task_queue_config_impl(
-        warehouse_id: WarehouseId,
+        filter: &TaskQueueConfigFilter,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
-        get_task_queue_config(&state.read_pool(), warehouse_id, queue_name).await
+        get_task_queue_config(&state.read_pool(), filter, queue_name).await
     }
 }

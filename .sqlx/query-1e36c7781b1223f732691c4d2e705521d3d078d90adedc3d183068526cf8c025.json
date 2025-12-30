@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH input_rows AS (\n            SELECT\n                task_id,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                payload,\n                entity_ids,\n                entity_types,\n                entity_name,\n                project_id,\n                $2 as queue_name\n            FROM unnest(\n                $1::uuid[],\n                $3::uuid[],\n                $4::uuid[],\n                $5::timestamptz[],\n                $6::jsonb[],\n                $7::uuid[],\n                $8::entity_type[],\n                $10::jsonb[],\n                $11::text[]\n            ) AS t(\n                task_id,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                payload,\n                entity_ids,\n                entity_types,\n                entity_name,\n                project_id\n            )\n        )\n        INSERT INTO task(\n                task_id,\n                queue_name,\n                status,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                task_data,\n                entity_id,\n                entity_type,\n                entity_name,\n                project_id\n        )\n        SELECT\n            i.task_id,\n            i.queue_name,\n            $9,\n            i.parent_task_id,\n            i.warehouse_id,\n            coalesce(i.scheduled_for, now()),\n            i.payload,\n            i.entity_ids,\n            i.entity_types,\n            CASE \n            WHEN entity_name IS NULL THEN NULL::text[]\n                ELSE ARRAY(SELECT jsonb_array_elements_text(entity_name))\n            END,\n            i.project_id\n        FROM input_rows i\n        ON CONFLICT (project_id, warehouse_id, entity_type, entity_id, queue_name) DO NOTHING\n        RETURNING task_id, queue_name, entity_id, entity_type as \"entity_type: TaskEntityTypeDB\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "queue_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "entity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_type: TaskEntityTypeDB",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "project",
+                "warehouse"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text",
+        "UuidArray",
+        "UuidArray",
+        "TimestamptzArray",
+        "JsonbArray",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "entity_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "entity_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view",
+                      "project",
+                      "warehouse"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        "JsonbArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1e36c7781b1223f732691c4d2e705521d3d078d90adedc3d183068526cf8c025"
+}

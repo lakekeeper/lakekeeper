@@ -4,12 +4,21 @@ use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
 use uuid::Uuid;
 
 use crate::{
-    WarehouseId,
-    api::management::v1::warehouse::{
-        GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
+    ProjectId, WarehouseId,
+    api::management::v1::{
+        task_queue::{GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest},
+        tasks::TaskStatus,
     },
     implementations::postgres::dbutils::DBErrorHandler,
-    service::tasks::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
+    service::{
+        TableId, ViewId,
+        task_configs::TaskQueueConfigFilter,
+        tasks::{
+            ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter,
+            TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome, TaskQueueName,
+            WarehouseTaskEntityId,
+        },
+    },
 };
 
 mod get_task_details;
@@ -23,21 +32,105 @@ pub(crate) use resolve_tasks::resolve_tasks;
 pub(crate) struct InsertResult {
     pub task_id: TaskId,
     #[cfg(test)]
-    pub entity_id: EntityId,
+    pub entity_id: Option<WarehouseTaskEntityId>,
 }
 
 #[derive(Debug, sqlx::Type, Clone, Copy)]
 #[sqlx(type_name = "entity_type", rename_all = "kebab-case")]
-enum EntityType {
+enum TaskEntityTypeDB {
     Table,
     View,
+    Project,
+    Warehouse,
 }
 
-impl From<EntityId> for EntityType {
-    fn from(entity_id: EntityId) -> Self {
+impl From<WarehouseTaskEntityId> for TaskEntityTypeDB {
+    fn from(entity_id: WarehouseTaskEntityId) -> Self {
         match entity_id {
-            EntityId::Table(_) => Self::Table,
-            EntityId::View(_) => Self::View,
+            WarehouseTaskEntityId::Table { .. } => Self::Table,
+            WarehouseTaskEntityId::View { .. } => Self::View,
+        }
+    }
+}
+
+fn task_status_from_db(
+    task_status: Option<TaskIntermediateStatus>,
+    task_log_status: Option<TaskOutcome>,
+) -> Result<TaskStatus, ErrorModel> {
+    task_status
+        .map(Into::into)
+        .or(task_log_status.map(Into::into))
+        .ok_or_else(|| {
+            ErrorModel::internal(
+                "Task has neither status nor log status.",
+                "TaskStatusMissing",
+                None,
+            )
+        })
+}
+
+fn task_entity_from_db(
+    entity_type: TaskEntityTypeDB,
+    warehouse_id: Option<Uuid>,
+    entity_id: Option<Uuid>,
+    entity_name: Option<Vec<String>>,
+) -> Result<TaskEntity, IcebergErrorResponse> {
+    match entity_type {
+        TaskEntityTypeDB::View | TaskEntityTypeDB::Table => {
+            let warehouse_id = warehouse_id
+                .ok_or_else(|| {
+                    ErrorModel::internal(
+                        "WarehouseId is missing for Warehouse task.",
+                        "InternalError",
+                        None,
+                    )
+                })
+                .map(WarehouseId::from)?;
+
+            let entity_id = entity_id.ok_or_else(|| {
+                ErrorModel::internal(
+                    "EntityId is missing for table or view scoped task.",
+                    "InternalError",
+                    None,
+                )
+            })?;
+
+            let entity_id = match entity_type {
+                TaskEntityTypeDB::View => WarehouseTaskEntityId::View {
+                    view_id: ViewId::from(entity_id),
+                },
+                TaskEntityTypeDB::Table => WarehouseTaskEntityId::Table {
+                    table_id: TableId::from(entity_id),
+                },
+                _ => unreachable!(),
+            };
+
+            let entity_name = entity_name.ok_or_else(|| {
+                ErrorModel::internal(
+                    "Entity name is missing for table or view scoped task.",
+                    "InternalError",
+                    None,
+                )
+            })?;
+
+            Ok(TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name,
+            })
+        }
+        TaskEntityTypeDB::Project => Ok(TaskEntity::Project),
+        TaskEntityTypeDB::Warehouse => {
+            let warehouse_id = warehouse_id
+                .ok_or_else(|| {
+                    ErrorModel::internal(
+                        "WarehouseId is missing for warehouse scoped task.",
+                        "InternalError",
+                        None,
+                    )
+                })
+                .map(WarehouseId::from)?;
+            Ok(TaskEntity::Warehouse { warehouse_id })
         }
     }
 }
@@ -51,6 +144,7 @@ pub(crate) async fn queue_task_batch(
     let queue_name = queue_name.as_str();
     let mut task_ids = Vec::with_capacity(tasks.len());
     let mut parent_task_ids = Vec::with_capacity(tasks.len());
+    let mut project_ids = Vec::with_capacity(tasks.len());
     let mut warehouse_ids = Vec::with_capacity(tasks.len());
     let mut scheduled_fors = Vec::with_capacity(tasks.len());
     let mut entity_ids = Vec::with_capacity(tasks.len());
@@ -59,30 +153,54 @@ pub(crate) async fn queue_task_batch(
     let mut entity_names = Vec::with_capacity(tasks.len());
     for TaskInput {
         task_metadata:
-            TaskMetadata {
+            ScheduleTaskMetadata {
+                project_id,
                 parent_task_id,
-                warehouse_id,
-                schedule_for,
-                entity_id,
-                entity_name,
+                scheduled_for,
+                entity: scope,
             },
         payload,
     } in tasks
     {
+        let (warehouse_id, entity_type, entity_id, entity_name) = match scope {
+            TaskEntity::Warehouse { warehouse_id } => {
+                (Some(warehouse_id), TaskEntityTypeDB::Warehouse, None, None)
+            }
+            TaskEntity::Project => (None, TaskEntityTypeDB::Project, None, None),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name,
+            } => (
+                Some(warehouse_id),
+                entity_id.into(),
+                Some(entity_id.as_uuid()),
+                Some(entity_name),
+            ),
+        };
+
         task_ids.push(Uuid::now_v7());
         parent_task_ids.push(parent_task_id.as_deref().copied());
-        warehouse_ids.push(*warehouse_id);
-        scheduled_fors.push(schedule_for);
+        project_ids.push(project_id.to_string());
+        warehouse_ids.push(warehouse_id.as_deref().copied());
+        scheduled_fors.push(scheduled_for);
         payloads.push(payload);
-        entity_types.push(EntityType::from(entity_id));
-        entity_ids.push(entity_id.as_uuid());
-        entity_names.push(serde_json::to_value(&entity_name).map_err(|e| {
-            ErrorModel::internal(
-                format!("Failed to serialize entity name: {entity_name:?}, error: {e}"),
-                "InternalError",
-                None,
-            )
-        })?);
+        entity_types.push(entity_type);
+        entity_ids.push(entity_id);
+        match entity_name {
+            None => {
+                entity_names.push(None);
+            }
+            Some(name) => {
+                entity_names.push(Some(serde_json::to_value(&name).map_err(|e| {
+                    ErrorModel::internal(
+                        format!("Failed to serialize entity name when queuing task: {name:?}, error: {e}"),
+                        "InternalError",
+                        None,
+                    )
+                })?));
+            }
+        }
     }
 
     Ok(sqlx::query!(
@@ -96,6 +214,7 @@ pub(crate) async fn queue_task_batch(
                 entity_ids,
                 entity_types,
                 entity_name,
+                project_id,
                 $2 as queue_name
             FROM unnest(
                 $1::uuid[],
@@ -105,7 +224,8 @@ pub(crate) async fn queue_task_batch(
                 $6::jsonb[],
                 $7::uuid[],
                 $8::entity_type[],
-                $10::jsonb[]
+                $10::jsonb[],
+                $11::text[]
             ) AS t(
                 task_id,
                 parent_task_id,
@@ -114,7 +234,8 @@ pub(crate) async fn queue_task_batch(
                 payload,
                 entity_ids,
                 entity_types,
-                entity_name
+                entity_name,
+                project_id
             )
         )
         INSERT INTO task(
@@ -127,7 +248,9 @@ pub(crate) async fn queue_task_batch(
                 task_data,
                 entity_id,
                 entity_type,
-                entity_name)
+                entity_name,
+                project_id
+        )
         SELECT
             i.task_id,
             i.queue_name,
@@ -138,23 +261,28 @@ pub(crate) async fn queue_task_batch(
             i.payload,
             i.entity_ids,
             i.entity_types,
-            ARRAY(SELECT jsonb_array_elements_text(entity_name))
+            CASE 
+            WHEN entity_name IS NULL THEN NULL::text[]
+                ELSE ARRAY(SELECT jsonb_array_elements_text(entity_name))
+            END,
+            i.project_id
         FROM input_rows i
-        ON CONFLICT (warehouse_id, entity_type, entity_id, queue_name) DO NOTHING
-        RETURNING task_id, queue_name, entity_id, entity_type as "entity_type: EntityType""#,
+        ON CONFLICT (project_id, warehouse_id, entity_type, entity_id, queue_name) DO NOTHING
+        RETURNING task_id, queue_name, entity_id, entity_type as "entity_type: TaskEntityTypeDB""#,
         &task_ids,
         queue_name,
         &parent_task_ids as _,
-        &warehouse_ids,
+        &warehouse_ids as _,
         &scheduled_fors
             .iter()
             .map(|t| t.as_ref())
             .collect::<Vec<_>>() as _,
         &payloads,
-        &entity_ids,
+        &entity_ids as _,
         &entity_types as _,
-        TaskStatus::Scheduled as _,
-        &entity_names,
+        TaskIntermediateStatus::Scheduled as _,
+        &entity_names as _,
+        &project_ids
     )
     .fetch_all(conn)
     .await
@@ -163,11 +291,15 @@ pub(crate) async fn queue_task_batch(
             .into_iter()
             .map(|record| InsertResult {
                 task_id: record.task_id.into(),
-                // queue_name: record.queue_name,
                 #[cfg(test)]
                 entity_id: match record.entity_type {
-                    EntityType::View => EntityId::View(record.entity_id.into()),
-                    EntityType::Table => EntityId::Table(record.entity_id.into()),
+                    TaskEntityTypeDB::View => Some(WarehouseTaskEntityId::View {
+                        view_id: record.entity_id.unwrap().into(),
+                    }),
+                    TaskEntityTypeDB::Table => Some(WarehouseTaskEntityId::Table {
+                        table_id: record.entity_id.unwrap().into(),
+                    }),
+                    TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => None,
                 },
             })
             .collect_vec()
@@ -189,11 +321,13 @@ pub(crate) async fn pick_task(
         days: 0,
         microseconds: default_max_time_since_last_heartbeat
             .num_microseconds()
-            .ok_or(ErrorModel::internal(
-                "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
-                "InternalError",
-                None,
-            ))?,
+            .ok_or_else(|| {
+                ErrorModel::internal(
+                    "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
+                    "InternalError",
+                    None,
+                )
+            })?,
     };
     let x = sqlx::query!(
         r#"
@@ -202,7 +336,8 @@ pub(crate) async fn pick_task(
             FROM task t
             LEFT JOIN task_config tc
                 ON tc.queue_name = t.queue_name
-                    AND tc.warehouse_id = t.warehouse_id
+                    AND ((tc.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (tc.warehouse_id = t.warehouse_id))
+                    AND tc.project_id = t.project_id
             WHERE (t.queue_name = $1 AND scheduled_for <= now()) 
                 AND (
                     (status = 'scheduled') OR 
@@ -232,7 +367,8 @@ pub(crate) async fn pick_task(
                 attempt_scheduled_for,
                 last_heartbeat_at,
                 parent_task_id,
-                task_created_at
+                task_created_at,
+                project_id
             )
             SELECT task_id,
                     warehouse_id,
@@ -251,7 +387,8 @@ pub(crate) async fn pick_task(
                     scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    created_at
+                    created_at,
+                    project_id
             FROM picked_task p
             WHERE p.status != 'scheduled'
             ON CONFLICT (task_id, attempt) DO NOTHING
@@ -268,17 +405,18 @@ pub(crate) async fn pick_task(
         RETURNING
             task.task_id,
             task.entity_id,
-            task.entity_type as "entity_type: EntityType",
+            task.entity_type as "entity_type: TaskEntityTypeDB",
             task.entity_name,
             task.warehouse_id,
             task.task_data,
             task.scheduled_for,
-            task.status as "status: TaskStatus",
+            task.status as "status: TaskIntermediateStatus",
             task.picked_up_at,
             task.attempt,
             task.parent_task_id,
             task.queue_name,
-            (select config from picked_task)
+            (select config from picked_task),
+            task.project_id
             "#,
         queue_name,
         max_time_since_last_heartbeat
@@ -292,16 +430,19 @@ pub(crate) async fn pick_task(
 
     if let Some(task) = x {
         tracing::trace!("Picked up task: {:?}", task);
+        let project_id = ProjectId::from_db_unchecked(task.project_id);
+        let scope = task_entity_from_db(
+            task.entity_type,
+            task.warehouse_id,
+            task.entity_id,
+            task.entity_name.clone(),
+        )?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
-                warehouse_id: task.warehouse_id.into(),
-                entity_id: match task.entity_type {
-                    EntityType::View => EntityId::View(task.entity_id.into()),
-                    EntityType::Table => EntityId::Table(task.entity_id.into()),
-                },
-                entity_name: task.entity_name,
+                project_id,
                 parent_task_id: task.parent_task_id.map(TaskId::from),
-                schedule_for: Some(task.scheduled_for),
+                scheduled_for: task.scheduled_for,
+                entity: scope,
             },
             config: task.config,
             id: TaskAttemptId {
@@ -351,7 +492,8 @@ pub(crate) async fn record_success(
                 attempt_scheduled_for,
                 last_heartbeat_at,
                 parent_task_id,
-                task_created_at
+                task_created_at,
+                project_id
             )
             SELECT task_id,
                     warehouse_id,
@@ -370,7 +512,8 @@ pub(crate) async fn record_success(
                     scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    created_at
+                    created_at,
+                    project_id
             FROM moved
             ON CONFLICT (task_id, attempt) DO NOTHING
             RETURNING task_id as log_task_id
@@ -461,7 +604,8 @@ pub(crate) async fn record_failure(
                     attempt_scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    task_created_at
+                    task_created_at,
+                    project_id
                 )
                 SELECT
                     task_id,
@@ -481,7 +625,8 @@ pub(crate) async fn record_failure(
                     scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    created_at
+                    created_at,
+                    project_id
                 FROM moved
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 RETURNING task_id as log_task_id
@@ -528,7 +673,8 @@ pub(crate) async fn record_failure(
                     attempt_scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    task_created_at
+                    task_created_at,
+                    project_id
                 )
                 SELECT 
                     task_id,
@@ -548,7 +694,8 @@ pub(crate) async fn record_failure(
                     scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    created_at
+                    created_at,
+                    project_id
                 FROM locked
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 RETURNING task_id as log_task_id
@@ -616,27 +763,57 @@ pub(crate) async fn record_failure(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct TaskConfigRow {
+    config: serde_json::Value,
+    max_time_since_last_heartbeat: Option<PgInterval>,
+}
+
 pub(crate) async fn get_task_queue_config<
     'e,
     'c: 'e,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
     connection: E,
-    warehouse_id: WarehouseId,
+    filter: &TaskQueueConfigFilter,
     queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
-    let result = sqlx::query!(
-        r#"
-        SELECT config, max_time_since_last_heartbeat
-        FROM task_config
-        WHERE warehouse_id = $1 AND queue_name = $2
-        "#,
-        *warehouse_id,
-        queue_name.as_str()
-    )
-    .fetch_optional(connection)
-    .await
-    .map_err(|e| {
+    let data = match filter {
+        TaskQueueConfigFilter::WarehouseId {
+            warehouse_id,
+            project_id,
+        } => {
+            sqlx::query_as!(
+                TaskConfigRow,
+                r#"
+                SELECT config, max_time_since_last_heartbeat
+                FROM task_config
+                WHERE warehouse_id = $1 AND queue_name = $2 AND project_id = $3
+                "#,
+                **warehouse_id,
+                queue_name.as_str(),
+                project_id.as_str()
+            )
+            .fetch_optional(connection)
+            .await
+        }
+        TaskQueueConfigFilter::ProjectId { project_id } => {
+            sqlx::query_as!(
+                TaskConfigRow,
+                r#"
+                SELECT config, max_time_since_last_heartbeat
+                FROM task_config
+                WHERE project_id = $1 AND queue_name = $2 AND warehouse_id IS NULL
+                "#,
+                project_id.as_str(),
+                queue_name.as_str(),
+            )
+            .fetch_optional(connection)
+            .await
+        }
+    };
+
+    let result = data.map_err(|e| {
         tracing::error!(?e, "Failed to get task queue config");
         e.into_error_model(format!("Failed to get task queue config for {queue_name}"))
     })?;
@@ -657,7 +834,8 @@ pub(crate) async fn get_task_queue_config<
 pub(crate) async fn set_task_queue_config(
     transaction: &mut PgConnection,
     queue_name: &TaskQueueName,
-    warehouse_id: WarehouseId,
+    project_id: ProjectId,
+    warehouse_id: Option<WarehouseId>,
     config: SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
     let serialized = config.queue_config.0;
@@ -668,7 +846,7 @@ pub(crate) async fn set_task_queue_config(
                 days: 0,
                 microseconds: chrono::Duration::seconds(max_seconds_since_last_heartbeat)
                     .num_microseconds()
-                    .ok_or(ErrorModel::internal(
+                    .ok_or_else(|| ErrorModel::internal(
                     "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
                     "InternalError",
                     None,
@@ -679,13 +857,14 @@ pub(crate) async fn set_task_queue_config(
         };
     sqlx::query!(
         r#"
-        INSERT INTO task_config (queue_name, warehouse_id, config, max_time_since_last_heartbeat)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (queue_name, warehouse_id) DO UPDATE
-        SET config = $3, max_time_since_last_heartbeat = COALESCE($4, task_config.max_time_since_last_heartbeat )
+        INSERT INTO task_config (queue_name, project_id, warehouse_id, config, max_time_since_last_heartbeat)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (queue_name, project_id, warehouse_id) DO UPDATE
+        SET config = $4, max_time_since_last_heartbeat = COALESCE($5, task_config.max_time_since_last_heartbeat)
         "#,
         queue_name.as_str(),
-        *warehouse_id,
+        project_id.as_str(),
+        warehouse_id.map(Uuid::from),
         serialized,
         max_time_since_last_heartbeat
     )
@@ -757,7 +936,8 @@ pub(crate) async fn reschedule_tasks_for(
                 attempt_scheduled_for,
                 last_heartbeat_at,
                 parent_task_id,
-                task_created_at
+                task_created_at,
+                project_id
             )
             SELECT
                 task_id,
@@ -777,7 +957,8 @@ pub(crate) async fn reschedule_tasks_for(
                 scheduled_for,
                 last_heartbeat_at,
                 parent_task_id,
-                created_at
+                created_at,
+                project_id
             FROM reschedule_tasks
             WHERE status != 'scheduled'
             ON CONFLICT (task_id, attempt) DO NOTHING
@@ -828,7 +1009,7 @@ pub(crate) async fn check_and_heartbeat_task(
             WHERE task_id = $1 AND attempt = $4
             RETURNING status
         )
-        SELECT status as "status: TaskStatus" FROM heartbeat"#,
+        SELECT status as "status: TaskIntermediateStatus" FROM heartbeat"#,
         *task_id,
         progress,
         execution_details,
@@ -842,14 +1023,12 @@ pub(crate) async fn check_and_heartbeat_task(
     })?
     .map_or(TaskCheckState::NotActive, |state| match state.status {
         // Back to scheduled means the was rescheduled, and thus the attempt should stop.
-        TaskStatus::ShouldStop | TaskStatus::Scheduled => TaskCheckState::Stop,
-        TaskStatus::Running => TaskCheckState::Continue,
+        TaskIntermediateStatus::ShouldStop | TaskIntermediateStatus::Scheduled => {
+            TaskCheckState::Stop
+        }
+        TaskIntermediateStatus::Running => TaskCheckState::Continue,
     }))
 }
-
-use crate::service::tasks::{
-    EntityId, TaskCheckState, TaskId, TaskInput, TaskMetadata, TaskOutcome,
-};
 
 /// Cancel scheduled tasks.
 /// If `force_delete_running_tasks` is true, "running" and "should-stop" tasks will also be cancelled.
@@ -862,10 +1041,10 @@ pub(crate) async fn cancel_scheduled_tasks(
     force_delete_running_tasks: bool,
 ) -> crate::api::Result<()> {
     let queue_name_is_none = queue_name.is_none();
-    let queue_name = queue_name.map(crate::service::tasks::TaskQueueName::as_str);
+    let queue_name = queue_name.map(TaskQueueName::as_str);
     let queue_name = queue_name.unwrap_or("");
     match filter {
-        TaskFilter::WarehouseId(warehouse_id) => {
+        TaskFilter::WarehouseId { warehouse_id, .. } => {
             sqlx::query!(
                 r#"
                 WITH deleted as (
@@ -889,7 +1068,9 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         attempt_scheduled_for,
                                         last_heartbeat_at,
                                         parent_task_id,
-                                        task_created_at)
+                                        task_created_at,
+                                        project_id
+                                    )
                 SELECT task_id,
                         warehouse_id,
                         queue_name,
@@ -909,13 +1090,14 @@ pub(crate) async fn cancel_scheduled_tasks(
                         scheduled_for,
                         last_heartbeat_at,
                         parent_task_id,
-                        created_at
+                        created_at,
+                        project_id
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
                 *warehouse_id,
                 queue_name,
-                TaskStatus::Scheduled as _,
+                TaskIntermediateStatus::Scheduled as _,
                 TaskOutcome::Cancelled as _,
                 force_delete_running_tasks,
                 queue_name_is_none
@@ -956,7 +1138,9 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         attempt_scheduled_for,
                                         last_heartbeat_at,
                                         parent_task_id,
-                                        task_created_at)
+                                        task_created_at,
+                                        project_id
+                                    )
                 SELECT task_id,
                         warehouse_id,
                         queue_name,
@@ -976,13 +1160,14 @@ pub(crate) async fn cancel_scheduled_tasks(
                         scheduled_for,
                         last_heartbeat_at,
                         parent_task_id,
-                        created_at
+                        created_at,
+                        project_id
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
                 &task_ids.iter().map(|s| **s).collect_vec(),
                 TaskOutcome::Cancelled as _,
-                TaskStatus::Scheduled as _,
+                TaskIntermediateStatus::Scheduled as _,
                 queue_name,
                 queue_name_is_none,
                 force_delete_running_tasks
@@ -994,6 +1179,79 @@ pub(crate) async fn cancel_scheduled_tasks(
                 e.into_error_model("Failed to cancel Tasks for specified ids")
             })?;
         }
+        TaskFilter::ProjectId {
+            project_id,
+            include_sub_tasks,
+        } => {
+            sqlx::query!(
+                r#"
+                WITH deleted as (
+                    DELETE FROM task
+                    WHERE (status = $3 OR $5) AND project_id = $1 AND ($7 OR warehouse_id IS NULL) AND (queue_name = $2 OR $6)
+                    RETURNING *
+                )
+                INSERT INTO task_log(task_id,
+                                        warehouse_id,
+                                        queue_name,
+                                        task_data,
+                                        status,
+                                        entity_id,
+                                        entity_type,
+                                        entity_name,
+                                        attempt,
+                                        started_at,
+                                        duration,
+                                        progress,
+                                        execution_details,
+                                        attempt_scheduled_for,
+                                        last_heartbeat_at,
+                                        parent_task_id,
+                                        task_created_at,
+                                        project_id)
+                SELECT task_id,
+                        warehouse_id,
+                        queue_name,
+                        task_data,
+                        $4,
+                        entity_id,
+                        entity_type,
+                        entity_name,
+                        attempt,
+                        picked_up_at,
+                        case when picked_up_at is not null
+                            then now() - picked_up_at
+                            else null
+                        end,
+                        progress,
+                        execution_details,
+                        scheduled_for,
+                        last_heartbeat_at,
+                        parent_task_id,
+                        created_at,
+                        project_id
+                FROM deleted
+                ON CONFLICT (task_id, attempt) DO NOTHING
+                "#,
+                project_id.as_str(),
+                queue_name,
+                TaskIntermediateStatus::Scheduled as _,
+                TaskOutcome::Cancelled as _,
+                force_delete_running_tasks,
+                queue_name_is_none,
+                include_sub_tasks
+            )
+            .execute(connection)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    ?e,
+                    "Failed to cancel {queue_name} Tasks for project {project_id}"
+                );
+                e.into_error_model(format!(
+                    "Failed to cancel {queue_name} Tasks for project {project_id}"
+                ))
+            })?;
+        }
     }
 
     Ok(())
@@ -1001,9 +1259,10 @@ pub(crate) async fn cancel_scheduled_tasks(
 
 #[cfg(test)]
 mod test {
-    use std::vec;
+    use std::{collections::HashMap, vec};
 
     use chrono::{DateTime, Utc};
+    use serde_json::Value;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -1011,36 +1270,43 @@ mod test {
     use crate::{
         WarehouseId,
         api::management::v1::{
-            tasks::TaskStatus as ApiTaskStatus,
-            warehouse::{QueueConfig, TabularDeleteProfile},
+            task_queue::QueueConfig, tasks::TaskStatus as ApiTaskStatus,
+            warehouse::TabularDeleteProfile,
+        },
+        implementations::{
+            CatalogState,
+            postgres::{PostgresBackend, PostgresTransaction},
         },
         service::{
+            CatalogStore, Transaction,
             authz::AllowAllAuthorizer,
             tasks::{
-                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EntityId, TaskId, TaskInput, TaskStatus,
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, TaskDetailsScope, TaskId, TaskInput,
+                TaskIntermediateStatus, WarehouseTaskEntityId,
             },
         },
+        tests::SetupTestCatalog,
     };
 
+    #[allow(clippy::too_many_arguments)]
     async fn queue_task(
         conn: &mut PgConnection,
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
-        entity_id: EntityId,
-        warehouse_id: WarehouseId,
-        schedule_for: Option<DateTime<Utc>>,
+        project_id: ProjectId,
+        scheduled_for: Option<DateTime<Utc>>,
         payload: Option<serde_json::Value>,
+        entity: TaskEntity,
     ) -> Result<Option<TaskId>, IcebergErrorResponse> {
         Ok(queue_task_batch(
             conn,
             queue_name,
             vec![TaskInput {
-                task_metadata: TaskMetadata {
-                    warehouse_id,
+                task_metadata: ScheduleTaskMetadata {
+                    project_id,
                     parent_task_id,
-                    entity_id,
-                    entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
-                    schedule_for,
+                    scheduled_for,
+                    entity,
                 },
                 payload: payload.unwrap_or(serde_json::json!({})),
             }],
@@ -1057,18 +1323,24 @@ mod test {
     #[sqlx::test]
     async fn test_queue_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_tq_name();
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap();
@@ -1078,24 +1350,35 @@ mod test {
                 &mut conn,
                 &tq_name,
                 None,
-                entity_id,
-                warehouse_id,
+                project_id.clone(),
                 None,
-                None
+                None,
+                TaskEntity::EntityInWarehouse {
+                    warehouse_id,
+                    entity_id,
+                    entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+                },
             )
             .await
             .unwrap()
             .is_none()
         );
 
+        let entity_id3 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id3 = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity_id3,
+                entity_name: vec![format!("entity-{}", entity_id3.as_uuid())],
+            },
         )
         .await
         .unwrap();
@@ -1103,7 +1386,7 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    pub(crate) async fn setup_warehouse(pool: PgPool) -> WarehouseId {
+    pub(crate) async fn setup_warehouse(pool: PgPool) -> (WarehouseId, ProjectId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -1113,12 +1396,15 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             1,
+            None,
         )
         .await;
-        wh.warehouse_id
+        (wh.warehouse_id, wh.project_id)
     }
 
-    pub(crate) async fn setup_two_warehouses(pool: PgPool) -> (WarehouseId, WarehouseId) {
+    pub(crate) async fn setup_two_warehouses(
+        pool: PgPool,
+    ) -> (ProjectId, WarehouseId, WarehouseId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -1128,24 +1414,36 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             2,
+            None,
         )
         .await;
-        (wh.warehouse_id, wh.additional_warehouses[0].0)
+        (
+            wh.project_id,
+            wh.warehouse_id,
+            wh.additional_warehouses[0].1,
+        )
     }
 
     #[sqlx::test]
     async fn test_failed_tasks_retry_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1157,7 +1455,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1172,7 +1470,7 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 2);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1195,15 +1493,22 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
 
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1215,7 +1520,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1238,17 +1543,23 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
 
-        let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Table(Uuid::now_v7().into());
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"a": "a"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity,
+                entity_name: vec![format!("entity-{}", entity.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1260,7 +1571,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1275,10 +1586,14 @@ mod test {
             &mut conn,
             &tq_name,
             None,
-            entity,
-            warehouse_id,
+            project_id,
             None,
             Some(serde_json::json!({"b": "b"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity,
+                entity_name: vec![format!("entity-{}", entity.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1290,7 +1605,7 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(task.task_id(), id2);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1301,18 +1616,24 @@ mod test {
     #[sqlx::test]
     async fn test_cancelled_tasks_can_be_reinserted(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Table(Uuid::now_v7().into());
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_tq_name();
 
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"a": "a"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity,
+                entity_name: vec![format!("entity-{}", entity.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1331,10 +1652,14 @@ mod test {
             &mut conn,
             &tq_name,
             None,
-            entity,
-            warehouse_id,
+            project_id,
             None,
             Some(serde_json::json!({"b": "b"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity,
+                entity_name: vec![format!("entity-{}", entity.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1347,7 +1672,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id2);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1360,17 +1685,23 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
 
-        let warehouse_id = setup_warehouse(pool.clone()).await;
-        let entity = EntityId::Table(Uuid::now_v7().into());
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"a": "a"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity,
+                entity_name: vec![format!("entity-{}", entity.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1382,7 +1713,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1397,10 +1728,14 @@ mod test {
             &mut conn,
             &tq_name,
             None,
-            entity,
-            warehouse_id,
+            project_id,
             None,
             Some(serde_json::json!({"b": "b"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity,
+                entity_name: vec![format!("entity-{}", entity.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1412,7 +1747,7 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(task.task_id(), id2);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1424,16 +1759,23 @@ mod test {
     async fn test_scheduled_tasks_are_polled_later(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let scheduled_for = Utc::now() + chrono::Duration::milliseconds(500);
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             Some(scheduled_for),
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1454,7 +1796,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1464,16 +1806,23 @@ mod test {
     #[sqlx::test]
     async fn test_stale_tasks_are_picked_up_again(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1485,7 +1834,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1499,7 +1848,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 2);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1509,16 +1858,23 @@ mod test {
     #[sqlx::test]
     async fn test_multiple_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id.clone(),
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1529,14 +1885,21 @@ mod test {
             .unwrap()
             .unwrap();
 
+        let entity_id2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let id2 = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity_id2,
+                entity_name: vec![format!("entity-{}", entity_id2.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1555,14 +1918,14 @@ mod test {
         );
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
         assert_eq!(task2.task_id(), id2);
-        assert!(matches!(task2.status, TaskStatus::Running));
+        assert!(matches!(task2.status, TaskIntermediateStatus::Running));
         assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
@@ -1579,7 +1942,7 @@ mod test {
     #[sqlx::test]
     async fn test_queue_batch(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
         let task_1_entity_name = vec![String::from("entity-1")];
         let task_2_entity_name = vec![String::from("entity-2")];
@@ -1588,23 +1951,33 @@ mod test {
             &tq_name,
             vec![
                 TaskInput {
-                    task_metadata: TaskMetadata {
-                        entity_id: EntityId::Table(Uuid::now_v7().into()),
-                        entity_name: task_1_entity_name.clone(),
-                        warehouse_id,
+                    task_metadata: ScheduleTaskMetadata {
+                        project_id: project_id.clone(),
                         parent_task_id: None,
-                        schedule_for: None,
+                        scheduled_for: None,
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_id: WarehouseTaskEntityId::Table {
+                                table_id: Uuid::now_v7().into(),
+                            },
+                            entity_name: task_1_entity_name.clone(),
+                            warehouse_id,
+                        },
                     },
 
                     payload: serde_json::Value::default(),
                 },
                 TaskInput {
-                    task_metadata: TaskMetadata {
-                        entity_id: EntityId::Table(Uuid::now_v7().into()),
-                        entity_name: task_2_entity_name.clone(),
-                        warehouse_id,
+                    task_metadata: ScheduleTaskMetadata {
+                        project_id,
                         parent_task_id: None,
-                        schedule_for: None,
+                        scheduled_for: None,
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_id: WarehouseTaskEntityId::Table {
+                                table_id: Uuid::now_v7().into(),
+                            },
+                            entity_name: task_2_entity_name.clone(),
+                            warehouse_id,
+                        },
                     },
                     payload: serde_json::Value::default(),
                 },
@@ -1632,20 +2005,20 @@ mod test {
         );
 
         assert_eq!(task.task_id(), id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
-        assert_eq!(task.task_metadata.entity_name, task_1_entity_name);
+        assert_eq!(task.task_metadata.entity_name(), Some(&task_1_entity_name));
 
         assert_eq!(task2.task_id(), id2);
-        assert!(matches!(task2.status, TaskStatus::Running));
+        assert!(matches!(task2.status, TaskIntermediateStatus::Running));
         assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, &tq_name);
-        assert_eq!(task2.task_metadata.entity_name, task_2_entity_name);
+        assert_eq!(task2.task_metadata.entity_name(), Some(&task_2_entity_name));
 
         record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
@@ -1655,33 +2028,44 @@ mod test {
             .unwrap();
     }
 
-    fn task_metadata(warehouse_id: WarehouseId, entity_id: EntityId) -> TaskMetadata {
-        TaskMetadata {
-            entity_id,
-            entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
-            warehouse_id,
+    fn task_schedule_metadata(
+        project_id: ProjectId,
+        warehouse_id: WarehouseId,
+        entity_id: WarehouseTaskEntityId,
+    ) -> ScheduleTaskMetadata {
+        ScheduleTaskMetadata {
+            project_id,
             parent_task_id: None,
-            schedule_for: None,
+            scheduled_for: None,
+            entity: TaskEntity::EntityInWarehouse {
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+                warehouse_id,
+            },
         }
     }
 
     #[sqlx::test]
     async fn test_queue_batch_idempotency(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
-        let idp1 = EntityId::Table(Uuid::now_v7().into());
-        let idp2 = EntityId::Table(Uuid::now_v7().into());
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let idp1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let idp2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let tq_name = generate_tq_name();
         let _ids = queue_task_batch(
             &mut conn,
             &tq_name,
             vec![
                 TaskInput {
-                    task_metadata: task_metadata(warehouse_id, idp1),
+                    task_metadata: task_schedule_metadata(project_id.clone(), warehouse_id, idp1),
                     payload: serde_json::Value::default(),
                 },
                 TaskInput {
-                    task_metadata: task_metadata(warehouse_id, idp2),
+                    task_metadata: task_schedule_metadata(project_id.clone(), warehouse_id, idp2),
                     payload: serde_json::Value::default(),
                 },
             ],
@@ -1705,13 +2089,13 @@ mod test {
             "There are no tasks left, something is wrong."
         );
 
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        assert!(matches!(task2.status, TaskStatus::Running));
+        assert!(matches!(task2.status, TaskIntermediateStatus::Running));
         assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
@@ -1720,17 +2104,19 @@ mod test {
         // Re-insert the first task with the same idempotency key
         // and a new idempotency key
         // This should create a new task with the new idempotency key
-        let new_key = EntityId::Table(Uuid::now_v7().into());
+        let new_key = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let ids_second = queue_task_batch(
             &mut conn,
             &tq_name,
             vec![
                 TaskInput {
-                    task_metadata: task_metadata(warehouse_id, idp1),
+                    task_metadata: task_schedule_metadata(project_id.clone(), warehouse_id, idp1),
                     payload: serde_json::Value::default(),
                 },
                 TaskInput {
-                    task_metadata: task_metadata(warehouse_id, new_key),
+                    task_metadata: task_schedule_metadata(project_id, warehouse_id, new_key),
                     payload: serde_json::Value::default(),
                 },
             ],
@@ -1740,7 +2126,7 @@ mod test {
         let new_id = ids_second[0].task_id;
 
         assert_eq!(ids_second.len(), 1);
-        assert_eq!(ids_second[0].entity_id, new_key);
+        assert_eq!(ids_second[0].entity_id, Some(new_key));
 
         // move both old tasks to done which will clear them from task table and move them into
         // task_log
@@ -1758,7 +2144,7 @@ mod test {
             .unwrap();
 
         assert_eq!(task.task_id(), new_id);
-        assert!(matches!(task.status, TaskStatus::Running));
+        assert!(matches!(task.status, TaskIntermediateStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
@@ -1780,14 +2166,21 @@ mod test {
     #[sqlx::test]
     async fn test_set_get_task_config(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         assert!(
-            get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
-                .await
-                .unwrap()
-                .is_none()
+            get_task_queue_config(
+                &mut *conn,
+                &TaskQueueConfigFilter::WarehouseId {
+                    warehouse_id,
+                    project_id: project_id.clone()
+                },
+                &tq_name
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
 
         let config = SetTaskQueueConfigRequest {
@@ -1795,14 +2188,27 @@ mod test {
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
-        set_task_queue_config(&mut conn, &tq_name, warehouse_id, config)
-            .await
-            .unwrap();
+        set_task_queue_config(
+            &mut conn,
+            &tq_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            config,
+        )
+        .await
+        .unwrap();
 
-        let response = get_task_queue_config(&mut *conn, warehouse_id, &tq_name)
-            .await
-            .unwrap()
-            .unwrap();
+        let response = get_task_queue_config(
+            &mut *conn,
+            &TaskQueueConfigFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            &tq_name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         assert_eq!(&response.queue_config.queue_name, &tq_name);
         assert_eq!(
@@ -1813,9 +2219,117 @@ mod test {
     }
 
     #[sqlx::test]
+    async fn test_get_task_queue_config_with_project_filter(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        let (warehouse_id, project_id) = setup_warehouse(pool).await;
+
+        // Add warehouse-level task config
+        let warehouse_task_queue_name = generate_tq_name();
+        let warehouse_queue_config = serde_json::json!({"answer": 42});
+        let warehouse_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(warehouse_queue_config),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &warehouse_task_queue_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            warehouse_config,
+        )
+        .await
+        .unwrap();
+
+        // Add project-level task config
+        let project_task_queue_name = generate_tq_name();
+        let project_queue_config = serde_json::json!({"message": "Hello, World!"});
+        let project_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(project_queue_config.clone()),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &project_task_queue_name,
+            project_id.clone(),
+            None,
+            project_config,
+        )
+        .await
+        .unwrap();
+
+        // Retrieve and verify projet-level task queue config
+        let response = get_task_queue_config(
+            &mut *conn,
+            &TaskQueueConfigFilter::ProjectId { project_id },
+            &project_task_queue_name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.queue_config.config, project_queue_config);
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_config_with_project_filter_and_all_have_same_queue_name(
+        pool: PgPool,
+    ) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        let (warehouse_id, project_id) = setup_warehouse(pool).await;
+
+        let task_queue_name = generate_tq_name();
+
+        // Add warehouse-level task config
+        let warehouse_queue_config = serde_json::json!({"answer": 42});
+        let warehouse_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(warehouse_queue_config),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &task_queue_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            warehouse_config,
+        )
+        .await
+        .unwrap();
+
+        // Add project-level task config
+        let project_queue_config = serde_json::json!({"message": "Hello, World!"});
+        let project_config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(project_queue_config.clone()),
+            max_seconds_since_last_heartbeat: None,
+        };
+        set_task_queue_config(
+            &mut conn,
+            &task_queue_name,
+            project_id.clone(),
+            None,
+            project_config,
+        )
+        .await
+        .unwrap();
+
+        // Retrieve and verify projet-level task queue config
+        let response = get_task_queue_config(
+            &mut *conn,
+            &TaskQueueConfigFilter::ProjectId { project_id },
+            &task_queue_name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.queue_config.config, project_queue_config);
+    }
+
+    #[sqlx::test]
     async fn test_set_task_config_yields_a_task_with_config(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         let config = SetTaskQueueConfigRequest {
@@ -1823,18 +2337,31 @@ mod test {
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
-        set_task_queue_config(&mut conn, &tq_name, warehouse_id, config)
-            .await
-            .unwrap();
+        set_task_queue_config(
+            &mut conn,
+            &tq_name,
+            project_id.clone(),
+            Some(warehouse_id),
+            config,
+        )
+        .await
+        .unwrap();
         let payload = serde_json::json!("our-task");
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let _task = queue_task(
             &mut conn,
             &tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(payload.clone()),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1851,14 +2378,21 @@ mod test {
 
         let other_tq_name = generate_tq_name();
         let other_payload = serde_json::json!("other-task");
+        let other_entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let _task = queue_task(
             &mut conn,
             &other_tq_name,
             None,
-            EntityId::Table(Uuid::now_v7().into()),
-            warehouse_id,
+            project_id,
             None,
             Some(other_payload.clone()),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: other_entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1876,19 +2410,25 @@ mod test {
     #[sqlx::test]
     async fn test_record_success_attempt(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "data"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -1924,34 +2464,48 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should be marked as successful
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Success));
+        assert!(matches!(task_details.task.status, TaskStatus::Success));
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
     async fn test_record_success_conflict_on_duplicate(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2017,19 +2571,25 @@ mod test {
     #[sqlx::test]
     async fn test_record_success_normal_case(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id,
             None,
             None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2060,19 +2620,25 @@ mod test {
     #[sqlx::test]
     async fn test_record_failure_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "failure_data"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2108,36 +2674,50 @@ mod test {
             .unwrap_err();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         assert_eq!(task_details.attempts.len(), 0); // No retries, so no historical attempts
 
         // Should be marked as failed
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Failed));
+        assert!(matches!(task_details.task.status, TaskStatus::Failed));
         // Should have no historical attempts since it failed permanently on first try
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
     async fn test_record_failure_conflict_on_duplicate(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "conflict_test"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2154,10 +2734,18 @@ mod test {
             .await
             .unwrap();
         // Get original task details, assert last_heartbeat is reset
-        let original_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let original_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
         assert_eq!(original_details.task.last_heartbeat_at, None);
 
         // Task should be rescheduled for retry since max_retries=2 > attempt=1
@@ -2218,7 +2806,7 @@ mod test {
     #[sqlx::test]
     async fn test_record_failure_not_found_error(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let _warehouse_id = setup_warehouse(pool.clone()).await;
+        let (_warehouse_id, _project_id) = setup_warehouse(pool.clone()).await;
         let non_existent_task_id = TaskAttemptId {
             task_id: TaskId::from(Uuid::now_v7()),
             attempt: 1,
@@ -2239,19 +2827,25 @@ mod test {
     #[sqlx::test]
     async fn test_cancel_scheduled_tasks_idempotent(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue a task but don't pick it up (leave it scheduled)
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "cancel_data"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2267,7 +2861,7 @@ mod test {
         // Put the task back to scheduled state for cancellation test
         sqlx::query!(
             "UPDATE task SET status = $1, picked_up_at = NULL WHERE task_id = $2",
-            TaskStatus::Scheduled as _,
+            TaskIntermediateStatus::Scheduled as _,
             *task_id
         )
         .execute(&mut conn as &mut PgConnection)
@@ -2311,34 +2905,48 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Cancelled));
+        assert!(matches!(task_details.task.status, TaskStatus::Cancelled));
         // Should have no historical attempts since it was cancelled while scheduled
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
     async fn test_cancel_running_tasks_idempotent_with_force_delete(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task (make it running)
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "running_cancel_data"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2349,7 +2957,10 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(picked_task.task_id(), task_id);
-        assert!(matches!(picked_task.status, TaskStatus::Running));
+        assert!(matches!(
+            picked_task.status,
+            TaskIntermediateStatus::Running
+        ));
 
         // Cancel the running task with force_delete=true first time
         cancel_scheduled_tasks(
@@ -2388,34 +2999,48 @@ mod test {
         .unwrap();
 
         // Verify task is in task_log using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should be marked as cancelled
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Cancelled));
+        assert!(matches!(task_details.task.status, TaskStatus::Cancelled));
         // Should have no historical attempts since it was cancelled while running
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
     async fn test_mixed_operations(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Queue and pick up a task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "mixed_operations"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2463,36 +3088,50 @@ mod test {
         .unwrap();
 
         // Verify task is still marked as successful using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist in task_log");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist in task_log");
 
         // Should remain marked as successful despite later operations
-        assert!(matches!(task_details.task.status, ApiTaskStatus::Success));
+        assert!(matches!(task_details.task.status, TaskStatus::Success));
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt, 1);
+        assert_eq!(task_details.task.attempt(), 1);
     }
 
     #[sqlx::test]
     async fn test_run_tasks_at_with_and_without_scheduled_for(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
 
         // Test 1: run_tasks_at with None (should run immediately)
-        let entity_id1 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id1 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let future_time = Utc::now() + chrono::Duration::hours(2);
 
         let task_id1 = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id1,
-            warehouse_id,
+            project_id.clone(),
             Some(future_time), // Schedule for 2 hours in the future
             Some(serde_json::json!({"test": "run_now"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity_id1,
+                entity_name: vec![format!("entity-{}", entity_id1.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2517,17 +3156,23 @@ mod test {
         assert_eq!(task_after.task_id(), task_id1);
 
         // Test 2: run_tasks_at with specific time
-        let entity_id2 = EntityId::Table(Uuid::now_v7().into());
+        let entity_id2 = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
         let specific_time = Utc::now() + chrono::Duration::minutes(30);
 
         let task_id2 = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id2,
-            warehouse_id,
+            project_id.clone(),
             Some(future_time), // Schedule for 2 hours in the future
             Some(serde_json::json!({"test": "run_at_specific_time"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: entity_id2,
+                entity_name: vec![format!("entity-{}", entity_id2.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2539,13 +3184,21 @@ mod test {
             .unwrap();
 
         // Verify the task's scheduled_for was updated to the specific time
-        let details2 = get_task_details(warehouse_id, task_id2, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task 2 should exist");
+        let details2 = get_task_details(
+            task_id2,
+            TaskDetailsScope::Warehouse {
+                project_id: project_id.clone(),
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task 2 should exist");
 
         // The scheduled_for should be close to our specific_time (within a few seconds tolerance)
-        let time_diff = (details2.task.scheduled_for - specific_time)
+        let time_diff = (details2.task.scheduled_for() - specific_time)
             .num_seconds()
             .abs();
         assert!(
@@ -2554,19 +3207,27 @@ mod test {
         );
 
         // Test 3: Verify using get_task_details shows the updated scheduling
-        let details1 = get_task_details(warehouse_id, task_id1, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task 1 should exist");
+        let details1 = get_task_details(
+            task_id1,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task 1 should exist");
 
         assert!(matches!(
             details1.task.status,
-            ApiTaskStatus::Running // Task was picked up
+            TaskStatus::Running // Task was picked up
         ));
-        assert!(matches!(details2.task.status, ApiTaskStatus::Scheduled));
+        assert!(matches!(details2.task.status, TaskStatus::Scheduled));
 
         // Task 2 should be scheduled for the specific time we set
-        let task2_scheduled_diff = (details2.task.scheduled_for - specific_time)
+        let task2_scheduled_diff = (details2.task.scheduled_for() - specific_time)
             .num_seconds()
             .abs();
         assert!(
@@ -2584,19 +3245,25 @@ mod test {
     #[sqlx::test]
     async fn test_reschedule_running_task_creates_failed_attempt(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
-        let entity_id = EntityId::Table(Uuid::now_v7().into());
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
 
         // Step 1: Queue a new task
         let task_id = queue_task(
             &mut conn,
             &tq_name,
             None,
-            entity_id,
-            warehouse_id,
+            project_id.clone(),
             None,
             Some(serde_json::json!({"test": "reschedule_running_task"})),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
         )
         .await
         .unwrap()
@@ -2608,7 +3275,7 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(picked_task.task_id(), task_id);
-        assert_eq!(picked_task.status, TaskStatus::Running);
+        assert_eq!(picked_task.status, TaskIntermediateStatus::Running);
         assert_eq!(picked_task.attempt(), 1);
 
         let original_attempt_id = picked_task.id();
@@ -2620,13 +3287,21 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id: project_id.clone(),
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist");
 
         // Task should still be running, as rescheduling does not affect running tasks
-        assert_eq!(task_details.task.status, ApiTaskStatus::Running);
+        assert_eq!(task_details.task.status, TaskStatus::Running);
 
         // Stop task.
         request_tasks_stop(&mut conn, &[task_id]).await.unwrap();
@@ -2636,15 +3311,23 @@ mod test {
             .unwrap();
 
         // Step 4: Verify task details - should not be running anymore and should have a failed attempt
-        let task_details = get_task_details(warehouse_id, task_id, 10, &pool)
-            .await
-            .unwrap()
-            .expect("Task should exist");
+        let task_details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("Task should exist");
 
-        assert_eq!(task_details.task.status, ApiTaskStatus::Scheduled);
+        assert_eq!(task_details.task.status, TaskStatus::Scheduled);
 
         // Task should be rescheduled for the future time
-        let time_diff = (task_details.task.scheduled_for - future_time)
+        let time_diff = (task_details.task.scheduled_for() - future_time)
             .num_seconds()
             .abs();
         assert!(
@@ -2668,7 +3351,8 @@ mod test {
 
         // The current task should be on attempt 2 (since the previous attempt was failed)
         assert_eq!(
-            task_details.task.attempt, 1,
+            task_details.task.attempt(),
+            1,
             "Task should still be on attempt 1 since it was rescheduled, not retried"
         );
 
@@ -2709,7 +3393,227 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(now_task.task_id(), task_id);
-        assert_eq!(now_task.status, TaskStatus::Running);
+        assert_eq!(now_task.status, TaskIntermediateStatus::Running);
         assert_eq!(now_task.attempt(), 2); // Attempt 2 now as the task used to be running
+    }
+
+    async fn setup_project(state: CatalogState) -> crate::api::Result<ProjectId> {
+        let project_id = ProjectId::new_random();
+        let mut transaction = PostgresTransaction::begin_write(state).await?;
+        PostgresBackend::create_project(
+            &project_id,
+            format!("Project {project_id}"),
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(project_id)
+    }
+
+    async fn setup_task_config(
+        conn: &mut PgConnection,
+        queue_name: &TaskQueueName,
+        config: Value,
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
+    ) -> crate::api::Result<()> {
+        set_task_queue_config(
+            conn,
+            queue_name,
+            project_id,
+            warehouse_id,
+            SetTaskQueueConfigRequest {
+                queue_config: QueueConfig(config),
+                max_seconds_since_last_heartbeat: None,
+            },
+        )
+        .await
+    }
+
+    /// Test: Project-level tasks across different projects get picked correctly
+    #[sqlx::test]
+    async fn test_pick_task_finds_correct_config_for_project_level_tasks_on_different_projects(
+        pool: PgPool,
+    ) {
+        let mut conn = pool.acquire().await.unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // 1. Set up two projects
+        let project_id_1 = setup_project(state.clone()).await.unwrap();
+        let project_id_2 = setup_project(state.clone()).await.unwrap();
+
+        // 2. Store expected data per task_id in HashMap (pick order can be random)
+        let mut config_expected = HashMap::with_capacity(2);
+        config_expected.insert(
+            project_id_1.clone(),
+            serde_json::json!({"test": "Task in Project 1"}),
+        );
+        config_expected.insert(
+            project_id_2.clone(),
+            serde_json::json!({"test": "Task in Project 2"}),
+        );
+
+        // 3. Queue one project-level task per project (warehouse_id = None)
+        let tq_name = generate_tq_name();
+
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            config_expected.get(&project_id_1).cloned().unwrap(),
+            project_id_1.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            config_expected.get(&project_id_2).cloned().unwrap(),
+            project_id_2.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            project_id_1.clone(),
+            None,
+            None,
+            TaskEntity::Project,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            project_id_2.clone(),
+            None,
+            None,
+            TaskEntity::Project,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // 4. Pick both tasks and verify:
+        //    - data matches the project's data
+        let mut picked_project_tasks = Vec::new();
+
+        while let Some(picked_task) =
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+        {
+            if picked_task.task_metadata.warehouse_id().is_some() {
+                continue;
+            }
+            picked_project_tasks.push(picked_task.clone());
+            let project_id = picked_task.task_metadata.project_id.clone();
+            let config = picked_task.config.unwrap();
+            assert_eq!(config_expected.get(&project_id).cloned().unwrap(), config);
+        }
+        assert_eq!(picked_project_tasks.len(), 2);
+    }
+
+    // Test: Project-level and warehouse-level tasks for same project are isolated
+    #[sqlx::test]
+    async fn test_pick_task_finds_correct_config_for_project_and_warehouse_level_tasks_in_same_project(
+        pool: PgPool,
+    ) {
+        let mut conn = pool.acquire().await.unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // 1. Set up one project with one warehouse
+        let project_id = setup_project(state).await.unwrap();
+        let (_, warehouse) = SetupTestCatalog::builder()
+            .project_id(Some(project_id.clone()))
+            .pool(pool.clone())
+            .authorizer(AllowAllAuthorizer::default())
+            .build()
+            .setup()
+            .await;
+
+        // 2. Store expected data
+        let project_level_config = serde_json::json!({"level": "project"});
+        let warehouse_level_config = serde_json::json!({"level": "warehouse"});
+
+        // 3. Queue one project-level task and one warehouse-level task
+        let tq_name = generate_tq_name();
+
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            project_level_config.clone(),
+            project_id.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        setup_task_config(
+            &mut conn,
+            &tq_name,
+            warehouse_level_config.clone(),
+            project_id.clone(),
+            Some(warehouse.warehouse_id),
+        )
+        .await
+        .unwrap();
+
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            project_id.clone(),
+            None,
+            None,
+            TaskEntity::Project,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: TableId::new_random(),
+        };
+        let _ = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            project_id,
+            None,
+            None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id: warehouse.warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // 4. Pick both tasks and verify:
+        //    - data matches with the corresponding task
+        let mut picked_tasks = Vec::new();
+
+        while let Some(picked_task) =
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+        {
+            picked_tasks.push(picked_task.clone());
+            if picked_task.task_metadata.warehouse_id().is_none() {
+                let config = picked_task.config.unwrap();
+                assert_eq!(project_level_config, config);
+            } else {
+                let config = picked_task.config.unwrap();
+                assert_eq!(warehouse_level_config, config);
+            }
+        }
+        assert_eq!(picked_tasks.len(), 2);
     }
 }

@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH heartbeat as (\n            UPDATE task \n            SET last_heartbeat_at = now(), \n                progress = $2, \n                execution_details = $3 \n            WHERE task_id = $1 AND attempt = $4\n            RETURNING status\n        )\n        SELECT status as \"status: TaskStatus\" FROM heartbeat",
+  "query": "WITH heartbeat as (\n            UPDATE task \n            SET last_heartbeat_at = now(), \n                progress = $2, \n                execution_details = $3 \n            WHERE task_id = $1 AND attempt = $4\n            RETURNING status\n        )\n        SELECT status as \"status: TaskIntermediateStatus\" FROM heartbeat",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "status: TaskStatus",
+        "name": "status: TaskIntermediateStatus",
         "type_info": {
           "Custom": {
             "name": "task_intermediate_status",
@@ -32,5 +32,5 @@
       false
     ]
   },
-  "hash": "97ee559390277a9d6ef89d56d63d1f69677f57a656dd510a3992524113c438d8"
+  "hash": "b0a2bdb25f4d0e34016f2e596d6a3a59e81cdea114afcc11d60120b99802f673"
 }

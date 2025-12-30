@@ -214,6 +214,10 @@ pub enum CatalogProjectAction {
     ListRoles,
     SearchRoles,
     GetEndpointStatistics,
+    ModifyTaskQueueConfig,
+    GetTaskQueueConfig,
+    GetProjectTasks,
+    ControlProjectTasks,
 }
 impl CatalogAction for CatalogProjectAction {}
 
