@@ -125,7 +125,7 @@ pub struct S3Settings {
     #[builder(default)]
     pub aws_kms_key_arn: Option<String>,
     #[builder(default)]
-    pub legacy_md5_behaviour: Option<bool>,
+    pub legacy_md5_behavior: Option<bool>,
 }
 
 impl S3Settings {
@@ -138,7 +138,7 @@ impl S3Settings {
             s3_builder.set_force_path_style(Some(true));
         }
 
-        if self.legacy_md5_behaviour.unwrap_or(false) {
+        if self.legacy_md5_behavior.unwrap_or(false) {
             s3_builder = s3_builder.interceptor(LegacyMD5Interceptor::default());
         }
 
@@ -155,7 +155,7 @@ impl S3Settings {
             // S3 specific settings
             path_style_access: _,
             aws_kms_key_arn: _,
-            legacy_md5_behaviour: _,
+            legacy_md5_behavior: _,
         } = self;
 
         let region = aws_config::Region::new(region.clone());

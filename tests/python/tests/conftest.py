@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     s3_path_style_access: Optional[str] = None
     s3_sts_mode: Optional[str] = None
     s3_allow_alternative_protocols: Optional[bool] = None
-    s3_legacy_md5_behaviour: Optional[str] = None
+    s3_legacy_md5_behavior: Optional[str] = None
     azure_client_id: Optional[Secret] = None
     azure_client_secret: Optional[Secret] = None
     azure_tenant_id: Optional[Secret] = None
@@ -134,7 +134,7 @@ def filter_empty_str(s: Optional[str]) -> Optional[str]:
 @pytest.fixture(scope="session", params=STORAGE_CONFIGS)
 def storage_config(request) -> dict:
     path_style_access = string_to_bool(settings.s3_path_style_access)
-    legacy_md5_behaviour = string_to_bool(settings.s3_legacy_md5_behaviour)
+    legacy_md5_behavior = string_to_bool(settings.s3_legacy_md5_behavior)
 
     test_id = uuid.uuid4().hex
 
@@ -159,7 +159,7 @@ def storage_config(request) -> dict:
                 "key-prefix": test_id,
                 "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
-                "legacy-md5-behaviour": legacy_md5_behaviour,
+                "legacy-md5-behavior": legacy_md5_behavior,
                 **extra_config,
             },
             "storage-credential": {
