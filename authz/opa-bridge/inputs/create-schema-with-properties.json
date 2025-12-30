@@ -1,0 +1,25 @@
+{
+    "input": {
+        "context": {
+            "identity": {
+                "user": "cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8",
+                "groups": []
+            },
+            "softwareStack": {
+                "trinoVersion": "476"
+            }
+        },
+        "action": {
+            "operation": "CreateSchema",
+            "resource": {
+                "schema": {
+                    "catalogName": "lakekeeper",
+                    "schemaName": "schema_with_properties",
+                    "properties": {
+                        "location": "/a/b/c"
+                    }
+                }
+            }
+        }
+    }
+}

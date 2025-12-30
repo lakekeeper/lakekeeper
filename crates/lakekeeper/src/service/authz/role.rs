@@ -6,7 +6,8 @@ use crate::{
     ProjectId,
     api::{RequestMetadata, management::v1::role::Role},
     service::{
-        Actor, CatalogBackendError, GetRoleError, InvalidPaginationToken, RoleId, RoleIdNotFound,
+        Actor, CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, RoleId,
+        RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogRoleAction,
@@ -39,8 +40,8 @@ impl AuthZCannotSeeRole {
         }
     }
 }
-impl From<RoleIdNotFound> for AuthZCannotSeeRole {
-    fn from(err: RoleIdNotFound) -> Self {
+impl From<RoleIdNotFoundInProject> for AuthZCannotSeeRole {
+    fn from(err: RoleIdNotFoundInProject) -> Self {
         // Deliberately discard the stack trace to avoid leaking
         // information about the existence of the role.
         AuthZCannotSeeRole {
@@ -55,7 +56,7 @@ impl From<AuthZCannotSeeRole> for ErrorModel {
             project_id,
             role_id,
         } = err;
-        RoleIdNotFound::new(role_id, project_id)
+        RoleIdNotFoundInProject::new(role_id, project_id)
             .append_detail("Role not found or access denied")
             .into()
     }
@@ -142,12 +143,12 @@ impl From<RequireRoleActionError> for IcebergErrorResponse {
         ErrorModel::from(err).into()
     }
 }
-impl From<GetRoleError> for RequireRoleActionError {
-    fn from(err: GetRoleError) -> Self {
+impl From<GetRoleInProjectError> for RequireRoleActionError {
+    fn from(err: GetRoleInProjectError) -> Self {
         match err {
-            GetRoleError::CatalogBackendError(e) => e.into(),
-            GetRoleError::RoleIdNotFound(e) => AuthZCannotSeeRole::from(e).into(),
-            GetRoleError::InvalidPaginationToken(e) => e.into(),
+            GetRoleInProjectError::CatalogBackendError(e) => e.into(),
+            GetRoleInProjectError::RoleIdNotFoundInProject(e) => AuthZCannotSeeRole::from(e).into(),
+            GetRoleInProjectError::InvalidPaginationToken(e) => e.into(),
         }
     }
 }
@@ -156,7 +157,7 @@ impl From<GetRoleError> for RequireRoleActionError {
 pub trait AuthZRoleOps: Authorizer {
     fn require_role_presence(
         &self,
-        role: Result<Arc<Role>, GetRoleError>,
+        role: Result<Arc<Role>, GetRoleInProjectError>,
     ) -> Result<Arc<Role>, RequireRoleActionError> {
         let role = role?;
         Ok(role)
@@ -229,7 +230,7 @@ pub trait AuthZRoleOps: Authorizer {
     async fn require_role_action(
         &self,
         metadata: &RequestMetadata,
-        role: Result<Arc<Role>, GetRoleError>,
+        role: Result<Arc<Role>, GetRoleInProjectError>,
         action: impl Into<Self::RoleAction> + Send,
     ) -> Result<Arc<Role>, RequireRoleActionError> {
         let role = self.require_role_presence(role)?;

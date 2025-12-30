@@ -84,7 +84,9 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             &warehouse,
             &destination.namespace,
             destination_namespace,
-            CatalogNamespaceAction::CreateView,
+            CatalogNamespaceAction::CreateView {
+                properties: Arc::new(source_view_info.properties().clone().into_iter().collect()),
+            },
         ),
         // Check 2)
         authorizer.require_view_action(
@@ -155,7 +157,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_rename_view_without_namespace(pool: PgPool) {
-        let (api_context, namespace, whi) = setup(pool, None).await;
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
 
         let view_name = "my-view";
         let rq: CreateViewRequest = create_view_request(Some(view_name), None);
@@ -215,7 +217,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_rename_view_with_namespace(pool: PgPool) {
-        let (api_context, _, whi) = setup(pool, None).await;
+        let (api_context, _, whi, _) = setup(pool, None).await;
         let namespace = NamespaceIdent::from_vec(vec!["Someother-ns".to_string()]).unwrap();
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)

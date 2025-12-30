@@ -1,10 +1,10 @@
 use lakekeeper::service::{
     authn::UserId,
     authz::{
-        CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-        CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, NamespaceAction,
-        ProjectAction, RoleAction, RoleAssignee, ServerAction, TableAction, UserOrRole, ViewAction,
-        WarehouseAction,
+        CatalogAction, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+        CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+        NamespaceAction, ProjectAction, RoleAction, RoleAssignee, ServerAction, TableAction,
+        UserOrRole, ViewAction, WarehouseAction,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub(super) trait Assignment: Sized {
-    type Relation: ReducedRelation + GrantableRelation;
+    type Relation: ReducedRelation + GrantableRelation + IntoEnumIterator;
     fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self>;
 
     fn openfga_user(&self) -> String;
@@ -32,9 +32,7 @@ pub(super) trait OpenFgaRelation:
 
 /// Trait for a subset of relations (i.e. actions)
 /// that can be converted to the corresponding full type
-pub(super) trait ReducedRelation:
-    Clone + Sized + Copy + IntoEnumIterator + Eq + PartialEq
-{
+pub(super) trait ReducedRelation: Clone + Sized + Eq + PartialEq {
     type OpenFgaRelation: OpenFgaRelation;
 
     fn to_openfga(&self) -> Self::OpenFgaRelation;
@@ -92,6 +90,7 @@ pub enum RoleRelation {
     CanDelete,
     CanUpdate,
     CanRead,
+    CanReadMetadata,
     CanReadAssignments,
 }
 impl RoleAction for RoleRelation {}
@@ -232,6 +231,7 @@ impl ReducedRelation for CatalogRoleAction {
             CatalogRoleAction::Delete => RoleRelation::CanDelete,
             CatalogRoleAction::Update => RoleRelation::CanUpdate,
             CatalogRoleAction::Read => RoleRelation::CanRead,
+            CatalogRoleAction::ReadMetadata => RoleRelation::CanReadMetadata,
         }
     }
 }
@@ -438,6 +438,10 @@ pub enum ProjectRelation {
     CanGrantSecurityAdmin,
     CanGrantDataAdmin,
     CanGetEndpointStatistics,
+    CanModifyTaskQueueConfig,
+    CanGetTaskQueueConfig,
+    CanGetProjectTasks,
+    CanControlProjectTasks,
 }
 
 impl ProjectAction for ProjectRelation {}
@@ -659,6 +663,12 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::GetEndpointStatistics => {
                 ProjectRelation::CanGetEndpointStatistics
             }
+            CatalogProjectAction::ModifyTaskQueueConfig => {
+                ProjectRelation::CanModifyTaskQueueConfig
+            }
+            CatalogProjectAction::GetTaskQueueConfig => ProjectRelation::CanGetTaskQueueConfig,
+            CatalogProjectAction::GetProjectTasks => ProjectRelation::CanGetProjectTasks,
+            CatalogProjectAction::ControlProjectTasks => ProjectRelation::CanControlProjectTasks,
         }
     }
 }
@@ -730,6 +740,7 @@ pub enum WarehouseRelation {
     CanGetEndpointStatistics,
 }
 impl WarehouseAction for WarehouseRelation {}
+impl CatalogAction for WarehouseRelation {}
 
 impl OpenFgaRelation for WarehouseRelation {}
 
@@ -947,7 +958,7 @@ impl ReducedRelation for CatalogWarehouseAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogWarehouseAction::CreateNamespace => WarehouseRelation::CanCreateNamespace,
+            CatalogWarehouseAction::CreateNamespace { .. } => WarehouseRelation::CanCreateNamespace,
             CatalogWarehouseAction::Delete => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
             CatalogWarehouseAction::UpdateStorageCredential => {
@@ -1039,7 +1050,7 @@ pub enum NamespaceRelation {
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
-
+impl CatalogAction for NamespaceRelation {}
 impl NamespaceAction for NamespaceRelation {}
 
 impl From<CatalogNamespaceAction> for NamespaceRelation {
@@ -1237,11 +1248,13 @@ impl ReducedRelation for CatalogNamespaceAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogNamespaceAction::CreateTable => NamespaceRelation::CanCreateTable,
-            CatalogNamespaceAction::CreateView => NamespaceRelation::CanCreateView,
-            CatalogNamespaceAction::CreateNamespace => NamespaceRelation::CanCreateNamespace,
+            CatalogNamespaceAction::CreateTable { .. } => NamespaceRelation::CanCreateTable,
+            CatalogNamespaceAction::CreateView { .. } => NamespaceRelation::CanCreateView,
+            CatalogNamespaceAction::CreateNamespace { .. } => NamespaceRelation::CanCreateNamespace,
             CatalogNamespaceAction::Delete => NamespaceRelation::CanDelete,
-            CatalogNamespaceAction::UpdateProperties => NamespaceRelation::CanUpdateProperties,
+            CatalogNamespaceAction::UpdateProperties { .. } => {
+                NamespaceRelation::CanUpdateProperties
+            }
             CatalogNamespaceAction::GetMetadata => NamespaceRelation::CanGetMetadata,
             CatalogNamespaceAction::ListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::ListViews => NamespaceRelation::CanListViews,
@@ -1303,7 +1316,7 @@ pub enum TableRelation {
 }
 
 impl TableAction for TableRelation {}
-
+impl CatalogAction for TableRelation {}
 impl OpenFgaRelation for TableRelation {}
 
 impl From<CatalogTableAction> for TableRelation {
@@ -1496,7 +1509,7 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::WriteData => TableRelation::CanWriteData,
             CatalogTableAction::ReadData => TableRelation::CanReadData,
             CatalogTableAction::GetMetadata => TableRelation::CanGetMetadata,
-            CatalogTableAction::Commit => TableRelation::CanCommit,
+            CatalogTableAction::Commit { .. } => TableRelation::CanCommit,
             CatalogTableAction::Rename => TableRelation::CanRename,
             CatalogTableAction::IncludeInList => TableRelation::CanIncludeInList,
             CatalogTableAction::Undrop => TableRelation::CanUndrop,
@@ -1553,7 +1566,7 @@ pub enum ViewRelation {
 }
 
 impl ViewAction for ViewRelation {}
-
+impl CatalogAction for ViewRelation {}
 impl OpenFgaRelation for ViewRelation {}
 
 impl From<CatalogViewAction> for ViewRelation {
@@ -1726,7 +1739,7 @@ impl ReducedRelation for CatalogViewAction {
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
             CatalogViewAction::Drop => ViewRelation::CanDrop,
-            CatalogViewAction::Commit => ViewRelation::CanCommit,
+            CatalogViewAction::Commit { .. } => ViewRelation::CanCommit,
             CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
             CatalogViewAction::Rename => ViewRelation::CanRename,
             CatalogViewAction::IncludeInList => ViewRelation::CanIncludeInList,

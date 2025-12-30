@@ -6,23 +6,25 @@ use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State,
-        TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
+        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId,
+        TabularId, TabularListFlags, TaskDetails, TaskList, Transaction, ViewId, ViewOrTableInfo,
         authz::{
-            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableOps as _,
-            AuthZViewOps as _, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, RequireTableActionError,
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZProjectOps,
+            AuthZTableOps as _, AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, RequireTableActionError,
             RequireViewActionError,
         },
         require_namespace_for_tabular,
         tasks::{
-            TaskEntity, TaskEntityNamed, TaskFilter, TaskId, TaskOutcome as TQTaskOutcome,
-            TaskQueueName, TaskStatus as TQTaskStatus,
+            ResolvedTaskEntity, TaskDetailsScope, TaskEntity, TaskFilter, TaskId, TaskInfo,
+            TaskIntermediateStatus, TaskMetadata, TaskOutcome, TaskQueueName, TaskResolveScope,
+            WarehouseTaskEntityId,
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
         },
     },
@@ -42,20 +44,23 @@ const DEFAULT_ATTEMPTS: u16 = 5;
 #[derive(Debug, Serialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-pub struct Task {
+pub struct WarehouseTaskInfo {
     /// Unique identifier for the task
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub task_id: TaskId,
+    /// Project ID associated with the task
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub project_id: ProjectId,
     /// Warehouse ID associated with the task
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub warehouse_id: WarehouseId,
     /// Name of the queue processing this task
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub queue_name: TaskQueueName,
-    /// Type of entity this task operates on
-    pub entity: TaskEntity,
-    /// Name of the entity this task operates on
-    pub entity_name: Vec<String>,
+    /// Type of the sub-entity this task operates on. None if this is a warehouse-level task.
+    pub entity: Option<WarehouseTaskEntityId>,
+    /// Name of the entity this task operates on. None if this is a warehouse-level task.
+    pub entity_name: Option<Vec<String>>,
     /// Current status of the task
     pub status: TaskStatus,
     /// When the latest attempt of the task is scheduled for
@@ -77,13 +82,144 @@ pub struct Task {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+impl TryFrom<TaskInfo> for WarehouseTaskInfo {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskInfo) -> Result<Self, Self::Error> {
+        let TaskInfo {
+            task_metadata,
+            queue_name,
+            id,
+            status,
+            picked_up_at,
+            last_heartbeat_at,
+            progress,
+            created_at,
+            updated_at,
+        } = value;
+
+        let task_id = id.task_id;
+        let attempt = id.attempt;
+
+        let TaskMetadata {
+            project_id,
+            parent_task_id,
+            scheduled_for,
+            entity: scope,
+        } = task_metadata;
+
+        let (warehouse_id, sub_entity) = match scope {
+            TaskEntity::Project => {
+                return Err(ErrorModel::internal(
+                    "Expected Warehouse task but received project task",
+                    "EntityMetadataMissing",
+                    None,
+                ));
+            }
+            TaskEntity::Warehouse { warehouse_id } => (warehouse_id, None),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name,
+            } => (warehouse_id, Some((entity_id, entity_name))),
+        };
+
+        let (entity_id, entity_name) = match sub_entity {
+            Some((entity_id, entity_name)) => (Some(entity_id), Some(entity_name)),
+            None => (None, None),
+        };
+
+        Ok(WarehouseTaskInfo {
+            task_id,
+            warehouse_id,
+            entity: entity_id,
+            status,
+            scheduled_for,
+            picked_up_at,
+            attempt,
+            last_heartbeat_at,
+            progress,
+            parent_task_id,
+            created_at,
+            updated_at,
+            entity_name,
+            queue_name,
+            project_id,
+        })
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ProjectTaskInfo {
+    /// Unique identifier for the task
+    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+    pub task_id: TaskId,
+    /// Project ID associated with the task
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub project_id: ProjectId,
+    /// Name of the queue processing this task
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub queue_name: TaskQueueName,
+    /// Current status of the task
+    pub status: TaskStatus,
+    /// When the latest attempt of the task is scheduled for
+    pub scheduled_for: chrono::DateTime<chrono::Utc>,
+    /// When the latest attempt of the task was picked up for processing by a worker.
+    pub picked_up_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Current attempt number
+    pub attempt: i32,
+    /// Last heartbeat timestamp for running tasks
+    pub last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Progress of the task (0.0 to 1.0)
+    pub progress: f32,
+    /// Parent task ID if this is a sub-task
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
+    pub parent_task_id: Option<TaskId>,
+    /// When this task attempt was created
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// When the task was last updated
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl TryFrom<TaskInfo> for ProjectTaskInfo {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskInfo) -> Result<Self, Self::Error> {
+        // Validate that this is actually a project-scoped task
+        if !matches!(value.task_metadata.entity, TaskEntity::Project) {
+            return Err(ErrorModel::internal(
+                "Expected Project task but received warehouse or entity task",
+                "ProjectTaskExpected",
+                None,
+            ));
+        }
+
+        Ok(ProjectTaskInfo {
+            task_id: value.task_id(),
+            status: value.status(),
+            scheduled_for: value.scheduled_for(),
+            picked_up_at: value.picked_up_at(),
+            attempt: value.attempt(),
+            last_heartbeat_at: value.last_heartbeat_at(),
+            progress: value.progress(),
+            parent_task_id: value.parent_task_id(),
+            created_at: value.created_at(),
+            updated_at: value.updated_at(),
+            project_id: value.task_metadata.project_id().clone(),
+            queue_name: value.queue_name,
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct GetTaskDetailsResponse {
     /// Most recent task information
     #[serde(flatten)]
-    pub task: Task,
+    pub task: WarehouseTaskInfo,
     /// Task-specific data
     #[cfg_attr(feature = "open-api", schema(value_type = Object))]
     pub task_data: serde_json::Value,
@@ -92,6 +228,69 @@ pub struct GetTaskDetailsResponse {
     pub execution_details: Option<serde_json::Value>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
+}
+
+impl TryFrom<TaskDetails> for GetTaskDetailsResponse {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskDetails) -> Result<Self, Self::Error> {
+        let TaskDetails {
+            task,
+            data,
+            execution_details,
+            attempts,
+        } = value;
+
+        Ok(Self {
+            task: WarehouseTaskInfo::try_from(task)?,
+            task_data: data,
+            execution_details,
+            attempts,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct GetProjectTaskDetailsResponse {
+    /// Most recent task information
+    #[serde(flatten)]
+    pub task: ProjectTaskInfo,
+    /// Task-specific data
+    #[cfg_attr(feature = "open-api", schema(value_type = Object))]
+    pub task_data: serde_json::Value,
+    /// Execution details for the current attempt
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
+    pub execution_details: Option<serde_json::Value>,
+    /// History of past attempts
+    pub attempts: Vec<TaskAttempt>,
+}
+
+impl IntoResponse for GetProjectTaskDetailsResponse {
+    fn into_response(self) -> axum::response::Response {
+        (http::StatusCode::OK, Json(self)).into_response()
+    }
+}
+
+impl TryFrom<TaskDetails> for GetProjectTaskDetailsResponse {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskDetails) -> Result<Self, Self::Error> {
+        let TaskDetails {
+            task,
+            data,
+            execution_details,
+            attempts,
+        } = value;
+
+        Ok(Self {
+            task: ProjectTaskInfo::try_from(task)?,
+            task_data: data,
+            execution_details,
+            attempts,
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,36 +338,36 @@ pub enum TaskStatus {
     Failed,
 }
 
-impl From<TQTaskStatus> for TaskStatus {
-    fn from(value: TQTaskStatus) -> Self {
+impl From<TaskIntermediateStatus> for TaskStatus {
+    fn from(value: TaskIntermediateStatus) -> Self {
         match value {
-            TQTaskStatus::Running => TaskStatus::Running,
-            TQTaskStatus::Scheduled => TaskStatus::Scheduled,
-            TQTaskStatus::ShouldStop => TaskStatus::Stopping,
+            TaskIntermediateStatus::Running => TaskStatus::Running,
+            TaskIntermediateStatus::Scheduled => TaskStatus::Scheduled,
+            TaskIntermediateStatus::ShouldStop => TaskStatus::Stopping,
         }
     }
 }
 
-impl From<TQTaskOutcome> for TaskStatus {
-    fn from(value: TQTaskOutcome) -> Self {
+impl From<TaskOutcome> for TaskStatus {
+    fn from(value: TaskOutcome) -> Self {
         match value {
-            TQTaskOutcome::Cancelled => TaskStatus::Cancelled,
-            TQTaskOutcome::Success => TaskStatus::Success,
-            TQTaskOutcome::Failed => TaskStatus::Failed,
+            TaskOutcome::Cancelled => TaskStatus::Cancelled,
+            TaskOutcome::Success => TaskStatus::Success,
+            TaskOutcome::Failed => TaskStatus::Failed,
         }
     }
 }
 
 impl TaskStatus {
     #[must_use]
-    pub fn split(&self) -> (Option<TQTaskStatus>, Option<TQTaskOutcome>) {
+    pub fn split(&self) -> (Option<TaskIntermediateStatus>, Option<TaskOutcome>) {
         match self {
-            TaskStatus::Running => (Some(TQTaskStatus::Running), None),
-            TaskStatus::Scheduled => (Some(TQTaskStatus::Scheduled), None),
-            TaskStatus::Stopping => (Some(TQTaskStatus::ShouldStop), None),
-            TaskStatus::Cancelled => (None, Some(TQTaskOutcome::Cancelled)),
-            TaskStatus::Success => (None, Some(TQTaskOutcome::Success)),
-            TaskStatus::Failed => (None, Some(TQTaskOutcome::Failed)),
+            TaskStatus::Running => (Some(TaskIntermediateStatus::Running), None),
+            TaskStatus::Scheduled => (Some(TaskIntermediateStatus::Scheduled), None),
+            TaskStatus::Stopping => (Some(TaskIntermediateStatus::ShouldStop), None),
+            TaskStatus::Cancelled => (None, Some(TaskOutcome::Cancelled)),
+            TaskStatus::Success => (None, Some(TaskOutcome::Success)),
+            TaskStatus::Failed => (None, Some(TaskOutcome::Failed)),
         }
     }
 }
@@ -178,14 +377,60 @@ impl TaskStatus {
 #[serde(rename_all = "kebab-case")]
 pub struct ListTasksResponse {
     /// List of tasks
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<WarehouseTaskInfo>,
     /// Token for the next page of results
     pub next_page_token: Option<String>,
+}
+
+impl TryFrom<TaskList> for ListTasksResponse {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskList) -> Result<Self, Self::Error> {
+        Ok(Self {
+            tasks: value
+                .tasks
+                .into_iter()
+                .map(WarehouseTaskInfo::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+            next_page_token: value.next_page_token,
+        })
+    }
 }
 
 impl IntoResponse for ListTasksResponse {
     fn into_response(self) -> axum::response::Response {
         (http::StatusCode::OK, Json(self)).into_response()
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ListProjectTasksResponse {
+    /// List of tasks
+    pub tasks: Vec<ProjectTaskInfo>,
+    /// Token for the next page of results
+    pub next_page_token: Option<String>,
+}
+
+impl IntoResponse for ListProjectTasksResponse {
+    fn into_response(self) -> axum::response::Response {
+        (http::StatusCode::OK, Json(self)).into_response()
+    }
+}
+
+impl TryFrom<TaskList> for ListProjectTasksResponse {
+    type Error = ErrorModel;
+
+    fn try_from(value: TaskList) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            tasks: value
+                .tasks
+                .into_iter()
+                .map(ProjectTaskInfo::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+            next_page_token: value.next_page_token,
+        })
     }
 }
 
@@ -196,6 +441,27 @@ impl IntoResponse for GetTaskDetailsResponse {
 }
 
 // -------------------- QUERY PARAMETERS --------------------
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum WarehouseTaskEntityFilter {
+    /// Get tasks for a specific table
+    #[serde(rename_all = "kebab-case")]
+    Table {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        table_id: TableId,
+    },
+    /// Get tasks for a specific view
+    #[serde(rename_all = "kebab-case")]
+    View {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        view_id: ViewId,
+    },
+    /// Get Warehouse-level tasks which are not associated with a specific entity
+    /// inside the warehouse
+    Warehouse,
+}
+
 #[derive(Debug, Deserialize, Default, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -212,7 +478,56 @@ pub struct ListTasksRequest {
     /// Filter by specific entity
     #[serde(default)]
     #[builder(default)]
-    pub entities: Option<Vec<TaskEntity>>,
+    pub entities: Option<Vec<WarehouseTaskEntityFilter>>,
+    /// Filter tasks created after this timestamp
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
+    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Filter tasks created before this timestamp
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
+    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Next page token, re-use the same request as for the original request,
+    /// but set this to the `next_page_token` from the previous response.
+    /// Stop iterating when no more items are returned in a page.
+    #[serde(default)]
+    #[builder(default)]
+    pub page_token: Option<String>,
+    /// Number of results per page
+    #[serde(default)]
+    #[builder(default)]
+    pub page_size: Option<i64>,
+}
+
+impl From<ListProjectTasksRequest> for ListTasksRequest {
+    fn from(value: ListProjectTasksRequest) -> Self {
+        Self {
+            status: value.status,
+            queue_name: value.queue_name,
+            entities: None,
+            created_after: value.created_after,
+            created_before: value.created_before,
+            page_token: value.page_token,
+            page_size: value.page_size,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ListProjectTasksRequest {
+    /// Filter by task status
+    #[serde(default)]
+    #[builder(default)]
+    pub status: Option<Vec<TaskStatus>>,
+    /// Filter by one or more queue names
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<Vec<String>>))]
+    #[builder(default)]
+    pub queue_name: Option<Vec<TaskQueueName>>,
     /// Filter tasks created after this timestamp
     #[serde(default)]
     #[builder(default)]
@@ -281,7 +596,6 @@ pub enum ControlTaskAction {
 }
 
 // -------------------- SERVICE TRAIT --------------------
-
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
     for ApiServer<C, A, S>
 {
@@ -330,9 +644,8 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }
         }
 
-        // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
-
+        // -------------------- AUTHZ --------------------
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
@@ -347,10 +660,15 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         // -------------------- Business Logic --------------------
+        let project_id = &warehouse.project_id;
+        let filter = TaskFilter::WarehouseId {
+            warehouse_id,
+            project_id: project_id.clone(),
+        };
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let tasks = C::list_tasks(warehouse_id, query, t.transaction()).await?;
+        let tasks = C::list_tasks(&filter, query, t.transaction()).await?;
         t.commit().await?;
-        Ok(tasks)
+        Ok(ListTasksResponse::try_from(tasks)?)
     }
 
     /// Get detailed information about a specific task including attempt history
@@ -361,9 +679,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetTaskDetailsResponse> {
-        // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
+        // -------------------- AUTHZ --------------------
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
         let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
@@ -387,8 +705,11 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- Business Logic --------------------
         let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
         let r = C::get_task_details(
-            warehouse_id,
             task_id,
+            TaskDetailsScope::Warehouse {
+                project_id: warehouse.project_id.clone(),
+                warehouse_id,
+            },
             num_attempts,
             context.v1_state.catalog.clone(),
         )
@@ -401,6 +722,8 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 None,
             )
         })?;
+
+        let task_details = GetTaskDetailsResponse::try_from(task_details)?;
 
         if !authz_get_all_warehouse {
             authorize_get_task_details::<A, C>(
@@ -470,22 +793,28 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             return Ok(());
         }
 
+        let project_id = warehouse.project_id.clone();
+
         // If some tasks are not part of this warehouse, this will return an error.
-        let entities = C::resolve_required_tasks(
-            warehouse_id,
+        let resolved_tasks = C::resolve_required_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
             &query.task_ids,
             context.v1_state.catalog.clone(),
         )
         .await?;
 
-        let tabular_expiration_entities = entities
+        let tabular_expiration_entities = resolved_tasks
             .iter()
             .filter_map(|(_, resolved_task)| {
                 if resolved_task.queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
-                    let named_entity = &resolved_task.entity;
-                    match named_entity {
-                        TaskEntityNamed::Table(t) => Some(TabularId::Table(t.table_id)),
-                        TaskEntityNamed::View(v) => Some(TabularId::View(v.view_id)),
+                    let resolved_task = &resolved_task.entity;
+                    match resolved_task {
+                        ResolvedTaskEntity::Table(t) => Some(TabularId::Table(t.table_id)),
+                        ResolvedTaskEntity::View(v) => Some(TabularId::View(v.view_id)),
+                        ResolvedTaskEntity::Warehouse { .. } | ResolvedTaskEntity::Project => None, // Project not returned due to scope
                     }
                 } else {
                     None
@@ -497,7 +826,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 &request_metadata,
                 &warehouse,
-                &entities.values().collect::<Vec<_>>(),
+                &resolved_tasks.values().collect::<Vec<_>>(),
                 context.v1_state.catalog.clone(),
             )
             .await?;
@@ -525,7 +854,153 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 )
                 .await?;
             }
-            ControlTaskAction::RunNow => C::run_tasks_at(&task_ids, None, t.transaction()).await?,
+            ControlTaskAction::RunNow => {
+                C::run_tasks_at(&task_ids, None, t.transaction()).await?;
+            }
+            ControlTaskAction::RunAt { scheduled_for } => {
+                C::run_tasks_at(&task_ids, Some(scheduled_for), t.transaction()).await?;
+            }
+        }
+        t.commit().await?;
+
+        Ok(())
+    }
+
+    async fn list_project_tasks(
+        query: ListProjectTasksRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ListProjectTasksResponse> {
+        let authorizer = context.v1_state.authz;
+        // -------------------- AUTHZ --------------------
+        let project_id = request_metadata.require_project_id(None)?;
+
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::GetProjectTasks,
+            )
+            .await?;
+
+        // -------------------- Business Logic --------------------
+        let filter = TaskFilter::ProjectId {
+            project_id,
+            include_sub_tasks: false, // Not yet implemented, so hardcoded here
+        };
+        let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
+        let tasks = C::list_tasks(&filter, query.into(), t.transaction()).await?;
+        t.commit().await?;
+        Ok(ListProjectTasksResponse::try_from(tasks)?)
+    }
+
+    async fn get_project_task_details(
+        task_id: TaskId,
+        query: GetTaskDetailsQuery,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetProjectTaskDetailsResponse> {
+        let authorizer = context.v1_state.authz;
+
+        // -------------------- AUTHZ --------------------
+        let project_id = request_metadata.require_project_id(None)?;
+
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::GetProjectTasks,
+            )
+            .await?;
+
+        // -------------------- Business Logic --------------------
+        let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
+        let r = C::get_task_details(
+            task_id,
+            TaskDetailsScope::Project { project_id },
+            num_attempts,
+            context.v1_state.catalog.clone(),
+        )
+        .await?;
+
+        let task_details = r.ok_or_else(|| {
+            ErrorModel::not_found(
+                format!("Task with id {task_id} not found"),
+                "TaskNotFound",
+                None,
+            )
+        })?;
+
+        Ok(GetProjectTaskDetailsResponse::try_from(task_details)?)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn control_project_tasks(
+        query: ControlTasksRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        if query.task_ids.len() > 100 {
+            return Err(ErrorModel::bad_request(
+                "Cannot control more than 100 tasks at once.",
+                "TooManyTasks",
+                None,
+            )
+            .into());
+        }
+        if query.task_ids.is_empty() {
+            return Ok(());
+        }
+
+        // Each task id may only appear once
+        let unique_task_ids: HashSet<TaskId> = query.task_ids.iter().copied().collect();
+        if unique_task_ids.len() != query.task_ids.len() {
+            return Err(ErrorModel::bad_request(
+                "Duplicate task IDs are not allowed in the request.",
+                "DuplicateTaskIds",
+                None,
+            )
+            .into());
+        }
+
+        // -------------------- AUTHZ --------------------
+        let project_id = request_metadata.require_project_id(None)?;
+
+        let authorizer = context.v1_state.authz;
+
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                &project_id,
+                CatalogProjectAction::ControlProjectTasks,
+            )
+            .await?;
+
+        // If some tasks are not part of this project, this will return an error.
+        C::resolve_required_tasks(
+            TaskResolveScope::Project { project_id },
+            &query.task_ids,
+            context.v1_state.catalog.clone(),
+        )
+        .await?;
+
+        // -------------------- Business Logic --------------------
+        let task_ids: Vec<TaskId> = query.task_ids;
+        let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        match query.action {
+            ControlTaskAction::Stop => C::stop_tasks(&task_ids, t.transaction()).await?,
+            ControlTaskAction::Cancel => {
+                C::cancel_scheduled_tasks(
+                    None,
+                    TaskFilter::TaskIds(task_ids),
+                    true,
+                    t.transaction(),
+                )
+                .await?;
+            }
+            ControlTaskAction::RunNow => {
+                C::run_tasks_at(&task_ids, None, t.transaction()).await?;
+            }
             ControlTaskAction::RunAt { scheduled_for } => {
                 C::run_tasks_at(&task_ids, Some(scheduled_for), t.transaction()).await?;
             }
@@ -541,7 +1016,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
-    entities: Option<&Vec<TaskEntity>>,
+    entities: Option<&Vec<WarehouseTaskEntityFilter>>,
 ) -> Result<()> {
     let warehouse_id = warehouse.warehouse_id;
 
@@ -576,10 +1051,19 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     let tabular_ids = entities
         .iter()
         .map(|entity| match entity {
-            TaskEntity::Table { table_id } => TabularId::from(*table_id),
-            TaskEntity::View { view_id } => TabularId::from(*view_id),
+            WarehouseTaskEntityFilter::Table { table_id } => Ok(TabularId::from(*table_id)),
+            WarehouseTaskEntityFilter::View { view_id } => Ok(TabularId::from(*view_id)),
+            WarehouseTaskEntityFilter::Warehouse => {
+                Err(
+                    ErrorModel::forbidden(
+                        "Not authorized to see warehouse-level tasks. Please specify a table or view entity to filter by.",
+            "WarehouseLevelTasksNotAuthorized",
+            None,
+        )
+                )
+            }
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
 
     let tabulars = C::get_tabular_infos_by_id(
         warehouse_id,
@@ -647,73 +1131,83 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
 ) -> Result<()> {
     let warehouse_id = warehouse.warehouse_id;
 
-    match &details.task.entity {
-        TaskEntity::Table { table_id } => {
-            let tabular_info = C::get_table_info(
-                warehouse_id,
-                *table_id,
-                TabularListFlags::all(),
-                catalog_state.clone(),
-            )
-            .await
-            .map_err(RequireTableActionError::from)?
-            .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, *table_id))?;
-
-            let namespace_id = tabular_info.namespace_id;
-            let namespace = C::get_namespace_cache_aware(
-                warehouse_id,
-                namespace_id,
-                CachePolicy::RequireMinimumVersion(*tabular_info.namespace_version),
-                catalog_state,
-            )
-            .await;
-            let namespace =
-                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
-
-            authorizer
-                .require_table_action(
-                    request_metadata,
-                    warehouse,
-                    &namespace,
+    if let Some(sub_entity) = &details.task.entity {
+        match sub_entity {
+            WarehouseTaskEntityId::Table { table_id } => {
+                let tabular_info = C::get_table_info(
+                    warehouse_id,
                     *table_id,
-                    Ok::<_, RequireTableActionError>(Some(tabular_info)),
-                    GET_TASK_PERMISSION_TABLE,
+                    TabularListFlags::all(),
+                    catalog_state.clone(),
                 )
-                .await?;
-        }
-        TaskEntity::View { view_id } => {
-            let view_info = C::get_view_info(
-                warehouse_id,
-                *view_id,
-                TabularListFlags::all(),
-                catalog_state.clone(),
-            )
-            .await
-            .map_err(RequireViewActionError::from)?
-            .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, *view_id))?;
+                .await
+                .map_err(RequireTableActionError::from)?
+                .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, *table_id))?;
 
-            let namespace_id = view_info.namespace_id;
-            let namespace = C::get_namespace_cache_aware(
-                warehouse_id,
-                view_info.namespace_id,
-                CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
-                catalog_state,
-            )
-            .await;
-            let namespace =
-                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+                let namespace_id = tabular_info.namespace_id;
+                let namespace = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    namespace_id,
+                    CachePolicy::RequireMinimumVersion(*tabular_info.namespace_version),
+                    catalog_state,
+                )
+                .await;
+                let namespace =
+                    authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
 
-            authorizer
-                .require_view_action(
-                    request_metadata,
-                    warehouse,
-                    &namespace,
+                authorizer
+                    .require_table_action(
+                        request_metadata,
+                        warehouse,
+                        &namespace,
+                        *table_id,
+                        Ok::<_, RequireTableActionError>(Some(tabular_info)),
+                        GET_TASK_PERMISSION_TABLE,
+                    )
+                    .await?;
+            }
+            WarehouseTaskEntityId::View { view_id } => {
+                let view_info = C::get_view_info(
+                    warehouse_id,
                     *view_id,
-                    Ok::<_, RequireViewActionError>(Some(view_info)),
-                    GET_TASK_PERMISSION_VIEW,
+                    TabularListFlags::all(),
+                    catalog_state.clone(),
                 )
-                .await?;
+                .await
+                .map_err(RequireViewActionError::from)?
+                .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, *view_id))?;
+
+                let namespace_id = view_info.namespace_id;
+                let namespace = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    view_info.namespace_id,
+                    CachePolicy::RequireMinimumVersion(*view_info.namespace_version),
+                    catalog_state,
+                )
+                .await;
+                let namespace =
+                    authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+
+                authorizer
+                    .require_view_action(
+                        request_metadata,
+                        warehouse,
+                        &namespace,
+                        *view_id,
+                        Ok::<_, RequireViewActionError>(Some(view_info)),
+                        GET_TASK_PERMISSION_VIEW,
+                    )
+                    .await?;
+            }
         }
+    } else {
+        // Warehouse permission already checked before calling this function
+        return Err(AuthZWarehouseActionForbidden::new(
+            warehouse.warehouse_id,
+            &CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION,
+            request_metadata.actor().clone(),
+        )
+        .into());
     }
     Ok(())
 }
@@ -725,20 +1219,36 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
     tasks: &[&Arc<ResolvedTask>],
     catalog_state: C::State,
 ) -> Result<()> {
-    let required_tabular_ids = tasks
+    let (required_tabular_ids, required_namespace_idents) = tasks
         .iter()
         .map(|t| match &t.entity {
-            TaskEntityNamed::Table(tabular) => TabularId::Table(tabular.table_id),
-            TaskEntityNamed::View(tabular) => TabularId::View(tabular.view_id),
+            ResolvedTaskEntity::Table(tabular) => Ok((
+                TabularId::Table(tabular.table_id),
+                &tabular.table_ident.namespace
+            )),
+            ResolvedTaskEntity::View(tabular) => Ok((
+                TabularId::View(tabular.view_id),
+                &tabular.view_ident.namespace
+            )),
+            ResolvedTaskEntity::Warehouse(warehouse_id) => Err(
+                ErrorModel::forbidden(
+                format!(
+                    "Actor {} is not authorized to control warehouse-level tasks of warehouse {warehouse_id}",
+                    request_metadata.actor(),
+                ),
+                "ControlAllTasksForbidden",
+                None,
+            )
+            ),
+            ResolvedTaskEntity::Project => Err(
+                ErrorModel::internal(
+                    "Project-level task encountered in warehouse scope - this should not happen",
+                    "ProjectTaskInWarehouseScope",
+                    None,
+                )
+            ),
         })
-        .collect::<Vec<_>>();
-    let required_namespace_idents = tasks
-        .iter()
-        .map(|t| match &t.entity {
-            TaskEntityNamed::Table(tabular) => &tabular.table_ident.namespace,
-            TaskEntityNamed::View(tabular) => &tabular.view_ident.namespace,
-        })
-        .collect::<Vec<_>>();
+        .collect::<Result<(Vec<_>, Vec<_>), ErrorModel>>()?;
 
     let (table_infos, namespaces) = tokio::join!(
         C::get_tabular_infos_by_id(

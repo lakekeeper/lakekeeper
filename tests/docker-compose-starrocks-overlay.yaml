@@ -4,9 +4,9 @@ services:
       starrocks:
         condition: service_healthy
   starrocks:
-    image: starrocks/allin1-ubuntu:3.3.5
+    image: starrocks/allin1-ubuntu:4.0.1
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      test: ["CMD", "curl", "-I", "http://starrocks:8030/api/health"]
       interval: 2s
       timeout: 10s
       retries: 2

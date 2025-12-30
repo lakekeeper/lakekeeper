@@ -212,6 +212,14 @@ def test_drop_table(
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
+    if storage_config["storage-profile"]["type"] == "adls":
+        # for adls with vended credentials enabled spark tries to refresh the credentials
+        # for purge after the table is dropped, which fails as the table no longer exists.
+        # Set f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled": "false"
+        # in the catalog session to make client side purge work.
+        pytest.skip(
+            "ADLS currently doesn't work with spark PURGE and refresh credentials."
+        )
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
         "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
@@ -231,11 +239,6 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
 
 
 def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "adls":
-        # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
-        # https://github.com/apache/iceberg-python/issues/1146 is resolved
-        pytest.skip("ADLS currently doesn't work with pyiceberg.")
-
     namespace = "test_drop_table_purge_http"
     spark.sql(f"CREATE NAMESPACE {namespace}")
     dfs = []
@@ -413,11 +416,6 @@ def undrop_table(table_0, warehouse):
 def test_undropped_table_can_be_purged_again_http(
     spark, warehouse: conftest.Warehouse, storage_config
 ):
-    # if storage_config["storage-profile"]["type"] == "adls":
-    #     # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
-    #     # https://github.com/apache/iceberg-python/issues/1146 is resolved
-    #     pytest.skip("ADLS currently doesn't work with pyiceberg.")
-
     namespace = "test_undropped_table_can_be_purged_again_http"
     spark.sql(f"CREATE NAMESPACE {namespace}")
     dfs = []
@@ -988,6 +986,130 @@ def test_hierarchical_namespaces(
     assert "exceeds maximum depth" in str(e.value)
 
 
+def test_special_characters_in_names(
+    spark,
+    namespace: conftest.Namespace,
+):
+    # Test various UTF-8 special characters in namespace and table names
+
+    special_namespace_names = [
+        "namespace with spaces",
+        "namespace-with-hyphens",
+        "namespace_with_underscores",
+        "namespace!with@special#chars$",
+        "naméspace_with_àccents_ñ",
+        "namespace_with_ümlauts_ä_ö",
+        "namespace_中文_日本語",
+        "namespace_עברית_العربية",
+        "namespace_🚀_emoji_✨",
+        "namespace-Mix!_OF_everything_中文_ä_🎉",
+        "namespace%with%percent",
+        "namespace&with&ampersands",
+        "namespace=with=equals",
+    ]
+
+    special_table_names = [
+        "table with spaces",
+        "table-with-hyphens",
+        "table_with_underscores",
+        "table!with@special#chars$",
+        "tablé_with_àccents_ñ",
+        "table_with_ümlauts_ä_ö",
+        "table_中文_日本語",
+        "table_עברית_العربية",
+        "table_🚀_emoji_✨",
+        "table-Mix!_OF_everything_中文_ä_🎉",
+        "table%with%percent",
+    ]
+
+    # Test creating nested namespaces with special characters
+    for i, special_name in enumerate(
+        special_namespace_names
+    ):  # Test first 5 to keep test time reasonable
+        full_namespace = f"{namespace.spark_name}.`{special_name}`"
+
+        # Create namespace with special characters
+        spark.sql(f"CREATE NAMESPACE {full_namespace}")
+
+        # Verify namespace was created
+        namespaces_df = spark.sql(
+            f"SHOW NAMESPACES IN {namespace.spark_name}"
+        ).toPandas()
+        # The namespace column contains the full qualified name
+        assert any(special_name in ns for ns in namespaces_df["namespace"].values)
+
+        # Create table in the special namespace
+        spark.sql(
+            f"CREATE TABLE {full_namespace}.my_table (id INT, value STRING) USING iceberg"
+        )
+        spark.sql(f"INSERT INTO {full_namespace}.my_table VALUES ({i + 1}, 'test_{i}')")
+
+        # Read from the table
+        df = spark.sql(f"SELECT * FROM {full_namespace}.my_table").toPandas()
+        assert len(df) == 1
+        assert df["id"].tolist() == [i + 1]
+        assert df["value"].tolist() == [f"test_{i}"]
+
+    # Test creating tables with special character names
+    for i, special_table_name in enumerate(special_table_names[:7]):  # Test first 7
+        spark.sql(
+            f"CREATE TABLE {namespace.spark_name}.`{special_table_name}` (id INT, value STRING) USING iceberg"
+        )
+        spark.sql(
+            f"INSERT INTO {namespace.spark_name}.`{special_table_name}` VALUES ({i}, 'value_{i}')"
+        )
+
+        # Read from the table
+        df = spark.sql(
+            f"SELECT * FROM {namespace.spark_name}.`{special_table_name}`"
+        ).toPandas()
+        assert len(df) == 1
+        assert df["id"].tolist() == [i]
+        assert df["value"].tolist() == [f"value_{i}"]
+
+        # Verify table appears in listing
+        tables_df = spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas()
+        assert special_table_name in tables_df["tableName"].values
+
+    # Test deeply nested namespaces with special characters
+    nested_special = [
+        namespace.spark_name,
+        "`specialns-1_ä`",
+        "`nest_中文_2`",
+        "`lëvel_3_🚀`",
+    ]
+
+    for i in range(2, len(nested_special)):
+        this_namespace = nested_special[:i]
+        spark.sql("CREATE NAMESPACE " + ".".join(this_namespace))
+
+        # Create and query a table in the nested namespace with special chars
+        full_ns = ".".join(this_namespace)
+        spark.sql(
+            f"CREATE TABLE {full_ns}.`tåble_émoji_🎯` (id INT, data STRING) USING iceberg"
+        )
+        spark.sql(
+            f"INSERT INTO {full_ns}.`tåble_émoji_🎯` VALUES ({i}, 'nested_level_{i}')"
+        )
+
+        df = spark.sql(f"SELECT * FROM {full_ns}.`tåble_émoji_🎯`").toPandas()
+        assert len(df) == 1
+        assert df["id"].tolist() == [i]
+        assert df["data"].tolist() == [f"nested_level_{i}"]
+
+    # Test renaming to special characters
+    spark.sql(f"CREATE TABLE {namespace.spark_name}.rename_test (id INT) USING iceberg")
+    new_name = "rënamed_tåble_🎯"
+    spark.sql(
+        f"ALTER TABLE {namespace.spark_name}.rename_test RENAME TO {namespace.spark_name}.`{new_name}`"
+    )
+
+    # Verify renamed table works
+    spark.sql(f"INSERT INTO {namespace.spark_name}.`{new_name}` VALUES (42)")
+    df = spark.sql(f"SELECT * FROM {namespace.spark_name}.`{new_name}`").toPandas()
+    assert df["id"].tolist() == [42]
+
+
 def test_register_table(
     spark,
     namespace,
@@ -1023,7 +1145,7 @@ def test_register_table(
     assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
 
     # Wait for expiration of soft delete
-    time.sleep(3)
+    time.sleep(4)
 
     spark.sql(
         f"""
@@ -1053,6 +1175,9 @@ def test_case_insensitivity(
     spark.sql(
         f"ALTER TABLE {namespace.spark_name}.MY_TABLE ADD COLUMN My_Floats DOUBLE"
     )
+    spark.sql(f"REFRESH TABLE {namespace.spark_name}.my_table")
+    pdf = spark.sql(f"SELECT * FROM {namespace.spark_name}.my_table").toPandas()
+    assert len(pdf.columns) == 2
     spark.sql(f"INSERT INTO {namespace.spark_name}.my_table VALUES (2, 2.2)")
     pdf = (
         spark.sql(f"SELECT * FROM {namespace.spark_name}.my_table ORDER BY My_Ints")

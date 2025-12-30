@@ -11,7 +11,7 @@ For query engines shared by multiple users, Lakekeeper supports two architecture
 
 Shared query engines must use the same Identity Provider as Lakekeeper in both scenarios unless user-ids are mapped, for example in OPA.
 
-We are tracking open issues and missing features in query engines in a [Tracking Issue on Github](https://github.com/lakekeeper/lakekeeper/issues/399).
+We are tracking open issues and missing features in query engines in a [Tracking Issue on GitHub](https://github.com/lakekeeper/lakekeeper/issues/399).
 
 ## Generic Iceberg REST Clients
 
@@ -115,6 +115,100 @@ Basic setup in trino:
         "iceberg.rest-catalog.oauth2.scope" = '<Scopes to request from the IdP, i.e. lakekeeper>'
     )
     ```
+
+## <img src="/assets/starburst.svg" width="30" alt="Starburst"> Starburst
+
+If [Soft-Deletion](./concepts.md#soft-deletion) is enabled in Lakekeeper, make sure to set `"iceberg.unique-table-location" = 'true'`, to ensure that tables can be recreated in new locations while their dropped counterparts are waiting for expiration.
+
+As Lakekeeper supports nesting of namespaces, we recommend to set `"iceberg.rest-catalog.nested-namespace-enabled" = 'true'`.
+
+Basic setup in Starburst:
+
+=== "S3-Compatible"
+
+    Starburst supports vended-credentials from Iceberg REST Catalogs for S3, so that no S3 credentials are required when creating the Catalog.
+
+    Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-s3.html).    
+
+    ```sql
+    CREATE CATALOG lakekeeper USING iceberg
+    WITH (
+        "iceberg.catalog.type" = 'rest',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
+        "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
+        "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
+        "iceberg.unique-table-location" = 'true',
+        "s3.region" = '<AWS Region to use. For S3-compatible storage use a non-existent AWS region, such as local>',
+        "fs.native-s3.enabled" = 'true'
+        -- Required for some S3-compatible storages:
+        "s3.path-style-access" = 'true',
+        "s3.endpoint" = '<Custom S3 endpoint>',
+        -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.rest-catalog.security" = 'OAUTH2',
+        "iceberg.rest-catalog.oauth2.credential" = '<Client-ID>:<Client-Secret>',
+        "iceberg.rest-catalog.oauth2.server-uri" = '<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>',
+        -- Optional Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.rest-catalog.oauth2.scope" = '<Scopes to request from the IdP, i.e. lakekeeper>'
+    )
+    ```
+
+=== "Azure"
+
+    Starburst does not support vended-credentials for Azure, so that Storage Account credentials must be specified in Starburst.
+
+    Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-azure.html).
+
+    ```sql
+    CREATE CATALOG lakekeeper USING iceberg
+    WITH (
+        "iceberg.catalog.type" = 'rest',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
+        "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
+        "iceberg.unique-table-location" = 'true',
+        "fs.native-azure.enabled" = 'true',
+        "azure.auth-type" = 'OAUTH',
+        "azure.oauth.client-id" = '<Client-ID for an Application with Storage Account access>',
+        "azure.oauth.secret" = '<Client-Secret>',
+        "azure.oauth.tenant-id" = '<Tenant-ID>',
+        "azure.oauth.endpoint" = 'https://login.microsoftonline.com/<Tenant-ID>/v2.0',
+        -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.rest-catalog.security" = 'OAUTH2',
+        "iceberg.rest-catalog.oauth2.credential" = '<Client-ID>:<Client-Secret>', -- Client-ID used to access Lakekeeper. Typically different to `azure.oauth.client-id`.
+        "iceberg.rest-catalog.oauth2.server-uri" = '<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>',
+        -- Optional Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.rest-catalog.oauth2.scope" = '<Scopes to request from the IdP, i.e. lakekeeper>'
+    )
+    ```
+
+=== "GCS"
+
+    Starburst does not support vended-credentials for GCS, so that GCS credentials must be specified in the connector.
+
+    Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-gcs.html).
+
+
+    ```sql
+    CREATE CATALOG lakekeeper USING iceberg
+    WITH (
+        "iceberg.catalog.type" = 'rest',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
+        "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
+        "iceberg.unique-table-location" = 'true',
+        "fs.native-gcs.enabled" = 'true',
+        "gcs.project-id" = '<Identifier for the project on Google Cloud Storage>',
+        "gcs.json-key" = '<Your Google Cloud service account key in JSON format>',
+        -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.rest-catalog.security" = 'OAUTH2',
+        "iceberg.rest-catalog.oauth2.credential" = '<Client-ID>:<Client-Secret>', -- Client-ID used to access Lakekeeper. Typically different to `azure.oauth.client-id`.
+        "iceberg.rest-catalog.oauth2.server-uri" = '<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>',
+        -- Optional Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.rest-catalog.oauth2.scope" = '<Scopes to request from the IdP, i.e. lakekeeper>'
+    )
+    ```
+
 
 ## <img src="/assets/spark.svg" width="40" background-color="red"> Spark
 

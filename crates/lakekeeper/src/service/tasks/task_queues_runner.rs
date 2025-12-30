@@ -36,6 +36,7 @@ pub struct TaskQueuesRunner {
 impl TaskQueuesRunner {
     /// Runs all registered task queue workers and monitors them, restarting any that exit.
     /// Accepts a cancellation token for graceful shutdown.
+    #[allow(clippy::too_many_lines)]
     pub async fn run_queue_workers(self, restart_workers: bool) {
         // Create a structure to track worker information and hold task handles
         struct WorkerInfo {
@@ -58,7 +59,9 @@ impl TaskQueuesRunner {
                 let task_fn = Arc::clone(&queue.worker_fn);
                 let cancellation_token_clone = self.cancellation_token.clone();
                 tracing::debug!(
-                    "Starting `{queue_name}` worker {worker_id}/{}",
+                    "Starting `{queue_name}` worker {} ({}/{})",
+                    worker_id,
+                    worker_id + 1,
                     queue.num_workers
                 );
                 workers.push(WorkerInfo {

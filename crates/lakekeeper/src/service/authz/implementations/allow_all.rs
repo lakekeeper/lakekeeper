@@ -11,7 +11,7 @@ use crate::{
     api::{ApiContext, iceberg::v1::Result, management::v1::role::Role},
     request_metadata::RequestMetadata,
     service::{
-        AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceHierarchy, NamespaceId,
+        AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
         NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
         TableId, ViewId, WarehouseId,
         authn::UserId,
@@ -162,7 +162,8 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
-        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; actions.len()])
     }

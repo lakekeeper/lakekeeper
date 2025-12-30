@@ -7,8 +7,13 @@ use strum::EnumIter;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::{
-    CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+use crate::{
+    ProjectId,
+    api::management::v1::tasks::TaskStatus,
+    service::{
+        CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+        task_configs::TaskQueueConfigFilter,
+    },
 };
 
 mod task_queues_runner;
@@ -76,10 +81,10 @@ impl TaskQueueName {
     }
 }
 
-#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Hash, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "type")]
-pub enum TaskEntity {
+pub enum WarehouseTaskEntityId {
     #[serde(rename_all = "kebab-case")]
     Table {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
@@ -93,17 +98,21 @@ pub enum TaskEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
-pub enum TaskEntityNamed {
+pub enum ResolvedTaskEntity {
     Table(TableNamed),
     View(ViewNamed),
+    Warehouse(WarehouseId),
+    Project,
 }
 
-impl TaskEntityNamed {
+impl ResolvedTaskEntity {
     #[must_use]
-    pub fn warehouse_id(&self) -> WarehouseId {
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
         match self {
-            TaskEntityNamed::Table(t) => t.warehouse_id,
-            TaskEntityNamed::View(v) => v.warehouse_id,
+            ResolvedTaskEntity::Table(t) => Some(t.warehouse_id),
+            ResolvedTaskEntity::View(v) => Some(v.warehouse_id),
+            ResolvedTaskEntity::Warehouse(w) => Some(*w),
+            ResolvedTaskEntity::Project => None,
         }
     }
 }
@@ -191,77 +200,199 @@ impl AsRef<TaskAttemptId> for TaskAttemptId {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskFilter {
-    WarehouseId(WarehouseId),
+    WarehouseId {
+        warehouse_id: WarehouseId,
+        project_id: ProjectId,
+    },
     TaskIds(Vec<TaskId>),
+    ProjectId {
+        project_id: ProjectId,
+        include_sub_tasks: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskResolveScope {
+    Warehouse {
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
+    },
+    Project {
+        project_id: ProjectId,
+    },
+}
+
+impl TaskResolveScope {
+    #[must_use]
+    pub fn project_id(&self) -> ProjectId {
+        match self {
+            TaskResolveScope::Warehouse { project_id, .. }
+            | TaskResolveScope::Project { project_id } => project_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskDetailsScope {
+    Warehouse {
+        project_id: ProjectId,
+        warehouse_id: WarehouseId,
+    },
+    Project {
+        project_id: ProjectId,
+    },
+}
+
+impl TaskDetailsScope {
+    #[must_use]
+    pub fn project_id(&self) -> ProjectId {
+        match self {
+            TaskDetailsScope::Warehouse { project_id, .. }
+            | TaskDetailsScope::Project { project_id } => project_id.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
+        match self {
+            TaskDetailsScope::Warehouse { warehouse_id, .. } => Some(*warehouse_id),
+            TaskDetailsScope::Project { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TaskInput {
     /// Metadata for this task instance.
     /// Metadata type is shared between different task types.
-    pub task_metadata: TaskMetadata,
+    pub task_metadata: ScheduleTaskMetadata,
     /// Specific payload for this task type
     pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-/// Metadata stored for each task in the database backend.
-/// This is separate from the task payload, which is specific to each task type.
+pub enum TaskEntity {
+    Project,
+    Warehouse {
+        warehouse_id: WarehouseId,
+    },
+    EntityInWarehouse {
+        warehouse_id: WarehouseId,
+        entity_id: WarehouseTaskEntityId,
+        entity_name: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaskMetadata {
-    pub warehouse_id: WarehouseId,
+    pub project_id: ProjectId,
     pub parent_task_id: Option<TaskId>,
-    pub entity_id: EntityId,
-    pub entity_name: Vec<String>,
-    pub schedule_for: Option<chrono::DateTime<Utc>>,
+    pub scheduled_for: chrono::DateTime<Utc>,
+    pub entity: TaskEntity,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleTaskMetadata {
+    pub project_id: ProjectId,
+    pub parent_task_id: Option<TaskId>,
+    pub scheduled_for: Option<chrono::DateTime<Utc>>,
+    pub entity: TaskEntity,
+}
+
+impl TaskMetadata {
+    #[must_use]
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+
+    #[must_use]
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
+        match &self.entity {
+            TaskEntity::Warehouse { warehouse_id }
+            | TaskEntity::EntityInWarehouse { warehouse_id, .. } => Some(*warehouse_id),
+            TaskEntity::Project => None,
+        }
+    }
+
+    #[must_use]
+    pub fn parent_task_id(&self) -> Option<TaskId> {
+        self.parent_task_id
+    }
+
+    #[must_use]
+    pub fn schedule_for(&self) -> chrono::DateTime<Utc> {
+        self.scheduled_for
+    }
+
+    #[must_use]
+    pub fn warehouse_task_sub_entity(
+        &self,
+    ) -> Option<(WarehouseId, &WarehouseTaskEntityId, &Vec<String>)> {
+        match &self.entity {
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name,
+            } => Some((*warehouse_id, entity_id, entity_name)),
+            TaskEntity::Warehouse { .. } | TaskEntity::Project => None,
+        }
+    }
+
+    #[must_use]
+    pub fn entity_name(&self) -> Option<&Vec<String>> {
+        match &self.entity {
+            TaskEntity::EntityInWarehouse { entity_name, .. } => Some(entity_name),
+            TaskEntity::Warehouse { .. } | TaskEntity::Project => None,
+        }
+    }
+
+    #[must_use]
+    pub fn entity_id(&self) -> Option<WarehouseTaskEntityId> {
+        match &self.entity {
+            TaskEntity::EntityInWarehouse { entity_id, .. } => Some(*entity_id),
+            TaskEntity::Warehouse { .. } | TaskEntity::Project => None,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, strum_macros::Display)]
 #[strum(serialize_all = "kebab-case")]
-pub enum EntityType {
+pub enum WarehouseEntityType {
     Table,
     View,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, derive_more::From)]
-pub enum EntityId {
-    Table(TableId),
-    View(ViewId),
-}
-
-impl std::fmt::Display for EntityId {
+impl std::fmt::Display for WarehouseTaskEntityId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EntityId::Table(id) => write!(f, "Table({id})"),
-            EntityId::View(id) => write!(f, "View({id})"),
+            WarehouseTaskEntityId::Table { table_id } => write!(f, "Table({table_id})"),
+            WarehouseTaskEntityId::View { view_id } => write!(f, "View({view_id})"),
         }
     }
 }
 
-impl EntityId {
+impl WarehouseTaskEntityId {
     #[must_use]
-    pub fn entity_type(&self) -> EntityType {
+    pub fn entity_type(&self) -> WarehouseEntityType {
         match self {
-            EntityId::Table(_) => EntityType::Table,
-            EntityId::View(_) => EntityType::View,
+            WarehouseTaskEntityId::Table { .. } => WarehouseEntityType::Table,
+            WarehouseTaskEntityId::View { .. } => WarehouseEntityType::View,
         }
     }
-}
 
-impl EntityId {
     #[must_use]
     pub fn as_uuid(&self) -> Uuid {
         match self {
-            EntityId::Table(id) => **id,
-            EntityId::View(id) => **id,
+            WarehouseTaskEntityId::Table { table_id } => **table_id,
+            WarehouseTaskEntityId::View { view_id } => **view_id,
         }
     }
 }
 
-impl From<TabularId> for EntityId {
+impl From<TabularId> for WarehouseTaskEntityId {
     fn from(id: TabularId) -> Self {
         match id {
-            TabularId::Table(table_id) => EntityId::Table(table_id),
-            TabularId::View(view_id) => EntityId::View(view_id),
+            TabularId::Table(table_id) => WarehouseTaskEntityId::Table { table_id },
+            TabularId::View(view_id) => WarehouseTaskEntityId::View { view_id },
         }
     }
 }
@@ -271,10 +402,85 @@ pub struct Task {
     pub task_metadata: TaskMetadata,
     pub queue_name: TaskQueueName,
     pub id: TaskAttemptId,
-    pub status: TaskStatus,
+    pub status: TaskIntermediateStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub(crate) config: Option<serde_json::Value>,
     pub(crate) data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskInfo {
+    pub task_metadata: TaskMetadata,
+    pub queue_name: TaskQueueName,
+    pub id: TaskAttemptId,
+    pub status: TaskStatus,
+    pub picked_up_at: Option<chrono::DateTime<Utc>>,
+    pub last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub progress: f32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl TaskInfo {
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    #[must_use]
+    pub fn project_id(&self) -> &ProjectId {
+        self.task_metadata.project_id()
+    }
+
+    #[must_use]
+    pub fn queue_name(&self) -> &TaskQueueName {
+        &self.queue_name
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    #[must_use]
+    pub fn status(&self) -> TaskStatus {
+        self.status
+    }
+
+    #[must_use]
+    pub fn parent_task_id(&self) -> Option<TaskId> {
+        self.task_metadata.parent_task_id()
+    }
+
+    #[must_use]
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    #[must_use]
+    pub fn picked_up_at(&self) -> Option<chrono::DateTime<Utc>> {
+        self.picked_up_at
+    }
+
+    #[must_use]
+    pub fn scheduled_for(&self) -> chrono::DateTime<Utc> {
+        self.task_metadata.schedule_for()
+    }
+
+    #[must_use]
+    pub fn last_heartbeat_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.last_heartbeat_at
+    }
+
+    #[must_use]
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    #[must_use]
+    pub fn updated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.updated_at
+    }
 }
 
 impl AsRef<TaskAttemptId> for Task {
@@ -287,7 +493,7 @@ impl AsRef<TaskAttemptId> for Task {
 pub struct SpecializedTask<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> {
     pub task_metadata: TaskMetadata,
     pub id: TaskAttemptId,
-    pub status: TaskStatus,
+    pub status: TaskIntermediateStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub config: Option<C>,
     pub data: P,
@@ -405,11 +611,19 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the configuration cannot be fetched or deserialized.
     pub async fn get_queue_config<C: CatalogStore>(
+        project_id: ProjectId,
         warehouse_id: WarehouseId,
         catalog_state: C::State,
     ) -> crate::api::Result<Option<Q>> {
-        let config =
-            C::get_task_queue_config(warehouse_id, Self::queue_name(), catalog_state).await?;
+        let config = C::get_task_queue_config(
+            &TaskQueueConfigFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            Self::queue_name(),
+            catalog_state,
+        )
+        .await?;
 
         config
             .map(|cfg| {
@@ -436,7 +650,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the task cannot be enqueued / scheduled.
     pub async fn schedule_task<C: CatalogStore>(
-        task_metadata: TaskMetadata,
+        task_metadata: ScheduleTaskMetadata,
         payload: D,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
     ) -> Result<Option<TaskId>, ErrorModel> {
@@ -471,7 +685,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// # Errors
     /// Returns an error if the tasks cannot be enqueued / scheduled.
     pub async fn schedule_tasks<C: CatalogStore>(
-        tasks: impl Iterator<Item = (TaskMetadata, D)>,
+        tasks: impl Iterator<Item = (ScheduleTaskMetadata, D)>,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>, ErrorModel> {
         let task_inputs = tasks
@@ -943,7 +1157,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     feature = "sqlx-postgres",
     sqlx(type_name = "task_intermediate_status", rename_all = "kebab-case")
 )]
-pub enum TaskStatus {
+pub enum TaskIntermediateStatus {
     Scheduled,
     Running,
     ShouldStop,
@@ -988,10 +1202,11 @@ mod test {
             "type": "table",
             "table-id": "550e8400-e29b-41d4-a716-446655440000"
         });
-        let deserialized: super::TaskEntity = serde_json::from_value(json.clone()).unwrap();
+        let deserialized: super::WarehouseTaskEntityId =
+            serde_json::from_value(json.clone()).unwrap();
         assert_eq!(
             deserialized,
-            TaskEntity::Table {
+            WarehouseTaskEntityId::Table {
                 table_id: TableId::from(
                     Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
                 )

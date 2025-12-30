@@ -17,7 +17,17 @@ By default, Lakekeeper Warehouses enforce specific URI schemas for tables and vi
 
 When a new table is created without an explicitly specified location, Lakekeeper automatically assigns the appropriate protocol based on the storage type. If a location is explicitly provided by the client, it must adhere to the required schema.
 
-### Allowing Alternative Protocols (s3a, s3n, wasbs)
+// ...existing code...
+
+## Disabling Credential Vending & Remote Signing
+
+Lakekeeper provides multiple ways to control how credentials and remote signing information are provided to clients.
+
+You can disable credential vending and remote signing on a per-warehouse basis using storage profile settings. For S3 warehouses, set `remote-signing-enabled` to `false` to disable remote signing and `sts-enabled` to `false` to disable STS vended credentials. For Azure ADLS warehouses, set `sas-enabled` to `false` to disable SAS token generation. For GCS warehouses, set `sts-enabled` to `false` to disable STS token generation. When these options are disabled at the storage profile level, clients will not receive the corresponding credentials or signing information for that warehouse, regardless of the request headers. Lakekeeper downscopes vended credentials for all supported storages to the location of the table being accessed and ensures that there are no overlapping table locations within a warehouse.
+
+Clients can also control credential delegation per request using the `X-Iceberg-Access-Delegation` header. Lakekeeper supports the standard Iceberg REST spec values (`vended-credentials` and `remote-signing`), plus a special `client-managed` value. When set to `client-managed`, no credentials or signing information are returned, regardless of storage profile configuration. This allows clients to use their own credentials for direct storage access.
+
+## Allowing Alternative Protocols (s3a, s3n, wasbs)
 
 For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additional protocols. To enable these, activate the "Allow Alternative Protocols" flag in the storage profile of the Warehouse. When enabled, the following additional protocols are accepted for table creation or registration:
 
@@ -26,14 +36,23 @@ For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additio
 
 ## S3
 
-We support remote signing and vended-credentials with Minio & AWS. Both provide a secure way to access data on S3:
+We support remote signing and vended-credentials with S3-compatible storages & AWS. Both provide a secure way to access data on S3:
 
 * **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
 * **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
 
-Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Minio, Rook Ceph and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Minio and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
+Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Minio and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
 
-Remote signing relies on identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
+When a client requests table configuration, Lakekeeper selects between remote signing and vended credentials based on the `X-Iceberg-Access-Delegation` header and storage profile settings:
+
+- If the header is set to `client-managed`, neither credentials nor signing information are returned
+- If the header specifies `vended-credentials` or `remote-signing`, that method is used if enabled in the storage profile
+- If both methods are requested or neither is specified, Lakekeeper attempts to provide vended credentials first (if STS is enabled), then falls back to remote signing (if enabled)
+- If both methods are disabled at the storage profile level, no credentials are returned regardless of the header value
+
+For maximum client compatibility, we recommend enabling both STS and remote signing when your S3 storage supports it.
+
+For some older remote signing clients that cannot handle table-specific remote signing endpoint locations, Lakekeeper needs to identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
 
 ### Configuration Parameters
 
@@ -44,6 +63,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
 | `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
+| `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
 | `endpoint`                    | URL     | No       | None                       | Optional endpoint URL for S3 requests. If not provided, the region will be used to determine the endpoint. If both are provided, the endpoint takes precedence. Example: `http://s3-de.my-domain.com:9000` |
 | `flavor`                      | String  | No       | `aws`                      | S3 flavor to use. Options: `aws` (Amazon S3) or `s3-compat` (for S3-compatible solutions like MinIO). |
@@ -411,6 +431,7 @@ The following table describes all configuration parameters for an ADLS storage p
 |-------------------------------|---------|----------|-------------------------------------|-----|
 | `account-name`                | String  | Yes      | -                                   | Name of the Azure storage account. |
 | `filesystem`                  | String  | Yes      | -                                   | Name of the ADLS filesystem, in blob storage also known as container. |
+| `sas-enabled`                 | Boolean | No       | `true`                              | Whether to enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                                | Subpath in the filesystem to use. |
 | `allow-alternative-protocols` | Boolean | No       | `false`                             | Whether to allow `wasbs://` in locations in addition to `abfss://`. This is disabled by default and should only be enabled for migrating legacy Hadoop-based tables via the register endpoint. |
 | `host`                        | String  | No       | `dfs.core.windows.net`              | The host to use for the storage account. |
@@ -484,10 +505,11 @@ Google Cloud Storage can be used to store Iceberg tables through the `gs://` pro
 
 The following table describes all configuration parameters for a GCS storage profile:
 
-| Parameter    | Type   | Required | Default | Description                     |
-|--------------|--------|----------|---------|---------------------------------|
-| `bucket`     | String | Yes      | -       | Name of the GCS bucket.         |
-| `key-prefix` | String | No       | None    | Subpath in the bucket to use for this warehouse. |
+| Parameter     | Type    | Required | Default | Description                   |
+|---------------|---------|----------|---------|-------------------------------|
+| `bucket`      | String  | Yes      | -       | Name of the GCS bucket.       |
+| `key-prefix`  | String  | No       | None    | Subpath in the bucket to use for this warehouse. |
+| `sts-enabled` | Boolean | No       | `true`  | Whether to enable STS (Security Token Service) downscoped token generation for GCS. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
 
 The service account should have appropriate permissions (such as Storage Admin role) on the bucket. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
 

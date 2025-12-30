@@ -25,6 +25,7 @@ services:
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
       - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
     command: ["serve"]
     healthcheck:
@@ -178,7 +179,7 @@ services:
       - iceberg_net
 
   starrocks:
-    image: starrocks/allin1-ubuntu:3.3.7
+    image: starrocks/allin1-ubuntu:4.0.1
     healthcheck:
       test: ["CMD", "curl", "-I", "http://starrocks:8030/api/health"]
       interval: 2s

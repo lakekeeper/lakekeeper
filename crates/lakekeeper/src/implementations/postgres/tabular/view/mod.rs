@@ -409,7 +409,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use crate::{
-        WarehouseId,
+        ProjectId, WarehouseId,
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             CatalogState, PostgresBackend,
@@ -421,7 +421,7 @@ pub(crate) mod tests {
             CreateViewError, DropTabularError, LoadViewError, TabularId, TabularIdentBorrowed,
             TabularListFlags, ViewId,
             tasks::{
-                EntityId, TaskMetadata,
+                ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             },
         },
@@ -524,7 +524,7 @@ pub(crate) mod tests {
     #[sqlx::test]
     async fn create_view(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
@@ -650,7 +650,7 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_unconditionally(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool).await;
         let mut tx: sqlx::Transaction<'_, sqlx::Postgres> =
             state.write_pool().begin().await.unwrap();
         super::super::drop_tabular(
@@ -678,7 +678,8 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_correct_location(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_id, _, _, metadata_location) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, metadata_location, _) =
+            prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         super::super::drop_tabular(
             warehouse_id,
@@ -704,7 +705,7 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn test_drop_view_metadata_mismatch(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         let err = super::super::drop_tabular(
             warehouse_id,
@@ -722,16 +723,21 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn soft_drop_view(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _, project_id) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
 
         let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
-            TaskMetadata {
-                entity_id: EntityId::View(created_meta.uuid().into()),
-                warehouse_id,
+            ScheduleTaskMetadata {
+                project_id,
                 parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity_name: vec!["myview".to_string()],
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    entity_name: vec!["myview".to_string()],
+                    entity_id: WarehouseTaskEntityId::View {
+                        view_id: created_meta.uuid().into(),
+                    },
+                    warehouse_id,
+                },
             },
             TabularExpirationPayload {
                 deletion_kind: DeleteKind::Purge,
@@ -777,7 +783,7 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn view_exists(pool: sqlx::PgPool) {
-        let (state, _created_meta, warehouse_id, namespace, name, _) = prepare_view(pool).await;
+        let (state, _created_meta, warehouse_id, namespace, name, _, _) = prepare_view(pool).await;
         let view_ident = TableIdent {
             namespace: namespace.clone(),
             name: name.clone(),
@@ -811,7 +817,7 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
-        let (state, _, warehouse_id, _, _, _) = prepare_view(pool).await;
+        let (state, _, warehouse_id, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         let e = super::super::drop_tabular(
             warehouse_id,
@@ -835,9 +841,11 @@ pub(crate) mod tests {
         NamespaceIdent,
         String,
         Location,
+        ProjectId,
     ) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
@@ -877,6 +885,7 @@ pub(crate) mod tests {
             namespace,
             "myview".into(),
             metadata_location,
+            project_id,
         )
     }
 }

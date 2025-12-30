@@ -17,14 +17,14 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        api::management::v1::warehouse::{QueueConfig, SetTaskQueueConfigRequest},
+        api::management::v1::task_queue::{QueueConfig, SetTaskQueueConfigRequest},
         implementations::postgres::PostgresBackend,
         service::{
             CatalogStore, CatalogTaskOps, Transaction,
             tasks::{
-                EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
-                TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
-                TaskQueueRegistry,
+                QueueRegistration, ScheduleTaskMetadata, SpecializedTask,
+                TaskConfig as QueueConfigTrait, TaskData, TaskEntity, TaskExecutionDetails,
+                TaskInput, TaskQueueName, TaskQueueRegistry, WarehouseTaskEntityId,
             },
         },
     };
@@ -106,7 +106,8 @@ mod test {
                 .await
                 .unwrap();
         <PostgresBackend as CatalogTaskOps>::set_task_queue_config(
-            setup.warehouse.warehouse_id,
+            setup.warehouse.project_id.clone(),
+            Some(setup.warehouse.warehouse_id),
             &QUEUE_NAME,
             SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(
@@ -131,12 +132,17 @@ mod test {
         let task_id = PostgresBackend::enqueue_task(
             &QUEUE_NAME,
             TaskInput {
-                task_metadata: TaskMetadata {
-                    warehouse_id: setup.warehouse.warehouse_id,
+                task_metadata: ScheduleTaskMetadata {
+                    project_id: setup.warehouse.project_id.clone(),
                     parent_task_id: None,
-                    entity_id: EntityId::Table(Uuid::now_v7().into()),
-                    schedule_for: None,
-                    entity_name: vec!["mytable".to_string()],
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id: setup.warehouse.warehouse_id,
+                        entity_id: WarehouseTaskEntityId::Table {
+                            table_id: Uuid::now_v7().into(),
+                        },
+                        entity_name: vec!["mytable".to_string()],
+                    },
+                    scheduled_for: None,
                 },
                 payload: serde_json::to_value(task_state).unwrap(),
             },
@@ -188,6 +194,7 @@ async fn setup_tasks_test(pool: PgPool) -> TasksSetup {
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         1,
+        None,
     )
     .await;
 

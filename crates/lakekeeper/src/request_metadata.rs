@@ -9,12 +9,14 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::{HeaderMap, HeaderName, Method, StatusCode};
+use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
 use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
+    api::iceberg::v1::namespace::NamespaceIdentUrl,
     service::{
         TabularId,
         authn::{Actor, InternalActor},
@@ -36,6 +38,26 @@ pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUE
 
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
+#[derive(Debug, Clone)]
+pub enum UserAgent {
+    // User-Agent: PyIceberg/<version>
+    PyIceberg { version: String },
+    Unknown(String),
+}
+
+impl UserAgent {
+    #[cfg(feature = "router")]
+    fn parse(user_agent: &str) -> Self {
+        if let Some(version) = user_agent.strip_prefix("PyIceberg/") {
+            Self::PyIceberg {
+                version: version.to_string(),
+            }
+        } else {
+            Self::Unknown(user_agent.to_string())
+        }
+    }
+}
+
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
@@ -46,6 +68,7 @@ pub struct RequestMetadata {
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
+    user_agent: Option<UserAgent>,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -84,6 +107,11 @@ impl RequestMetadata {
         self
     }
 
+    #[must_use]
+    pub fn user_agent(&self) -> Option<&UserAgent> {
+        self.user_agent.as_ref()
+    }
+
     /// ID of the user performing the request.
     /// This returns the underlying user-id, even if a role is assumed.
     /// Please use `actor()` to get the full actor for `AuthZ` decisions.
@@ -115,6 +143,7 @@ impl RequestMetadata {
             actor: InternalActor::LakekeeperInternal,
             matched_path: None,
             request_method: Method::default(),
+            user_agent: None,
         }
     }
 
@@ -136,6 +165,7 @@ impl RequestMetadata {
             actor: Actor::Anonymous.into(),
             matched_path: None,
             request_method: Method::default(),
+            user_agent: None,
         }
     }
 
@@ -164,6 +194,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             project_id: None,
+            user_agent: None,
         }
     }
 
@@ -194,6 +225,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             project_id: None,
+            user_agent: None,
         }
     }
 
@@ -215,6 +247,7 @@ impl RequestMetadata {
             project_id,
             matched_path,
             request_method,
+            user_agent: None,
         }
     }
 
@@ -284,6 +317,23 @@ impl RequestMetadata {
     }
 
     #[must_use]
+    pub fn refresh_client_credentials_endpoint_for_table(
+        &self,
+        warehouse_id: WarehouseId,
+        table_ident: &TableIdent,
+    ) -> String {
+        format!(
+            "{}/v1/{warehouse_id}/namespaces/{}/tables/{}/credentials",
+            self.base_uri_catalog(),
+            NamespaceIdentUrl::from(table_ident.namespace().clone()).to_url_string(),
+            percent_encoding::utf8_percent_encode(
+                &table_ident.name,
+                percent_encoding::NON_ALPHANUMERIC
+            ),
+        )
+    }
+
+    #[must_use]
     pub fn base_uri_catalog(&self) -> String {
         format!("{}/catalog", self.base_url())
     }
@@ -347,6 +397,11 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .map(|mp| Arc::from(mp.as_str()));
     let request_method = request.method().clone();
 
+    let user_agent = headers
+        .get(http::header::USER_AGENT)
+        .and_then(|hv| hv.to_str().ok())
+        .map(UserAgent::parse);
+
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
@@ -355,6 +410,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         project_id,
         matched_path,
         request_method,
+        user_agent,
     });
     next.run(request).await
 }

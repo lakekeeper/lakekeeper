@@ -6,14 +6,14 @@ pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
 
-use std::str::FromStr as _;
+use std::{collections::HashMap, str::FromStr as _};
 
 pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
-use iceberg::io::FileIO;
+use iceberg::{NamespaceIdent, TableIdent, io::FileIO};
 use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
 use lakekeeper_io::{
     InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
@@ -33,7 +33,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{compression_codec::CompressionCodec, io::list_location},
     service::{
-        TabularId,
+        BasicTabularInfo, NamespaceVersion, TabularId, TabularInfo, WarehouseVersion,
         storage::error::{IcebergFileIoError, UnexpectedStorageType},
     },
 };
@@ -264,14 +264,13 @@ impl StorageProfile {
         table_location: &Location,
         storage_permissions: StoragePermissions,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        tabular_id: TabularId,
+        tabular_info: &impl BasicTabularInfo,
     ) -> Result<TableConfig, TableConfigError> {
         let stc_request = ShortTermCredentialsRequest {
             table_location: table_location.clone(),
             storage_permissions,
-            warehouse_id,
-            tabular_id,
+            warehouse_id: tabular_info.warehouse_id(),
+            tabular_id: tabular_info.tabular_id(),
         };
 
         match self {
@@ -284,6 +283,7 @@ impl StorageProfile {
                             .transpose()
                             .map_err(CredentialsError::from)?,
                         stc_request,
+                        tabular_info,
                         request_metadata,
                     )
                     .await
@@ -297,6 +297,8 @@ impl StorageProfile {
                             .try_to_az()
                             .map_err(CredentialsError::from)?,
                         stc_request,
+                        tabular_info,
+                        request_metadata,
                     )
                     .await
             }
@@ -312,6 +314,8 @@ impl StorageProfile {
                                 CredentialsError::MissingCredential("gcs".to_string())
                             })?,
                         &stc_request,
+                        tabular_info,
+                        request_metadata,
                     )
                     .await
             }
@@ -384,8 +388,8 @@ impl StorageProfile {
         // Test vended-credentials access
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
-            StorageProfile::Adls(_) => true,
-            StorageProfile::Gcs(_) => true,
+            StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::Gcs(profile) => profile.sts_enabled,
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
         };
@@ -458,6 +462,23 @@ impl StorageProfile {
         let mut sub_location = test_location.clone();
         sub_location.without_trailing_slash().push("vended-test");
 
+        let tabular_info = TabularInfo {
+            warehouse_id: WarehouseId::new_random(),
+            namespace_id: NamespaceId::new_random(),
+            namespace_version: NamespaceVersion::new(0),
+            warehouse_version: WarehouseVersion::new(0),
+            tabular_ident: TableIdent::new(
+                NamespaceIdent::new("vended-test".to_string()),
+                "tbl".to_string(),
+            ),
+            tabular_id: TableId::new_random(),
+            location: test_location.clone(),
+            metadata_location: None,
+            protected: false,
+            properties: HashMap::new(),
+            updated_at: None,
+        };
+
         let tbl_config = self
             .generate_table_config(
                 DataAccess {
@@ -471,8 +492,7 @@ impl StorageProfile {
                 // The following arguments are used only for generating the remote signing configuration
                 // and are not used in the vended credentials case.
                 request_metadata,
-                WarehouseId::new_random(),
-                TableId::new_random().into(),
+                &tabular_info,
             )
             .await?;
 
@@ -1048,7 +1068,7 @@ mod tests {
     };
     use crate::{
         server::io::{delete_file, read_metadata_file, write_file},
-        service::storage::s3::S3AccessKeyCredential,
+        service::{TableInfo, storage::s3::S3AccessKeyCredential},
     };
 
     #[test]
@@ -1231,6 +1251,7 @@ mod tests {
             host: None,
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
+            sas_enabled: true,
         });
 
         let cases = vec![
@@ -1296,6 +1317,7 @@ mod tests {
             let mut profile: StorageProfile = GcsProfile {
                 bucket,
                 key_prefix: key_prefix.clone(),
+                sts_enabled: true,
             }
             .into();
 
@@ -1453,8 +1475,7 @@ mod tests {
                 &table_location1,
                 StoragePermissions::ReadWriteDelete,
                 &RequestMetadata::new_unauthenticated(),
-                WarehouseId::new_random(),
-                TableId::new_random().into(),
+                &TableInfo::new_random(WarehouseId::new_random()),
             )
             .await
             .unwrap();
@@ -1470,8 +1491,7 @@ mod tests {
                 &table_location2,
                 StoragePermissions::ReadWriteDelete,
                 &RequestMetadata::new_unauthenticated(),
-                WarehouseId::new_random(),
-                TableId::new_random().into(),
+                &TableInfo::new_random(WarehouseId::new_random()),
             )
             .await
             .unwrap();

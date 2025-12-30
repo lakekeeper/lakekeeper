@@ -17,7 +17,7 @@ pub struct CreateViewRequest {
     pub schema: Schema,
     #[serde(rename = "view-version")]
     pub view_version: ViewVersion,
-    #[serde(rename = "properties")]
+    #[serde(default, rename = "properties")]
     pub properties: std::collections::HashMap<String, String>,
 }
 

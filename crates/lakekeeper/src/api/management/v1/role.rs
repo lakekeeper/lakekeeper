@@ -67,6 +67,22 @@ pub struct Role {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+/// Metadata of a role with reduced information.
+/// Returned for cross-project role references.
+pub struct RoleMetadata {
+    /// Globally unique id of this role
+    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    pub id: RoleId,
+    /// Name of the role
+    pub name: String,
+    /// Project ID in which the role is created.
+    #[cfg_attr(feature = "open-api", schema(value_type=String))]
+    pub project_id: ProjectId,
+}
+
 #[cfg(feature = "test-utils")]
 impl Role {
     #[must_use]
@@ -302,6 +318,28 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         Ok(role)
+    }
+
+    async fn get_role_metadata(
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        role_id: RoleId,
+    ) -> Result<RoleMetadata> {
+        let authorizer = context.v1_state.authz;
+
+        let role = C::get_role_by_id_across_projects(role_id, context.v1_state.catalog).await?;
+
+        let role = authorizer
+            .require_role_action(&request_metadata, Ok(role), CatalogRoleAction::ReadMetadata)
+            .await?;
+
+        let role_metadata = RoleMetadata {
+            id: role.id,
+            name: role.name.clone(),
+            project_id: role.project_id.clone(),
+        };
+
+        Ok(role_metadata)
     }
 
     async fn search_role(

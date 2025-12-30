@@ -10,7 +10,7 @@ use lakekeeper::{
     async_trait,
     axum::Router,
     service::{
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel, NamespaceHierarchy,
+        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel,
         NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
         TableId, UserId, ViewId,
         authz::{
@@ -203,7 +203,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let mut batch_items = Vec::new();
         let mut batch_indices = Vec::new();
         for (idx, (role, action)) in roles_with_actions.iter().enumerate() {
-            if *action == RoleRelation::CanRead {
+            if *action == RoleRelation::CanReadMetadata {
                 results.push((idx, true));
             } else {
                 batch_indices.push(idx);
@@ -221,7 +221,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 // Collect unique role objects for permission checks
                 let unique_roles: HashSet<_> = roles_with_actions
                     .iter()
-                    .filter(|(_, action)| *action != RoleRelation::CanRead)
+                    .filter(|(_, action)| *action != RoleRelation::CanReadMetadata)
                     .map(|(role, _)| role.id.to_openfga())
                     .collect();
 
@@ -449,7 +449,8 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
-        actions: &[(&NamespaceHierarchy, Self::NamespaceAction)],
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         let user =
             for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);

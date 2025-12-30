@@ -10,8 +10,19 @@ services:
         condition: service_started
 
   opa:
-    image: openpolicyagent/opa:1.0.0
-    command: ["run", "--server", "--log-format", "text", "--log-level", "debug", "--addr", ":8181", "/policies"]
+    image: openpolicyagent/opa:1.10.1
+    command:
+      [
+        "run",
+        "--server",
+        "--log-format",
+        "text",
+        "--log-level",
+        "debug",
+        "--addr",
+        ":8181",
+        "/policies",
+      ]
     volumes:
       - ../authz/opa-bridge/policies:/policies
     networks:
@@ -33,7 +44,7 @@ services:
     environment:
       - OIDC_ISSUER=http://keycloak:8080/realms/iceberg
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2

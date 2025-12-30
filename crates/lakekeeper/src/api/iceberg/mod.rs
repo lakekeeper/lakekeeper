@@ -24,7 +24,10 @@ pub mod v1 {
 
     pub use self::{
         namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery},
-        tables::{DataAccess, DataAccessMode, ListTablesQuery, TableParameters},
+        tables::{
+            DataAccess, DataAccessMode, ListTablesQuery, LoadTableResultOrNotModified,
+            TableParameters,
+        },
         views::ViewParameters,
     };
     pub use crate::{
@@ -161,6 +164,15 @@ pub mod v1 {
                 entities: HashMap::with_capacity(capacity),
                 next_page_tokens: Vec::with_capacity(capacity),
                 ordering: Vec::with_capacity(capacity),
+            }
+        }
+
+        #[must_use]
+        pub fn new() -> Self {
+            Self {
+                entities: HashMap::new(),
+                next_page_tokens: Vec::new(),
+                ordering: Vec::new(),
             }
         }
 

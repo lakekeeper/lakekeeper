@@ -285,7 +285,7 @@ pub(super) async fn get_allowed_warehouse_actions<
 ) -> Result<Vec<CatalogWarehouseAction>> {
     let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
-    let actions = CatalogWarehouseAction::VARIANTS;
+    let actions = CatalogWarehouseAction::variants();
     let can_see_permission = CatalogWarehouseAction::IncludeInList;
 
     let warehouse = C::get_warehouse_by_id_cache_aware(
@@ -303,7 +303,7 @@ pub(super) async fn get_allowed_warehouse_actions<
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (&*warehouse, *action))
+                .map(|action| (&*warehouse, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -318,7 +318,7 @@ pub(super) async fn get_allowed_warehouse_actions<
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }
@@ -345,7 +345,7 @@ pub(super) async fn get_allowed_namespace_actions<
 ) -> Result<Vec<CatalogNamespaceAction>> {
     let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
-    let actions = CatalogNamespaceAction::VARIANTS;
+    let actions = CatalogNamespaceAction::variants();
     let can_see_permission = CatalogNamespaceAction::IncludeInList;
 
     let (warehouse, namespace) = tokio::join!(
@@ -366,9 +366,14 @@ pub(super) async fn get_allowed_namespace_actions<
             request_metadata,
             for_user.as_ref(),
             &warehouse,
+            &namespace
+                .parents
+                .into_iter()
+                .map(|ns| (ns.namespace_id(), ns))
+                .collect(),
             &actions
                 .iter()
-                .map(|action| (&namespace, *action))
+                .map(|action| (&namespace.namespace, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -383,7 +388,7 @@ pub(super) async fn get_allowed_namespace_actions<
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }
@@ -407,7 +412,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
     let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let catalog_state = context.v1_state.catalog;
-    let actions = CatalogTableAction::VARIANTS;
+    let actions = CatalogTableAction::variants();
     let can_see_permission = CatalogTableAction::IncludeInList;
 
     let (warehouse, namespace, table_info) = fetch_warehouse_namespace_table_by_id::<C, _>(
@@ -444,7 +449,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
             &parents_map,
             &actions
                 .iter()
-                .map(|action| (&namespace.namespace, &table_info, *action))
+                .map(|action| (&namespace.namespace, &table_info, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -459,7 +464,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }
@@ -483,7 +488,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
     let for_user = query.try_parse()?.principal;
     let authorizer = context.v1_state.authz;
     let catalog_state = context.v1_state.catalog;
-    let actions = CatalogViewAction::VARIANTS;
+    let actions = CatalogViewAction::variants();
     let can_see_permission = CatalogViewAction::IncludeInList;
 
     let (warehouse, namespace, view_info) = fetch_warehouse_namespace_view_by_id::<C, _>(
@@ -520,7 +525,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
             &parents_map,
             &actions
                 .iter()
-                .map(|action| (&namespace.namespace, &view_info, *action))
+                .map(|action| (&namespace.namespace, &view_info, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -535,7 +540,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }

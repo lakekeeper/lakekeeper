@@ -20,10 +20,6 @@ allow_table if {
 }
 
 allow_table if {
-    allow_show_tables
-}
-
-allow_table if {
     allow_table_metadata
 }
 
@@ -31,12 +27,23 @@ allow_table if {
     allow_table_read
 }
 
+allow_table if {
+    allow_table_procedure
+}
+
+allow_table if {
+    allow_table_metadata_read
+}
+
 allow_table_create if {
     input.action.operation in ["CreateTable"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
-    trino.require_schema_access(catalog, schema, "create_table")
+    properties := object.get(input.action.resource.table, "properties", {})
+    flattened_properties := flatten_properties(properties)
+    trino.is_metadata_table(table) == false
+    trino.require_schema_access_create(catalog, schema, "create_table", flattened_properties)
 }
 
 allow_table_drop if {
@@ -44,7 +51,8 @@ allow_table_drop if {
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
-    trino.require_table_access(catalog, schema, table, "drop")
+    trino.is_metadata_table(table) == false
+    trino.require_table_access_simple(catalog, schema, table, "drop")
 }
 
 allow_table_rename if {
@@ -54,27 +62,33 @@ allow_table_rename if {
     source_table := input.action.resource.table.tableName
     target_catalog := input.action.targetResource.table.catalogName
     target_schema := input.action.targetResource.table.schemaName
-    trino.require_table_access(source_catalog, source_schema, source_table, "rename")
-    trino.require_schema_access(target_catalog, target_schema, "create_table")
+    trino.is_metadata_table(source_table) == false
+    trino.require_table_access_simple(source_catalog, source_schema, source_table, "rename")
+    trino.require_schema_access_simple(target_catalog, target_schema, "create_table")
 }
 
 allow_table_modify if {
     input.action.operation in [
-        "SetTableProperties", "SetTableComment", "SetColumnComment", 
+        "SetTableComment", "SetColumnComment", 
         "AddColumn", "AlterColumn", "DropColumn", "RenameColumn", 
         "InsertIntoTable", "DeleteFromTable", "TruncateTable", 
         "UpdateTableColumns"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
-    trino.require_table_access(catalog, schema, table, "write_data")
+    trino.is_metadata_table(table) == false
+    trino.require_table_access_simple(catalog, schema, table, "write_data")
 }
 
-allow_show_tables if {
-    input.action.operation in ["ShowTables"]
-    catalog := input.action.resource.schema.catalogName
-    schema := input.action.resource.schema.schemaName
-    trino.require_schema_access(catalog, schema, "get_metadata")
+allow_table_modify if {
+    input.action.operation in ["SetTableProperties"]
+    catalog := input.action.resource.table.catalogName
+    schema := input.action.resource.table.schemaName
+    table := input.action.resource.table.tableName
+    properties := object.get(input.action.resource.table, "properties", {})
+    flattened_properties := flatten_properties(properties)
+    trino.is_metadata_table(table) == false
+    trino.require_table_access_commit(catalog, schema, table, flattened_properties, [])
 }
 
 allow_table_metadata if {
@@ -82,31 +96,33 @@ allow_table_metadata if {
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
-    trino.require_table_access(catalog, schema, table, "get_metadata")
+    trino.is_metadata_table(table) == false
+    trino.require_table_access_simple(catalog, schema, table, "get_metadata")
 }
-
-allow_table_metadata if {
-    input.action.operation in ["FilterTables", "ShowColumns", "FilterColumns"]
-    catalog := input.action.resource.table.catalogName
-    schema := input.action.resource.table.schemaName
-    table := input.action.resource.table.tableName
-    trino.require_view_access(catalog, schema, table, "get_metadata")
-}
-
 
 allow_table_read if {
     input.action.operation in ["SelectFromColumns"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
-    trino.require_table_access(catalog, schema, table, "read_data")
+    trino.is_metadata_table(table) == false
+    trino.require_table_access_simple(catalog, schema, table, "read_data")
 }
 
-
-allow_table_read if {
+allow_table_metadata_read if {
     input.action.operation in ["SelectFromColumns"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
+    table := trino.split_metadata_table_name(input.action.resource.table.tableName)
+    trino.require_table_access_simple(catalog, schema, table, "get_metadata")
+}
+
+allow_table_procedure if {
+    input.action.operation in ["ExecuteTableProcedure"]
+    input.action.resource.function.functionName in ["OPTIMIZE", "OPTIMIZE_MANIFESTS", "EXPIRE_SNAPSHOTS", "DROP_EXTENDED_STATS", "REMOVE_ORPHAN_FILES"]
+    catalog := input.action.resource.table.catalogName
+    schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
-    trino.require_view_access(catalog, schema, table, "get_metadata")
+    trino.is_metadata_table(table) == false
+    trino.require_table_access_simple(catalog, schema, table, "write_data")
 }

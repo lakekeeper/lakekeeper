@@ -183,23 +183,72 @@ async fn print_request_body(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<impl IntoResponse, axum::response::Response> {
-    let request = buffer_request_body(request).await?;
-
-    Ok(next.run(request).await)
-}
-
-// This function is expensive and should only be used for debugging purposes.
-async fn buffer_request_body(
-    request: axum::extract::Request,
-) -> Result<axum::extract::Request, axum::response::Response> {
     let path = request.uri().path().to_string();
+    let method = request.method().to_string();
     let request_id = request
         .headers()
         .get(crate::api::X_REQUEST_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("MISSING-REQUEST-ID")
         .to_string();
-    let method = request.method().to_string();
+    let user_agent = request
+        .headers()
+        .get(http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let request = buffer_request_body(request, &method, &path, &request_id, &user_agent).await?;
+    let response = next.run(request).await;
+    buffer_response_body(response, &method, &path, &request_id, &user_agent).await
+}
+
+async fn buffer_response_body(
+    response: axum::response::Response,
+    method: &str,
+    path: &str,
+    request_id: &str,
+    user_agent: &str,
+) -> Result<axum::response::Response, axum::response::Response> {
+    let (parts, body) = response.into_parts();
+
+    let bytes = http_body_util::BodyExt::collect(body)
+        .await
+        .map_err(|err| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                err.to_string(),
+            )
+                .into_response()
+        })?
+        .to_bytes();
+
+    let s = String::from_utf8_lossy(&bytes).to_string();
+    let status = parts.status;
+
+    tracing::debug!(
+        method = method,
+        path = path,
+        request_id = request_id,
+        user_agent = user_agent,
+        status = %status,
+        response_body = s,
+    );
+
+    Ok(axum::response::Response::from_parts(
+        parts,
+        axum::body::Body::from(bytes),
+    ))
+}
+
+// This function is expensive and should only be used for debugging purposes.
+async fn buffer_request_body(
+    request: axum::extract::Request,
+    method: &str,
+    path: &str,
+    request_id: &str,
+    user_agent: &str,
+) -> Result<axum::extract::Request, axum::response::Response> {
     let (parts, body) = request.into_parts();
 
     // this won't work if the body is an long running stream
@@ -218,8 +267,9 @@ async fn buffer_request_body(
     tracing::debug!(
         method = method,
         path = path,
-        body = s,
-        request_id = request_id
+        request_body = s,
+        request_id = request_id,
+        user_agent = user_agent
     );
 
     Ok(axum::extract::Request::from_parts(

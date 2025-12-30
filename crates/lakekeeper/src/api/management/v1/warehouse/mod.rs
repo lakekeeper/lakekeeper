@@ -24,14 +24,18 @@ use crate::{
         management::v1::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
             ListDeletedTabularsResponse,
+            task_queue::{
+                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest,
+                get_task_queue_config as get_task_queue_config_authorized,
+                set_task_queue_config as set_task_queue_config_authorized,
+            },
         },
     },
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        NamespaceId, State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
         authz::{
             AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
             AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -40,6 +44,7 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
+        task_configs::TaskQueueConfigFilter,
         tasks::{TaskFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask},
     },
 };
@@ -156,6 +161,11 @@ impl CreateWarehouseResponse {
     #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
         self.0.warehouse_id
+    }
+
+    #[must_use]
+    pub fn project_id(&self) -> ProjectId {
+        self.0.project_id.clone()
     }
 }
 
@@ -1081,7 +1091,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         if !can_list_deleted_tabulars {
             return Err(AuthZWarehouseActionForbidden::new(
                 warehouse_id,
-                CatalogWarehouseAction::ListDeletedTabulars,
+                &CatalogWarehouseAction::ListDeletedTabulars,
                 request_metadata.actor().clone(),
             )
             .into());
@@ -1098,7 +1108,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     &request_metadata,
                     None,
                     &warehouse,
-                    &namespace,
+                    &namespace.parents,
+                    &namespace.namespace,
                     CatalogNamespaceAction::ListEverything,
                 )
                 .await?
@@ -1244,11 +1255,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
-        let authorizer = context.v1_state.authz;
+        let authorizer = &context.v1_state.authz;
 
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        authorizer
+        let warehouse_resolved = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
@@ -1256,40 +1267,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogWarehouseAction::ModifyTaskQueueConfig,
             )
             .await?;
+        let project_id = warehouse_resolved.project_id.clone();
 
         // ------------------- Business Logic -------------------
-        let task_queues = context.v1_state.registered_task_queues;
-
-        if let Some(validate_config_fn) = task_queues.validate_config_fn(queue_name).await {
-            validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
-                ErrorModel::bad_request(
-                    format!(
-                        "Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"
-                    ),
-                    "InvalidQueueConfig",
-                    Some(Box::new(e)),
-                )
-            })?;
-        } else {
-            let mut existing_queue_names = task_queues.queue_names().await;
-            existing_queue_names.sort_unstable();
-            let existing_queue_names = existing_queue_names.iter().join(", ");
-            return Err(ErrorModel::bad_request(
-                format!(
-                    "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"
-                ),
-                "QueueNotFound",
-                None,
-            )
-            .into());
-        }
-
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-
-        C::set_task_queue_config(warehouse_id, queue_name, request, transaction.transaction())
-            .await?;
-        transaction.commit().await?;
-        Ok(())
+        set_task_queue_config_authorized(
+            project_id,
+            Some(warehouse_id),
+            queue_name,
+            request,
+            context,
+        )
+        .await
     }
 
     async fn get_task_queue_config(
@@ -1299,11 +1287,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<GetTaskQueueConfigResponse> {
         // ------------------- AuthZ -------------------
-        let authorizer = context.v1_state.authz;
+        let authorizer = &context.v1_state.authz;
 
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        authorizer
+        let warehouse_resolved = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
@@ -1313,53 +1301,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let config = C::get_task_queue_config(warehouse_id, queue_name, context.v1_state.catalog)
-            .await?
-            .unwrap_or_else(|| GetTaskQueueConfigResponse {
-                queue_config: QueueConfigResponse {
-                    config: serde_json::json!({}),
-                    queue_name: queue_name.clone(),
-                },
-                max_seconds_since_last_heartbeat: None,
-            });
-        Ok(config)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct SetTaskQueueConfigRequest {
-    pub queue_config: QueueConfig,
-    pub max_seconds_since_last_heartbeat: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(transparent)]
-pub struct QueueConfig(pub(crate) serde_json::Value);
-
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct GetTaskQueueConfigResponse {
-    pub queue_config: QueueConfigResponse,
-    pub max_seconds_since_last_heartbeat: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct QueueConfigResponse {
-    #[serde(flatten)]
-    pub(crate) config: serde_json::Value,
-    #[cfg_attr(feature = "open-api", schema(value_type=String))]
-    pub(crate) queue_name: TaskQueueName,
-}
-
-impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
-    fn into_response(self) -> axum::http::Response<axum::body::Body> {
-        (http::StatusCode::OK, axum::Json(self)).into_response()
+        let project_id = warehouse_resolved.project_id.clone();
+        let filter = TaskQueueConfigFilter::WarehouseId {
+            warehouse_id,
+            project_id,
+        };
+        get_task_queue_config_authorized(&filter, queue_name, context).await
     }
 }
 

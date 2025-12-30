@@ -17,7 +17,7 @@ use crate::{
             types::{DropParams, Prefix},
             v1::{
                 namespace::{NamespaceIdentUrl, NamespaceParameters},
-                tables::DataAccessMode,
+                tables::{DataAccessMode, normalize_tabular_name},
             },
         },
     },
@@ -147,7 +147,7 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                                 prefix: Some(prefix),
                                 view: TableIdent {
                                     namespace: namespace.into(),
-                                    name: view,
+                                    name: normalize_tabular_name(&view),
                                 },
                             },
                             api_context,
@@ -169,7 +169,7 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                                 prefix: Some(prefix),
                                 view: TableIdent {
                                     namespace: namespace.into(),
-                                    name: view,
+                                    name: normalize_tabular_name(&view),
                                 },
                             },
                             request,
@@ -184,14 +184,14 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  Query(drop_params): Query<DropParams>,
                  State(api_context): State<ApiContext<S>>,
-                 Extension(metadata): Extension<RequestMetadata>| async {
+                 Extension(metadata): Extension<RequestMetadata>| async move {
                     {
                         I::drop_view(
                             ViewParameters {
                                 prefix: Some(prefix),
                                 view: TableIdent {
                                     namespace: namespace.into(),
-                                    name: view,
+                                    name: normalize_tabular_name(&view),
                                 },
                             },
                             drop_params,
@@ -206,14 +206,14 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
             .head(
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
-                 Extension(metadata): Extension<RequestMetadata>| async {
+                 Extension(metadata): Extension<RequestMetadata>| async move {
                     {
                         I::view_exists(
                             ViewParameters {
                                 prefix: Some(prefix),
                                 view: TableIdent {
                                     namespace: namespace.into(),
-                                    name: view,
+                                    name: normalize_tabular_name(&view),
                                 },
                             },
                             api_context,

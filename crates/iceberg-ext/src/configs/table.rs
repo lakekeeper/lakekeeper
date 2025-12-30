@@ -25,6 +25,11 @@ impl TableProperties {
             } else if key.starts_with("gcs") {
                 gcs::validate(&key, &value)?;
                 config.props.insert(key, value);
+            } else if key.starts_with("adls") {
+                adls::validate(&key, &value)?;
+            } else if [creds::ExpirationTimeMs::KEY].contains(&key.as_str()) {
+                creds::validate(&key, &value)?;
+                config.props.insert(key, value);
             } else {
                 let pair = custom::CustomConfig {
                     key: key.clone(),
@@ -66,7 +71,23 @@ pub mod s3 {
             Signer, String, "s3.signer", "s3_signer";
             SignerUri, String, "s3.signer.uri", "s3_signer_uri";
             SignerEndpoint, String, "s3.signer.endpoint", "s3_signer_endpoint";
+            SesionTokenExpiresAtMs, i64, "s3.session-token-expires-at-ms", "s3_session_token_expires_at_ms";
          }
+    );
+}
+
+pub mod creds {
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
+    use crate::configs::impl_config_values;
+
+    impl_config_values!(
+        Table,
+        {
+            ExpirationTimeMs, i64, "expiration-time", "expiration_time";
+        }
     );
 }
 
@@ -84,6 +105,7 @@ pub mod gcs {
             Bucket, String, "gcs.bucket", "gcs_bucket";
             Token, String, "gcs.oauth2.token", "gcs_oauth2_token";
             TokenExpiresAt, String, "gcs.oauth2.token-expires-at", "gcs_oauth2_token_expires_at";
+            RefreshCredentialsEndpoint, String, "gcs.oauth2.refresh-credentials-endpoint", "gcs_oauth2_refresh_credentials_endpoint";
         }
     );
 }
@@ -98,6 +120,21 @@ pub mod client {
         Table,
         {
             Region, String, "client.region", "client_region";
+            RefreshClientCredentialsEndpoint, String, "client.refresh-credentials-endpoint", "client_refresh_credentials_endpoint";
+        }
+    );
+}
+
+pub mod adls {
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
+    use crate::configs::impl_config_values;
+    impl_config_values!(
+        Table,
+        {
+            RefreshClientCredentialsEndpoint, String, "adls.refresh-credentials-endpoint", "adls_refresh_credentials_endpoint";
         }
     );
 }

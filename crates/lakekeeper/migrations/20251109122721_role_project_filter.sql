@@ -7,4 +7,4 @@ DROP INDEX IF EXISTS role_project_id_idx;
 DROP INDEX IF EXISTS role_name_gist_idx;
 
 -- Create a composite GiST index
-CREATE INDEX role_project_name_gist_idx ON public.role USING gist (project_id, name gist_trgm_ops (siglen = '256'));
+CREATE INDEX role_project_name_gist_idx ON role USING gist (project_id, name gist_trgm_ops (siglen = '256'));

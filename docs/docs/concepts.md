@@ -5,14 +5,14 @@
 Lakekeeper is an implementation of the Apache Iceberg REST Catalog API.  Lakekeeper depends on the following, partially optional, external dependencies:
 
 <figure markdown="span">
-  ![Lakekeeper Overview](../../assets/interfaces-v1.svg){ width="100%" }
+  ![Lakekeeper Overview](../../assets/interfaces-v2.svg){ width="100%" }
   <figcaption>Connected systems. Green boxes are recommended for production.</figcaption>
 </figure>
 
 * **Persistence Backend / Catalog** (required): We currently support only Postgres, but plan to expand our support to more Databases in the future.
 * **Warehouse Storage** (required): When a new Warehouse is created, storage credentials are required.
 * **Identity Provider** (optional): Lakekeeper can authenticate incoming requests using any OIDC capable Identity Provider (IdP). Lakekeeper can also natively authenticate kubernetes service accounts.
-* **Authorization System** (optional): For permission management, Lakekeeper uses the wonderful [OpenFGA](http://openfga.dev) Project. OpenFGA is automatically deployed in our docker-compose and helm installations. Authorization can only be used if Lakekeeper is connected to an Identity Provider.
+* **Authorization System** (optional): For permission management, Lakekeeper supports different Authorizers. Please refer to the [Authorization Documentation](./authorization.md) for more information.
 * **Secret Store** (required): Lakekeeper requires a Secret Store to stores secrets such as Warehouse credentials. By default, Lakekeeper uses the default Postgres connection to store encrypted secrets. To increase security, Lakekeeper can also use external systems to store secrets. Currently all Hashicorp-Vault like stores are supported.
 * **Event Store** (optional): Lakekeeper can send Change Events to an Event Store. We support [NATS](http://nats.io) and [Apache Kafka](http://kafka.apache.org)
 * **Data Contract System** (optional): Lakekeeper can interface with external data contract systems to prohibit breaking changes to your tables.
@@ -66,7 +66,7 @@ Users can be provisioned to Lakekeeper by either of the following endpoints:
 
 
 ### Roles
-Projects can contain multiple Roles, allowing Roles to be reused in all Warehouses within the Project. Roles can be nested arbitrarily, meaning that a role can contain other roles within it. Roles can be provisioned automatically using the `/management/v1/role` endpoint or manually created via the UI. We are looking into SCIM support to simplify role provisioning. Please consider upvoting the corresponding [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/497) if this would be of interest to you.
+Projects can contain multiple Roles, allowing Roles to be reused in all Warehouses within the Project. Roles can be nested arbitrarily, meaning that a role can contain other roles within it. Roles can be provisioned automatically using the `/management/v1/role` endpoint or manually created via the UI. We are looking into SCIM support to simplify role provisioning. Please consider upvoting the corresponding [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/497) if this would be of interest to you.
 
 ## Dropping Tables
 Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeeper. The concept of "external" tables will follow in a later release. When managed tables are dropped, Lakekeeper defaults to setting `purgeRequested` parameter of the `dropTable` endpoint to true unless explicitly set to false. Currently most query engines do not set this flag, which defaults to enabling purge. If purge is enabled for a drop, all files of the table are removed.

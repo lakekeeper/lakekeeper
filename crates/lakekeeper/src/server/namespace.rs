@@ -30,7 +30,7 @@ use crate::{
         },
         secrets::SecretStore,
         tasks::{
-            EntityId, TaskFilter, TaskMetadata,
+            ScheduleTaskMetadata, TaskEntity, TaskFilter, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
     },
@@ -116,7 +116,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         &request_metadata,
                         None,
                         &warehouse,
-                        &parent_namespace,
+                        &parent_namespace.parents,
+                        &parent_namespace.namespace,
                         CatalogNamespaceAction::ListEverything,
                     )
                     .await?
@@ -147,8 +148,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     // return the correct next page token which is why we do these unholy things here.
                     let list_namespaces =
                         C::list_namespaces(warehouse_id, &query, trx.transaction()).await?;
-                    let (ids, responses, tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                        list_namespaces.into_iter_with_page_tokens().multiunzip();
+                    let parent_namespaces = list_namespaces.parent_namespaces;
+                    let (ids, responses, tokens): (Vec<_>, Vec<_>, Vec<_>) = list_namespaces
+                        .namespaces
+                        .into_iter_with_page_tokens()
+                        .multiunzip();
 
                     let masks = if can_list_everything {
                         // No need to check individual permissions if everything in namespace can
@@ -160,6 +164,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                                 &request_metadata,
                                 None,
                                 &warehouse,
+                                &parent_namespaces,
                                 &responses
                                     .iter()
                                     .map(|id| (id, CatalogNamespaceAction::IncludeInList))
@@ -222,11 +227,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             namespace,
             properties,
         } = &request;
-
-        tracing::debug!("Creating namespace: {:?}", namespace);
-
-        validate_namespace_ident(namespace)?;
-
+        validate_namespace_ident_creation(namespace)?;
         properties
             .as_ref()
             .map(|p| validate_namespace_properties_keys(p.keys()))
@@ -252,6 +253,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
         let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
+        let properties_btree =
+            Arc::new(properties.clone().unwrap_or_default().into_iter().collect());
+
         let (warehouse, parent_namespace) = if let Some(namespace_parent) = namespace.parent() {
             let parent_namespace = C::get_namespace(
                 warehouse_id,
@@ -265,7 +269,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &warehouse,
                     namespace_parent,
                     parent_namespace,
-                    CatalogNamespaceAction::CreateNamespace,
+                    CatalogNamespaceAction::CreateNamespace {
+                        properties: properties_btree,
+                    },
                 )
                 .await?;
             (warehouse, Some(parent_namespace.namespace_id()))
@@ -275,7 +281,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     &request_metadata,
                     warehouse_id,
                     Ok(Some(warehouse)),
-                    CatalogWarehouseAction::CreateNamespace,
+                    CatalogWarehouseAction::CreateNamespace {
+                        properties: properties_btree,
+                    },
                 )
                 .await?;
             (warehouse, None)
@@ -482,7 +490,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 parameters.namespace,
-                CatalogNamespaceAction::UpdateProperties,
+                CatalogNamespaceAction::UpdateProperties {
+                    updated_properties: Arc::new(updates.clone().into_iter().collect()),
+                    removed_properties: Arc::new(removals.clone().unwrap_or_default()),
+                },
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
@@ -546,16 +557,20 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             t.transaction(),
         )
         .await?;
+        let project_id = &warehouse.project_id;
 
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
                 TabularPurgeTask::schedule_task::<C>(
-                    TaskMetadata {
-                        warehouse_id: warehouse.warehouse_id,
-                        entity_id: EntityId::from(*tabular_id),
+                    ScheduleTaskMetadata {
+                        project_id: project_id.clone(),
                         parent_task_id: None,
-                        schedule_for: None,
-                        entity_name: tabular_ident.clone().into_name_parts(),
+                        scheduled_for: None,
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_name: tabular_ident.clone().into_name_parts(),
+                            warehouse_id: warehouse.warehouse_id,
+                            entity_id: WarehouseTaskEntityId::from(*tabular_id),
+                        },
                     },
                     TabularPurgePayload {
                         tabular_location: tabular_location.to_string(),
@@ -699,6 +714,23 @@ pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()>
             None,
         )
         .append_detail(format!("Namespace: {namespace:?}"))
+        .into());
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_namespace_ident_creation(namespace: &NamespaceIdent) -> Result<()> {
+    validate_namespace_ident(namespace)?;
+
+    // Deny a "+" in in namespace, since some clients (spark, trino) encode space as "+" in URLs and supporting
+    // space is more important. Other clients properly encode space as "%20".
+    if namespace.as_ref().iter().any(|part| part.contains('+')) {
+        return Err(ErrorModel::bad_request(
+            "Namespace cannot contain '+' character.",
+            "InvalidNamespace",
+            None,
+        )
         .into());
     }
 

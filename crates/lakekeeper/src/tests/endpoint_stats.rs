@@ -505,7 +505,7 @@ mod test {
                 request_metadata: request_metadata.clone(),
                 response_status: http::StatusCode::OK,
                 path_params: hashmap! {
-                    "warehouse_id".to_string() => setup.warehouse.additional_warehouses.first().unwrap().0.to_string(),
+                    "warehouse_id".to_string() => setup.warehouse.additional_warehouses.first().unwrap().1.to_string(),
                 },
                 query_params: HashMap::default(),
             })
@@ -524,7 +524,6 @@ mod test {
             .await
             .unwrap();
         setup.tracker_handle.await.unwrap();
-        tokio::time::sleep(Duration::from_millis(75)).await;
         // Test filtering by warehouse
         let stats = ApiServer::get_endpoint_statistics(
             setup.ctx.clone(),
@@ -546,6 +545,7 @@ mod test {
         assert_eq!(stats.called_endpoints[0][0].count, 1);
         assert_eq!(stats.called_endpoints[0][1].count, 1);
         assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
+        assert!(stats.called_endpoints[0][1].warehouse_name.is_some());
 
         ApiServer::delete_warehouse(
             stats.called_endpoints[0][0].warehouse_id.unwrap().into(),
@@ -634,6 +634,7 @@ async fn setup_stats_test(
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         number_of_warehouses,
+        None,
     )
     .await;
 
@@ -641,7 +642,7 @@ async fn setup_stats_test(
     let tx = EndpointStatisticsTrackerTx::new(tx);
     let tracker = EndpointStatisticsTracker::new(
         rx,
-        vec![Arc::new(PostgresStatisticsSink::new(pool.clone()))],
+        vec![Arc::new(PostgresStatisticsSink::new(pool.clone(), pool))],
         Duration::from_millis(150),
         flush_mode,
     );

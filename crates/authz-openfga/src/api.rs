@@ -1892,7 +1892,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
         let allowed = authorizer.clone().check(key).await?;
 
-        OpenFGAResult::Ok(Some(*action).filter(|_| allowed))
+        OpenFGAResult::Ok(Some(action.clone()).filter(|_| allowed))
     });
     let actions = futures::future::try_join_all(actions)
         .await?
@@ -2043,7 +2043,9 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::NamespaceHierarchy;
+    use std::str::FromStr;
+
+    use lakekeeper::service::{NamespaceHierarchy, UserId};
     use uuid::Uuid;
 
     use super::*;
@@ -2061,7 +2063,40 @@ mod tests {
         NamespaceHierarchy::new_with_id(Uuid::nil().into(), namespace_id)
     }
 
+    #[test]
+    fn test_get_role_assignments_response_serde() {
+        let response = GetRoleAssignmentsResponse {
+            assignments: vec![
+                RoleAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
+                RoleAssignment::Assignee(UserOrRole::Role(
+                    RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
+                        .into_assignees(),
+                )),
+            ],
+        };
+        let serialized = serde_json::to_value(&response).unwrap();
+        println!(
+            "Serialized: {}",
+            serde_json::to_string_pretty(&response).unwrap()
+        );
+        let expected = serde_json::json!({
+          "assignments": [
+            {
+              "type": "ownership",
+              "user": "oidc~user1"
+            },
+            {
+              "type": "assignee",
+              "role": "b0ef03ea-f314-42df-ae26-dc5eeea8259f"
+            }
+          ]
+        });
+        assert_eq!(serialized, expected);
+    }
+
     mod openfga_integration_tests {
+        use std::collections::HashMap;
+
         use lakekeeper::{
             service::{
                 ResolvedWarehouse,
@@ -2187,9 +2222,10 @@ mod tests {
                     &RequestMetadata::test_user(user_id_assignee.clone()),
                     None,
                     &ResolvedWarehouse::new_random(),
+                    &HashMap::new(),
                     &namespaces
                         .iter()
-                        .map(|id| (id, AllNamespaceRelations::CanDelete))
+                        .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                         .collect::<Vec<_>>(),
                 )
                 .await
@@ -2210,9 +2246,10 @@ mod tests {
                     &RequestMetadata::test_user(user_id_assignee.clone()),
                     None,
                     &ResolvedWarehouse::new_random(),
+                    &HashMap::new(),
                     &namespaces
                         .iter()
-                        .map(|id| (id, AllNamespaceRelations::CanDelete))
+                        .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                         .collect::<Vec<_>>(),
                 )
                 .await
@@ -2660,11 +2697,17 @@ mod tests {
 
             let actions: Vec<_> = namespaces
                 .iter()
-                .map(|ns| (ns, AllNamespaceRelations::CanDelete))
+                .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &HashMap::new(),
+                    &actions,
+                )
                 .await
                 .unwrap();
 
@@ -2743,11 +2786,17 @@ mod tests {
 
             let actions: Vec<_> = namespaces
                 .iter()
-                .map(|ns| (ns, AllNamespaceRelations::CanDelete))
+                .map(|ns| (&ns.namespace, AllNamespaceRelations::CanDelete))
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &HashMap::new(),
+                    &actions,
+                )
                 .await
                 .unwrap();
 
@@ -2794,11 +2843,17 @@ mod tests {
 
             let actions: Vec<_> = namespaces
                 .iter()
-                .map(|ns| (ns, AllNamespaceRelations::CanGetMetadata))
+                .map(|ns| (&ns.namespace, AllNamespaceRelations::CanGetMetadata))
                 .collect();
 
             let results = authorizer
-                .are_allowed_namespace_actions_impl(&metadata, None, &warehouse, &actions)
+                .are_allowed_namespace_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &HashMap::new(),
+                    &actions,
+                )
                 .await
                 .unwrap();
 

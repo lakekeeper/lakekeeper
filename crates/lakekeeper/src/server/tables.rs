@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr as _,
     sync::Arc,
 };
@@ -15,7 +15,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{ETag, IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
@@ -40,8 +40,8 @@ use crate::{
             v1::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest,
-                RenameTableRequest, Result, TableIdent, TableParameters,
+                LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
                 tables::{DataAccessMode, LoadTableFilters},
             },
         },
@@ -60,15 +60,15 @@ use crate::{
         TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
-            refresh_warehouse_and_namespace_if_needed,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
         tasks::{
-            EntityId, TaskMetadata,
+            ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
@@ -186,7 +186,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let table_ident = TableIdent::new(provided_ns.clone(), request.name.clone());
-        validate_table_or_view_ident(&table_ident)?;
+        validate_table_or_view_ident_creation(&table_ident)?;
         let metadata_location =
             parse_location(&request.metadata_location, StatusCode::BAD_REQUEST)?;
 
@@ -196,19 +196,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
             C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
         );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace = authorizer
-            .require_namespace_action(
+        let warehouse = authorizer
+            .require_warehouse_action(
                 &request_metadata,
-                &warehouse,
-                provided_ns,
-                namespace,
-                CatalogNamespaceAction::CreateTable,
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::Use,
             )
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id();
+
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
@@ -222,6 +220,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
+
+        let namespace = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                &warehouse,
+                provided_ns,
+                namespace,
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::new(
+                        table_metadata
+                            .properties()
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<BTreeMap<_, _>>(),
+                    ),
+                },
+            )
+            .await?;
+        let namespace_id = namespace.namespace_id();
 
         let table_metadata = Arc::new(table_metadata);
 
@@ -274,7 +291,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let tabular_id = TableId::from(table_metadata.uuid());
 
-        let (_table_info, staged_table_id) = C::create_table(
+        let (table_info, staged_table_id) = C::create_table(
             TableCreation {
                 warehouse_id: warehouse.warehouse_id,
                 namespace_id,
@@ -293,8 +310,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
                 &request_metadata,
-                warehouse_id,
-                tabular_id.into(),
+                &table_info,
             )
             .await?;
 
@@ -368,8 +384,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         filters: LoadTableFilters,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<LoadTableResult> {
-        load_table::load_table(parameters, data_access, filters, state, request_metadata).await
+        etags: Vec<ETag>,
+    ) -> Result<LoadTableResultOrNotModified> {
+        load_table::load_table(
+            parameters,
+            data_access,
+            filters,
+            state,
+            request_metadata,
+            etags,
+        )
+        .await
     }
 
     async fn load_table_credentials(
@@ -382,7 +407,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
-        let (warehouse, tabular_details, storage_permissions) = authorize_load_table::<C, A>(
+        let (warehouse, tabular_info, storage_permissions) = authorize_load_table::<C, A>(
             &request_metadata,
             table.clone(),
             warehouse_id,
@@ -406,13 +431,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 data_access.into(),
                 storage_secret_ref,
                 &parse_location(
-                    tabular_details.location.as_str(),
+                    tabular_info.location.as_str(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 )?,
                 storage_permission,
                 &request_metadata,
-                warehouse_id,
-                tabular_details.table_id().into(),
+                &tabular_info,
             )
             .await?;
 
@@ -420,7 +444,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             vec![]
         } else {
             vec![StorageCredential {
-                prefix: tabular_details.location.to_string(),
+                prefix: tabular_info.location.to_string(),
                 config: storage_config.creds.into(),
             }]
         };
@@ -486,6 +510,18 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+
+        // Deny a "+" in in table name, since some clients (spark, trino) encode space as "+" in URLs and supporting
+        // space is more important. Other clients properly encode space as "%20".
+        if table.name.contains('+') {
+            return Err(ErrorModel::bad_request(
+                "Table name cannot contain '+' character.",
+                "InvalidTableName",
+                None,
+            )
+            .into());
+        }
+
         validate_table_or_view_ident(table)?;
 
         // ------------------- AUTHZ -------------------
@@ -539,6 +575,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         } else {
             warehouse.tabular_delete_profile
         };
+        let project_id = &warehouse.project_id;
 
         match delete_profile {
             TabularDeleteProfile::Hard {} => {
@@ -547,12 +584,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
-                        TaskMetadata {
-                            warehouse_id,
-                            entity_id: EntityId::from(table_id),
+                        ScheduleTaskMetadata {
+                            project_id: project_id.clone(),
+
                             parent_task_id: None,
-                            schedule_for: None,
-                            entity_name: table.clone().into_name_parts(),
+                            scheduled_for: None,
+                            entity: TaskEntity::EntityInWarehouse {
+                                entity_name: table.clone().into_name_parts(),
+                                warehouse_id,
+                                entity_id: WarehouseTaskEntityId::Table { table_id },
+                            },
                         },
                         TabularPurgePayload {
                             tabular_location: location.to_string(),
@@ -574,12 +615,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
-                    TaskMetadata {
-                        entity_id: EntityId::from(table_id),
-                        warehouse_id,
+                    ScheduleTaskMetadata {
+                        project_id: project_id.clone(),
                         parent_task_id: None,
-                        schedule_for: Some(chrono::Utc::now() + expiration_seconds),
-                        entity_name: table.clone().into_name_parts(),
+                        scheduled_for: Some(chrono::Utc::now() + expiration_seconds),
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_name: table.clone().into_name_parts(),
+                            entity_id: WarehouseTaskEntityId::Table { table_id },
+                            warehouse_id,
+                        },
                     },
                     TabularExpirationPayload {
                         deletion_kind: if purge_requested {
@@ -729,7 +773,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &warehouse,
                 user_provided_namespace,
                 destination_namespace,
-                CatalogNamespaceAction::CreateTable,
+                CatalogNamespaceAction::CreateTable {
+                    // Properties from source table are inherited
+                    properties: Arc::new(
+                        source_table_info
+                            .as_ref()
+                            .ok()
+                            .and_then(|opt| opt.as_ref())
+                            .map_or_else(BTreeMap::new, |tab| tab
+                                .properties
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect())
+                    )
+                },
             ),
             // Check 2)
             authorizer.require_table_action(
@@ -1052,6 +1109,27 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .into_iter()
         .map(|ti| (ti.tabular_ident.clone(), ti))
         .collect::<HashMap<_, _>>();
+
+    let table_info_with_actions = request
+        .table_changes
+        .iter()
+        .filter_map(|change| {
+            change.identifier.as_ref().map(|ti| {
+                let table_info = table_ident_to_info
+                    .get(ti)
+                    .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, ti.clone()))?;
+                let (updates, removals) = parse_table_property_updates(&change.updates);
+                Ok((
+                    table_info,
+                    CatalogTableAction::Commit {
+                        updated_properties: Arc::new(updates),
+                        removed_properties: Arc::new(removals),
+                    },
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()?;
+
     for user_provided_ident in identifiers {
         if !table_ident_to_info.contains_key(user_provided_ident) {
             return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
@@ -1081,14 +1159,10 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             &request_metadata,
             &warehouse,
             &namespaces,
-            &table_ident_to_info
-                .values()
-                .map(|ti| {
-                    Ok::<_, ErrorModel>((
-                        require_namespace_for_tabular(&namespaces, ti)?,
-                        ti,
-                        CatalogTableAction::Commit,
-                    ))
+            &table_info_with_actions
+                .into_iter()
+                .map(|(ti, a)| {
+                    Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         )
@@ -1697,6 +1771,21 @@ pub(crate) fn validate_table_or_view_ident(table: &TableIdent) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_table_or_view_ident_creation(table: &TableIdent) -> Result<()> {
+    validate_table_or_view_ident(table)?;
+    // Deny a "+" in names, since some clients (spark, trino) encode space as "+" in URLs and supporting
+    // space is more important. Other clients properly encode space as "%20".
+    if table.name.contains('+') {
+        return Err(ErrorModel::bad_request(
+            "Table name cannot contain '+' character.",
+            "InvalidTableName",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 // This function does not return a result but serde_json::Value::Null if serialization
 // fails. This follows the rationale that we'll likely end up ignoring the error in the API handler
 // anyway since we already effected the change and only the event emission about the change failed.
@@ -1711,6 +1800,32 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
         );
         serde_json::Value::Null
     }
+}
+
+/// Parse property updates and removals from a list of table updates
+///
+/// Returns a tuple of (updates, removals) where:
+/// - updates: `BtreeMap` of property key-value pairs to set
+/// - removals: `Vec` of property keys to remove
+pub(crate) fn parse_table_property_updates(
+    updates: &[TableUpdate],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut property_updates = BTreeMap::new();
+    let mut property_removals = Vec::new();
+
+    for update in updates {
+        match update {
+            TableUpdate::SetProperties { updates } => {
+                property_updates.extend(updates.clone());
+            }
+            TableUpdate::RemoveProperties { removals } => {
+                property_removals.extend(removals.clone());
+            }
+            _ => {}
+        }
+    }
+
+    (property_updates, property_removals)
 }
 
 #[cfg(test)]
@@ -1736,6 +1851,7 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         WarehouseId,
         api::{
@@ -1743,7 +1859,8 @@ pub(crate) mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                    DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                    NamespaceParameters, TableParameters,
                     tables::{LoadTableFilters, TablesService as _},
                 },
             },
@@ -1758,11 +1875,10 @@ pub(crate) mod test {
         request_metadata::RequestMetadata,
         server::{
             CatalogServer, CatalogStore,
-            tables::validate_table_properties,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            CatalogTabularOps as _, SecretStore, State, TableId, TabularListFlags, UserId,
+            SecretStore, State, TableId, TabularListFlags, UserId,
             authz::{
                 AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
                 tests::HidingAuthorizer,
@@ -1770,6 +1886,97 @@ pub(crate) mod test {
         },
         tests::{create_table_request as create_request, random_request_metadata},
     };
+
+    #[test]
+    fn test_parse_table_property_updates() {
+        // Test empty updates
+        let updates = vec![];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert!(property_updates.is_empty());
+        assert!(property_removals.is_empty());
+
+        // Test only SetProperties
+        let updates = vec![TableUpdate::SetProperties {
+            updates: HashMap::from([
+                ("key1".to_string(), "value1".to_string()),
+                ("key2".to_string(), "value2".to_string()),
+            ]),
+        }];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 2);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_updates.get("key2"), Some(&"value2".to_string()));
+        assert!(property_removals.is_empty());
+
+        // Test only RemoveProperties
+        let updates = vec![TableUpdate::RemoveProperties {
+            removals: vec!["key1".to_string(), "key2".to_string()],
+        }];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert!(property_updates.is_empty());
+        assert_eq!(property_removals.len(), 2);
+        assert!(property_removals.contains(&"key1".to_string()));
+        assert!(property_removals.contains(&"key2".to_string()));
+
+        // Test mixed updates
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([
+                    ("key1".to_string(), "value1".to_string()),
+                    ("key2".to_string(), "value2".to_string()),
+                ]),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["key3".to_string(), "key4".to_string()],
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key5".to_string(), "value5".to_string())]),
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 3);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_updates.get("key2"), Some(&"value2".to_string()));
+        assert_eq!(property_updates.get("key5"), Some(&"value5".to_string()));
+        assert_eq!(property_removals.len(), 2);
+        assert!(property_removals.contains(&"key3".to_string()));
+        assert!(property_removals.contains(&"key4".to_string()));
+
+        // Test with other update types (should be ignored)
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value1".to_string())]),
+            },
+            TableUpdate::AssignUuid {
+                uuid: Uuid::now_v7(),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["key2".to_string()],
+            },
+            TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V2,
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 1);
+        assert_eq!(property_updates.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(property_removals.len(), 1);
+        assert!(property_removals.contains(&"key2".to_string()));
+
+        // Test property override (later SetProperties should override earlier ones)
+        let updates = vec![
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value1".to_string())]),
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("key1".to_string(), "value2".to_string())]),
+            },
+        ];
+        let (property_updates, property_removals) = parse_table_property_updates(&updates);
+        assert_eq!(property_updates.len(), 1);
+        assert_eq!(property_updates.get("key1"), Some(&"value2".to_string()));
+        assert!(property_removals.is_empty());
+    }
 
     #[test]
     fn test_mixed_case_properties() {
@@ -1894,7 +2101,7 @@ pub(crate) mod test {
             name: table_name.to_string(),
         };
 
-        CatalogServer::load_table(
+        let load_table_result = CatalogServer::load_table(
             TableParameters {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident,
@@ -1903,9 +2110,16 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
-        .unwrap()
+        .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(load_table_result) = load_table_result
+        else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+        load_table_result
     }
 
     /// Helper to commit table changes
@@ -2031,9 +2245,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2188,9 +2408,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
@@ -2250,9 +2475,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
@@ -2333,9 +2564,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(&*tab.metadata, &builder.metadata);
     }
 
@@ -2380,9 +2617,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
         let builder = builder
@@ -2423,9 +2666,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
@@ -2467,9 +2715,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
     }
@@ -2775,9 +3028,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v2) = loaded_table_v2 else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(loaded_table_v2.metadata.format_version(), FormatVersion::V2);
 
@@ -2809,9 +3067,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v3) = loaded_table_v3 else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(loaded_table_v3.metadata.format_version(), FormatVersion::V3);
         assert_eq!(loaded_table_v3.metadata.next_row_id(), 0); // Should be 0 after migration
@@ -2860,9 +3123,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(final_table) = final_table else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(final_table.metadata.format_version(), FormatVersion::V3);
         assert_eq!(final_table.metadata.next_row_id(), 50);
@@ -2942,9 +3210,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(tab.metadata.history(), builder.metadata.history());
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3005,9 +3279,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3063,9 +3342,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         assert_eq!(&*tab.metadata, &builder.metadata);
 
@@ -3102,9 +3386,15 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
+
         assert_eq!(tab.metadata.history(), builder.metadata.history());
         assert_eq!(
             tab.metadata
@@ -3876,7 +4166,7 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to rename the source table
-        authz.block_action(format!("table:{}", CatalogTableAction::Rename).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::Rename).as_str());
         let rename_table_request = RenameTableRequest {
             source: TableIdent {
                 namespace: ns_params.namespace.clone(),
@@ -3900,7 +4190,7 @@ pub(crate) mod test {
 
         // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
         // thus, we should get a 404 instead.
-        authz.block_action(format!("table:{}", CatalogTableAction::GetMetadata).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::GetMetadata).as_str());
         let response = CatalogServer::rename_table(
             prefix,
             rename_table_request,
@@ -3958,7 +4248,15 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(format!("namespace:{}", CatalogNamespaceAction::CreateTable).as_str());
+        authz.block_action(
+            format!(
+                "namespace:{:?}",
+                CatalogNamespaceAction::CreateTable {
+                    properties: Arc::default(),
+                }
+            )
+            .as_str(),
+        );
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {
@@ -4203,9 +4501,14 @@ pub(crate) mod test {
             LoadTableFilters::default(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            Vec::new(),
         )
         .await
         .unwrap();
+
+        let LoadTableResultOrNotModified::LoadTableResult(loaded_table) = loaded_table else {
+            panic!("Expected LoadTableResult, got NotModified");
+        };
 
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());

@@ -27,7 +27,7 @@ s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http", "dep:tower"]
 nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
-kafka = ["dep:rdkafka", "dep:openssl-src"]
+kafka = ["dep:rdkafka"]
 vendored-protoc = []
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
@@ -88,6 +88,7 @@ percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
 rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_norway = { workspace = true, optional = true }
@@ -117,11 +118,6 @@ uuid = { workspace = true }
 vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
 veil = { workspace = true }
-
-[build-dependencies]
-openssl-src = { version = "300.4.2", features = [
-    "force-engine",
-], default-features = false, optional = true }
 
 [dev-dependencies]
 assert-json-diff = { workspace = true }

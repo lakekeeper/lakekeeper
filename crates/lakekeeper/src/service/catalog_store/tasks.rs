@@ -8,16 +8,17 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use super::{CatalogStore, Transaction};
 use crate::{
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::management::v1::{
-        tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
-        warehouse::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+        task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+        tasks::{ListTasksRequest, TaskAttempt},
     },
     service::{
         Result,
+        task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskEntityNamed, TaskFilter, TaskId, TaskInput,
-            TaskQueueName,
+            ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
+            TaskId, TaskInfo, TaskInput, TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -40,15 +41,30 @@ static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, Arc<ResolvedTask>>> =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTask {
     pub task_id: TaskId,
-    pub entity: TaskEntityNamed,
+    pub project_id: ProjectId,
+    pub entity: ResolvedTaskEntity,
     pub queue_name: TaskQueueName,
 }
 
 impl ResolvedTask {
     #[must_use]
-    pub fn warehouse_id(&self) -> WarehouseId {
+    pub fn warehouse_id(&self) -> Option<WarehouseId> {
         self.entity.warehouse_id()
     }
+}
+
+#[derive(Debug)]
+pub struct TaskList {
+    pub tasks: Vec<TaskInfo>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct TaskDetails {
+    pub task: TaskInfo,
+    pub execution_details: Option<serde_json::Value>,
+    pub data: serde_json::Value,
+    pub attempts: Vec<TaskAttempt>,
 }
 
 #[async_trait::async_trait]
@@ -141,12 +157,12 @@ where
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
     async fn get_task_details(
-        warehouse_id: WarehouseId,
         task_id: TaskId,
+        scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<GetTaskDetailsResponse>> {
-        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, state).await
+    ) -> Result<Option<TaskDetails>> {
+        Self::get_task_details_impl(task_id, scope, num_attempts, state).await
     }
 
     /// Enqueue a single task to a task queue.
@@ -179,18 +195,18 @@ where
 
     /// List tasks
     async fn list_tasks(
-        warehouse_id: WarehouseId,
+        filter: &TaskFilter,
         query: ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<ListTasksResponse> {
-        Self::list_tasks_impl(warehouse_id, query, transaction).await
+    ) -> Result<TaskList> {
+        Self::list_tasks_impl(filter, query, transaction).await
     }
 
     /// Resolve tasks among all known active and historical tasks.
     /// Returns a map of `task_id` to `(TaskEntity, queue_name)`.
     /// If a task does not exist, it is not included in the map.
     async fn resolve_tasks(
-        warehouse_id: WarehouseId,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
@@ -199,10 +215,9 @@ where
         }
         let mut cached_results = HashMap::new();
         for id in task_ids {
-            if let Some(cached_value) = TASKS_CACHE.get(id).await {
-                if cached_value.warehouse_id() != warehouse_id {
-                    continue;
-                }
+            if let Some(cached_value) = TASKS_CACHE.get(id).await
+                && task_matches_scope(&cached_value, &scope)
+            {
                 cached_results.insert(*id, cached_value);
             }
         }
@@ -215,7 +230,7 @@ where
             return Ok(cached_results);
         }
         let resolve_uncached_result =
-            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, state).await?;
+            Self::resolve_tasks_impl(scope, &not_cached_ids, state).await?;
         for value in resolve_uncached_result {
             let value = Arc::new(value);
             cached_results.insert(value.task_id, value.clone());
@@ -225,11 +240,11 @@ where
     }
 
     async fn resolve_required_tasks(
-        warehouse_id: WarehouseId,
+        scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
     ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
-        let tasks = Self::resolve_tasks(warehouse_id, task_ids, state).await?;
+        let tasks = Self::resolve_tasks(scope, task_ids, state).await?;
 
         for task_id in task_ids {
             if !tasks.contains_key(task_id) {
@@ -246,21 +261,44 @@ where
     }
 
     async fn set_task_queue_config(
-        warehouse_id: WarehouseId,
+        project_id: ProjectId,
+        warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        Self::set_task_queue_config_impl(warehouse_id, queue_name, config, transaction).await
+        Self::set_task_queue_config_impl(project_id, warehouse_id, queue_name, config, transaction)
+            .await
     }
 
     async fn get_task_queue_config(
-        warehouse_id: WarehouseId,
+        filter: &TaskQueueConfigFilter,
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
-        Self::get_task_queue_config_impl(warehouse_id, queue_name, state).await
+        Self::get_task_queue_config_impl(filter, queue_name, state).await
     }
 }
 
 impl<T> CatalogTaskOps for T where T: CatalogStore {}
+
+fn task_matches_scope(task: &ResolvedTask, scope: &TaskResolveScope) -> bool {
+    match scope {
+        TaskResolveScope::Warehouse {
+            warehouse_id,
+            project_id,
+        } => {
+            if task.project_id != *project_id {
+                return false;
+            }
+            match (warehouse_id, task.warehouse_id()) {
+                (None, Some(_)) => true,               // Alle Warehouses im Projekt
+                (Some(wid), Some(tid)) => wid == &tid, // Spezifisches Warehouse
+                _ => false,
+            }
+        }
+        TaskResolveScope::Project { project_id } => {
+            task.project_id == *project_id && task.warehouse_id().is_none()
+        }
+    }
+}
