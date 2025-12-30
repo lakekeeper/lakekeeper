@@ -229,7 +229,7 @@ struct LegacyMD5Interceptor;
 
 impl LegacyMD5Interceptor {
     /// This function mutates the request to insert a Content-MD5 header if one is not present.
-    fn calculate_md5_checksum_and_remove_other_checksums(http_request: &mut HttpRequest) {
+    fn calculate_md5_checksum(http_request: &mut HttpRequest) {
         // Return early if a Content-MD5 header is already present
         if http_request.headers().contains_key("Content-MD5") {
             return;
@@ -258,8 +258,8 @@ impl Intercept for LegacyMD5Interceptor {
         cfg: &mut ConfigBag,
     ) -> Result<(), BoxError> {
         if let Some(metadata) = cfg.load::<Metadata>() {
-            if metadata.service().eq("S3") && metadata.name().eq("DeleteObjects") {
-                Self::calculate_md5_checksum_and_remove_other_checksums(ctx.request_mut());
+            if metadata.service().eq("S3") && is_checksum_required(metadata.name()) {
+                Self::calculate_md5_checksum(ctx.request_mut());
             }
         }
 
@@ -267,6 +267,35 @@ impl Intercept for LegacyMD5Interceptor {
     }
 }
 
+/// Check if a checksum is required for the given S3 operation.
+/// The list of operations requiring a checksum is based on the AWS S3 model definition,
+/// see https://github.com/smithy-lang/smithy-rs/blob/main/aws/sdk/aws-models/s3.json
+pub fn is_checksum_required(operation: &str) -> bool {
+    matches!(operation, 
+        "CreateBucketMetadataTableConfiguration" 
+        | "DeleteObjects" 
+        | "PutBucketAcl" 
+        | "PutBucketCors" 
+        | "PutBucketEncryption" 
+        | "PutBucketLifecycleConfiguration" 
+        | "PutBucketLogging" 
+        | "PutBucketOwnershipControls" 
+        | "PutBucketPolicy" 
+        | "PutBucketReplication" 
+        | "PutBucketRequestPayment" 
+        | "PutBucketTagging" 
+        | "PutBucketVersioning" 
+        | "PutBucketWebsite" 
+        | "PutObjectAcl" 
+        | "PutObjectLegalHold" 
+        | "PutObjectLockConfiguration" 
+        | "PutObjectRetention" 
+        | "PutObjectTagging" 
+        | "PutPublicAccessBlock" 
+        | "UpdateBucketMetadataInventoryTableConfiguration" 
+        | "UpdateBucketMetadataJournalTableConfiguration"
+    )
+}
 
 /// Validate the S3 region.
 ///
