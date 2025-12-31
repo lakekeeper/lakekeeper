@@ -39,6 +39,7 @@ limes = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 tracing-subscriber = { workspace = true }
+http = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }

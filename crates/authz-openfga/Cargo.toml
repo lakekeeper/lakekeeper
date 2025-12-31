@@ -21,7 +21,12 @@ figment = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 lakekeeper = { path = "../lakekeeper", default-features = false }
-openfga-client = { version = "0.5", features = ["auth-middle"] }
+openfga-client = { version = "0.5", features = [
+    "auth-middle",
+    "tls-rustls",
+    "tls-webpki-roots",
+    "tls-native-roots",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
