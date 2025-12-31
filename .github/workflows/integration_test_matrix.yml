@@ -35,6 +35,7 @@ jobs:
       matrix:
         names:
           - pyiceberg
+          - pyiceberg-legacy_md5
           - starrocks
           - trino
           - trino_opa

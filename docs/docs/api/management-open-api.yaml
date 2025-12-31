@@ -6356,6 +6356,13 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        legacy-md5-behavior:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Legacy MD5 behavior for S3 operations requiring checksums.
+            When enabled, Lakekeeper will use the legacy MD5 checksum for operations like `DeleteObjects`.
         path-style-access:
           type:
             - boolean

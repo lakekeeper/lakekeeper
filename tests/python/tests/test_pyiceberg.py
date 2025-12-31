@@ -240,18 +240,16 @@ def test_drop_purge_table(namespace: conftest.Namespace, storage_config):
 
     file_io = io._infer_file_io_from_scheme(tab.location(), properties)
 
+    location = tab.location().rstrip("/") + "/"
+    inp = file_io.new_input(location)
+    assert inp.exists(), f"Table location {location} still exists"
+    
     catalog.drop_table((*namespace.name, table_name), purge_requested=True)
-
     with pytest.raises(exc.NoSuchTableError):
         catalog.load_table((*namespace.name, table_name))
 
-    location = tab.location().rstrip("/") + "/"
-
-    inp = file_io.new_input(location)
-    assert inp.exists(), f"Table location {location} still exists"
     # sleep to give time for the table to be gone
     time.sleep(5)
-
     inp = file_io.new_input(location)
     assert not inp.exists(), f"Table location {location} still exists"
 

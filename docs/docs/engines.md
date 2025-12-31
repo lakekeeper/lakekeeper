@@ -19,6 +19,57 @@ All Apache Iceberg REST clients are compatible with Lakekeeper, as Lakekeeper fu
 
 When using Lakekeeper with authentication enabled, remember that you can follow the approaches described at the beginning of this page: either use credentials specific to individual users or leverage OAuth2 token exchange for shared query engines. The authentication parameters typically include credential pairs, OAuth2 server URIs, and scopes as shown in the examples above.
 
+## <img src="/assets/duckdb.svg" width="30"> DuckDB WASM
+
+DuckDB WASM allows you to query Lakekeeper directly from your browser. If you are using the Lakekeeper UI, DuckDB WASM is pre-configured. To use DuckDB WASM from the Lakekeeper UI, there are two important requirements due to browser security restrictions:
+
+**Requirements:**
+1. **Same-Origin Access**: The S3 endpoint must be accessible from your browser at the same URL/origin that Lakekeeper uses to access it. For example, if Lakekeeper accesses S3 at `http://my-s3-endpoint:9000`, your browser must also be able to reach it at `http://my-s3-endpoint:9000`. This means the Docker Compose examples won't work with DuckDB WASM out of the box, as the S3 endpoint is typically only accessible within the Docker network, while your browser is not in this network.
+2. **CORS Policy**: Your S3 storage must be configured with a CORS policy that allows requests from the Lakekeeper origin.
+
+## <img src="/assets/duckdb.svg" width="30"> DuckDB
+
+Basic setup in DuckDB:
+
+```python
+import duckdb
+
+CATALOG_URL = "http://localhost:8181/catalog"
+WAREHOUSE = "my_warehouse"
+
+# Required if OAuth2 authentication is enabled for Lakekeeper
+CLIENT_ID = "your-client-id"
+CLIENT_SECRET = "your-client-secret"
+KEYCLOAK_TOKEN_ENDPOINT = "http://your-idp/realms/iceberg/protocol/openid-connect/token"
+
+# Install and load Iceberg extension
+duckdb.sql("INSTALL ICEBERG;")
+duckdb.sql("LOAD ICEBERG;")
+
+# Create secret for authentication
+duckdb.sql(f"""
+    CREATE SECRET lakekeeper_secret (
+        TYPE ICEBERG,
+        CLIENT_ID '{CLIENT_ID}',
+        CLIENT_SECRET '{CLIENT_SECRET}',
+        OAUTH2_SCOPE 'lakekeeper',
+        OAUTH2_SERVER_URI '{KEYCLOAK_TOKEN_ENDPOINT}'
+    )
+""")
+
+# Attach catalog
+duckdb.sql(f"""
+    ATTACH '{WAREHOUSE}' AS my_datalake (
+        TYPE ICEBERG,
+        ENDPOINT '{CATALOG_URL}',
+        SECRET lakekeeper_secret
+    )
+""")
+
+# Query tables
+duckdb.sql("SELECT * FROM my_datalake.my_namespace.my_table").show()
+```
+
 ## <img src="/assets/trino.svg" width="30"> Trino
 
 The following docker compose examples are available for trino:

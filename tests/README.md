@@ -24,6 +24,8 @@ docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.s
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_wasbs-1.10.0"
 # Pyiceberg
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh pyiceberg"
+# Pyiceberg with legacy MD5 checksums for S3
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh pyiceberg-legacy_md5"
 # With Authorization
 docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_openfga-1.7.1"
 # Pyiceberg only
@@ -38,4 +40,5 @@ docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml -f 
 docker compose -f docker-compose.yaml -f docker-compose-s3-system-identity-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_aws_sts"
 # V3 Table Format
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_sts-1.10.0"
+#
 ```
