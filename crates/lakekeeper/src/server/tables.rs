@@ -10,8 +10,8 @@ use http::StatusCode;
 use iceberg::{
     NamespaceIdent, TableUpdate,
     spec::{
-        MetadataLog, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX, SchemaId, TableMetadata,
-        TableMetadataBuildResult, TableMetadataRef,
+        MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataRef,
+        TableProperties,
     },
 };
 use iceberg_ext::{
@@ -1736,7 +1736,7 @@ where
         // future properties from being silently ignored, which could mislead users.
         if ((prop.starts_with("write.metadata")
             && ![
-                PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+                TableProperties::PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
                 PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED,
                 PROPERTY_METADATA_COMPRESSION_CODEC,
             ]
@@ -1836,8 +1836,7 @@ pub(crate) mod test {
     use iceberg::{
         NamespaceIdent, TableIdent, TableUpdate,
         spec::{
-            EncryptedKey, FormatVersion, MAIN_BRANCH, NestedField, Operation,
-            PROPERTY_FORMAT_VERSION, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX, PrimitiveType,
+            EncryptedKey, FormatVersion, MAIN_BRANCH, NestedField, Operation, PrimitiveType,
             Schema, Snapshot, SnapshotReference, SnapshotRetention, Summary, TableMetadata,
             Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
         },
@@ -2068,7 +2067,7 @@ pub(crate) mod test {
         let mut properties = None;
         if let Some(version) = format_version {
             properties = Some(HashMap::from([(
-                PROPERTY_FORMAT_VERSION.to_string(),
+                TableProperties::PROPERTY_FORMAT_VERSION.to_string(),
                 match version {
                     FormatVersion::V1 => "1".to_string(),
                     FormatVersion::V2 => "2".to_string(),
@@ -2587,7 +2586,7 @@ pub(crate) mod test {
             .clone()
             .into_builder(table.metadata_location)
             .set_properties(HashMap::from_iter([(
-                PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX.to_string(),
+                TableProperties::PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX.to_string(),
                 "2".to_string(),
             )]))
             .unwrap()

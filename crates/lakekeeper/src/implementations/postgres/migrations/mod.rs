@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    stringify,
 };
 
 use anyhow::anyhow;
