@@ -19,6 +19,43 @@ servers:
         default: https
         description: The scheme of the URI, either http or https
 paths:
+  /management/v1/action/batch-check:
+    post:
+      tags:
+        - authorization
+      summary: Batch Check Catalog Actions
+      description: |-
+        Performs authorization checks for multiple catalog actions in a single request.
+        This endpoint allows checking permissions across different resource types (servers, projects,
+        warehouses, namespaces, tables, and views) efficiently.
+
+        The endpoint supports:
+        - Checking actions for different identities (users or roles)
+        - Mixing different resource types in a single batch
+        - Optional error-on-not-found behavior (default: treat missing resources as denied)
+
+        Each check in the request can optionally override the identity being checked.
+        If no identity is specified, the current user's identity is used.
+      operationId: batch_check_actions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogActionsBatchCheckRequest'
+        required: true
+      responses:
+        '200':
+          description: Batch check results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogActionsBatchCheckResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/bootstrap:
     post:
       tags:
@@ -149,7 +186,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetCedarEntitySourcesResponse'
+                $ref: '#/components/schemas/ListCedarEntitySourcesResponse'
   /management/v1/permissions/cedar/policy-list:
     post:
       tags:
@@ -181,7 +218,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetCedarPolicySourcesResponse'
+                $ref: '#/components/schemas/ListCedarPolicySourcesResponse'
   /management/v1/permissions/check:
     post:
       tags:
@@ -1485,6 +1522,116 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/task/by-id/{task_id}:
+    get:
+      tags:
+        - tasks
+      summary: Get Details about a specific Project-level task by its ID.
+      operationId: get_project_task_details
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: numAttempts
+          in: query
+          description: 'Number of attempts to retrieve (default: 5)'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int32
+            default: 5
+            minimum: 0
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectTaskDetailsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/task/control:
+    post:
+      tags:
+        - tasks
+      summary: Control a set of Project-level tasks by their IDs (e.g., cancel, request stop, run now)
+      description: Accepts at most 100 task IDs in one request.
+      operationId: control_project_tasks
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlTasksRequest'
+        required: true
+      responses:
+        '204':
+          description: All requested actions were successful
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/task/list:
+    post:
+      tags:
+        - tasks
+      summary: List active and historic Project-level tasks.
+      operationId: list_project_tasks
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListProjectTasksRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectTasksResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/{project_id}:
     get:
       tags:
@@ -1828,6 +1975,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetLakekeeperRoleActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/metadata:
+    get:
+      tags:
+        - role
+      summary: Get Role Metadata
+      description: |-
+        Retrieves high-level metadata about a specific role.
+        Depending on the authorizer, this method is typically allowed also for roles in
+        other projects.
+      operationId: get_role_metadata
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: High level Role Metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleMetadata'
         4XX:
           description: ''
           content:
@@ -3436,6 +3614,12 @@ components:
             - string
             - 'null'
           description: Subpath in the filesystem to use.
+        sas-enabled:
+          type: boolean
+          description: |-
+            Enable SAS (Shared Access Signature) token generation for Azure Data Lake Storage.
+            When disabled, clients cannot use vended credentials for this storage profile.
+            Defaults to true.
         sas-token-validity-seconds:
           type:
             - integer
@@ -3519,6 +3703,154 @@ components:
               description: |-
                 Type of the user performing bootstrap. Optional. If not provided
                 the server will try to parse the type from the provided token.
+    CatalogActionCheckItem:
+      type: object
+      description: A single check item with optional identity override
+      required:
+        - operation
+      properties:
+        id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Optional identifier for this check (returned in response).
+            If not specified, the index in the request array will be used.
+        identity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserOrRole'
+              description: |-
+                The user or role to check access for.
+                If not specified, the identity of the user making the request is used.
+        operation:
+          $ref: '#/components/schemas/CatalogActionCheckOperation'
+          description: The operation to check
+    CatalogActionCheckOperation:
+      oneOf:
+        - type: object
+          required:
+            - server
+          properties:
+            server:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/LakekeeperServerAction'
+        - type: object
+          required:
+            - project
+          properties:
+            project:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/LakekeeperProjectAction'
+                project-id:
+                  type:
+                    - string
+                    - 'null'
+                  format: uuid
+        - type: object
+          required:
+            - warehouse
+          properties:
+            warehouse:
+              type: object
+              required:
+                - action
+                - warehouse-id
+              properties:
+                action:
+                  $ref: '#/components/schemas/LakekeeperWarehouseAction'
+                warehouse-id:
+                  type: string
+                  format: uuid
+        - type: object
+          required:
+            - namespace
+          properties:
+            namespace:
+              allOf:
+                - $ref: '#/components/schemas/NamespaceIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperNamespaceAction'
+        - type: object
+          required:
+            - table
+          properties:
+            table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperTableAction'
+        - type: object
+          required:
+            - view
+          properties:
+            view:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperViewAction'
+      description: Represents an action on an object
+    CatalogActionsBatchCheckRequest:
+      type: object
+      required:
+        - checks
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogActionCheckItem'
+          description: List of checks to perform
+        error-on-not-found:
+          type: boolean
+          description: |-
+            If true, return 404 error when resources are not found.
+            If false, treat missing resources as denied (allowed = false).
+            Defaults to false.
+    CatalogActionsBatchCheckResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogActionsBatchCheckResult'
+    CatalogActionsBatchCheckResult:
+      type: object
+      required:
+        - allowed
+      properties:
+        allowed:
+          type: boolean
+        id:
+          type:
+            - string
+            - 'null'
+    CedarEffectFilter:
+      type: string
+      enum:
+        - Permit
+        - Forbid
     CedarEntitySourceInfo:
       type: object
       required:
@@ -3571,6 +3903,152 @@ components:
           type: string
           format: uuid
           description: Unique identifier for the policy source.
+    CedarPrincipalConstraintPattern:
+      type: object
+      description: |-
+        Constraint patterns for filtering policies by principal constraint type.
+
+        Each field corresponds to a Cedar principal constraint pattern.
+      properties:
+        eq:
+          type: boolean
+          description: Include policies with `principal == <PrincipalType>::"<id>"` (specific entity)
+          default: false
+        in:
+          type: boolean
+          description: |-
+            Include policies with `principal in <PrincipalType>::"<id>"` (within hierarchy)
+            Also covers `principal is <Path> in <PrincipalType>::"<id>"` (typed entity within hierarchy)
+          default: false
+        is:
+          type: boolean
+          description: Include policies with `principal is <PrincipalType>` (any entity of this type)
+          default: false
+    CedarPrincipalTypeFilter:
+      type: object
+      description: |-
+        Filter for Cedar policy principal constraints.
+
+        This filter allows fine-grained control over which policies to retrieve based on
+        their principal scope. Each principal type has its own set of constraint patterns.
+      properties:
+        any:
+          type: boolean
+          description: Include policies where `principal` is unconstrained (applies to all principals)
+          default: false
+        role:
+          oneOf:
+            - $ref: '#/components/schemas/CedarPrincipalConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Role` principals
+          default:
+            eq: false
+            in: false
+            is: false
+        user:
+          oneOf:
+            - $ref: '#/components/schemas/CedarPrincipalConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::User` principals
+          default:
+            eq: false
+            in: false
+            is: false
+    CedarResourceConstraintPattern:
+      type: object
+      description: |-
+        Constraint patterns for filtering policies by resource constraint type.
+
+        Each field corresponds to a Cedar resource constraint pattern.
+      properties:
+        eq:
+          type: boolean
+          description: Include policies with `resource == <ResourceType>::"<id>"` (specific entity)
+          default: false
+        in:
+          type: boolean
+          description: |-
+            Include policies with `resource in <ResourceType>::"<id>"` (within hierarchy)
+            Also covers `resource is <Path> in <ResourceType>::"<id>"` (typed entity within hierarchy)
+          default: false
+        is:
+          type: boolean
+          description: Include policies with `resource is <ResourceType>` (any entity of this type)
+          default: false
+    CedarResourceTypeFilter:
+      type: object
+      description: |-
+        Filter for Cedar policy resource constraints.
+
+        This filter allows fine-grained control over which policies to retrieve based on
+        their resource scope. Each resource type has its own set of constraint patterns.
+      properties:
+        any:
+          type: boolean
+          description: Include policies where `resource` is unconstrained (applies to all resources)
+          default: false
+        namespace:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Namespace` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        project:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Project` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        role:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Role` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        server:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Server` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        table:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Table` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        user:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::User` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        view:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::View` resources
+          default:
+            eq: false
+            in: false
+            is: false
+        warehouse:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::Warehouse` resources
+          default:
+            eq: false
+            in: false
+            is: false
     CedarSourceConfig:
       oneOf:
         - allOf:
@@ -4177,6 +4655,12 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        sts-enabled:
+          type: boolean
+          description: |-
+            Enable STS (Security Token Service) downscoped token generation for GCS.
+            When disabled, clients cannot use vended credentials for this storage profile.
+            Defaults to true.
     GcsServiceKey:
       type: object
       required:
@@ -4214,20 +4698,18 @@ components:
           type: string
         universe_domain:
           type: string
-    GetCedarEntitySourcesResponse:
-      type: object
-      required:
-        - entity-sources
-      properties:
-        entity-sources:
-          type: array
-          items:
-            $ref: '#/components/schemas/CedarEntitySourceInfo'
     GetCedarPoliciesResponse:
       type: object
       required:
         - policies
       properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque token for retrieving the next page of results.
+            If `None`, there are no more pages to retrieve.
         policies:
           type: array
           items: {}
@@ -4235,15 +4717,6 @@ components:
             List of JSON formatted Cedar policies.
 
             For schema details, see `<https://docs.cedarpolicy.com/policies/json-format.html>`
-    GetCedarPolicySourcesResponse:
-      type: object
-      required:
-        - policy-sources
-      properties:
-        policy-sources:
-          type: array
-          items:
-            $ref: '#/components/schemas/CedarPolicySourceInfo'
     GetEndpointStatisticsRequest:
       type: object
       required:
@@ -4486,6 +4959,28 @@ components:
         project-name:
           type: string
           description: Name of the project
+    GetProjectTaskDetailsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ProjectTaskInfo'
+          description: Most recent task information
+        - type: object
+          required:
+            - task-data
+            - attempts
+          properties:
+            attempts:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskAttempt'
+              description: History of past attempts
+            execution-details:
+              type:
+                - object
+                - 'null'
+              description: Execution details for the current attempt
+            task-data:
+              type: object
+              description: Task-specific data
     GetPurgeQueueConfig:
       type: object
       required:
@@ -4566,7 +5061,7 @@ components:
           $ref: '#/components/schemas/TabularExpirationQueueConfig'
     GetTaskDetailsResponse:
       allOf:
-        - $ref: '#/components/schemas/Task'
+        - $ref: '#/components/schemas/WarehouseTaskInfo'
           description: Most recent task information
         - type: object
           required:
@@ -4683,103 +5178,707 @@ components:
         error:
           $ref: '#/components/schemas/ErrorModel'
     LakekeeperNamespaceAction:
-      type: string
-      enum:
-        - create_table
-        - create_view
-        - create_namespace
-        - delete
-        - update_properties
-        - get_metadata
-        - list_tables
-        - list_views
-        - list_namespaces
-        - list_everything
-        - set_protection
-        - include_in_list
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_table
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_view
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_properties
+            removed_properties:
+              type: array
+              items:
+                type: string
+            updated_properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_tables
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_views
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
     LakekeeperProjectAction:
-      type: string
-      enum:
-        - create_warehouse
-        - delete
-        - rename
-        - get_metadata
-        - list_warehouses
-        - include_in_list
-        - create_role
-        - list_roles
-        - search_roles
-        - get_endpoint_statistics
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_warehouse
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_warehouses
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_role
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - search_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_project_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_project_tasks
     LakekeeperRoleAction:
-      type: string
-      enum:
-        - read
-        - delete
-        - update
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update
     LakekeeperServerAction:
-      type: string
-      enum:
-        - create_project
-        - update_users
-        - delete_users
-        - list_users
-        - provision_users
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_project
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - provision_users
     LakekeeperTableAction:
-      type: string
-      enum:
-        - drop
-        - write_data
-        - read_data
-        - get_metadata
-        - commit
-        - rename
-        - include_in_list
-        - undrop
-        - get_tasks
-        - control_tasks
-        - set_protection
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - write_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+            removed_properties:
+              type: array
+              items:
+                type: string
+            updated_properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperUserAction:
-      type: string
-      enum:
-        - read
-        - update
-        - delete
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
     LakekeeperViewAction:
-      type: string
-      enum:
-        - drop
-        - get_metadata
-        - commit
-        - include_in_list
-        - rename
-        - undrop
-        - get_tasks
-        - control_tasks
-        - set_protection
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+            removed_properties:
+              type: array
+              items:
+                type: string
+            updated_properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperWarehouseAction:
-      type: string
-      enum:
-        - create_namespace
-        - delete
-        - update_storage
-        - update_storage_credential
-        - get_metadata
-        - get_config
-        - list_namespaces
-        - list_everything
-        - use
-        - include_in_list
-        - deactivate
-        - activate
-        - rename
-        - list_deleted_tabulars
-        - modify_soft_deletion
-        - get_task_queue_config
-        - modify_task_queue_config
-        - get_all_tasks
-        - control_all_tasks
-        - set_protection
-        - get_endpoint_statistics
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage_credential
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - use
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - deactivate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - activate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_deleted_tabulars
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_soft_deletion
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
     LicenseStatus:
       type: object
       description: Status of license validation
@@ -4824,9 +5923,61 @@ components:
         valid:
           type: boolean
           description: If the license is valid and active
+    ListCedarEntitySourcesResponse:
+      type: object
+      required:
+        - entity-sources
+      properties:
+        entity-sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/CedarEntitySourceInfo'
     ListCedarPoliciesQuery:
       type: object
+      description: |-
+        Query parameters for listing Cedar policies.
+
+        # Pagination Consistency
+
+        When using pagination with `page_token`, list continuation is only consistent if
+        policy sources have not changed between calls. If policy sources are added, removed,
+        or modified between paginated requests, results may be incomplete or contain duplicates.
       properties:
+        effect-filter:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CedarEffectFilter'
+              description: |-
+                Filter by effect (permit/forbid).
+                If not provided, policies of all effects are returned.
+        page-size:
+          type: integer
+          description: |-
+            Maximum number of policies to return per page.
+            Defaults to 1000 if not specified.
+          minimum: 0
+        page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque page token from a previous response.
+            Use this to retrieve the next page of results.
+            The token represents a policy ID to start from.
+        principal-type-filter:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CedarPrincipalTypeFilter'
+              description: |-
+                Filter by principal entity type names.
+                Returns policies where the principal scope matches any of these types.
+        resource-type-filter:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CedarResourceTypeFilter'
+              description: |-
+                Filter by resource entity type names.
+                Returns policies where the resource scope matches any of these types.
         source-filter:
           type:
             - array
@@ -4835,8 +5986,17 @@ components:
             type: string
             format: uuid
           description: |-
-            Only return policies from the specified source ID.
+            Only return policies from the specified source IDs.
             If not provided, policies from all sources are returned.
+    ListCedarPolicySourcesResponse:
+      type: object
+      required:
+        - policy-sources
+      properties:
+        policy-sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/CedarPolicySourceInfo'
     ListDeletedTabularsResponse:
       type: object
       required:
@@ -4852,6 +6012,66 @@ components:
           items:
             $ref: '#/components/schemas/DeletedTabularResponse'
           description: List of tabulars
+    ListProjectTasksRequest:
+      type: object
+      properties:
+        created-after:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter tasks created after this timestamp
+          example: 2025-12-31T23:59:59Z
+        created-before:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter tasks created before this timestamp
+          example: 2025-12-31T23:59:59Z
+        page-size:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Number of results per page
+        page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Next page token, re-use the same request as for the original request,
+            but set this to the `next_page_token` from the previous response.
+            Stop iterating when no more items are returned in a page.
+        queue-name:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: Filter by one or more queue names
+        status:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/TaskStatus'
+          description: Filter by task status
+    ListProjectTasksResponse:
+      type: object
+      required:
+        - tasks
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token for the next page of results
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectTaskInfo'
+          description: List of tasks
     ListProjectsResponse:
       type: object
       required:
@@ -4897,7 +6117,7 @@ components:
             - array
             - 'null'
           items:
-            $ref: '#/components/schemas/TaskEntity'
+            $ref: '#/components/schemas/WarehouseTaskEntityFilter'
           description: Filter by specific entity
         page-size:
           type:
@@ -4940,7 +6160,7 @@ components:
         tasks:
           type: array
           items:
-            $ref: '#/components/schemas/Task'
+            $ref: '#/components/schemas/WarehouseTaskInfo'
           description: List of tasks
     ListUsersResponse:
       type: object
@@ -5282,6 +6502,71 @@ components:
         - select
         - create
         - modify
+    ProjectTaskInfo:
+      type: object
+      required:
+        - task-id
+        - project-id
+        - queue-name
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        project-id:
+          type: string
+          description: Project ID associated with the task
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
     ProtectionResponse:
       type: object
       required:
@@ -5398,6 +6683,26 @@ components:
                   enum:
                     - ownership
           title: RoleAssignmentOwnership
+    RoleMetadata:
+      type: object
+      description: |-
+        Metadata of a role with reduced information.
+        Returned for cross-project role references.
+      required:
+        - id
+        - name
+        - project-id
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Globally unique id of this role
+        name:
+          type: string
+          description: Name of the role
+        project-id:
+          type: string
+          description: Project ID in which the role is created.
     RoleRelation:
       type: string
       enum:
@@ -5543,6 +6848,13 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        legacy-md5-behavior:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Legacy MD5 behavior for S3 operations requiring checksums.
+            When enabled, Lakekeeper will use the legacy MD5 checksum for operations like `DeleteObjects`.
         path-style-access:
           type:
             - boolean
@@ -5571,6 +6883,12 @@ components:
         region:
           type: string
           description: Region to use for S3 requests.
+        remote-signing-enabled:
+          type: boolean
+          description: |-
+            Enable remote signing for S3 requests.
+            When disabled, clients cannot use remote signing even if STS is disabled.
+            Defaults to true.
         remote-signing-url-style:
           $ref: '#/components/schemas/S3UrlStyleDetectionMode'
           description: |-
@@ -6244,82 +7562,6 @@ components:
       enum:
         - table
         - view
-    Task:
-      type: object
-      required:
-        - task-id
-        - warehouse-id
-        - queue-name
-        - entity
-        - entity-name
-        - status
-        - scheduled-for
-        - attempt
-        - progress
-        - created-at
-      properties:
-        attempt:
-          type: integer
-          format: int32
-          description: Current attempt number
-        created-at:
-          type: string
-          format: date-time
-          description: When this task attempt was created
-        entity:
-          $ref: '#/components/schemas/TaskEntity'
-          description: Type of entity this task operates on
-        entity-name:
-          type: array
-          items:
-            type: string
-          description: Name of the entity this task operates on
-        last-heartbeat-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: Last heartbeat timestamp for running tasks
-        parent-task-id:
-          type:
-            - string
-            - 'null'
-          format: uuid
-          description: Parent task ID if this is a sub-task
-        picked-up-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: When the latest attempt of the task was picked up for processing by a worker.
-        progress:
-          type: number
-          format: float
-          description: Progress of the task (0.0 to 1.0)
-        queue-name:
-          type: string
-          description: Name of the queue processing this task
-        scheduled-for:
-          type: string
-          format: date-time
-          description: When the latest attempt of the task is scheduled for
-        status:
-          $ref: '#/components/schemas/TaskStatus'
-          description: Current status of the task
-        task-id:
-          type: string
-          format: uuid
-          description: Unique identifier for the task
-        updated-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: When the task was last updated
-        warehouse-id:
-          type: string
-          format: uuid
-          description: Warehouse ID associated with the task
     TaskAttempt:
       type: object
       required:
@@ -6370,32 +7612,6 @@ components:
         status:
           $ref: '#/components/schemas/TaskStatus'
           description: Status of this attempt
-    TaskEntity:
-      oneOf:
-        - type: object
-          required:
-            - table-id
-            - type
-          properties:
-            table-id:
-              type: string
-              format: uuid
-            type:
-              type: string
-              enum:
-                - table
-        - type: object
-          required:
-            - view-id
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - view
-            view-id:
-              type: string
-              format: uuid
     TaskStatus:
       type: string
       enum:
@@ -6970,6 +8186,153 @@ components:
       enum:
         - active
         - inactive
+    WarehouseTaskEntityFilter:
+      oneOf:
+        - type: object
+          description: Get tasks for a specific table
+          required:
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+        - type: object
+          description: Get tasks for a specific view
+          required:
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+        - type: object
+          description: |-
+            Get Warehouse-level tasks which are not associated with a specific entity
+            inside the warehouse
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+    WarehouseTaskEntityId:
+      oneOf:
+        - type: object
+          required:
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+        - type: object
+          required:
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+    WarehouseTaskInfo:
+      type: object
+      required:
+        - task-id
+        - project-id
+        - warehouse-id
+        - queue-name
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        entity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WarehouseTaskEntityId'
+              description: Type of the sub-entity this task operates on. None if this is a warehouse-level task.
+        entity-name:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: Name of the entity this task operates on. None if this is a warehouse-level task.
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        project-id:
+          type: string
+          description: Project ID associated with the task
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
+        warehouse-id:
+          type: string
+          format: uuid
+          description: Warehouse ID associated with the task
   securitySchemes:
     bearerAuth:
       type: http

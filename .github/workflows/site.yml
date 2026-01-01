@@ -1,16 +1,14 @@
 name: site
 on:
-  #  Uncomment this when we're ready to switch this to an automated push to main
-  #
-  #  push:
-  #    branches:
-  #      - main
-  #    paths:
-  #      - docs/**
-  #      - site/**
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**
+      - site/**
   workflow_dispatch:
 permissions:
-  contents: write  # Needed to deploy site to GitHub Pages
+  contents: write
 jobs:
   deploy:
     runs-on: ubuntu-24.04
