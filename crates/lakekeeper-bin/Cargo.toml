@@ -25,6 +25,7 @@ open-api = ["lakekeeper-authz-openfga/open-api", "lakekeeper/open-api"]
 anyhow = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
 figment = { workspace = true }
+http = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = [
     "sqlx-postgres",
     "s3-signer",

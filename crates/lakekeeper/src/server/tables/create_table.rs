@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use iceberg::spec::{
-    FormatVersion, PROPERTY_FORMAT_VERSION, SortOrder, TableMetadata, TableMetadataBuilder,
+    FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, TableProperties,
     UnboundPartitionSpec,
 };
 use iceberg_ext::catalog::rest::StorageCredential;
@@ -355,7 +355,7 @@ pub(crate) fn create_table_request_into_table_metadata(
 
     let format_version = properties
         .as_mut()
-        .and_then(|props| props.remove(PROPERTY_FORMAT_VERSION))
+        .and_then(|props| props.remove(TableProperties::PROPERTY_FORMAT_VERSION))
         .map(|s| match s.as_str() {
             "v1" | "1" => Ok(FormatVersion::V1),
             "v2" | "2" => Ok(FormatVersion::V2),

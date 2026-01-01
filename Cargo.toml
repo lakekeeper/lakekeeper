@@ -66,21 +66,23 @@ flate2 = "^1.0"
 futures = "^0.3"
 fxhash = "0.2.1"
 gcloud-token = "1.0.0"
-google-cloud-auth = { package = "gcloud-auth", version = "1.1", features = [
+google-cloud-auth = { package = "gcloud-auth", version = "1.2", features = [
     "rustls-tls",
+    "jwt-aws-lc-rs",
     "external-account",
 ], default-features = false }
 google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-features = false, features = [
     "rustls-tls",
     "auth",
 ] }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 google-cloud-token = { package = "token-source", version = "1.0" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "01fe1ef351277199f8de30b86cb89ad82c7d7583", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "91805f2fec5991399bf6006488dc20a0e961f5c3", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",
@@ -92,10 +94,10 @@ jwks_client_rs = { version = "0.5.1", default-features = false, features = [
 ] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { version = "0.3.0", features = ["kubernetes", "axum", "rustls-tls"] }
 maplit = "1.0.2"
 md5 = "0.8.0"
-middle = { version = "0.3", features = ["tonic"] }
+middle = { version = "0.4", features = ["tonic"] }
 mockall = "0.14.0"
 moka = { version = "^0.12", features = ["future"] }
 paste = "1.0.15"

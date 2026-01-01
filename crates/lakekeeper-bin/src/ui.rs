@@ -157,7 +157,10 @@ pub(crate) fn get_ui_router() -> Router {
                         .make_span_with(RestMakeSpan::new(tracing::Level::INFO))
                         .on_response(trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)),
                 )
-                .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
+                .layer(TimeoutLayer::with_status_code(
+                    http::StatusCode::REQUEST_TIMEOUT,
+                    std::time::Duration::from_secs(30),
+                ))
                 .layer(CatchPanicLayer::new())
                 .propagate_x_request_id(),
         )
