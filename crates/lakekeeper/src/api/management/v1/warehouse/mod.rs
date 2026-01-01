@@ -1291,7 +1291,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let warehouse_resolved = authorizer
+        let _warehouse_resolved = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
@@ -1301,11 +1301,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let project_id = warehouse_resolved.project_id.clone();
-        let filter = TaskQueueConfigFilter::WarehouseId {
-            warehouse_id,
-            project_id,
-        };
+        let filter = TaskQueueConfigFilter::WarehouseId { warehouse_id };
         get_task_queue_config_authorized(&filter, queue_name, context).await
     }
 }

@@ -779,20 +779,16 @@ pub(crate) async fn get_task_queue_config<
     queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
     let data = match filter {
-        TaskQueueConfigFilter::WarehouseId {
-            warehouse_id,
-            project_id,
-        } => {
+        TaskQueueConfigFilter::WarehouseId { warehouse_id } => {
             sqlx::query_as!(
                 TaskConfigRow,
                 r#"
                 SELECT config, max_time_since_last_heartbeat
                 FROM task_config
-                WHERE warehouse_id = $1 AND queue_name = $2 AND project_id = $3
+                WHERE warehouse_id = $1 AND queue_name = $2
                 "#,
                 **warehouse_id,
-                queue_name.as_str(),
-                project_id.as_str()
+                queue_name.as_str()
             )
             .fetch_optional(connection)
             .await
@@ -2172,10 +2168,7 @@ mod test {
         assert!(
             get_task_queue_config(
                 &mut *conn,
-                &TaskQueueConfigFilter::WarehouseId {
-                    warehouse_id,
-                    project_id: project_id.clone()
-                },
+                &TaskQueueConfigFilter::WarehouseId { warehouse_id },
                 &tq_name
             )
             .await
@@ -2200,10 +2193,7 @@ mod test {
 
         let response = get_task_queue_config(
             &mut *conn,
-            &TaskQueueConfigFilter::WarehouseId {
-                warehouse_id,
-                project_id,
-            },
+            &TaskQueueConfigFilter::WarehouseId { warehouse_id },
             &tq_name,
         )
         .await
