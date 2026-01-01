@@ -66,7 +66,7 @@ flate2 = "^1.0"
 futures = "^0.3"
 fxhash = "0.2.1"
 gcloud-token = "1.0.0"
-google-cloud-auth = { package = "gcloud-auth", version = "1.1", features = [
+google-cloud-auth = { package = "gcloud-auth", version = "1.2", features = [
     "rustls-tls",
     "jwt-aws-lc-rs",
     "external-account",
@@ -75,6 +75,7 @@ google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-fe
     "rustls-tls",
     "auth",
 ] }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 google-cloud-token = { package = "token-source", version = "1.0" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
