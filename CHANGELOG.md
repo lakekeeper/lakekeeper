@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.0](https://github.com/lakekeeper/lakekeeper/compare/v0.11.0...v0.11.0) (2026-01-02)
+
+
+### Miscellaneous Chores
+
+* **docs:** Add 0.11 docs section ([02b421a](https://github.com/lakekeeper/lakekeeper/commit/02b421a4990bce5437af1527ecd6adc59f20a126))
+* **docs:** Fix DuckDB WASM Bullets ([f74ef80](https://github.com/lakekeeper/lakekeeper/commit/f74ef808b6d3ffa81f6949e2b167781b8f807eaf))
+* **docs:** Improve S3 CORS guide ([205ae0b](https://github.com/lakekeeper/lakekeeper/commit/205ae0be3a6bb20ad704ce5cdcbc7cadfee38507))
+
 ## [0.11.0](https://github.com/lakekeeper/lakekeeper/compare/v0.10.3...v0.11.0) (2026-01-01)
 
 
