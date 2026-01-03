@@ -67,7 +67,7 @@ md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 reqwest-middleware = { version = "0.4", optional = true }
-reqwest-retry = { version = "0.7", optional = true }
+reqwest-retry = { version = "0.8", optional = true }
 serde = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
