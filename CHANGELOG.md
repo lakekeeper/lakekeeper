@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.11.1](https://github.com/lakekeeper/lakekeeper/compare/v0.11.0...v0.11.1) (2026-01-06)
+
+
+### Features
+
+* add configurable log formatting and database connection logging ([#1557](https://github.com/lakekeeper/lakekeeper/issues/1557)) ([1d638e8](https://github.com/lakekeeper/lakekeeper/commit/1d638e8dac18d68629ba35434db8e8205a181522))
+
+
+### Bug Fixes
+
+* Remove dependency on unmaintained libraries (paste, fxhash, derivative) ([f85128c](https://github.com/lakekeeper/lakekeeper/commit/f85128c347800505ad4c9e9f1084394085e0c608))
+* Update OpenFGA Client to 0.5.1 (retry after ModelWrite) ([f85128c](https://github.com/lakekeeper/lakekeeper/commit/f85128c347800505ad4c9e9f1084394085e0c608))
+* Update rsa to 0.9.10 to avoid potential panic ([836c2ec](https://github.com/lakekeeper/lakekeeper/commit/836c2ec56df03b60eba09287617fc652df9c2737))
+
+
+### Miscellaneous Chores
+
+* **dep:** Update UI to v0.11.1 ([836c2ec](https://github.com/lakekeeper/lakekeeper/commit/836c2ec56df03b60eba09287617fc652df9c2737))
+* **docs:** Add 0.11 docs section ([02b421a](https://github.com/lakekeeper/lakekeeper/commit/02b421a4990bce5437af1527ecd6adc59f20a126))
+* **docs:** Fix DuckDB WASM Bullets ([f74ef80](https://github.com/lakekeeper/lakekeeper/commit/f74ef808b6d3ffa81f6949e2b167781b8f807eaf))
+* **docs:** Improve S3 CORS guide ([205ae0b](https://github.com/lakekeeper/lakekeeper/commit/205ae0be3a6bb20ad704ce5cdcbc7cadfee38507))
+* **docs:** Update Odometer ([f85128c](https://github.com/lakekeeper/lakekeeper/commit/f85128c347800505ad4c9e9f1084394085e0c608))
+* OPA Use catalog config Endpoint to get warehouse id ([#1558](https://github.com/lakekeeper/lakekeeper/issues/1558)) ([847ad13](https://github.com/lakekeeper/lakekeeper/commit/847ad13577643ed032be7d541ed695f02be1dc65))
+
 ## [0.11.0](https://github.com/lakekeeper/lakekeeper/compare/v0.10.3...v0.11.0) (2026-01-01)
 
 
