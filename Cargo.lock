@@ -3202,7 +3202,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=91805f2fec5991399bf6006488dc20a0e961f5c3#91805f2fec5991399bf6006488dc20a0e961f5c3"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=acda05d67eb0bb304ba2f86e135c9ecb6caf793e#acda05d67eb0bb304ba2f86e135c9ecb6caf793e"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3788,7 +3788,6 @@ dependencies = [
  "quick-xml 0.38.4",
  "rdkafka",
  "reqwest",
- "rustls-native-certs 0.8.3",
  "semver",
  "serde",
  "serde_json",

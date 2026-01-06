@@ -25,7 +25,7 @@ sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
 s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http", "dep:tower"]
-nats = ["dep:async-nats", "dep:rustls-native-certs"]
+nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka"]
 vendored-protoc = []
@@ -87,7 +87,6 @@ percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
 rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
-rustls-native-certs = { workspace = true, optional = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }

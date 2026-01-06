@@ -28,7 +28,6 @@ async-nats = { version = "0.45.0", default-features = false, features = [
     "aws-lc-rs",
     "service",
 ] }
-rustls-native-certs = { version = "0.8.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
@@ -88,7 +87,7 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "91805f2fec5991399bf6006488dc20a0e961f5c3", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "acda05d67eb0bb304ba2f86e135c9ecb6caf793e", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",

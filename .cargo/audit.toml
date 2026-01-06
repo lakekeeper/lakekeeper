@@ -7,4 +7,7 @@ ignore = [
     "RUSTSEC-2024-0399", # we are using tls only in clients
     "RUSTSEC-2024-0384", # unmaintained without direct harm
     "RUSTSEC-2025-0009", # we do not enable overflow-checks
+    "RUSTSEC-2024-0436", # paste is unmaintained but has no direct harm. We already removed direct dependencies.
+    "RUSTSEC-2026-0001", # Review once https://github.com/paupino/rust-decimal/issues/766 is merged
+    "RUSTSEC-2025-0134", # https://github.com/nats-io/nats.rs/issues/1502
 ]
