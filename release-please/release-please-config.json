@@ -14,7 +14,7 @@
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
     "include-component-in-tag": false,
-    "release-as": "0.11.0",
+    "release-as": "0.11.1",
     "extra-files": [
         {
             "type": "toml",
