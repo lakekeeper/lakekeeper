@@ -1,11 +1,10 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use fxhash::FxHashSet;
 use itertools::Itertools;
 use uuid::Uuid;
 
 use crate::{
-    ProjectId,
+    ProjectId, XXHashSet,
     api::endpoints::EndpointFlat,
     implementations::postgres::dbutils::DBErrorHandler,
     service::endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
@@ -183,10 +182,10 @@ impl PostgresStatisticsSink {
 async fn resolve_projects<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     stats: &Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
     conn: E,
-) -> crate::api::Result<FxHashSet<ProjectId>> {
+) -> crate::api::Result<XXHashSet<ProjectId>> {
     let projects = stats.keys().map(ToString::to_string).collect_vec();
     tracing::debug!("Resolving '{}' project ids.", projects.len());
-    let resolved_projects: FxHashSet<ProjectId> = sqlx::query!(
+    let resolved_projects: XXHashSet<ProjectId> = sqlx::query!(
         r#"SELECT true as "exists!", project_id
                FROM project
                WHERE project_id = ANY($1::text[])"#,

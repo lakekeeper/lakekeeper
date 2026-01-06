@@ -84,7 +84,7 @@ veil = { workspace = true }
 anyhow = { workspace = true }
 fastrand = { workspace = true }
 futures = { workspace = true }
-paste = "1.0"
+pastey = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3.0"
 tokio = { workspace = true }

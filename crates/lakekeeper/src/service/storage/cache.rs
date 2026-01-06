@@ -77,8 +77,15 @@ impl STCCacheKey {
         storage_profile: StorageProfileBorrowed<'_>,
         credential: Option<StorageCredentialBorrowed<'_>>,
     ) -> Self {
-        let storage_profile_hash = fxhash::hash64(&storage_profile);
-        let credential_hash = fxhash::hash64(&credential);
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+        storage_profile.hash(&mut hasher);
+        let storage_profile_hash = hasher.finish();
+
+        let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+        credential.hash(&mut hasher);
+        let credential_hash = hasher.finish();
 
         Self {
             request,

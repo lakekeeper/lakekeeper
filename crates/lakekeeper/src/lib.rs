@@ -62,3 +62,5 @@ pub mod request_tracing;
 pub use tracing;
 #[cfg(any(test, all(feature = "test-utils", feature = "sqlx-postgres")))]
 pub mod tests;
+
+pub(crate) type XXHashSet<T> = std::collections::HashSet<T, xxhash_rust::xxh3::Xxh3Builder>;

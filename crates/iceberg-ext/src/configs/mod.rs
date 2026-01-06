@@ -292,11 +292,11 @@ macro_rules! impl_config_value {
 
         impl NotCustomProp for $struct_name {}
 
-        paste::paste! {
+        pastey::paste! {
             impl [<$prop_type Property>] for $struct_name {}
         }
 
-        paste::paste! {
+        pastey::paste! {
             impl [<$prop_type Properties>] {
                 #[must_use]
                 pub fn [<$accessor:snake>](&self) -> Option<$typ> {

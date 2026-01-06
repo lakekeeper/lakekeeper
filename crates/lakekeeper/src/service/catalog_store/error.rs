@@ -68,7 +68,7 @@ macro_rules! define_transparent_error {
             )*
         }
 
-        paste::paste! {
+        pastey::paste! {
             const [<$error_name:snake:upper _STACK>]: &str = $stack_msg;
 
             $(

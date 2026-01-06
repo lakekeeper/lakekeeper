@@ -776,7 +776,7 @@ pub(crate) mod tests {
     };
 
     use iceberg::NamespaceIdent;
-    use paste::paste;
+    use pastey::paste;
     use strum::EnumCount;
     use uuid::Uuid;
 

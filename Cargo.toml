@@ -21,7 +21,14 @@ anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-async-nats = "0.45.0"
+async-nats = { version = "0.45.0", default-features = false, features = [
+    "server_2_10",
+    "server_2_11",
+    "server_2_12",
+    "aws-lc-rs",
+    "service",
+] }
+rustls-native-certs = { version = "0.8.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
@@ -64,7 +71,6 @@ figment = { version = "^0.10", features = ["env"] }
 figment_file_provider_adapter = "0.1.1"
 flate2 = "^1.0"
 futures = "^0.3"
-fxhash = "0.2.1"
 gcloud-token = "1.0.0"
 google-cloud-auth = { package = "gcloud-auth", version = "1.2", features = [
     "rustls-tls",
@@ -100,7 +106,7 @@ md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }
 mockall = "0.14.0"
 moka = { version = "^0.12", features = ["future"] }
-paste = "1.0.15"
+pastey = "0.2.1"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
 quick-xml = { version = "0.38.3", features = ["serialize"] }

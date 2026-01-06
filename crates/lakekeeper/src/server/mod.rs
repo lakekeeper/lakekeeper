@@ -459,7 +459,7 @@ pub(crate) mod test {
 
     macro_rules! impl_pagination_tests {
         ($typ:ident, $setup_fn:ident, $server_typ:ident, $query_typ:ident, $entity_ident:ident, $map_block:expr) => {
-            use paste::paste;
+            use pastey::paste;
             // we're constructing queries via json here to sidestep different query types, going
             // from json to rust doesn't blow up with extra params so we can pass return uuids to
             // list fns that dont support it without having to care about it.

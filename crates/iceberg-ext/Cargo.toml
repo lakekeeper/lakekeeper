@@ -23,7 +23,7 @@ heck = { workspace = true }
 http = { workspace = true }
 iceberg = { workspace = true }
 lakekeeper-io = { path = "../io", default-features = false }
-paste = { workspace = true }
+pastey = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }

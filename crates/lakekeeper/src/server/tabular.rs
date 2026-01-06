@@ -47,7 +47,7 @@ pub(super) fn determine_tabular_location(
 macro_rules! list_entities {
     ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
         |ps, page_token, trx: &mut _| {
-            use ::paste::paste;
+            use ::pastey::paste;
             use iceberg_ext::catalog::rest::ErrorModel;
 
             use crate::{

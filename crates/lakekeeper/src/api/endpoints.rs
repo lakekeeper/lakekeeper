@@ -14,7 +14,7 @@ macro_rules! generate_endpoints {
         )*
     ) => {
         $(
-            paste::paste! {
+            pastey::paste! {
                 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter)]
                 #[allow(clippy::enum_variant_names)]
                 pub enum [<$enum_name Endpoint>] {
@@ -43,7 +43,7 @@ macro_rules! generate_endpoints {
             }
         )*
 
-        paste::paste! {
+        pastey::paste! {
             #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, strum::Display)]
             #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
             #[strum(serialize_all = "kebab-case")]

@@ -150,7 +150,7 @@ async fn create_gcs_storage(bucket_env_var: &str) -> anyhow::Result<(StorageBack
 /// Macro to generate parameterized tests for all available storage backends
 macro_rules! test_all_storages {
     ($test_name:ident, $test_fn:ident) => {
-        paste::paste! {
+        pastey::paste! {
             #[cfg(feature = "storage-in-memory")]
             #[test]
             fn [<$test_name _memory>]() -> anyhow::Result<()> {

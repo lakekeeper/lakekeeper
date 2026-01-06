@@ -5,7 +5,6 @@ use std::{
 };
 
 use futures::FutureExt;
-use fxhash::FxHashSet;
 use http::StatusCode;
 use iceberg::{
     NamespaceIdent, TableUpdate,
@@ -33,7 +32,7 @@ use super::{
     require_warehouse_id,
 };
 use crate::{
-    WarehouseId,
+    WarehouseId, XXHashSet,
     api::{
         iceberg::{
             types::DropParams,
@@ -1456,11 +1455,11 @@ pub(crate) fn calculate_diffs(
     let new_snaps = new_metadata
         .snapshots()
         .map(|s| s.snapshot_id())
-        .collect::<FxHashSet<i64>>();
+        .collect::<XXHashSet<i64>>();
     let old_snaps = previous_metadata
         .snapshots()
         .map(|s| s.snapshot_id())
-        .collect::<FxHashSet<i64>>();
+        .collect::<XXHashSet<i64>>();
     let removed_snaps = old_snaps
         .difference(&new_snaps)
         .copied()
@@ -1473,11 +1472,11 @@ pub(crate) fn calculate_diffs(
     let old_schemas = previous_metadata
         .schemas_iter()
         .map(|s| s.schema_id())
-        .collect::<FxHashSet<SchemaId>>();
+        .collect::<XXHashSet<SchemaId>>();
     let new_schemas = new_metadata
         .schemas_iter()
         .map(|s| s.schema_id())
-        .collect::<FxHashSet<SchemaId>>();
+        .collect::<XXHashSet<SchemaId>>();
     let removed_schemas = old_schemas
         .difference(&new_schemas)
         .copied()
@@ -1493,11 +1492,11 @@ pub(crate) fn calculate_diffs(
     let old_specs = previous_metadata
         .partition_specs_iter()
         .map(|s| s.spec_id())
-        .collect::<FxHashSet<i32>>();
+        .collect::<XXHashSet<i32>>();
     let new_specs = new_metadata
         .partition_specs_iter()
         .map(|s| s.spec_id())
-        .collect::<FxHashSet<i32>>();
+        .collect::<XXHashSet<i32>>();
     let removed_specs = old_specs
         .difference(&new_specs)
         .copied()
@@ -1513,11 +1512,11 @@ pub(crate) fn calculate_diffs(
     let old_sort_orders = previous_metadata
         .sort_orders_iter()
         .map(|s| s.order_id)
-        .collect::<FxHashSet<i64>>();
+        .collect::<XXHashSet<i64>>();
     let new_sort_orders = new_metadata
         .sort_orders_iter()
         .map(|s| s.order_id)
-        .collect::<FxHashSet<i64>>();
+        .collect::<XXHashSet<i64>>();
     let removed_sort_orders = old_sort_orders
         .difference(&new_sort_orders)
         .copied()
@@ -1543,11 +1542,11 @@ pub(crate) fn calculate_diffs(
     let old_stats = previous_metadata
         .statistics_iter()
         .map(|s| s.snapshot_id)
-        .collect::<FxHashSet<_>>();
+        .collect::<XXHashSet<_>>();
     let new_stats = new_metadata
         .statistics_iter()
         .map(|s| s.snapshot_id)
-        .collect::<FxHashSet<_>>();
+        .collect::<XXHashSet<_>>();
     let removed_stats = old_stats
         .difference(&new_stats)
         .copied()
@@ -1560,11 +1559,11 @@ pub(crate) fn calculate_diffs(
     let old_partition_stats = previous_metadata
         .partition_statistics_iter()
         .map(|s| s.snapshot_id)
-        .collect::<FxHashSet<_>>();
+        .collect::<XXHashSet<_>>();
     let new_partition_stats = new_metadata
         .partition_statistics_iter()
         .map(|s| s.snapshot_id)
-        .collect::<FxHashSet<_>>();
+        .collect::<XXHashSet<_>>();
     let removed_partition_stats = old_partition_stats
         .difference(&new_partition_stats)
         .copied()
@@ -1577,11 +1576,11 @@ pub(crate) fn calculate_diffs(
     let old_encryption_keys = previous_metadata
         .encryption_keys_iter()
         .map(|k| k.key_id().to_string())
-        .collect::<FxHashSet<_>>();
+        .collect::<XXHashSet<_>>();
     let new_encryption_keys = new_metadata
         .encryption_keys_iter()
         .map(|k| k.key_id().to_string())
-        .collect::<FxHashSet<_>>();
+        .collect::<XXHashSet<_>>();
     let removed_encryption_keys = old_encryption_keys
         .difference(&new_encryption_keys)
         .cloned()
