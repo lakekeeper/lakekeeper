@@ -17,6 +17,9 @@ pub(crate) struct DebugConfig {
     pub(crate) migrate_before_serve: bool,
     /// Run the serve command unless another command is specified.
     pub(crate) auto_serve: bool,
+    /// Include file names and line numbers in log output.
+    /// This is useful for debugging but can be disabled for cleaner logs in production.
+    pub(crate) extended_logs: bool,
 }
 
 fn get_config() -> DynAppConfig {

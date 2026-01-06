@@ -297,5 +297,19 @@ fn build_connect_ops(typ: ConnectionType) -> anyhow::Result<PgConnectOptions> {
     } else {
         opts.disable_statement_logging()
     };
+
+    // Log connection details
+    let conn_type = match typ {
+        ConnectionType::Read => "read",
+        ConnectionType::Write => "write",
+    };
+    tracing::info!(
+        host = opts.get_host(),
+        port = opts.get_port(),
+        database = opts.get_database(),
+        username = opts.get_username(),
+        "Building PostgreSQL {conn_type} connection"
+    );
+
     Ok(opts)
 }

@@ -78,7 +78,7 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<ServerId> {
                 hook.apply(transaction).await?;
                 tracing::info!(%migration.version, "Data migration {} complete", hook.name());
             } else {
-                tracing::info!(%migration.version, "No hook for migration");
+                tracing::debug!(%migration.version, "No hook for migration");
             }
         }
     }
