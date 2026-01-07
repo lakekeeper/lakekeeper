@@ -350,6 +350,7 @@ Lakekeeper provides debugging options to help troubleshoot issues during develop
 | <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr>   | `true`  | If set to `true`, Lakekeeper will log all incoming and outgoing request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
 | <nobr>`LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE`</nobr> | `true`  | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. Default: `false` |
 | <nobr>`LAKEKEEPER__DEBUG__AUTO_SERVE`</nobr>           | `true`  | If set to `true`, Lakekeeper will automatically start the server when no subcommand is provided (i.e., when running the binary without arguments). This is useful for development environments to quickly start the server without explicitly specifying the `serve` command. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__EXTENDED_LOGS`</nobr>        | `false` | Controls whether file names and line numbers are included in JSON log output. When set to `false`, these fields are omitted for cleaner logs. When set to `true`, each log entry includes `filename` and `line_number` fields for easier debugging. Default: `false` |
 
 **Warning**: Debug options can expose sensitive information in logs and should only be used in secure development environments.
 
