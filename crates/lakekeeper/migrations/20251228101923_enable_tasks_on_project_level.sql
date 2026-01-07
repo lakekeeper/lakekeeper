@@ -176,15 +176,15 @@ alter type api_endpoints add value if not exists 'management-v1-get-project-task
 alter type api_endpoints add value if not exists 'management-v1-list-project-tasks';
 
 -- Create new indexes with project_id
-CREATE INDEX task_project_warehouse_created_at_id_idx ON public.task USING btree (project_id, warehouse_id, created_at DESC);
-CREATE INDEX task_project_warehouse_id_entity_type_entity_id_idx ON public.task USING btree (
+CREATE INDEX task_project_warehouse_created_at_id_idx ON task USING btree (project_id, warehouse_id, created_at DESC);
+CREATE INDEX task_project_warehouse_id_entity_type_entity_id_idx ON task USING btree (
 	project_id,
 	warehouse_id,
 	entity_type,
 	entity_id,
 	created_at DESC
 );
-CREATE INDEX task_project_warehouse_queue_created_at_idx ON public.task USING btree (
+CREATE INDEX task_project_warehouse_queue_created_at_idx ON task USING btree (
 	project_id,
 	warehouse_id,
 	queue_name,
