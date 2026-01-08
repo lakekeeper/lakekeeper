@@ -43,7 +43,7 @@ aws-smithy-types = { version = "1.3.4" }
 axum = { version = "0.8.1" }
 axum-extra = { version = "0.12.0", features = ["middleware"] }
 axum-macros = { version = "0.5.0" }
-axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
+axum-prometheus = { version = "0.10.0", features = ["http-listener"] }
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
@@ -63,7 +63,7 @@ azure_storage_datalake = { version = "0.21.0", default-features = false, feature
 base64 = "0.22.1"
 bytes = "1.10"
 chrono = "^0.4"
-cloudevents-sdk = { version = "0.8.0" }
+cloudevents-sdk = { version = "0.9.0" }
 derive_more = { version = "^2.0.0", features = ["from", "debug"] }
 fastrand = "2.3.0"
 figment = { version = "^0.10", features = ["env"] }
@@ -118,7 +118,7 @@ rdkafka = { version = "0.38.0", default-features = false, features = [
     "libz-static",
     "cmake-build",
 ] }
-reqwest = { version = "0.12.23", default-features = false, features = [
+reqwest = { version = "0.13.0", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
@@ -180,7 +180,7 @@ utoipa = { version = "5.4.0", features = [
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 valuable = "0.1.1"
-veil = "0.2.0"
+veil = "0.3.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
 [profile.dev.build-override]
