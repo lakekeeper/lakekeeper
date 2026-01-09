@@ -70,6 +70,7 @@ impl CleanupPeriod {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct TaskLogCleanupConfig {
     cleanup_period: CleanupPeriod,
     retention_period: RetentionPeriod,
