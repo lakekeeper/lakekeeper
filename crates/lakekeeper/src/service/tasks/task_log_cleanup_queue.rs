@@ -5,6 +5,7 @@ use derive_more::Debug;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 
+use super::TaskQueueName;
 use crate::{
     CancellationToken,
     api::Result,
@@ -19,8 +20,6 @@ use crate::{
     utils::period::Period,
 };
 
-use super::TaskQueueName;
-
 const QN_STR: &str = "task_log_cleanup";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 
@@ -31,7 +30,14 @@ pub type TaskLogCleanupTask =
 pub struct TaskLogCleanupPayload {}
 impl TaskData for TaskLogCleanupPayload {}
 
+impl Default for TaskLogCleanupPayload {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskLogCleanupPayload {
+    #[must_use]
     pub fn new() -> Self {
         Self {}
     }
@@ -41,14 +47,17 @@ impl TaskLogCleanupPayload {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct RetentionPeriod(Period);
 impl RetentionPeriod {
+    #[must_use]
     pub fn new(period: Period) -> Self {
         Self(period)
     }
 
+    #[must_use]
     pub fn days(days: i32) -> Self {
         Self(Period::Days(days))
     }
 
+    #[must_use]
     pub fn period(&self) -> Period {
         self.0
     }
@@ -58,14 +67,17 @@ impl RetentionPeriod {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct CleanupPeriod(Period);
 impl CleanupPeriod {
+    #[must_use]
     pub fn new(period: Period) -> Self {
         Self(period)
     }
 
+    #[must_use]
     pub fn days(days: i32) -> Self {
         Self(Period::Days(days))
     }
 
+    #[must_use]
     pub fn period(&self) -> Period {
         self.0
     }
@@ -78,10 +90,12 @@ pub struct TaskLogCleanupConfig {
     retention_period: RetentionPeriod,
 }
 impl TaskLogCleanupConfig {
+    #[must_use]
     pub fn cleanup_period(&self) -> CleanupPeriod {
         self.cleanup_period
     }
 
+    #[must_use]
     pub fn retention_period(&self) -> RetentionPeriod {
         self.retention_period
     }
@@ -130,7 +144,7 @@ pub(crate) async fn task_log_cleanup_worker<C: CatalogStore>(
 
 async fn instrumented_cleanup<C: CatalogStore>(catalog_state: C::State, task: &TaskLogCleanupTask) {
     match cleanup_tasks::<C>(catalog_state.clone(), task).await {
-        Ok(_) => {
+        Ok(()) => {
             tracing::info!("Task cleanup completed successfully");
             task.record_success::<C>(catalog_state, None).await;
         }
@@ -212,7 +226,7 @@ fn get_retention_period(task: &TaskLogCleanupTask) -> RetentionPeriod {
 
 fn calculate_next_schedule_date(cleanup_period: CleanupPeriod) -> DateTime<Utc> {
     match cleanup_period {
-        CleanupPeriod(Period::Days(days)) => Utc::now() + chrono::Duration::days(days as i64),
+        CleanupPeriod(Period::Days(days)) => Utc::now() + chrono::Duration::days(i64::from(days)),
     }
 }
 

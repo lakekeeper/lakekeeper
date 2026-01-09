@@ -47,11 +47,9 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
 
         let retention_period = RetentionPeriod::days(90);
-        let days = match retention_period.period() {
-            Period::Days(days) => days,
-        };
+        let Period::Days(days) = retention_period.period();
 
-        let kept_task_log_ids = vec![
+        let kept_task_log_ids = [
             Uuid::parse_str("550e8400-e29b-41d4-a716-446655440003").unwrap(),
             Uuid::parse_str("550e8400-e29b-41d4-a716-446655440004").unwrap(),
         ];
@@ -162,7 +160,6 @@ mod test {
         .fetch_all(&mut *conn)
         .await
         .unwrap();
-        println!("Task logs before cleanup: {:?}", tasks);
 
         cleanup_task_logs_older_than(&mut conn, retention_period)
             .await
@@ -180,7 +177,6 @@ mod test {
 
         assert_eq!(remaining_task_logs.len(), 2);
         for record in remaining_task_logs {
-            println!("Remaining task log: {:?}", record);
             assert!(kept_task_log_ids.contains(&record.task_id));
         }
     }

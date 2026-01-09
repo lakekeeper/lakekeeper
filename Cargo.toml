@@ -80,7 +80,6 @@ google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-fe
     "rustls-tls",
     "auth",
 ] }
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 google-cloud-token = { package = "token-source", version = "1.0" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
@@ -94,6 +93,7 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "acda0
 ] }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
