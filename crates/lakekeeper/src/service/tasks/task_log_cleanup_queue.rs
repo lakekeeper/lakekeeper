@@ -38,6 +38,7 @@ impl TaskLogCleanupPayload {
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::PartialSchema))]
 pub struct RetentionPeriod(Period);
 impl RetentionPeriod {
     pub fn new(period: Period) -> Self {
@@ -54,6 +55,7 @@ impl RetentionPeriod {
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::PartialSchema))]
 pub struct CleanupPeriod(Period);
 impl CleanupPeriod {
     pub fn new(period: Period) -> Self {
