@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub enum Period {
     #[serde(rename = "days")]
     Days(i32),
