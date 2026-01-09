@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM task_log\n            WHERE created_at < now() - make_interval(days => $1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8694a632208c350b06eaeb0a1ac03f81b8873367afc0de6ae5a706cb550e6b32"
+}

@@ -21,7 +21,7 @@ pub use service::{ProjectId, SecretId, WarehouseId};
 pub mod serve;
 
 pub mod implementations;
-pub(crate) mod utils;
+pub mod utils;
 
 pub mod api;
 mod request_metadata;

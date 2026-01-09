@@ -186,19 +186,19 @@ impl TaskQueueRegistry {
         authorizer: A,
         poll_interval: Duration,
     ) -> &Self {
-        use super::{tabular_expiration_queue, tabular_purge_queue};
+        use super::{tabular_expiration_queue, tabular_purge_queue, task_log_cleanup_queue};
 
-        let catalog_state_clone = catalog_state.clone();
+        let catalog_state_clone_for_tabular_expiration = catalog_state.clone();
         self.register_queue::<tabular_expiration_queue::TabularExpirationQueueConfig>(
             QueueRegistration {
                 queue_name: &tabular_expiration_queue::QUEUE_NAME,
                 worker_fn: Arc::new(move |cancellation_token| {
                     let authorizer = authorizer.clone();
-                    let catalog_state_clone = catalog_state_clone.clone();
+                    let catalog_state_clone = catalog_state_clone_for_tabular_expiration.clone();
                     Box::pin({
                         async move {
                             tabular_expiration_queue::tabular_expiration_worker::<C, A>(
-                                catalog_state_clone.clone(),
+                                catalog_state_clone,
                                 authorizer.clone(),
                                 poll_interval,
                                 cancellation_token,
@@ -212,15 +212,35 @@ impl TaskQueueRegistry {
         )
         .await;
 
+        let catalog_state_clone_for_tabular_purge = catalog_state.clone();
         self.register_queue::<tabular_purge_queue::PurgeQueueConfig>(QueueRegistration {
             queue_name: &tabular_purge_queue::QUEUE_NAME,
             worker_fn: Arc::new(move |cancellation_token| {
-                let catalog_state_clone = catalog_state.clone();
+                let catalog_state_clone = catalog_state_clone_for_tabular_purge.clone();
                 let secret_store = secret_store.clone();
                 Box::pin(async move {
                     tabular_purge_queue::tabular_purge_worker::<C, S>(
-                        catalog_state_clone.clone(),
+                        catalog_state_clone,
                         secret_store.clone(),
+                        poll_interval,
+                        cancellation_token,
+                    )
+                    .await;
+                })
+            }),
+            num_workers: CONFIG.task_tabular_purge_workers,
+        })
+        .await;
+
+        let catalog_state_for_task_log_cleanup = catalog_state.clone();
+        self.register_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(QueueRegistration {
+            queue_name: &task_log_cleanup_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move |cancellation_token| {
+                let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
+                Box::pin(async move {
+                    let catalog_state_clone = catalog_state_clone.clone();
+                    task_log_cleanup_queue::task_log_cleanup_worker::<C>(
+                        catalog_state_clone,
                         poll_interval,
                         cancellation_token,
                     )

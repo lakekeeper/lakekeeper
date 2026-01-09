@@ -24,6 +24,7 @@ pub use task_registry::{
 };
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
+pub mod task_log_cleanup_queue;
 
 #[cfg(test)]
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =

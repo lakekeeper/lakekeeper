@@ -39,11 +39,7 @@
                 "table",
                 "view",
                 "project",
-                "warehouse",
-                "namespace",
-                "role",
-                "user",
-                "server"
+                "warehouse"
               ]
             }
           }
@@ -187,11 +183,7 @@
                       "table",
                       "view",
                       "project",
-                      "warehouse",
-                      "namespace",
-                      "role",
-                      "user",
-                      "server"
+                      "warehouse"
                     ]
                   }
                 }
