@@ -36,7 +36,7 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName, TaskResolveScope,
+            TaskQueueName, TaskResolveScope, task_log_cleanup_queue::RetentionPeriod,
         },
     },
 };
@@ -681,4 +681,9 @@ where
         queue_name: &TaskQueueName,
         state: Self::State,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;
+
+    async fn cleanup_task_logs_older_than(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        retention_period: RetentionPeriod,
+    ) -> Result<()>;
 }

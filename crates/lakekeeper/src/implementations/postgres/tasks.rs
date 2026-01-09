@@ -24,9 +24,11 @@ use crate::{
 mod get_task_details;
 mod list_tasks;
 mod resolve_tasks;
+mod cleanup_task_logs_older_than;
 pub(crate) use get_task_details::get_task_details;
 pub(crate) use list_tasks::list_tasks;
 pub(crate) use resolve_tasks::resolve_tasks;
+pub(crate) use cleanup_task_logs_older_than::cleanup_task_logs_older_than;
 
 #[derive(Debug)]
 pub(crate) struct InsertResult {
