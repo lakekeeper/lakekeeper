@@ -152,15 +152,6 @@ mod test {
         .await
         .unwrap();
 
-        let tasks = query!(
-            r#"
-                SELECT task_id, attempt, created_at FROM task_log;
-            "#
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .unwrap();
-
         cleanup_task_logs_older_than(&mut conn, retention_period)
             .await
             .unwrap();
