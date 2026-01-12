@@ -5,7 +5,7 @@ use derive_more::Debug;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 #[cfg(feature = "open-api")]
-use utoipa::{ToSchema, PartialSchema};
+use utoipa::{PartialSchema, ToSchema};
 
 #[cfg(feature = "open-api")]
 use super::QueueApiConfig;
@@ -28,12 +28,11 @@ const QN_STR: &str = "task_log_cleanup";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 
 #[cfg(feature = "open-api")]
-pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> =
-    LazyLock::new(|| QueueApiConfig {
-        queue_name: &QUEUE_NAME,
-        utoipa_type_name: TaskLogCleanupConfig::name(),
-        utoipa_schema: TaskLogCleanupConfig::schema(),
-    });
+pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
+    queue_name: &QUEUE_NAME,
+    utoipa_type_name: TaskLogCleanupConfig::name(),
+    utoipa_schema: TaskLogCleanupConfig::schema(),
+});
 
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;
