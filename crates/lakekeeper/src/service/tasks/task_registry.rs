@@ -221,7 +221,7 @@ impl TaskQueueRegistry {
                 Box::pin(async move {
                     tabular_purge_queue::tabular_purge_worker::<C, S>(
                         catalog_state_clone,
-                        secret_store.clone(),
+                        secret_store,
                         poll_interval,
                         cancellation_token,
                     )
@@ -238,7 +238,6 @@ impl TaskQueueRegistry {
             worker_fn: Arc::new(move |cancellation_token| {
                 let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
                 Box::pin(async move {
-                    let catalog_state_clone = catalog_state_clone.clone();
                     task_log_cleanup_queue::task_log_cleanup_worker::<C>(
                         catalog_state_clone,
                         poll_interval,
