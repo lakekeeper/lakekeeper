@@ -7,6 +7,12 @@ pub enum Period {
     Days(u16),
 }
 
+impl Default for Period {
+    fn default() -> Self {
+        Self::Days(1)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

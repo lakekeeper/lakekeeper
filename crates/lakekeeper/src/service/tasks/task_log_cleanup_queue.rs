@@ -4,7 +4,11 @@ use chrono::{DateTime, Utc};
 use derive_more::Debug;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
+#[cfg(feature = "open-api")]
+use utoipa::{ToSchema, PartialSchema};
 
+#[cfg(feature = "open-api")]
+use super::QueueApiConfig;
 use super::TaskQueueName;
 use crate::{
     CancellationToken,
@@ -22,6 +26,14 @@ use crate::{
 
 const QN_STR: &str = "task_log_cleanup";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+
+#[cfg(feature = "open-api")]
+pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> =
+    LazyLock::new(|| QueueApiConfig {
+        queue_name: &QUEUE_NAME,
+        utoipa_type_name: TaskLogCleanupConfig::name(),
+        utoipa_schema: TaskLogCleanupConfig::schema(),
+    });
 
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;
@@ -43,8 +55,8 @@ impl TaskLogCleanupPayload {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Default, Debug)]
+#[cfg_attr(feature = "open-api", derive(ToSchema))]
 pub struct RetentionPeriod(Period);
 impl RetentionPeriod {
     #[must_use]
@@ -63,8 +75,8 @@ impl RetentionPeriod {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Default, Debug)]
+#[cfg_attr(feature = "open-api", derive(ToSchema))]
 pub struct CleanupPeriod(Period);
 impl CleanupPeriod {
     #[must_use]
@@ -83,8 +95,8 @@ impl CleanupPeriod {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[derive(Clone, Serialize, Deserialize, Default, Debug)]
+#[cfg_attr(feature = "open-api", derive(ToSchema))]
 pub struct TaskLogCleanupConfig {
     cleanup_period: CleanupPeriod,
     retention_period: RetentionPeriod,
@@ -231,6 +243,8 @@ fn calculate_next_schedule_date(cleanup_period: CleanupPeriod) -> DateTime<Utc> 
 
 #[cfg(test)]
 mod test {
+    use serde_json::from_str;
+
     use super::*;
 
     #[test]
@@ -245,7 +259,7 @@ mod test {
             }
         }
         "#;
-        let config: TaskLogCleanupConfig = serde_json::from_str(config_json).unwrap();
+        let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
         assert_eq!(config.cleanup_period, CleanupPeriod(Period::Days(7)));
         assert_eq!(config.retention_period, RetentionPeriod(Period::Days(90)));
     }

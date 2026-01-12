@@ -3229,6 +3229,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/task_log_cleanup/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_task_log_cleanup
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTaskLogCleanupConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_task_log_cleanup
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTaskLogCleanupConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}:
     get:
       tags:
@@ -4663,6 +4724,18 @@ components:
             task-data:
               type: object
               description: Task-specific data
+    GetTaskLogCleanupConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/TaskLogCleanupConfig'
     GetViewAccessResponse:
       type: object
       required:
@@ -6689,6 +6762,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/TabularExpirationQueueConfig'
+    SetTaskLogCleanupConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/TaskLogCleanupConfig'
     StorageCredential:
       oneOf:
         - allOf:
@@ -7108,6 +7193,16 @@ components:
         status:
           $ref: '#/components/schemas/TaskStatus'
           description: Status of this attempt
+    TaskLogCleanupConfig:
+      type: object
+      required:
+        - cleanup_period
+        - retention_period
+      properties:
+        cleanup_period:
+          $ref: '#/components/schemas/CleanupPeriod'
+        retention_period:
+          $ref: '#/components/schemas/RetentionPeriod'
     TaskStatus:
       type: string
       enum:

@@ -38,6 +38,7 @@ pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
         vec![
             tabular_expiration_queue::API_CONFIG.clone(),
             tabular_purge_queue::API_CONFIG.clone(),
+            task_log_cleanup_queue::API_CONFIG.clone(),
         ]
     });
 
