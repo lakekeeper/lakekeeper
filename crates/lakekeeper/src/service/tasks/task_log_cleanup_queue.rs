@@ -146,7 +146,6 @@ async fn instrumented_cleanup<C: CatalogStore>(catalog_state: C::State, task: &T
     match cleanup_tasks::<C>(catalog_state.clone(), task).await {
         Ok(()) => {
             tracing::info!("Task cleanup completed successfully");
-            task.record_success::<C>(catalog_state, None).await;
         }
         Err(e) => {
             tracing::error!("Task cleanup failed: {:?}", e);
