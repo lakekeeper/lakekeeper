@@ -114,7 +114,7 @@ impl TaskConfig for TaskLogCleanupConfig {
 pub struct TaskLogCleanupExecutionDetails {}
 impl TaskExecutionDetails for TaskLogCleanupExecutionDetails {}
 
-pub(crate) async fn task_log_cleanup_worker<C: CatalogStore>(
+pub(crate) async fn log_cleanup_worker<C: CatalogStore>(
     catalog_state: C::State,
     poll_interval: Duration,
     cancellation_token: CancellationToken,

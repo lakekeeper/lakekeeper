@@ -238,7 +238,7 @@ impl TaskQueueRegistry {
             worker_fn: Arc::new(move |cancellation_token| {
                 let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
                 Box::pin(async move {
-                    task_log_cleanup_queue::task_log_cleanup_worker::<C>(
+                    task_log_cleanup_queue::log_cleanup_worker::<C>(
                         catalog_state_clone,
                         poll_interval,
                         cancellation_token,
