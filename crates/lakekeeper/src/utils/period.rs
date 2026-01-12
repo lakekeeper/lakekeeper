@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub enum Period {
     #[serde(rename = "days")]
-    Days(i32),
+    Days(u16),
 }
 
 #[cfg(test)]

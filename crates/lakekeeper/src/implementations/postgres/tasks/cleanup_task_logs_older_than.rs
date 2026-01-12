@@ -15,7 +15,7 @@ pub(crate) async fn cleanup_task_logs_older_than(
             DELETE FROM task_log
             WHERE created_at < now() - make_interval(days => $1)
             "#,
-            days
+            i32::from(days)
         ),
     };
 
@@ -144,7 +144,7 @@ mod test {
                 now() - make_interval(days => ($1 - 83)::int)
             )
             "#,
-            days,
+            i32::from(days),
             kept_task_log_ids[0],
             kept_task_log_ids[1],
         )

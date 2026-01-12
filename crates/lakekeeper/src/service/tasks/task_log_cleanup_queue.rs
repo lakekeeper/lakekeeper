@@ -53,7 +53,7 @@ impl RetentionPeriod {
     }
 
     #[must_use]
-    pub fn days(days: i32) -> Self {
+    pub fn days(days: u16) -> Self {
         Self(Period::Days(days))
     }
 
@@ -73,7 +73,7 @@ impl CleanupPeriod {
     }
 
     #[must_use]
-    pub fn days(days: i32) -> Self {
+    pub fn days(days: u16) -> Self {
         Self(Period::Days(days))
     }
 
@@ -207,7 +207,7 @@ async fn cleanup_tasks<C: CatalogStore>(
     Ok(())
 }
 
-const DEFAULT_CLEANUP_PERIOD_DAYS: i32 = 1;
+const DEFAULT_CLEANUP_PERIOD_DAYS: u16 = 1;
 fn get_cleanup_period(task: &TaskLogCleanupTask) -> CleanupPeriod {
     match &task.config {
         Some(config) => config.cleanup_period(),
@@ -215,7 +215,7 @@ fn get_cleanup_period(task: &TaskLogCleanupTask) -> CleanupPeriod {
     }
 }
 
-const DEFAULT_RETENTION_PERIOD_DAYS: i32 = 90;
+const DEFAULT_RETENTION_PERIOD_DAYS: u16 = 90;
 fn get_retention_period(task: &TaskLogCleanupTask) -> RetentionPeriod {
     match &task.config {
         Some(config) => config.retention_period(),
