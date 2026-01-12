@@ -246,7 +246,7 @@ impl TaskQueueRegistry {
                     .await;
                 })
             }),
-            num_workers: CONFIG.task_tabular_purge_workers,
+            num_workers: CONFIG.task_log_cleanup_workers,
         })
         .await;
 
