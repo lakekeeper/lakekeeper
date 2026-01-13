@@ -1,3 +1,5 @@
+#[cfg(feature = "open-api")]
+use std::collections::HashMap;
 use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
 use chrono::Utc;
@@ -41,6 +43,14 @@ pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
             task_log_cleanup_queue::API_CONFIG.clone(),
         ]
     });
+
+#[cfg(feature = "open-api")]
+pub static BUILT_IN_DEPENDENT_SCHEMAS: std::sync::LazyLock<
+    HashMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>> = std::sync::LazyLock::new(|| {
+    let mut map = HashMap::new();
+    map.extend(task_log_cleanup_queue::DEPENDENT_SCHEMAS.clone());
+    map
+});
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]

@@ -3908,6 +3908,8 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
+    CleanupPeriod:
+      $ref: '#/components/schemas/Period'
     ControlTaskAction:
       oneOf:
         - type: object
@@ -5962,6 +5964,16 @@ components:
         - grant_pass_grants
         - grant_manage_grants
         - change_ownership
+    Period:
+      oneOf:
+        - type: object
+          required:
+            - days
+          properties:
+            days:
+              type: integer
+              format: int32
+              minimum: 0
     ProjectAction:
       type: string
       enum:
@@ -6190,6 +6202,8 @@ components:
         new-name:
           type: string
           description: New name for the warehouse.
+    RetentionPeriod:
+      $ref: '#/components/schemas/Period'
     Role:
       type: object
       required:

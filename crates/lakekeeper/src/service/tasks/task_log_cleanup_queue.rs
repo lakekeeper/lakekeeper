@@ -1,3 +1,5 @@
+#[cfg(feature = "open-api")]
+use std::collections::HashMap;
 use std::{sync::LazyLock, time::Duration};
 
 use chrono::{DateTime, Utc};
@@ -5,7 +7,10 @@ use derive_more::Debug;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 #[cfg(feature = "open-api")]
-use utoipa::{PartialSchema, ToSchema};
+use utoipa::{
+    PartialSchema, ToSchema,
+    openapi::{RefOr, Schema},
+};
 
 #[cfg(feature = "open-api")]
 use super::QueueApiConfig;
@@ -33,6 +38,19 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_type_name: TaskLogCleanupConfig::name(),
     utoipa_schema: TaskLogCleanupConfig::schema(),
 });
+
+#[cfg(feature = "open-api")]
+pub(crate) static DEPENDENT_SCHEMAS: LazyLock<HashMap<String, RefOr<Schema>>> =
+    LazyLock::new(|| {
+        let mut map = HashMap::new();
+        map.insert(CleanupPeriod::name().to_string(), CleanupPeriod::schema());
+        map.insert(
+            RetentionPeriod::name().to_string(),
+            RetentionPeriod::schema(),
+        );
+        map.insert(Period::name().to_string(), Period::schema());
+        map
+    });
 
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;
