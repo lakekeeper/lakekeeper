@@ -79,8 +79,8 @@ use crate::{
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId,
-            TaskInput, TaskQueueName, TaskResolveScope, task_log_cleanup_queue::RetentionPeriod,
+            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
+            TaskQueueName, TaskResolveScope, task_log_cleanup_queue::RetentionPeriod,
         },
     },
 };
