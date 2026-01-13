@@ -1,7 +1,5 @@
 #![allow(clippy::needless_for_each)]
 
-use std::collections::HashMap;
-
 use utoipa::{
     OpenApi, PartialSchema, ToSchema,
     openapi::{KnownFormat, RefOr, security::SecurityScheme},
@@ -172,7 +170,7 @@ fn fix_warehouse_task_queue_config_paths(
 
     let dependent_schemas = BUILT_IN_DEPENDENT_SCHEMAS
         .iter()
-        .map(|(name, schema)| (name.to_string(), schema.clone()));
+        .map(|(name, schema)| (name.clone(), schema.clone()));
 
     comps.schemas.extend(dependent_schemas);
 

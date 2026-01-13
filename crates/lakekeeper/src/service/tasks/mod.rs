@@ -46,7 +46,8 @@ pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
 
 #[cfg(feature = "open-api")]
 pub static BUILT_IN_DEPENDENT_SCHEMAS: std::sync::LazyLock<
-    HashMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>> = std::sync::LazyLock::new(|| {
+    HashMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>,
+> = std::sync::LazyLock::new(|| {
     let mut map = HashMap::new();
     map.extend(task_log_cleanup_queue::DEPENDENT_SCHEMAS.clone());
     map
