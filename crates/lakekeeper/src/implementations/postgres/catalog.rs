@@ -47,7 +47,7 @@ use crate::{
             view::{create_view, load_view},
         },
         tasks::{
-            TaskLogCleanupFilter, cancel_scheduled_tasks, check_and_heartbeat_task,
+            cancel_scheduled_tasks, check_and_heartbeat_task,
             cleanup_task_logs_older_than, get_task_details, get_task_queue_config, list_tasks,
             pick_task, queue_task_batch, record_failure, record_success, request_tasks_stop,
             reschedule_tasks_for, resolve_tasks, set_task_queue_config,
@@ -80,7 +80,7 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName, TaskResolveScope, task_log_cleanup_queue::RetentionPeriod,
+            TaskQueueName, TaskResolveScope, task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter},
         },
     },
 };

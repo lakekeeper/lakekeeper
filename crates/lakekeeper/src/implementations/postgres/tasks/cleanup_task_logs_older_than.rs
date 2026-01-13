@@ -1,16 +1,9 @@
 use sqlx::{PgConnection, query};
-use uuid::Uuid;
 
 use crate::{
     ProjectId, api::Result, implementations::postgres::dbutils::DBErrorHandler as _,
-    service::tasks::task_log_cleanup_queue::RetentionPeriod, utils::period::Period,
+    service::tasks::task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter}, utils::period::Period,
 };
-
-#[derive(Debug)]
-pub enum TaskLogCleanupFilter {
-    Project,
-    Warehouse { warehouse_id: Uuid },
-}
 
 pub(crate) async fn cleanup_task_logs_older_than(
     transaction: &mut PgConnection,

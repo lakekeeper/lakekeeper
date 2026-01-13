@@ -11,6 +11,7 @@ use utoipa::{
     PartialSchema, ToSchema,
     openapi::{RefOr, Schema},
 };
+use uuid::Uuid;
 
 #[cfg(feature = "open-api")]
 use super::QueueApiConfig;
@@ -18,7 +19,6 @@ use super::TaskQueueName;
 use crate::{
     CancellationToken,
     api::Result,
-    implementations::postgres::tasks::TaskLogCleanupFilter,
     service::{
         CatalogStore,
         catalog_store::Transaction,
@@ -52,6 +52,12 @@ pub(crate) static DEPENDENT_SCHEMAS: LazyLock<HashMap<String, RefOr<Schema>>> =
         map.insert(Period::name().to_string(), Period::schema());
         map
     });
+
+#[derive(Debug)]
+pub enum TaskLogCleanupFilter {
+    Project,
+    Warehouse { warehouse_id: Uuid },
+}
 
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;

@@ -29,7 +29,6 @@ use crate::{
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
-    implementations::postgres::tasks::TaskLogCleanupFilter,
     service::{
         TabularId, TabularIdentBorrowed,
         authn::UserId,
@@ -37,7 +36,7 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName, TaskResolveScope, task_log_cleanup_queue::RetentionPeriod,
+            TaskQueueName, TaskResolveScope, task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter},
         },
     },
 };
