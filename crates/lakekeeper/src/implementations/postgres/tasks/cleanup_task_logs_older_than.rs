@@ -1,8 +1,11 @@
 use sqlx::{PgConnection, query};
 
 use crate::{
-    ProjectId, api::Result, implementations::postgres::dbutils::DBErrorHandler as _,
-    service::tasks::task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter}, utils::period::Period,
+    ProjectId,
+    api::Result,
+    implementations::postgres::dbutils::DBErrorHandler as _,
+    service::tasks::task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter},
+    utils::period::Period,
 };
 
 pub(crate) async fn cleanup_task_logs_older_than(
