@@ -29,6 +29,7 @@ use crate::{
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
+    implementations::postgres::tasks::TaskLogCleanupFilter,
     service::{
         TabularId, TabularIdentBorrowed,
         authn::UserId,
@@ -685,5 +686,7 @@ where
     async fn cleanup_task_logs_older_than(
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         retention_period: RetentionPeriod,
+        project_id: &ProjectId,
+        filter: TaskLogCleanupFilter,
     ) -> Result<()>;
 }

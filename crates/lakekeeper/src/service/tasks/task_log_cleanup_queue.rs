@@ -18,6 +18,7 @@ use super::TaskQueueName;
 use crate::{
     CancellationToken,
     api::Result,
+    implementations::postgres::tasks::TaskLogCleanupFilter,
     service::{
         CatalogStore,
         catalog_store::Transaction,
@@ -192,13 +193,22 @@ async fn cleanup_tasks<C: CatalogStore>(
     let schedule_date = calculate_next_schedule_date(cleanup_period);
     let retention_period = get_retention_period(task);
 
+    let project_id = &task.task_metadata.project_id;
+    let filter = match task.task_metadata.entity {
+        TaskEntity::Project => TaskLogCleanupFilter::Project,
+        TaskEntity::Warehouse { warehouse_id }
+        | TaskEntity::EntityInWarehouse { warehouse_id, .. } => TaskLogCleanupFilter::Warehouse {
+            warehouse_id: *warehouse_id,
+        },
+    };
+
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
             e.append_detail(format!("Failed to start transaction for `{QN_STR}`Queue."))
         })?;
 
-    C::cleanup_task_logs_older_than(trx.transaction(), retention_period)
+    C::cleanup_task_logs_older_than(trx.transaction(), retention_period, project_id, filter)
         .await
         .map_err(|e| {
             e.append_detail(format!(
