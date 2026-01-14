@@ -5965,9 +5965,6 @@ components:
         - grant_manage_grants
         - change_ownership
     Period:
-      allOf:
-        - $ref: '#/components/schemas/PeriodData'
-    PeriodData:
       oneOf:
         - type: object
           required:
@@ -5976,7 +5973,7 @@ components:
             days:
               type: integer
               format: int32
-              minimum: 0
+              minimum: 1
     ProjectAction:
       type: string
       enum:

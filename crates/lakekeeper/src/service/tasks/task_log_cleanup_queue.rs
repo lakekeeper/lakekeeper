@@ -26,7 +26,7 @@ use crate::{
             TaskExecutionDetails,
         },
     },
-    utils::period::{Period, PeriodData},
+    utils::period::{NonZeroDays, Period},
 };
 
 const QN_STR: &str = "task_log_cleanup";
@@ -49,7 +49,6 @@ pub(crate) static DEPENDENT_SCHEMAS: LazyLock<HashMap<String, RefOr<Schema>>> =
             RetentionPeriod::schema(),
         );
         map.insert(Period::name().to_string(), Period::schema());
-        map.insert(PeriodData::name().to_string(), PeriodData::schema());
         map
     });
 
@@ -89,12 +88,14 @@ impl RetentionPeriod {
     }
 
     pub fn with_days(days: u16) -> Result<Self> {
-        Ok(Self(Period::with_days(days)?))
+        let non_zero_days = NonZeroDays::try_from(days)?;
+        let period = Period::with_days(non_zero_days);
+        Ok(RetentionPeriod(period))
     }
 
     #[must_use]
-    pub fn period(&self) -> PeriodData {
-        self.0.data()
+    pub fn period(&self) -> Period {
+        self.0
     }
 }
 
@@ -108,12 +109,14 @@ impl CleanupPeriod {
     }
 
     pub fn with_days(days: u16) -> Result<Self> {
-        Ok(Self(Period::with_days(days)?))
+        let non_zero_days = NonZeroDays::try_from(days)?;
+        let period = Period::with_days(non_zero_days);
+        Ok(CleanupPeriod(period))
     }
 
     #[must_use]
-    pub fn period(&self) -> PeriodData {
-        self.0.data()
+    pub fn period(&self) -> Period {
+        self.0
     }
 }
 
@@ -254,9 +257,11 @@ const DEFAULT_CLEANUP_PERIOD_DAYS: u16 = 1;
 fn get_cleanup_period(task: &TaskLogCleanupTask) -> Result<CleanupPeriod> {
     match &task.config {
         Some(config) => Ok(config.cleanup_period()),
-        None => Ok(CleanupPeriod(Period::with_days(
-            DEFAULT_CLEANUP_PERIOD_DAYS,
-        )?)),
+        None => {
+            let non_zero_days = NonZeroDays::try_from(DEFAULT_CLEANUP_PERIOD_DAYS)?;
+            let period = Period::with_days(non_zero_days);
+            Ok(CleanupPeriod(period))
+        }
     }
 }
 
@@ -264,15 +269,17 @@ const DEFAULT_RETENTION_PERIOD_DAYS: u16 = 90;
 fn get_retention_period(task: &TaskLogCleanupTask) -> Result<RetentionPeriod> {
     match &task.config {
         Some(config) => Ok(config.retention_period()),
-        None => Ok(RetentionPeriod(Period::with_days(
-            DEFAULT_RETENTION_PERIOD_DAYS,
-        )?)),
+        None => {
+            let non_zero_days = NonZeroDays::try_from(DEFAULT_RETENTION_PERIOD_DAYS)?;
+            let period = Period::with_days(non_zero_days);
+            Ok(RetentionPeriod(period))
+        }
     }
 }
 
 fn calculate_next_schedule_date(cleanup_period: CleanupPeriod) -> DateTime<Utc> {
     match cleanup_period.period() {
-        PeriodData::Days(days) => Utc::now() + chrono::Duration::days(i64::from(days)),
+        Period::Days(days) => Utc::now() + chrono::Duration::days(days.into()),
     }
 }
 
@@ -297,11 +304,11 @@ mod test {
         let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
         assert_eq!(
             config.cleanup_period,
-            CleanupPeriod(Period::with_days(7).unwrap())
+            CleanupPeriod(Period::with_days(NonZeroDays::try_from(7).unwrap()))
         );
         assert_eq!(
             config.retention_period,
-            RetentionPeriod(Period::with_days(90).unwrap())
+            RetentionPeriod(Period::with_days(NonZeroDays::try_from(90).unwrap()))
         );
     }
 }

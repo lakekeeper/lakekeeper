@@ -1,58 +1,89 @@
 use iceberg_ext::catalog::rest::ErrorModel;
-use serde::{Deserialize, Deserializer, Serialize, de::Error};
-
-use crate::api::Result;
-
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Default, Debug)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-pub struct Period {
-    #[serde(flatten)]
-    data: PeriodData,
-}
-
-impl Period {
-    pub fn with_days(days: u16) -> Result<Self> {
-        if days == 0 {
-            return Err(ErrorModel::internal(
-                "Invalid period",
-                "days must be greater than zero",
-                None,
-            )
-            .into());
-        }
-        Ok(Self {
-            data: PeriodData::Days(days),
-        })
-    }
-
-    #[must_use]
-    pub fn data(&self) -> PeriodData {
-        self.data
-    }
-}
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-pub enum PeriodData {
-    #[serde(rename = "days", deserialize_with = "deserialize_non_zero_days")]
-    Days(u16),
+#[serde(untagged)]
+pub enum Period {
+    Days(#[cfg_attr(feature = "open-api", schema(inline))] NonZeroDays),
 }
 
-impl Default for PeriodData {
+impl Period {
+    pub fn with_days(days: NonZeroDays) -> Self {
+        Self::Days(days)
+    }
+}
+
+impl Default for Period {
     fn default() -> Self {
-        Self::Days(1)
+        Self::Days(NonZeroDays::default())
     }
 }
 
-fn deserialize_non_zero_days<'de, D>(deserializer: D) -> Result<u16, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let days = u16::deserialize(deserializer)?;
-    if days == 0 {
-        return Err(D::Error::custom("days must be greater than zero"));
+#[derive(Clone, Copy, PartialEq, Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+pub struct NonZeroDays {
+    #[cfg_attr(feature = "open-api", schema(minimum = 1))]
+    days: u16,
+}
+
+impl<'de> Deserialize<'de> for NonZeroDays {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            days: u16,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        if helper.days == 0 {
+            Err(serde::de::Error::custom("Days must be greater than zero"))
+        } else {
+            Ok(NonZeroDays { days: helper.days })
+        }
     }
-    Ok(days)
+}
+
+impl Default for NonZeroDays {
+    fn default() -> Self {
+        Self { days: 1 }
+    }
+}
+
+impl TryFrom<u16> for NonZeroDays {
+    type Error = ErrorModel;
+
+    fn try_from(value: u16) -> std::result::Result<Self, Self::Error> {
+        if value == 0 {
+            Err(ErrorModel::internal(
+                "Days must be greater than zero",
+                "InvalidPeriod",
+                None,
+            ))
+        } else {
+            Ok(NonZeroDays { days: value })
+        }
+    }
+}
+
+impl From<NonZeroDays> for u16 {
+    fn from(value: NonZeroDays) -> Self {
+        value.days
+    }
+}
+
+impl From<NonZeroDays> for i32 {
+    fn from(value: NonZeroDays) -> Self {
+        i32::from(value.days)
+    }
+}
+
+impl From<NonZeroDays> for i64 {
+    fn from(value: NonZeroDays) -> Self {
+        i64::from(value.days)
+    }
 }
 
 #[cfg(test)]
@@ -63,7 +94,8 @@ mod test {
     fn test_parsing_period_from_json() {
         let period_json = r#"{ "days": 7 }"#;
         let period: Period = serde_json::from_str(period_json).unwrap();
-        assert_eq!(period, Period::with_days(7).unwrap());
+        let days = NonZeroDays::try_from(7).unwrap();
+        assert_eq!(period, Period::with_days(days));
     }
 
     #[test]
@@ -82,7 +114,7 @@ mod test {
 
     #[test]
     fn test_create_period_fails_with_zero_days() {
-        let period = Period::with_days(0);
-        assert!(period.is_err());
+        let days_result = NonZeroDays::try_from(0);
+        assert!(days_result.is_err());
     }
 }
