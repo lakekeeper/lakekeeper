@@ -224,12 +224,20 @@ async fn cleanup_tasks<C: CatalogStore>(
             ))
         })?;
 
+    let next_entity = match task.task_metadata.entity {
+        TaskEntity::Project => TaskEntity::Project,
+        TaskEntity::Warehouse { warehouse_id }
+        | TaskEntity::EntityInWarehouse { warehouse_id, .. } => {
+            TaskEntity::Warehouse { warehouse_id }
+        }
+    };
+
     TaskLogCleanupTask::schedule_task::<C>(
         ScheduleTaskMetadata {
             project_id: task.task_metadata.project_id.clone(),
             parent_task_id: Some(task.task_id()),
             scheduled_for: Some(schedule_date),
-            entity: TaskEntity::Project,
+            entity: next_entity,
         },
         TaskLogCleanupPayload::new(),
         trx.transaction(),
