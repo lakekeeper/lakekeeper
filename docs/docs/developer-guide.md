@@ -94,6 +94,38 @@ just sqlx-prepare
 This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
 Be careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on GitHub so there's no way of really breaking things.
 
+### ⚠️ Schema Qualification Warning
+
+**IMPORTANT**: When adding new migrations, do **NOT** schema qualify references to any database objects. Schema qualification will break deployments that place the application in a schema different than the public one.
+
+**❌ Incorrect - Do NOT do this:**
+```sql
+-- This will break deployments in non-public schemas
+CREATE TABLE public.my_new_table (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255)
+);
+
+INSERT INTO public.my_new_table (name) VALUES ('example');
+
+ALTER TABLE public.existing_table ADD COLUMN new_column INTEGER;
+```
+
+**✅ Correct - Do this instead:**
+```sql
+-- This will work in any schema
+CREATE TABLE my_new_table (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255)
+);
+
+INSERT INTO my_new_table (name) VALUES ('example');
+
+ALTER TABLE existing_table ADD COLUMN new_column INTEGER;
+```
+
+The migration system will automatically apply the migration in the correct schema context, so explicit schema qualification is unnecessary and will cause issues in deployments where Lakekeeper is deployed to a custom schema.
+
 ### Inspecting the db
 
 The db schema is the result of all migrations applied in order. To inspect it you can:
