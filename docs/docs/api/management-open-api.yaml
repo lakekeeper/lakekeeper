@@ -5965,6 +5965,9 @@ components:
         - grant_manage_grants
         - change_ownership
     Period:
+      allOf:
+        - $ref: '#/components/schemas/PeriodData'
+    PeriodData:
       oneOf:
         - type: object
           required:

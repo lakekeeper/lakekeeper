@@ -49,6 +49,7 @@ pub(crate) static DEPENDENT_SCHEMAS: LazyLock<HashMap<String, RefOr<Schema>>> =
             RetentionPeriod::schema(),
         );
         map.insert(Period::name().to_string(), Period::schema());
+        map.insert(PeriodData::name().to_string(), PeriodData::schema());
         map
     });
 
