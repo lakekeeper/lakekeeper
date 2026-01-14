@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/lakekeeper/lakekeeper/compare/v0.11.1...v0.11.1) (2026-01-14)
+
+
+### Bug Fixes
+
+* Remove explicit schema qualification and update developer guide ([#1564](https://github.com/lakekeeper/lakekeeper/issues/1564)) ([b5f7cc9](https://github.com/lakekeeper/lakekeeper/commit/b5f7cc919c8102081453b2b627242647ad8a20c1))
+
 ## [0.11.1](https://github.com/lakekeeper/lakekeeper/compare/v0.11.0...v0.11.1) (2026-01-06)
 
 
