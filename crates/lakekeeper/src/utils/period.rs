@@ -25,6 +25,7 @@ impl Period {
         })
     }
 
+    #[must_use]
     pub fn data(&self) -> PeriodData {
         self.data
     }
