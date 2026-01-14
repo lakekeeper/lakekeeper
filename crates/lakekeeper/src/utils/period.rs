@@ -9,6 +9,7 @@ pub enum Period {
 }
 
 impl Period {
+    #[must_use]
     pub fn with_days(days: NonZeroDays) -> Self {
         Self::Days(days)
     }

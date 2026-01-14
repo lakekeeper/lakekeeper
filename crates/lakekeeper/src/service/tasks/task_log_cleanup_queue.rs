@@ -255,25 +255,23 @@ async fn cleanup_tasks<C: CatalogStore>(
 
 const DEFAULT_CLEANUP_PERIOD_DAYS: u16 = 1;
 fn get_cleanup_period(task: &TaskLogCleanupTask) -> Result<CleanupPeriod> {
-    match &task.config {
-        Some(config) => Ok(config.cleanup_period()),
-        None => {
-            let non_zero_days = NonZeroDays::try_from(DEFAULT_CLEANUP_PERIOD_DAYS)?;
-            let period = Period::with_days(non_zero_days);
-            Ok(CleanupPeriod(period))
-        }
+    if let Some(config) = &task.config {
+        Ok(config.cleanup_period())
+    } else {
+        let non_zero_days = NonZeroDays::try_from(DEFAULT_CLEANUP_PERIOD_DAYS)?;
+        let period = Period::with_days(non_zero_days);
+        Ok(CleanupPeriod(period))
     }
 }
 
 const DEFAULT_RETENTION_PERIOD_DAYS: u16 = 90;
 fn get_retention_period(task: &TaskLogCleanupTask) -> Result<RetentionPeriod> {
-    match &task.config {
-        Some(config) => Ok(config.retention_period()),
-        None => {
-            let non_zero_days = NonZeroDays::try_from(DEFAULT_RETENTION_PERIOD_DAYS)?;
-            let period = Period::with_days(non_zero_days);
-            Ok(RetentionPeriod(period))
-        }
+    if let Some(config) = &task.config {
+        Ok(config.retention_period())
+    } else {
+        let non_zero_days = NonZeroDays::try_from(DEFAULT_RETENTION_PERIOD_DAYS)?;
+        let period = Period::with_days(non_zero_days);
+        Ok(RetentionPeriod(period))
     }
 }
 
