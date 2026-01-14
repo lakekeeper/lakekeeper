@@ -10,7 +10,10 @@ use crate::{
         endpoints::ManagementV1Endpoint,
         management::v1::task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
     },
-    service::{authz::Authorizer, tasks::QueueApiConfig},
+    service::{
+        authz::Authorizer,
+        tasks::{BUILT_IN_DEPENDENT_SCHEMAS, QueueApiConfig},
+    },
 };
 
 #[derive(Debug, OpenApi)]
@@ -164,6 +167,12 @@ fn fix_warehouse_task_queue_config_paths(
         tracing::warn!("No path found for SetTaskQueueConfig, not patching queue configs in.");
         return;
     };
+
+    let dependent_schemas = BUILT_IN_DEPENDENT_SCHEMAS
+        .iter()
+        .map(|(name, schema)| (name.clone(), schema.clone()));
+
+    comps.schemas.extend(dependent_schemas);
 
     for QueueApiConfig {
         queue_name,

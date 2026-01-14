@@ -1,3 +1,5 @@
+#[cfg(feature = "open-api")]
+use std::collections::HashMap;
 use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
 use chrono::Utc;
@@ -24,6 +26,7 @@ pub use task_registry::{
 };
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
+pub mod task_log_cleanup_queue;
 
 #[cfg(test)]
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
@@ -37,8 +40,18 @@ pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
         vec![
             tabular_expiration_queue::API_CONFIG.clone(),
             tabular_purge_queue::API_CONFIG.clone(),
+            task_log_cleanup_queue::API_CONFIG.clone(),
         ]
     });
+
+#[cfg(feature = "open-api")]
+pub static BUILT_IN_DEPENDENT_SCHEMAS: std::sync::LazyLock<
+    HashMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>,
+> = std::sync::LazyLock::new(|| {
+    let mut map = HashMap::new();
+    map.extend(task_log_cleanup_queue::DEPENDENT_SCHEMAS.clone());
+    map
+});
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]

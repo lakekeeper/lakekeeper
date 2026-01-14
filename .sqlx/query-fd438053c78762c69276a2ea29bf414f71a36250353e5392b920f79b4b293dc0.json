@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH insert_projects AS (\n                INSERT INTO project (project_id, project_name)\n                VALUES\n                (\n                    $1,\n                    'My Project'\n                ),\n                (\n                    $2,\n                    'Other Project'\n                )\n            ),\n            insert_warehouse AS (\n                INSERT INTO warehouse (warehouse_id, warehouse_name, project_id, status, \"tabular_delete_mode\")\n                VALUES\n                (\n                    $3,\n                    'My Warehouse',\n                    $1,\n                    'active',\n                    'hard'\n                ),\n                (\n                    $4,\n                    'Other Warehouse',\n                    $2,\n                    'active',\n                    'hard'\n                )\n            )\n            INSERT INTO task_log (\n                task_id,\n                attempt,\n                warehouse_id,\n                queue_name,\n                task_data,\n                status,\n                entity_id,\n                entity_name,\n                entity_type,\n                project_id,\n                attempt_scheduled_for,\n                task_created_at,\n                created_at\n            )\n            VALUES\n            (\n                $5,\n                1,\n                $3,\n                'metadata_sync',\n                '{\"table_id\": \"customers\"}',\n                'success'::task_final_status,\n                '550e8400-e29b-41d4-a716-446655440101',\n                ARRAY['customers'],\n                'table',\n                $1,\n                now() - make_interval(days => ($7 + 5)),\n                now() - make_interval(days => ($7 + 5)),\n                now() - make_interval(days => ($7 + 5))\n            ),\n            (\n                $6,\n                1,\n                $4,\n                'file_compaction',\n                '{\"path\": \"/warehouse/parquet\"}',\n                'failed',\n                NULL,\n                NULL,\n                'warehouse',\n                $2,\n                now() - make_interval(days => ($7 + 5)),\n                now() - make_interval(days => ($7 + 5)),\n                now() - make_interval(days => ($7 + 5))\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fd438053c78762c69276a2ea29bf414f71a36250353e5392b920f79b4b293dc0"
+}

@@ -232,6 +232,8 @@ pub struct DynAppConfig {
     pub task_tabular_expiration_workers: usize,
     /// Number of workers to spawn for purging tabulars. (default: 2)
     pub task_tabular_purge_workers: usize,
+    /// Number of workers to spawn for cleaning task logs. (default: 2)
+    pub task_log_cleanup_workers: usize,
     // ------------- Tabular -------------
     /// Delay in seconds after which a tabular will be deleted
     #[serde(
@@ -577,6 +579,7 @@ impl Default for DynAppConfig {
             task_poll_interval: Duration::from_secs(10),
             task_tabular_expiration_workers: 2,
             task_tabular_purge_workers: 2,
+            task_log_cleanup_workers: 2,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
