@@ -196,7 +196,7 @@ async fn cleanup_tasks<C: CatalogStore>(
     let schedule_date = calculate_next_schedule_date(cleanup_period);
     let retention_period = get_retention_period(task)?;
 
-    let project_id = &task.task_metadata.project_id;
+    let project_id = task.task_metadata.project_id();
     let filter = match task.task_metadata.entity {
         TaskEntity::Project => TaskLogCleanupFilter::Project,
         TaskEntity::Warehouse { warehouse_id }
@@ -216,7 +216,7 @@ async fn cleanup_tasks<C: CatalogStore>(
         .map_err(|e| {
             e.append_detail(format!(
                 "Failed to cleanup old tasks for `{QN_STR}` task. Original Task id was `{}`.",
-                task.id
+                task.task_id()
             ))
         })?;
 
@@ -234,7 +234,7 @@ async fn cleanup_tasks<C: CatalogStore>(
     .map_err(|e| {
         e.append_detail(format!(
             "Failed to queue next `{QN_STR}` task. Original Task id was `{}`.",
-            task.id
+            task.task_id()
         ))
     })?;
 
