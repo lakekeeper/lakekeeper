@@ -24,7 +24,7 @@ impl Default for Period {
 #[derive(Clone, Copy, PartialEq, Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct NonZeroDays {
-    #[cfg_attr(feature = "open-api", schema(minimum = 1))]
+    #[cfg_attr(feature = "open-api", schema(minimum = 1, format = "uint16"))]
     days: u16,
 }
 

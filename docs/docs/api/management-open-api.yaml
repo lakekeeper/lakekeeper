@@ -5972,7 +5972,7 @@ components:
           properties:
             days:
               type: integer
-              format: int32
+              format: uint16
               minimum: 1
     ProjectAction:
       type: string
