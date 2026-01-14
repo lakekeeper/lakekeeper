@@ -34,7 +34,11 @@
                 "table",
                 "view",
                 "project",
-                "warehouse"
+                "warehouse",
+                "namespace",
+                "role",
+                "user",
+                "server"
               ]
             }
           }

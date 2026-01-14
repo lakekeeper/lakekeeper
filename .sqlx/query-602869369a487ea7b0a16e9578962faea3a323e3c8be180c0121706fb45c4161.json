@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH insert_projects AS (\n                INSERT INTO project (project_id, project_name)\n                VALUES\n                (\n                    $1,\n                    'My Project'\n                )\n            ),\n            insert_warehouse AS (\n                INSERT INTO warehouse (warehouse_id, warehouse_name, project_id, status, \"tabular_delete_mode\")\n                VALUES\n                (\n                    $2,\n                    'My Warehouse',\n                    $1,\n                    'active',\n                    'hard'\n                )\n            )\n            INSERT INTO task_log (\n                task_id,\n                attempt,\n                warehouse_id,\n                queue_name,\n                task_data,\n                status,\n                entity_id,\n                entity_name,\n                entity_type,\n                project_id,\n                attempt_scheduled_for,\n                task_created_at,\n                created_at\n            )\n            VALUES\n            (\n                $3,\n                1,\n                NULL,\n                'clean_tasks',\n                '{}'::jsonb,\n                'success'::task_final_status,\n                NULL,\n                NULL,\n                'project'::entity_type,\n                $1,\n                now() - make_interval(days => ($6 + 5)::int),\n                now() - make_interval(days => ($6 + 5)::int),\n                now() - make_interval(days => ($6 + 5)::int)\n            ),\n            (\n                $4,\n                1,\n                $2,\n                'remove_orphaned_files',\n                '{}'::jsonb,\n                'success'::task_final_status,\n                NULL,\n                NULL,\n                'warehouse'::entity_type,\n                $1,\n                now() - make_interval(days => ($6 + 5)::int),\n                now() - make_interval(days => ($6 + 5)::int),\n                now() - make_interval(days => ($6 + 5)::int)\n            ),\n            (\n                $5,\n                1,\n                $2,\n                'remove_tabular',\n                '{}'::jsonb,\n                'success'::task_final_status,\n                '550e8400-e29b-41d4-a716-446655440101'::uuid,\n                ARRAY['customers']::text[],\n                'table'::entity_type,\n                $1,\n                now() - make_interval(days => ($6 + 5)::int),\n                now() - make_interval(days => ($6 + 5)::int),\n                now() - make_interval(days => ($6 + 5)::int)\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "602869369a487ea7b0a16e9578962faea3a323e3c8be180c0121706fb45c4161"
+}
