@@ -208,7 +208,7 @@ async fn cleanup_tasks<C: CatalogStore>(
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
-            e.append_detail(format!("Failed to start transaction for `{QN_STR}`Queue."))
+            e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue."))
         })?;
 
     C::cleanup_task_logs_older_than(trx.transaction(), retention_period, project_id, filter)
