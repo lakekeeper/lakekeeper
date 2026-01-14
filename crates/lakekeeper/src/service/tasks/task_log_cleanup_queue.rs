@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::{sync::LazyLock, time::Duration};
 
 use chrono::{DateTime, Utc};
-use derive_more::Debug;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 #[cfg(feature = "open-api")]
