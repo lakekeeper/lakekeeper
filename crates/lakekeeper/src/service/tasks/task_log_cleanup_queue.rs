@@ -94,8 +94,8 @@ impl RetentionPeriod {
     }
 
     #[must_use]
-    pub fn period(&self) -> Period {
-        self.0
+    pub fn period(&self) -> PeriodData {
+        self.0.data()
     }
 }
 
@@ -114,8 +114,8 @@ impl CleanupPeriod {
     }
 
     #[must_use]
-    pub fn period(&self) -> Period {
-        self.0
+    pub fn period(&self) -> PeriodData {
+        self.0.data()
     }
 }
 
@@ -273,7 +273,7 @@ fn get_retention_period(task: &TaskLogCleanupTask) -> Result<RetentionPeriod> {
 }
 
 fn calculate_next_schedule_date(cleanup_period: CleanupPeriod) -> DateTime<Utc> {
-    match cleanup_period.period().data() {
+    match cleanup_period.period() {
         PeriodData::Days(days) => Utc::now() + chrono::Duration::days(i64::from(days)),
     }
 }
