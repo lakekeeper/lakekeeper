@@ -1,0 +1,18 @@
+site_name: docs/0.6.x
+
+plugins:
+  - search
+
+nav:
+  - Concepts: concepts.md
+  - User Guide:
+      - bootstrap.md
+      - storage.md
+      - authentication.md
+      - authorization.md
+      - opa.md
+      - production.md
+  - Configuration: configuration.md
+  - Contribute:
+      - developer-guide.md
+      - customize.md
