@@ -88,7 +88,6 @@ impl RetentionPeriod {
         Self(period)
     }
 
-    #[must_use]
     pub fn with_days(days: u16) -> Result<Self> {
         Ok(Self(Period::with_days(days)?))
     }
@@ -108,7 +107,6 @@ impl CleanupPeriod {
         Self(period)
     }
 
-    #[must_use]
     pub fn with_days(days: u16) -> Result<Self> {
         Ok(Self(Period::with_days(days)?))
     }
