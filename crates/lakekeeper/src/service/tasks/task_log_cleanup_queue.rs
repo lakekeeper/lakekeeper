@@ -27,7 +27,7 @@ use crate::{
             TaskExecutionDetails,
         },
     },
-    utils::period::Period,
+    utils::period::{Period, PeriodData},
 };
 
 const QN_STR: &str = "task_log_cleanup";
@@ -89,8 +89,8 @@ impl RetentionPeriod {
     }
 
     #[must_use]
-    pub fn days(days: u16) -> Self {
-        Self(Period::Days(days))
+    pub fn with_days(days: u16) -> Result<Self> {
+        Ok(Self(Period::with_days(days)?))
     }
 
     #[must_use]
@@ -109,8 +109,8 @@ impl CleanupPeriod {
     }
 
     #[must_use]
-    pub fn days(days: u16) -> Self {
-        Self(Period::Days(days))
+    pub fn with_days(days: u16) -> Result<Self> {
+        Ok(Self(Period::with_days(days)?))
     }
 
     #[must_use]
@@ -195,9 +195,9 @@ async fn cleanup_tasks<C: CatalogStore>(
     catalog_state: C::State,
     task: &TaskLogCleanupTask,
 ) -> Result<()> {
-    let cleanup_period = get_cleanup_period(task);
+    let cleanup_period = get_cleanup_period(task)?;
     let schedule_date = calculate_next_schedule_date(cleanup_period);
-    let retention_period = get_retention_period(task);
+    let retention_period = get_retention_period(task)?;
 
     let project_id = &task.task_metadata.project_id;
     let filter = match task.task_metadata.entity {
@@ -253,24 +253,28 @@ async fn cleanup_tasks<C: CatalogStore>(
 }
 
 const DEFAULT_CLEANUP_PERIOD_DAYS: u16 = 1;
-fn get_cleanup_period(task: &TaskLogCleanupTask) -> CleanupPeriod {
+fn get_cleanup_period(task: &TaskLogCleanupTask) -> Result<CleanupPeriod> {
     match &task.config {
-        Some(config) => config.cleanup_period(),
-        None => CleanupPeriod(Period::Days(DEFAULT_CLEANUP_PERIOD_DAYS)),
+        Some(config) => Ok(config.cleanup_period()),
+        None => Ok(CleanupPeriod(Period::with_days(
+            DEFAULT_CLEANUP_PERIOD_DAYS,
+        )?)),
     }
 }
 
 const DEFAULT_RETENTION_PERIOD_DAYS: u16 = 90;
-fn get_retention_period(task: &TaskLogCleanupTask) -> RetentionPeriod {
+fn get_retention_period(task: &TaskLogCleanupTask) -> Result<RetentionPeriod> {
     match &task.config {
-        Some(config) => config.retention_period(),
-        None => RetentionPeriod(Period::Days(DEFAULT_RETENTION_PERIOD_DAYS)),
+        Some(config) => Ok(config.retention_period()),
+        None => Ok(RetentionPeriod(Period::with_days(
+            DEFAULT_RETENTION_PERIOD_DAYS,
+        )?)),
     }
 }
 
 fn calculate_next_schedule_date(cleanup_period: CleanupPeriod) -> DateTime<Utc> {
-    match cleanup_period {
-        CleanupPeriod(Period::Days(days)) => Utc::now() + chrono::Duration::days(i64::from(days)),
+    match cleanup_period.period().data() {
+        PeriodData::Days(days) => Utc::now() + chrono::Duration::days(i64::from(days)),
     }
 }
 
@@ -293,7 +297,13 @@ mod test {
         }
         "#;
         let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
-        assert_eq!(config.cleanup_period, CleanupPeriod(Period::Days(7)));
-        assert_eq!(config.retention_period, RetentionPeriod(Period::Days(90)));
+        assert_eq!(
+            config.cleanup_period,
+            CleanupPeriod(Period::with_days(7).unwrap())
+        );
+        assert_eq!(
+            config.retention_period,
+            RetentionPeriod(Period::with_days(90).unwrap())
+        );
     }
 }

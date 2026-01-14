@@ -5,7 +5,7 @@ use crate::{
     api::Result,
     implementations::postgres::dbutils::DBErrorHandler as _,
     service::tasks::task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter},
-    utils::period::Period,
+    utils::period::PeriodData,
 };
 
 pub(crate) async fn cleanup_task_logs_older_than(
@@ -18,8 +18,8 @@ pub(crate) async fn cleanup_task_logs_older_than(
         TaskLogCleanupFilter::Project => None,
         TaskLogCleanupFilter::Warehouse { warehouse_id } => Some(warehouse_id),
     };
-    let query = match retention_period.period() {
-        Period::Days(days) => query!(
+    let query = match retention_period.period().data() {
+        PeriodData::Days(days) => query!(
             r#"
             DELETE FROM task_log
             WHERE created_at < now() - make_interval(days => $1)
@@ -62,8 +62,8 @@ mod test {
         let project_id = ProjectId::new_random();
         let filter = TaskLogCleanupFilter::Project;
 
-        let retention_period = RetentionPeriod::days(90);
-        let Period::Days(days) = retention_period.period();
+        let retention_period = RetentionPeriod::with_days(90).unwrap();
+        let PeriodData::Days(days) = retention_period.period().data();
 
         let kept_task_log_ids = [
             Uuid::parse_str("550e8400-e29b-41d4-a716-446655440003").unwrap(),
@@ -204,8 +204,8 @@ mod test {
 
         let filter = TaskLogCleanupFilter::Project;
 
-        let retention_period = RetentionPeriod::days(90);
-        let Period::Days(days) = retention_period.period();
+        let retention_period = RetentionPeriod::with_days(90).unwrap();
+        let PeriodData::Days(days) = retention_period.period().data();
 
         query!(
             r#"
@@ -330,8 +330,8 @@ mod test {
         let warehouse_task_id = Uuid::new_v4();
         let tabular_task_id = Uuid::new_v4();
 
-        let retention_period = RetentionPeriod::days(90);
-        let Period::Days(days) = retention_period.period();
+        let retention_period = RetentionPeriod::with_days(90).unwrap();
+        let PeriodData::Days(days) = retention_period.period().data();
 
         query!(
             r#"
@@ -456,8 +456,8 @@ mod test {
         let old_task_id = Uuid::new_v4();
         let recent_task_id = Uuid::new_v4();
 
-        let retention_period = RetentionPeriod::days(90);
-        let Period::Days(days) = retention_period.period();
+        let retention_period = RetentionPeriod::with_days(90).unwrap();
+        let PeriodData::Days(days) = retention_period.period().data();
 
         query!(
             r#"
