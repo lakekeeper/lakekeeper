@@ -42,6 +42,17 @@ namespace Lakekeeper {
     name: String,
     protected: Bool,    
     properties: Set<{key: String, value: String}>,
+
+    // If a table is created in this namespace, these properties are requested for the table
+    create_table_properties?: Set<{key: String, value: String}>,
+    // If a view is created in this namespace, these properties are requested for the view
+    create_view_properties?: Set<{key: String, value: String}>,
+    // If a child namespace is created in this namespace, these properties are requested for the child namespace
+    create_namespace_properties?: Set<{key: String, value: String}>,
+    // Properties to be updated on this namespace
+    namespace_properties_updated?: Set<{key: String, value: String}>,
+    // Properties to be removed from this namespace
+    namespace_properties_removed?: Set<String>,
   };
 
   // Table entity for Iceberg tables
@@ -54,6 +65,11 @@ namespace Lakekeeper {
     name: String,
     protected: Bool,
     properties: Set<{key: String, value: String}>,
+
+    // Properties to be updated on this table
+    table_properties_updated?: Set<{key: String, value: String}>,
+    // Properties to be removed from this table
+    table_properties_removed?: Set<String>,
   };
 
   // View entity for Iceberg views
@@ -66,6 +82,11 @@ namespace Lakekeeper {
     name: String,
     protected: Bool,
     properties: Set<{key: String, value: String}>,
+
+    // Properties to be updated on this view
+    view_properties_updated?: Set<{key: String, value: String}>,
+    // Properties to be removed from this view
+    view_properties_removed?: Set<String>,
   };
 
   // ============================================================================
@@ -86,12 +107,12 @@ namespace Lakekeeper {
   action "ProjectActions";
   action "ProjectDescribeActions" in ["ProjectActions", "ProjectModifyActions"];
   action "ProjectModifyActions" in ["ProjectActions"];
-  action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles, SearchRoles, GetProjectEndpointStatistics in ["ProjectDescribeActions"]
+  action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles, SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig, GetProjectTasks in ["ProjectDescribeActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project]
     };
-  action IntrospectProjectAuthorization, CreateWarehouse, DeleteProject, RenameProject, CreateRole in ["ProjectModifyActions"]
+  action IntrospectProjectAuthorization, CreateWarehouse, DeleteProject, RenameProject, CreateRole, ModifyProjectTaskQueueConfig, ControlProjectTasks in ["ProjectModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project]
@@ -99,7 +120,7 @@ namespace Lakekeeper {
   
   // ---------- Role Actions ----------
   action "RoleActions";
-  action AssumeRole, DeleteRole, UpdateRole, ReadRole, IntrospectRoleAuthorization in ["RoleActions"]
+  action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata, IntrospectRoleAuthorization in ["RoleActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Role]
