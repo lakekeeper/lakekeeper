@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, LazyLock},
 };
 
@@ -43,6 +43,61 @@ mod role;
 pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
+
+pub use ListAllowedEntitiesResponse::NotImplemented as ListNotImplemented;
+
+/// Response from list_allowed_tables/list_allowed_views methods
+#[derive(Debug, Clone)]
+pub enum ListAllowedEntitiesResponse<T> {
+    /// The method is not implemented by the authorizer (fallback to legacy behavior)
+    NotImplemented,
+    /// All entities are allowed (user has ListEverything or similar permission)
+    All,
+    /// Only specific entities are allowed
+    Ids(HashSet<T>),
+}
+
+impl<T: Eq + std::hash::Hash> PartialEq for ListAllowedEntitiesResponse<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NotImplemented, Self::NotImplemented) => true,
+            (Self::All, Self::All) => true,
+            (Self::Ids(a), Self::Ids(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl<T: Eq + std::hash::Hash> Eq for ListAllowedEntitiesResponse<T> {}
+
+impl<T> ListAllowedEntitiesResponse<T> {
+    /// Check if the authorizer has implemented this method
+    pub fn is_implemented(&self) -> bool {
+        !matches!(self, Self::NotImplemented)
+    }
+
+    /// Check if a specific ID is allowed
+    pub fn is_allowed(&self, id: &T) -> bool
+    where
+        T: Eq + std::hash::Hash,
+    {
+        match self {
+            Self::NotImplemented => false, // Should not be called when not implemented
+            Self::All => true,
+            Self::Ids(ids) => ids.contains(id),
+        }
+    }
+
+    /// Convert to a HashSet of IDs, returning an empty set for `All` or `NotImplemented` variants.
+    /// This is useful when you need to work with a concrete set of IDs,
+    /// treating `All` as "no specific filtering needed" (empty set).
+    pub fn into_ids_or_empty(self) -> HashSet<T> {
+        match self {
+            Self::NotImplemented | Self::All => HashSet::new(),
+            Self::Ids(ids) => ids,
+        }
+    }
+}
 
 /// Custom deserializer that converts various JSON values to strings
 fn deserialize_string_map<'de, D>(
@@ -754,6 +809,8 @@ where
     /// This is used to clean up permissions for the table.
     async fn delete_table(&self, warehouse_id: WarehouseId, table_id: TableId) -> Result<()>;
 
+    // async fn list_table(&self, warehouse_id: WarehouseId, table_id: TableId) -> Result<()>;
+
     /// Hook that is called when a new view is created.
     /// This is used to set up the initial permissions for the view.
     async fn create_view(
@@ -767,6 +824,39 @@ where
     /// Hook that is called when a view is deleted.
     /// This is used to clean up permissions for the view.
     async fn delete_view(&self, warehouse_id: WarehouseId, view_id: ViewId) -> Result<()>;
+
+    /// List tables the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific table IDs.
+    async fn list_allowed_tables(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<TableId>, AuthorizationBackendUnavailable> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
+    }
+
+    /// List views the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific view IDs.
+    async fn list_allowed_views(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<ViewId>, AuthorizationBackendUnavailable> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
+    }
+
+    /// List namespaces the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific namespace IDs.
+    async fn list_allowed_namespaces(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<NamespaceId>, AuthorizationBackendUnavailable> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
+    }
 }
 
 #[cfg(test)]

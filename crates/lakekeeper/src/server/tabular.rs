@@ -53,9 +53,9 @@ macro_rules! list_entities {
             use crate::{
                 server::UnfilteredPage,
                 service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular},
+                service::authz::ListAllowedEntitiesResponse,
             };
 
-            // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
             let warehouse_id = $namespace_response.warehouse_id();
@@ -76,6 +76,8 @@ macro_rules! list_entities {
                     query,
                 )
                 .await?;
+
+                // Check ListEverything permission first (fast path)
                 let can_list_everything = authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
@@ -88,38 +90,54 @@ macro_rules! list_entities {
                     .await?
                     .into_inner();
 
+                // Get allowed entity IDs if not ListEverything
+                let allowed_response = if can_list_everything {
+                    ListAllowedEntitiesResponse::All
+                } else {
+                    paste! {
+                        authorizer.[<list_allowed_ $entity:lower s>](
+                            &request_metadata,
+                            warehouse_id,
+                        ).await?
+                    }
+                };
+
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
 
-                let masks = if can_list_everything {
-                    // No need to check individual permissions if everything in namespace can
-                    // be listed.
-                    vec![true; ids.len()]
-                } else {
-                    let requested_namespace_ids = idents
-                        .iter()
-                        .map(|id| BasicTabularInfo::namespace_id(&id.tabular))
-                        .collect::<Vec<_>>();
-                    let namespaces = C::get_namespaces_by_id(
-                        warehouse_id,
-                        &requested_namespace_ids,
-                        trx.transaction(),
-                    )
-                    .await?;
+                // Filter based on allowed IDs, with fallback to legacy behavior
+                let masks: Vec<bool> = match &allowed_response {
+                    ListAllowedEntitiesResponse::All => vec![true; ids.len()],
+                    ListAllowedEntitiesResponse::Ids(_) => {
+                        ids.iter().map(|id| allowed_response.is_allowed(id)).collect()
+                    }
+                    ListAllowedEntitiesResponse::NotImplemented => {
+                        // Fallback to legacy per-item authorization check
+                        let requested_namespace_ids = idents
+                            .iter()
+                            .map(|id| BasicTabularInfo::namespace_id(&id.tabular))
+                            .collect::<Vec<_>>();
+                        let namespaces = C::get_namespaces_by_id(
+                            warehouse_id,
+                            &requested_namespace_ids,
+                            trx.transaction(),
+                        )
+                        .await?;
 
-                    paste! {
-                        authorizer.[<are_allowed_ $entity:lower _actions_vec>](
-                            &request_metadata,
-                            None,
-                            &resolved_warehouse,
-                            &namespaces,
-                            &idents.iter().map(|t| Ok::<_, ErrorModel>((
-                                require_namespace_for_tabular(&namespaces, &t.tabular)?,
-                                t,
-                                [<Catalog $entity Action>]::IncludeInList)
-                            )
-                            ).collect::<Result<Vec<_>, _>>()?,
-                        ).await?.into_inner()
+                        paste! {
+                            authorizer.[<are_allowed_ $entity:lower _actions_vec>](
+                                &request_metadata,
+                                None,
+                                &resolved_warehouse,
+                                &namespaces,
+                                &idents.iter().map(|t| Ok::<_, ErrorModel>((
+                                    require_namespace_for_tabular(&namespaces, &t.tabular)?,
+                                    t,
+                                    [<Catalog $entity Action>]::IncludeInList)
+                                )
+                                ).collect::<Result<Vec<_>, _>>()?,
+                            ).await?.into_inner()
+                        }
                     }
                 };
 
