@@ -46,16 +46,12 @@ pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
 #[cfg(feature = "open-api")]
 #[allow(clippy::declare_interior_mutable_const)]
 pub static BUILT_IN_PROJECT_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
-    std::sync::LazyLock::new(|| {
-        vec![
-            task_log_cleanup_queue::API_CONFIG.clone(),
-        ]
-    });
+    std::sync::LazyLock::new(|| vec![task_log_cleanup_queue::API_CONFIG.clone()]);
 
 #[cfg(feature = "open-api")]
 pub static BUILT_IN_DEPENDENT_SCHEMAS: std::sync::LazyLock<
     HashMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>,
-> = std::sync::LazyLock::new(|| HashMap::new());
+> = std::sync::LazyLock::new(HashMap::new);
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]

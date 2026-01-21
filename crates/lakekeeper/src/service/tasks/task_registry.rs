@@ -182,7 +182,10 @@ impl TaskQueueRegistry {
         self
     }
 
-    pub async fn register_project_queue<T: TaskConfig>(&self, task_queue: QueueRegistration) -> &Self {
+    pub async fn register_project_queue<T: TaskConfig>(
+        &self,
+        task_queue: QueueRegistration,
+    ) -> &Self {
         let QueueRegistration {
             queue_name,
             worker_fn,
@@ -278,21 +281,23 @@ impl TaskQueueRegistry {
         .await;
 
         let catalog_state_for_task_log_cleanup = catalog_state.clone();
-        self.register_project_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(QueueRegistration {
-            queue_name: &task_log_cleanup_queue::QUEUE_NAME,
-            worker_fn: Arc::new(move |cancellation_token| {
-                let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
-                Box::pin(async move {
-                    task_log_cleanup_queue::log_cleanup_worker::<C>(
-                        catalog_state_clone,
-                        poll_interval,
-                        cancellation_token,
-                    )
-                    .await;
-                })
-            }),
-            num_workers: CONFIG.task_log_cleanup_workers,
-        })
+        self.register_project_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(
+            QueueRegistration {
+                queue_name: &task_log_cleanup_queue::QUEUE_NAME,
+                worker_fn: Arc::new(move |cancellation_token| {
+                    let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
+                    Box::pin(async move {
+                        task_log_cleanup_queue::log_cleanup_worker::<C>(
+                            catalog_state_clone,
+                            poll_interval,
+                            cancellation_token,
+                        )
+                        .await;
+                    })
+                }),
+                num_workers: CONFIG.task_log_cleanup_workers,
+            },
+        )
         .await;
 
         self

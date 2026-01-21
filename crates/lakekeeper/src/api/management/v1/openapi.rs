@@ -364,7 +364,7 @@ fn add_dependent_schemas(
 ) {
     let dependent_schemas = dependent_schemas
         .iter()
-        .map(|(name, schema)| (name.to_string(), (*schema).clone()));
+        .map(|(name, schema)| (name.clone(), (*schema).clone()));
     let Some(comps) = doc.components.as_mut() else {
         let mut comps = ComponentsBuilder::new().build();
         comps.schemas.extend(dependent_schemas);

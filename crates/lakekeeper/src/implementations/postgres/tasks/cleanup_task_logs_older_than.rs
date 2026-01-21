@@ -34,6 +34,7 @@ mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         WarehouseId,
         api::management::v1::{tasks::ListTasksRequest, warehouse::TabularDeleteProfile},
@@ -53,8 +54,6 @@ mod test {
             },
         },
     };
-
-    use super::*;
 
     const QN_STR: &str = "dummy";
     static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
@@ -85,7 +84,10 @@ mod test {
 
     impl TaskExecutionDetails for DummyExecutionDetails {}
 
-    async fn get_remaining_task_log_ids(pool: PgPool, project_ids: impl IntoIterator<Item = &ProjectId>) -> Vec<Uuid> {
+    async fn get_remaining_task_log_ids(
+        pool: PgPool,
+        project_ids: impl IntoIterator<Item = &ProjectId>,
+    ) -> Vec<Uuid> {
         let mut tx = pool.begin().await.unwrap();
 
         let filters: Vec<TaskFilter> = project_ids
@@ -180,11 +182,11 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
 
         query(
-            r#"
+            r"
             UPDATE task_log
             SET created_at = $2
             WHERE task_id = $1
-            "#,
+            ",
         )
         .bind(task_id)
         .bind(created_at)

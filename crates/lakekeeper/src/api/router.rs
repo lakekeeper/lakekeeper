@@ -147,7 +147,11 @@ pub async fn new_full_router<
         );
     let registered_api_config = state.v1_state.registered_task_queues.api_config().await;
     let queue_api_configs = registered_api_config.iter().collect::<Vec<_>>();
-    let registered_project_api_config = state.v1_state.registered_project_task_queues.api_config().await;
+    let registered_project_api_config = state
+        .v1_state
+        .registered_project_task_queues
+        .api_config()
+        .await;
     let project_queue_api_configs = registered_project_api_config.iter().collect::<Vec<_>>();
     let router = maybe_merge_swagger_router(router, &queue_api_configs, &project_queue_api_configs);
     let router = router
