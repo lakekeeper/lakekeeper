@@ -90,6 +90,7 @@ impl CatalogStore for super::PostgresBackend {
     type Transaction = PostgresTransaction;
     type State = CatalogState;
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_server_info(
         catalog_state: Self::State,
     ) -> std::result::Result<ServerInfo, ErrorModel> {
@@ -97,6 +98,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     // ---------------- Bootstrap ----------------
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn bootstrap<'a>(
         terms_accepted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -104,6 +106,7 @@ impl CatalogStore for super::PostgresBackend {
         bootstrap(terms_accepted, &mut **transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_warehouse_by_name_impl(
         warehouse_name: &str,
         project_id: &ProjectId,
@@ -112,6 +115,7 @@ impl CatalogStore for super::PostgresBackend {
         get_warehouse_by_name(warehouse_name, project_id, catalog_state).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_namespaces_impl<'a>(
         warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
@@ -120,6 +124,7 @@ impl CatalogStore for super::PostgresBackend {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -129,6 +134,7 @@ impl CatalogStore for super::PostgresBackend {
         create_namespace(warehouse_id, namespace_id, request, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_namespaces_by_id_impl<'a, 'b, SOT>(
         warehouse_id: WarehouseId,
         namespaces: &[NamespaceId],
@@ -152,6 +158,7 @@ impl CatalogStore for super::PostgresBackend {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_namespaces_by_ident_impl<'a, 'b, SOT>(
         warehouse_id: WarehouseId,
         namespaces: &[&NamespaceIdent],
@@ -175,6 +182,7 @@ impl CatalogStore for super::PostgresBackend {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn drop_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -184,6 +192,7 @@ impl CatalogStore for super::PostgresBackend {
         drop_namespace(warehouse_id, namespace_id, flags, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn update_namespace_properties_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -193,6 +202,7 @@ impl CatalogStore for super::PostgresBackend {
         update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_table_impl<'a>(
         table_creation: TableCreation<'_>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
@@ -200,6 +210,7 @@ impl CatalogStore for super::PostgresBackend {
         create_table(table_creation, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn rename_tabular_impl(
         warehouse_id: WarehouseId,
         source_id: TabularId,
@@ -210,6 +221,7 @@ impl CatalogStore for super::PostgresBackend {
         rename_tabular(warehouse_id, source_id, source, destination, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn drop_tabular_impl<'a>(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
@@ -219,6 +231,7 @@ impl CatalogStore for super::PostgresBackend {
         drop_tabular(warehouse_id, tabular_id, force, None, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_tabular_infos_by_ident_impl(
         warehouse_id: WarehouseId,
         tabulars: &[TabularIdentBorrowed<'_>],
@@ -234,6 +247,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_tabular_infos_by_id_impl(
         warehouse_id: WarehouseId,
         tabulars: &[TabularId],
@@ -249,6 +263,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_tabular_infos_by_s3_location_impl(
         warehouse_id: WarehouseId,
         location: &Location,
@@ -259,6 +274,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     // Should also load staged tables but not tables of inactive warehouses
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn load_tables_impl<'a>(
         warehouse_id: WarehouseId,
         tables: impl IntoIterator<Item = TableId> + Send,
@@ -269,6 +285,7 @@ impl CatalogStore for super::PostgresBackend {
         load_tables(warehouse_id, tables, include_deleted, filters, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn clear_tabular_deleted_at_impl(
         tabular_ids: &[TabularId],
         warehouse_id: WarehouseId,
@@ -277,6 +294,7 @@ impl CatalogStore for super::PostgresBackend {
         clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn mark_tabular_as_deleted_impl(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
@@ -286,6 +304,7 @@ impl CatalogStore for super::PostgresBackend {
         mark_tabular_as_deleted(warehouse_id, tabular_id, force, None, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn commit_table_transaction_impl<'a>(
         warehouse_id: WarehouseId,
         commits: impl IntoIterator<Item = TableCommit> + Send,
@@ -295,6 +314,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     // ---------------- Role Management API ----------------
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
@@ -303,6 +323,7 @@ impl CatalogStore for super::PostgresBackend {
         create_roles(project_id, roles_to_create, &mut **transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn update_role_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
@@ -320,6 +341,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_role_source_system_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
@@ -329,6 +351,7 @@ impl CatalogStore for super::PostgresBackend {
         update_role_source_system(project_id, role_id, request, &mut **transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
         filter: CatalogListRolesFilter<'_>,
@@ -338,6 +361,7 @@ impl CatalogStore for super::PostgresBackend {
         list_roles(project_id, filter, pagination, &catalog_state.read_pool()).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
         role_id_filter: Option<&[RoleId]>,
@@ -353,6 +377,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
@@ -362,6 +387,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     // ---------------- User Management API ----------------
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_or_update_user<'a>(
         user_id: &UserId,
         name: &str,
@@ -381,6 +407,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn search_user(
         search_term: &str,
         catalog_state: Self::State,
@@ -389,6 +416,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     /// Return Ok(vec[]) if the user does not exist.
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_user(
         filter_user_id: Option<Vec<UserId>>,
         filter_name: Option<String>,
@@ -404,6 +432,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -411,6 +440,7 @@ impl CatalogStore for super::PostgresBackend {
         delete_user(user_id, &mut **transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_warehouse_impl<'a>(
         warehouse_name: String,
         project_id: &ProjectId,
@@ -431,6 +461,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     // ---------------- Management API ----------------
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_project<'a>(
         project_id: &ProjectId,
         project_name: String,
@@ -440,6 +471,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     /// Delete a project
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn delete_project<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -448,6 +480,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     /// Get the project metadata
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_project<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -455,6 +488,7 @@ impl CatalogStore for super::PostgresBackend {
         get_project(project_id, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_projects(
         project_ids: Option<HashSet<ProjectId>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -462,6 +496,7 @@ impl CatalogStore for super::PostgresBackend {
         list_projects(project_ids, &mut **transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_endpoint_statistics(
         project_id: ProjectId,
         warehouse_id: WarehouseFilter,
@@ -479,6 +514,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_warehouses_impl(
         project_id: &ProjectId,
         status_filter: Option<Vec<WarehouseStatus>>,
@@ -487,6 +523,7 @@ impl CatalogStore for super::PostgresBackend {
         list_warehouses(project_id, status_filter, &catalog_state.read_pool()).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_warehouse_by_id_impl<'a>(
         warehouse_id: WarehouseId,
         state: Self::State,
@@ -494,6 +531,7 @@ impl CatalogStore for super::PostgresBackend {
         get_warehouse_by_id(warehouse_id, &state.read_pool()).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_warehouse_stats(
         warehouse_id: WarehouseId,
         pagination_query: PaginationQuery,
@@ -502,6 +540,7 @@ impl CatalogStore for super::PostgresBackend {
         get_warehouse_stats(state.read_pool(), warehouse_id, pagination_query).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn delete_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
@@ -510,6 +549,7 @@ impl CatalogStore for super::PostgresBackend {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn rename_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         new_name: &str,
@@ -518,6 +558,7 @@ impl CatalogStore for super::PostgresBackend {
         rename_warehouse(warehouse_id, new_name, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_warehouse_deletion_profile_impl<'a>(
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
@@ -526,6 +567,7 @@ impl CatalogStore for super::PostgresBackend {
         set_warehouse_deletion_profile(warehouse_id, deletion_profile, &mut **transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn rename_project<'a>(
         project_id: &ProjectId,
         new_name: &str,
@@ -534,6 +576,7 @@ impl CatalogStore for super::PostgresBackend {
         rename_project(project_id, new_name, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_warehouse_status_impl<'a>(
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
@@ -542,6 +585,7 @@ impl CatalogStore for super::PostgresBackend {
         set_warehouse_status(warehouse_id, status, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn update_storage_profile_impl<'a>(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
@@ -557,6 +601,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn create_view_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -576,6 +621,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn load_view_impl<'a>(
         warehouse_id: WarehouseId,
         view_id: ViewId,
@@ -585,6 +631,7 @@ impl CatalogStore for super::PostgresBackend {
         load_view(warehouse_id, view_id, include_deleted, &mut *transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn commit_view_impl<'a>(
         ViewCommit {
             view_ident,
@@ -615,6 +662,7 @@ impl CatalogStore for super::PostgresBackend {
         .map_err(Into::into)
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn search_tabular_impl(
         warehouse_id: WarehouseId,
         search_term: &str,
@@ -623,6 +671,7 @@ impl CatalogStore for super::PostgresBackend {
         search_tabular(warehouse_id, search_term, &catalog_state.read_pool()).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_tabulars_impl(
         warehouse_id: WarehouseId,
         namespace_id: Option<NamespaceId>,
@@ -642,6 +691,8 @@ impl CatalogStore for super::PostgresBackend {
         )
         .await
     }
+
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_tabular_protected_impl(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
@@ -651,6 +702,7 @@ impl CatalogStore for super::PostgresBackend {
         set_tabular_protected(warehouse_id, tabular_id, protect, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_namespace_protected_impl(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -660,6 +712,7 @@ impl CatalogStore for super::PostgresBackend {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
@@ -668,6 +721,7 @@ impl CatalogStore for super::PostgresBackend {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
         default_max_time_since_last_heartbeat: Duration,
@@ -681,6 +735,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,
         task_ids: &[TaskId],
@@ -689,6 +744,7 @@ impl CatalogStore for super::PostgresBackend {
         resolve_tasks(scope, task_ids, &state.read_pool()).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn record_task_success_impl(
         id: TaskAttemptId,
         message: Option<&str>,
@@ -697,6 +753,7 @@ impl CatalogStore for super::PostgresBackend {
         record_success(&&id, transaction, message).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn record_task_failure_impl(
         id: TaskAttemptId,
         error_details: &str,
@@ -706,6 +763,7 @@ impl CatalogStore for super::PostgresBackend {
         record_failure(&id, max_retries, error_details, transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_task_details_impl(
         task_id: TaskId,
         scope: TaskDetailsScope,
@@ -716,6 +774,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     /// List tasks
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn list_tasks_impl(
         filter: &TaskFilter,
         query: ListTasksRequest,
@@ -724,6 +783,7 @@ impl CatalogStore for super::PostgresBackend {
         list_tasks(filter, query, &mut *transaction).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn enqueue_tasks_impl(
         queue_name: &'static TaskQueueName,
         tasks: Vec<TaskInput>,
@@ -739,6 +799,7 @@ impl CatalogStore for super::PostgresBackend {
         Ok(queued.into_iter().map(|t| t.task_id).collect())
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
         filter: TaskFilter,
@@ -748,6 +809,7 @@ impl CatalogStore for super::PostgresBackend {
         cancel_scheduled_tasks(&mut *transaction, filter, queue_name, force).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn check_and_heartbeat_task_impl(
         id: TaskAttemptId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -757,6 +819,7 @@ impl CatalogStore for super::PostgresBackend {
         check_and_heartbeat_task(&mut *transaction, &id, progress, execution_details).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn stop_tasks_impl(
         task_ids: &[TaskId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -764,6 +827,7 @@ impl CatalogStore for super::PostgresBackend {
         request_tasks_stop(&mut *transaction, task_ids).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn run_tasks_at_impl(
         task_ids: &[TaskId],
         scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
@@ -772,6 +836,7 @@ impl CatalogStore for super::PostgresBackend {
         reschedule_tasks_for(&mut *transaction, task_ids, scheduled_for).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn set_task_queue_config_impl(
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
@@ -782,6 +847,7 @@ impl CatalogStore for super::PostgresBackend {
         set_task_queue_config(transaction, queue_name, project_id, warehouse_id, config).await
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     async fn get_task_queue_config_impl(
         filter: &TaskQueueConfigFilter,
         queue_name: &TaskQueueName,

@@ -550,6 +550,13 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         let drop_info =
             C::drop_namespace(warehouse.warehouse_id, namespace_id, flags, t.transaction()).await?;
 
+        tracing::debug!(
+            child_namespaces = drop_info.child_namespaces.len(),
+            child_tables = drop_info.child_tables.len(),
+            open_tasks = drop_info.open_tasks.len(),
+            "Drop information for namespace collected"
+        );
+
         C::cancel_scheduled_tasks(
             None,
             TaskFilter::TaskIds(drop_info.open_tasks),
@@ -560,6 +567,10 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         let project_id = &warehouse.project_id;
 
         if flags.purge {
+            tracing::debug!(
+                "Scheduling purge tasks for {} child tables",
+                drop_info.child_tables.len()
+            );
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {

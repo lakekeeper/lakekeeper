@@ -937,7 +937,7 @@ where
                         Some(namespace)
                     } else {
                         tracing::debug!(
-                            "Detected stale cache for namespace {}: cached={:?}, required={:?}. Refreshing.",
+                            "Detected stale cache for namespace {}: cached={}, required={}. Refreshing.",
                             provided_namespace,
                             namespace.version(),
                             require_min_version

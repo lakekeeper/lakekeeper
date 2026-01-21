@@ -305,7 +305,7 @@ pub struct TaskAttempt {
     pub scheduled_for: chrono::DateTime<chrono::Utc>,
     /// When this attempt started
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// How long this attempt took
+    /// How long this attempt took, specified as an ISO 8601 duration string
     #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
     #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
     pub duration: Option<chrono::Duration>,

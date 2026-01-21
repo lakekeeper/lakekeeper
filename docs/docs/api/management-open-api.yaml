@@ -7079,7 +7079,7 @@ components:
           type:
             - string
             - 'null'
-          description: How long this attempt took
+          description: How long this attempt took, specified as an ISO 8601 duration string
           example: PT1H30M45.5S
         execution-details:
           type:

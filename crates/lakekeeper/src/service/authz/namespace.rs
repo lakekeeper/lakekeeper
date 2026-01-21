@@ -383,6 +383,7 @@ pub trait AuthzNamespaceOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
+    #[tracing::instrument(name = "authorize_namespace_actions", level = "trace", skip_all, fields(count = actions.len()))]
     async fn are_allowed_namespace_actions_vec<
         A: Into<Self::NamespaceAction> + Send + Clone + Sync,
     >(
