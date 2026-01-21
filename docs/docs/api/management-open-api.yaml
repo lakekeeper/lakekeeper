@@ -1478,6 +1478,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/task-queue/task_log_cleanup/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Project-level Task Queue.
+      description: These configurations are global per project and shared across all instances of this kind of task.
+      operationId: get_project_task_queue_config_task_log_cleanup
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTaskLogCleanupConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Project-level Task Queue.
+      description: These configurations are global per project and shared across all instances of this kind of task.
+      operationId: set_project_task_queue_config_task_log_cleanup
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTaskLogCleanupConfig'
+        required: true
+      responses:
+        '204':
+          description: Project-level Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/task/by-id/{task_id}:
     get:
       tags:
@@ -3229,67 +3294,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/warehouse/{warehouse_id}/task-queue/task_log_cleanup/config:
-    get:
-      tags:
-        - tasks
-      summary: Get the configuration for a Task Queue.
-      description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: get_task_queue_config_task_log_cleanup
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: ''
-          headers:
-            x-request-id:
-              schema:
-                type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetTaskLogCleanupConfig'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-    post:
-      tags:
-        - tasks
-      summary: Set the configuration for a Task Queue.
-      description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: set_task_queue_config_task_log_cleanup
-      parameters:
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SetTaskLogCleanupConfig'
-        required: true
-      responses:
-        '204':
-          description: Task queue config set successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}:
     get:
       tags:
@@ -3908,8 +3912,6 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
-    CleanupPeriod:
-      $ref: '#/components/schemas/Period'
     ControlTaskAction:
       oneOf:
         - type: object
@@ -5964,16 +5966,6 @@ components:
         - grant_pass_grants
         - grant_manage_grants
         - change_ownership
-    Period:
-      oneOf:
-        - type: object
-          required:
-            - days
-          properties:
-            days:
-              type: integer
-              format: uint16
-              minimum: 1
     ProjectAction:
       type: string
       enum:
@@ -6202,8 +6194,6 @@ components:
         new-name:
           type: string
           description: New name for the warehouse.
-    RetentionPeriod:
-      $ref: '#/components/schemas/Period'
     Role:
       type: object
       required:
@@ -7209,14 +7199,17 @@ components:
           description: Status of this attempt
     TaskLogCleanupConfig:
       type: object
-      required:
-        - cleanup_period
-        - retention_period
       properties:
-        cleanup_period:
-          $ref: '#/components/schemas/CleanupPeriod'
-        retention_period:
-          $ref: '#/components/schemas/RetentionPeriod'
+        cleanup-period:
+          type:
+            - string
+            - 'null'
+          example: PT1H30M45.5S
+        retention-period:
+          type:
+            - string
+            - 'null'
+          example: PT1H30M45.5S
     TaskStatus:
       type: string
       enum:

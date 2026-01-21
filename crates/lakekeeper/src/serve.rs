@@ -402,6 +402,7 @@ async fn serve_inner<
     // Registered task queues have interior mutability. A later registration of a task
     // affects the state of all previously registered tasks.
     let registered_task_queues = task_queue_registry.registered_task_queues();
+    let registered_project_task_queues = task_queue_registry.registered_project_task_queues();
     let state = ApiContext {
         v1_state: State::<_, C, _> {
             authz: authorizer,
@@ -409,6 +410,7 @@ async fn serve_inner<
             secrets: secrets_state,
             contract_verifiers: contract_verification,
             registered_task_queues,
+            registered_project_task_queues,
             hooks,
             license_status,
         },

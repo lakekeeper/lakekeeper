@@ -393,7 +393,7 @@ mod test {
         let exempt_config_paths = [
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config",
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
-            "management/v1/warehouse/{warehouse_id}/task-queue/task_log_cleanup/config",
+            "/management/v1/project/task-queue/task_log_cleanup/config",
         ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");

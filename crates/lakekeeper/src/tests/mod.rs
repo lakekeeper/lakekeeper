@@ -223,6 +223,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
         )
         .await;
     let registered_task_queues = task_queues.registered_task_queues();
+    let registered_project_task_queues = task_queues.registered_project_task_queues();
     ApiContext {
         v1_state: State {
             authz: auth,
@@ -234,6 +235,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
                 std::sync::Arc::new(NamespaceCacheEndpointHook {}),
             ]),
             registered_task_queues,
+            registered_project_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
         },
     }

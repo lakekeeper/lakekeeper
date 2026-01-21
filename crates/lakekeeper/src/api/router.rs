@@ -147,7 +147,9 @@ pub async fn new_full_router<
         );
     let registered_api_config = state.v1_state.registered_task_queues.api_config().await;
     let queue_api_configs = registered_api_config.iter().collect::<Vec<_>>();
-    let router = maybe_merge_swagger_router(router, &queue_api_configs);
+    let registered_project_api_config = state.v1_state.registered_project_task_queues.api_config().await;
+    let project_queue_api_configs = registered_project_api_config.iter().collect::<Vec<_>>();
+    let router = maybe_merge_swagger_router(router, &queue_api_configs, &project_queue_api_configs);
     let router = router
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
@@ -338,6 +340,7 @@ fn get_cors_layer(
 fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
     queue_api_configs: &[&QueueApiConfig],
+    project_queue_api_configs: &[&QueueApiConfig],
 ) -> Router<ApiContext<State<A, C, S>>> {
     #[cfg(feature = "open-api")]
     if CONFIG.serve_swagger_ui {
@@ -345,7 +348,7 @@ fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                 .url(
                     "/api-docs/management/v1/openapi.json",
-                    v1_api_doc::<A>(queue_api_configs),
+                    v1_api_doc::<A>(queue_api_configs, project_queue_api_configs),
                 )
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",

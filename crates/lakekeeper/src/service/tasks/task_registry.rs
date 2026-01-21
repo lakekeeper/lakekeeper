@@ -98,6 +98,8 @@ impl std::fmt::Debug for RegisteredTaskQueueWorker {
 pub struct TaskQueueRegistry {
     // Mapping of queue names to their configurations
     registered_queues: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredQueue>>>,
+    // Mapping of queue names to their configurations
+    registered_project_queues: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredQueue>>>,
     // Mapping of queue names to their worker configuration
     task_workers: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredTaskQueueWorker>>>,
 }
@@ -133,6 +135,7 @@ impl TaskQueueRegistry {
     pub fn new() -> Self {
         Self {
             registered_queues: Arc::new(RwLock::new(HashMap::new())),
+            registered_project_queues: Arc::new(RwLock::new(HashMap::new())),
             task_workers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -160,6 +163,48 @@ impl TaskQueueRegistry {
         };
 
         if let Some(_prev) = self.registered_queues.write().await.insert(
+            queue_name,
+            RegisteredQueue {
+                api_config,
+                schema_validator_fn,
+            },
+        ) {
+            tracing::warn!("Overwriting registration for queue `{queue_name}`");
+        }
+
+        self.task_workers.write().await.insert(
+            queue_name,
+            RegisteredTaskQueueWorker {
+                worker_fn,
+                num_workers,
+            },
+        );
+        self
+    }
+
+    pub async fn register_project_queue<T: TaskConfig>(&self, task_queue: QueueRegistration) -> &Self {
+        let QueueRegistration {
+            queue_name,
+            worker_fn,
+            num_workers,
+        } = task_queue;
+        let schema_validator_fn = |v| serde_json::from_value::<T>(v).map(|_| ());
+        let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
+        let api_config = QueueApiConfig {
+            queue_name,
+            #[cfg(feature = "open-api")]
+            utoipa_type_name: T::name().to_string().into(),
+            #[cfg(feature = "open-api")]
+            utoipa_schema: utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_schema_name(
+                T::name(),
+            )),
+            #[cfg(not(feature = "open-api"))]
+            utoipa_type_name: (),
+            #[cfg(not(feature = "open-api"))]
+            utoipa_schema: (),
+        };
+
+        if let Some(_prev) = self.registered_project_queues.write().await.insert(
             queue_name,
             RegisteredQueue {
                 api_config,
@@ -233,7 +278,7 @@ impl TaskQueueRegistry {
         .await;
 
         let catalog_state_for_task_log_cleanup = catalog_state.clone();
-        self.register_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(QueueRegistration {
+        self.register_project_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(QueueRegistration {
             queue_name: &task_log_cleanup_queue::QUEUE_NAME,
             worker_fn: Arc::new(move |cancellation_token| {
                 let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
@@ -261,6 +306,17 @@ impl TaskQueueRegistry {
             // so that tasks that register later are reflected to the state
             // that previously registered tasks have a reference to.
             queues: self.registered_queues.clone(),
+        }
+    }
+
+    /// Creates [`RegisteredTaskQueues`] for use in application state
+    #[must_use]
+    pub fn registered_project_task_queues(&self) -> RegisteredTaskQueues {
+        RegisteredTaskQueues {
+            // It is important to share the interior mutable state,
+            // so that tasks that register later are reflected to the state
+            // that previously registered tasks have a reference to.
+            queues: self.registered_project_queues.clone(),
         }
     }
 
