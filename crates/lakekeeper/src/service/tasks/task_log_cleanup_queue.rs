@@ -32,8 +32,35 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_schema: TaskLogCleanupConfig::schema(),
 });
 
+const DEFAULT_CLEANUP_PERIOD_DAYS: Duration = Duration::days(1);
+const DEFAULT_RETENTION_PERIOD_DAYS: Duration = Duration::days(90);
+
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;
+
+impl TaskLogCleanupTask {
+    fn cleanup_period(&self) -> Duration {
+        let Some(TaskLogCleanupConfig {
+            cleanup_period: Some(cleanup_period),
+            ..
+        }) = self.config
+        else {
+            return DEFAULT_CLEANUP_PERIOD_DAYS;
+        };
+        cleanup_period
+    }
+
+    fn retention_period(&self) -> Duration {
+        let Some(TaskLogCleanupConfig {
+            retention_period: Some(retention_period),
+            ..
+        }) = self.config
+        else {
+            return DEFAULT_RETENTION_PERIOD_DAYS;
+        };
+        retention_period
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct TaskLogCleanupPayload {}
@@ -133,9 +160,9 @@ async fn cleanup_tasks<C: CatalogStore>(
     catalog_state: C::State,
     task: &TaskLogCleanupTask,
 ) -> Result<()> {
-    let cleanup_period = get_cleanup_period(task)?;
+    let cleanup_period = task.cleanup_period();
     let schedule_date = calculate_next_schedule_date(cleanup_period);
-    let retention_period = get_retention_period(task)?;
+    let retention_period = task.retention_period();
 
     let project_id = task.task_metadata.project_id();
 
@@ -189,30 +216,6 @@ async fn cleanup_tasks<C: CatalogStore>(
     })?;
 
     Ok(())
-}
-
-const DEFAULT_CLEANUP_PERIOD_DAYS: Duration = Duration::days(1);
-fn get_cleanup_period(task: &TaskLogCleanupTask) -> Result<Duration> {
-    if let Some(config) = &task.config {
-        let Some(cleanup_period) = config.cleanup_period() else {
-            return Ok(DEFAULT_CLEANUP_PERIOD_DAYS);
-        };
-        Ok(cleanup_period)
-    } else {
-        Ok(DEFAULT_CLEANUP_PERIOD_DAYS)
-    }
-}
-
-const DEFAULT_RETENTION_PERIOD_DAYS: Duration = Duration::days(90);
-fn get_retention_period(task: &TaskLogCleanupTask) -> Result<Duration> {
-    if let Some(config) = &task.config {
-        let Some(retention_period) = config.retention_period() else {
-            return Ok(DEFAULT_RETENTION_PERIOD_DAYS);
-        };
-        Ok(retention_period)
-    } else {
-        Ok(DEFAULT_RETENTION_PERIOD_DAYS)
-    }
 }
 
 fn calculate_next_schedule_date(cleanup_period: Duration) -> DateTime<Utc> {
