@@ -7204,11 +7204,13 @@ components:
           type:
             - string
             - 'null'
+          description: How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
           example: PT1H30M45.5S
         retention-period:
           type:
             - string
             - 'null'
+          description: How long to retain task logs before deletion in ISO8601 duration format. Defaults to 90 days.
           example: PT1H30M45.5S
     TaskStatus:
       type: string
