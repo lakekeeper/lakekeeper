@@ -81,7 +81,6 @@ use crate::{
         tasks::{
             Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
             TaskQueueName, TaskResolveScope,
-            task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter},
         },
     },
 };
@@ -793,10 +792,9 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn cleanup_task_logs_older_than(
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-        retention_period: RetentionPeriod,
+        retention_period: Duration,
         project_id: &ProjectId,
-        filter: TaskLogCleanupFilter,
     ) -> Result<()> {
-        cleanup_task_logs_older_than(&mut *transaction, retention_period, project_id, filter).await
+        cleanup_task_logs_older_than(&mut *transaction, retention_period, project_id).await
     }
 }

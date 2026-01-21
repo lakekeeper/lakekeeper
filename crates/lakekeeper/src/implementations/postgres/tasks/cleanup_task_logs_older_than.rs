@@ -1,553 +1,308 @@
+use chrono::Duration;
 use sqlx::{PgConnection, query};
 
-use crate::{
-    ProjectId,
-    api::Result,
-    implementations::postgres::dbutils::DBErrorHandler as _,
-    service::tasks::task_log_cleanup_queue::{RetentionPeriod, TaskLogCleanupFilter},
-    utils::period::Period,
-};
+use crate::{ProjectId, api::Result, implementations::postgres::dbutils::DBErrorHandler as _};
 
 pub(crate) async fn cleanup_task_logs_older_than(
     transaction: &mut PgConnection,
-    retention_period: RetentionPeriod,
+    retention_period: Duration,
     project_id: &ProjectId,
-    filter: TaskLogCleanupFilter,
 ) -> Result<()> {
-    let warehouse_id = match filter {
-        TaskLogCleanupFilter::Project => None,
-        TaskLogCleanupFilter::Warehouse { warehouse_id } => Some(warehouse_id),
-    };
-    let query = match retention_period.period() {
-        Period::Days(days) => query!(
-            r#"
-            DELETE FROM task_log
-            WHERE created_at < now() - make_interval(days => $1)
-            AND project_id = $2
-            AND ($3::uuid IS NULL OR $3 = warehouse_id)
-            "#,
-            i32::from(days),
-            project_id.as_str(),
-            warehouse_id
-        ),
-    };
-
-    query
-        .execute(transaction)
-        .await
-        .map_err(|e| e.into_error_model("Failed to delete old task logs."))?;
+    let retention_date = chrono::Utc::now() - retention_period;
+    query!(
+        r#"
+        DELETE FROM task_log
+        WHERE created_at < $1
+        AND project_id = $2
+        "#,
+        retention_date,
+        project_id.as_str(),
+    )
+    .execute(transaction)
+    .await
+    .map_err(|e| e.into_error_model("Failed to delete old task logs."))?;
 
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
+    use chrono::{DateTime, Utc};
+    use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use crate::{
+        WarehouseId,
+        api::management::v1::{tasks::ListTasksRequest, warehouse::TabularDeleteProfile},
+        implementations::{
+            CatalogState,
+            postgres::{
+                PostgresBackend,
+                warehouse::{create_project, create_warehouse},
+            },
+        },
+        service::{
+            CatalogTaskOps,
+            storage::{MemoryProfile, StorageProfile},
+            tasks::{
+                ScheduleTaskMetadata, SpecializedTask, TaskConfig, TaskData, TaskEntity,
+                TaskExecutionDetails, TaskFilter, TaskQueueName,
+            },
+        },
+    };
+
     use super::*;
 
-    #[derive(Debug)]
-    struct TaskLogRecord {
-        task_id: Uuid,
-        _attempt: i32,
-    }
+    const QN_STR: &str = "dummy";
+    static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 
-    #[sqlx::test]
-    async fn test_cleanup_task_logs_older_than_removes_task_logs_older_than_retention_time(
-        pool: PgPool,
-    ) {
-        let mut conn = pool.acquire().await.unwrap();
+    type DummyTask = SpecializedTask<DummyConfig, DummyPayload, DummyExecutionDetails>;
 
-        let project_id = ProjectId::new_random();
-        let filter = TaskLogCleanupFilter::Project;
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct DummyPayload {}
 
-        let retention_period = RetentionPeriod::with_days(90).unwrap();
-        let Period::Days(days) = retention_period.period();
+    impl TaskData for DummyPayload {}
 
-        let kept_task_log_ids = [
-            Uuid::parse_str("550e8400-e29b-41d4-a716-446655440003").unwrap(),
-            Uuid::parse_str("550e8400-e29b-41d4-a716-446655440004").unwrap(),
-        ];
+    #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+    struct DummyConfig {}
 
-        query!(
-            r#"
-            WITH insert_project AS (
-                INSERT INTO project (project_id, project_name)
-                VALUES ($1, 'My Project')
-                RETURNING project_id
-            ),
-            insert_warehouse AS (
-                INSERT INTO warehouse (warehouse_name, project_id, status, "tabular_delete_mode")
-                SELECT 'My Warehouse', project_id, 'active', 'hard'
-                FROM insert_project
-                RETURNING warehouse_id
-            )
-            INSERT INTO task_log (
-                task_id,
-                attempt,
-                warehouse_id,
-                queue_name,
-                task_data,
-                status,
-                entity_id,
-                entity_name,
-                entity_type,
-                project_id,
-                attempt_scheduled_for,
-                task_created_at,
-                created_at
-            )
-            VALUES
-            (
-                '550e8400-e29b-41d4-a716-446655440001',
-                1,
-                (SELECT warehouse_id FROM insert_warehouse),
-                'metadata_sync',
-                '{"table_id": "customers"}',
-                'success',
-                '550e8400-e29b-41d4-a716-446655440101',
-                ARRAY['customers'],
-                'table',
-                (SELECT project_id FROM insert_project),
-                now() - make_interval(days => ($2 + 5)),
-                now() - make_interval(days => ($2 + 5)),
-                now() - make_interval(days => ($2 + 5))
-            ),
-            (
-                '550e8400-e29b-41d4-a716-446655440002',
-                1,
-                (SELECT warehouse_id FROM insert_warehouse),
-                'garbage_collection',
-                '{"schema": "prod_analytics"}',
-                'success',
-                NULL,
-                NULL,
-                'warehouse',
-                (SELECT project_id FROM insert_project),
-                now() - make_interval(days => ($2 + 30)),
-                now() - make_interval(days => ($2 + 30)),
-                now() - make_interval(days => ($2 + 30))
-            ),
-            (
-                $3,
-                1,
-                (SELECT warehouse_id FROM insert_warehouse),
-                'schema_evolution',
-                '{"column_name": "new_discount_column"}',
-                'success',
-                '550e8400-e29b-41d4-a716-446655440103',
-                ARRAY['orders'],
-                'table',
-                (SELECT project_id FROM insert_project),
-                now() - make_interval(days => ($2 - 60)),
-                now() - make_interval(days => ($2 - 60)),
-                now() - make_interval(days => ($2 - 60))
-            ),
-            (
-                $4,
-                1,
-                (SELECT warehouse_id FROM insert_warehouse),
-                'file_compaction',
-                '{"path": "/warehouse/parquet"}',
-                'failed',
-                NULL,
-                NULL,
-                'warehouse',
-                (SELECT project_id FROM insert_project),
-                now() - make_interval(days => ($2 - 83)),
-                now() - make_interval(days => ($2 - 83)),
-                now() - make_interval(days => ($2 - 83))
-            )
-            "#,
-            project_id.as_str(),
-            i32::from(days),
-            kept_task_log_ids[0],
-            kept_task_log_ids[1],
-        )
-        .execute(&mut *conn)
-        .await
-        .unwrap();
+    impl TaskConfig for DummyConfig {
+        fn queue_name() -> &'static TaskQueueName {
+            &QUEUE_NAME
+        }
 
-        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id, filter)
-            .await
-            .unwrap();
-
-        let remaining_task_logs = sqlx::query_as!(
-            TaskLogRecord,
-            r#"
-            SELECT task_id, attempt as _attempt FROM task_log
-        "#
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .unwrap();
-
-        assert_eq!(remaining_task_logs.len(), 2);
-        for record in remaining_task_logs {
-            assert!(kept_task_log_ids.contains(&record.task_id));
+        fn max_time_since_last_heartbeat() -> chrono::Duration {
+            chrono::Duration::seconds(3600)
         }
     }
 
-    #[sqlx::test]
-    async fn test_cleanup_task_logs_older_than_ignores_logs_for_other_projects(pool: PgPool) {
-        let mut conn = pool.acquire().await.unwrap();
+    #[derive(Debug, Clone, Deserialize, Serialize)]
+    struct DummyExecutionDetails {}
+
+    impl TaskExecutionDetails for DummyExecutionDetails {}
+
+    async fn get_remaining_task_log_ids(pool: PgPool, project_ids: impl IntoIterator<Item = &ProjectId>) -> Vec<Uuid> {
+        let mut tx = pool.begin().await.unwrap();
+
+        let filters: Vec<TaskFilter> = project_ids
+            .into_iter()
+            .map(|project_id| TaskFilter::ProjectId {
+                project_id: project_id.clone(),
+                include_sub_tasks: true,
+            })
+            .collect();
+        let mut task_ids: Vec<Uuid> = Vec::new();
+        for filter in filters {
+            let tasks: Vec<Uuid> =
+                PostgresBackend::list_tasks(&filter, ListTasksRequest::default(), &mut tx)
+                    .await
+                    .unwrap()
+                    .tasks
+                    .into_iter()
+                    .map(|task| task.task_id().into())
+                    .collect();
+            task_ids.extend(tasks);
+        }
+
+        tx.commit().await.unwrap();
+
+        task_ids
+    }
+
+    async fn setup_project(pool: PgPool) -> ProjectId {
+        let mut tx = pool.begin().await.unwrap();
 
         let project_id = ProjectId::new_random();
-        let other_project_id = ProjectId::new_random();
+        create_project(&project_id, "My Project".to_string(), &mut tx)
+            .await
+            .unwrap();
 
-        let my_task_id = Uuid::new_v4();
-        let other_task_id = Uuid::new_v4();
+        tx.commit().await.unwrap();
 
-        let my_warehouse_id = Uuid::new_v4();
-        let other_warehouse_id = Uuid::new_v4();
+        project_id
+    }
 
-        let filter = TaskLogCleanupFilter::Project;
+    async fn setup_warehouse(pool: PgPool, project_id: &ProjectId) -> WarehouseId {
+        let mut tx = pool.begin().await.unwrap();
 
-        let retention_period = RetentionPeriod::with_days(90).unwrap();
-        let Period::Days(days) = retention_period.period();
-
-        query!(
-            r#"
-            WITH insert_projects AS (
-                INSERT INTO project (project_id, project_name)
-                VALUES
-                (
-                    $1,
-                    'My Project'
-                ),
-                (
-                    $2,
-                    'Other Project'
-                )
-            ),
-            insert_warehouse AS (
-                INSERT INTO warehouse (warehouse_id, warehouse_name, project_id, status, "tabular_delete_mode")
-                VALUES
-                (
-                    $3,
-                    'My Warehouse',
-                    $1,
-                    'active',
-                    'hard'
-                ),
-                (
-                    $4,
-                    'Other Warehouse',
-                    $2,
-                    'active',
-                    'hard'
-                )
-            )
-            INSERT INTO task_log (
-                task_id,
-                attempt,
-                warehouse_id,
-                queue_name,
-                task_data,
-                status,
-                entity_id,
-                entity_name,
-                entity_type,
-                project_id,
-                attempt_scheduled_for,
-                task_created_at,
-                created_at
-            )
-            VALUES
-            (
-                $5,
-                1,
-                $3,
-                'metadata_sync',
-                '{"table_id": "customers"}',
-                'success'::task_final_status,
-                '550e8400-e29b-41d4-a716-446655440101',
-                ARRAY['customers'],
-                'table',
-                $1,
-                now() - make_interval(days => ($7 + 5)),
-                now() - make_interval(days => ($7 + 5)),
-                now() - make_interval(days => ($7 + 5))
-            ),
-            (
-                $6,
-                1,
-                $4,
-                'file_compaction',
-                '{"path": "/warehouse/parquet"}',
-                'failed',
-                NULL,
-                NULL,
-                'warehouse',
-                $2,
-                now() - make_interval(days => ($7 + 5)),
-                now() - make_interval(days => ($7 + 5)),
-                now() - make_interval(days => ($7 + 5))
-            )
-            "#,
-            project_id.as_str(),
-            other_project_id.as_str(),
-            my_warehouse_id,
-            other_warehouse_id,
-            my_task_id,
-            other_task_id,
-            i32::from(days)
+        let storage_profile = StorageProfile::Memory(MemoryProfile::default());
+        let tabular_delete_profile = TabularDeleteProfile::default();
+        let warehouse = create_warehouse(
+            "My Warehouse".to_string(),
+            project_id,
+            storage_profile,
+            tabular_delete_profile,
+            None,
+            &mut tx,
         )
+        .await
+        .unwrap();
+
+        tx.commit().await.unwrap();
+
+        warehouse.warehouse_id
+    }
+
+    async fn schedule_and_finish_task_at(
+        pool: PgPool,
+        project_id: &ProjectId,
+        entity: TaskEntity,
+        created_at: DateTime<Utc>,
+    ) -> Uuid {
+        let mut tx = pool.begin().await.unwrap();
+
+        let task_metadata = ScheduleTaskMetadata {
+            project_id: project_id.clone(),
+            parent_task_id: None,
+            scheduled_for: Some(created_at),
+            entity,
+        };
+        let task_id =
+            *DummyTask::schedule_task::<PostgresBackend>(task_metadata, DummyPayload {}, &mut tx)
+                .await
+                .unwrap()
+                .unwrap();
+        tx.commit().await.unwrap();
+
+        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let task = DummyTask::pick_new_task::<PostgresBackend>(catalog_state.clone())
+            .await
+            .unwrap()
+            .unwrap();
+
+        task.record_success::<PostgresBackend>(catalog_state, None)
+            .await;
+
+        let mut conn = pool.acquire().await.unwrap();
+
+        query(
+            r#"
+            UPDATE task_log
+            SET created_at = $2
+            WHERE task_id = $1
+            "#,
+        )
+        .bind(task_id)
+        .bind(created_at)
         .execute(&mut *conn)
         .await
         .unwrap();
 
-        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id, filter)
-            .await
-            .unwrap();
-
-        let remaining_task_logs = sqlx::query_as!(
-            TaskLogRecord,
-            r#"
-            SELECT task_id, attempt as _attempt FROM task_log
-        "#
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .unwrap();
-
-        assert_eq!(remaining_task_logs.len(), 1);
-        assert_eq!(remaining_task_logs[0].task_id, other_task_id);
+        task_id
     }
 
     #[sqlx::test]
-    async fn test_cleanup_task_logs_older_than_only_cleanup_logs_for_warehouse_tasks_when_filter_is_warehouse(
+    async fn test_cleanup_task_logs_older_than_removes_project_task_logs_older_than_retention_time(
         pool: PgPool,
     ) {
         let mut conn = pool.acquire().await.unwrap();
 
-        let project_id = ProjectId::new_random();
-        let warehouse_id = Uuid::new_v4();
-        let filter = TaskLogCleanupFilter::Warehouse { warehouse_id };
+        let project_id = setup_project(pool.clone()).await;
 
-        let project_task_id = Uuid::new_v4();
-        let warehouse_task_id = Uuid::new_v4();
-        let tabular_task_id = Uuid::new_v4();
+        let retention_period = Duration::days(90);
 
-        let retention_period = RetentionPeriod::with_days(90).unwrap();
-        let Period::Days(days) = retention_period.period();
+        let old_created_at = Utc::now() - retention_period - Duration::days(10);
+        let new_created_at = Utc::now() - retention_period + Duration::days(10);
 
-        query!(
-            r#"
-            WITH insert_projects AS (
-                INSERT INTO project (project_id, project_name)
-                VALUES
-                (
-                    $1,
-                    'My Project'
-                )
-            ),
-            insert_warehouse AS (
-                INSERT INTO warehouse (warehouse_id, warehouse_name, project_id, status, "tabular_delete_mode")
-                VALUES
-                (
-                    $2,
-                    'My Warehouse',
-                    $1,
-                    'active',
-                    'hard'
-                )
-            )
-            INSERT INTO task_log (
-                task_id,
-                attempt,
-                warehouse_id,
-                queue_name,
-                task_data,
-                status,
-                entity_id,
-                entity_name,
-                entity_type,
-                project_id,
-                attempt_scheduled_for,
-                task_created_at,
-                created_at
-            )
-            VALUES
-            (
-                $3,
-                1,
-                NULL,
-                'clean_tasks',
-                '{}'::jsonb,
-                'success'::task_final_status,
-                NULL,
-                NULL,
-                'project'::entity_type,
-                $1,
-                now() - make_interval(days => ($6 + 5)::int),
-                now() - make_interval(days => ($6 + 5)::int),
-                now() - make_interval(days => ($6 + 5)::int)
-            ),
-            (
-                $4,
-                1,
-                $2,
-                'remove_orphaned_files',
-                '{}'::jsonb,
-                'success'::task_final_status,
-                NULL,
-                NULL,
-                'warehouse'::entity_type,
-                $1,
-                now() - make_interval(days => ($6 + 5)::int),
-                now() - make_interval(days => ($6 + 5)::int),
-                now() - make_interval(days => ($6 + 5)::int)
-            ),
-            (
-                $5,
-                1,
-                $2,
-                'remove_tabular',
-                '{}'::jsonb,
-                'success'::task_final_status,
-                '550e8400-e29b-41d4-a716-446655440101'::uuid,
-                ARRAY['customers']::text[],
-                'table'::entity_type,
-                $1,
-                now() - make_interval(days => ($6 + 5)::int),
-                now() - make_interval(days => ($6 + 5)::int),
-                now() - make_interval(days => ($6 + 5)::int)
-            )
-            "#,
-            project_id.as_str(),
-            warehouse_id,
-            project_task_id,
-            warehouse_task_id,
-            tabular_task_id,
-            i32::from(days)
+        let new_task_id = schedule_and_finish_task_at(
+            pool.clone(),
+            &project_id,
+            TaskEntity::Project,
+            new_created_at,
         )
-        .execute(&mut *conn)
-        .await
-        .unwrap();
+        .await;
+        schedule_and_finish_task_at(
+            pool.clone(),
+            &project_id,
+            TaskEntity::Project,
+            old_created_at,
+        )
+        .await;
 
-        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id, filter)
+        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id)
             .await
             .unwrap();
 
-        let remaining_task_logs = sqlx::query_as!(
-            TaskLogRecord,
-            r#"
-            SELECT task_id, attempt as _attempt FROM task_log
-        "#
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .unwrap();
+        let remaining_task_logs = get_remaining_task_log_ids(pool, [&project_id]).await;
 
         assert_eq!(remaining_task_logs.len(), 1);
-        assert_eq!(remaining_task_logs[0].task_id, project_task_id);
+        assert_eq!(new_task_id, remaining_task_logs[0]);
     }
 
     #[sqlx::test]
-    async fn test_cleanup_task_logs_with_warehouse_filter_respects_retention_period(pool: PgPool) {
+    async fn test_cleanup_task_logs_older_than_removes_warehouse_task_logs_older_than_retention_time(
+        pool: PgPool,
+    ) {
         let mut conn = pool.acquire().await.unwrap();
 
-        let project_id = ProjectId::new_random();
-        let warehouse_id = Uuid::new_v4();
-        let filter = TaskLogCleanupFilter::Warehouse { warehouse_id };
+        let project_id = setup_project(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone(), &project_id).await;
 
-        let old_task_id = Uuid::new_v4();
-        let recent_task_id = Uuid::new_v4();
+        let retention_period = Duration::days(90);
 
-        let retention_period = RetentionPeriod::with_days(90).unwrap();
-        let Period::Days(days) = retention_period.period();
+        let old_created_at = Utc::now() - retention_period - Duration::days(10);
+        let new_created_at = Utc::now() - retention_period + Duration::days(10);
 
-        query!(
-            r#"
-            WITH insert_projects AS (
-                INSERT INTO project (project_id, project_name)
-                VALUES (
-                    $1,
-                    'My Project'
-                )
-            ),
-            insert_warehouse AS (
-                INSERT INTO warehouse (warehouse_id, warehouse_name, project_id, status, "tabular_delete_mode")
-                VALUES (
-                    $2,
-                    'My Warehouse',
-                    $1,
-                    'active',
-                    'hard'
-                )
-            )
-            INSERT INTO task_log (
-                task_id,
-                attempt,
-                warehouse_id,
-                queue_name,
-                task_data,
-                status,
-                entity_id,
-                entity_name,
-                entity_type,
-                project_id,
-                attempt_scheduled_for,
-                task_created_at,
-                created_at
-            )
-            VALUES
-            (
-                $3,
-                1,
-                $2,
-                'old_task',
-                '{}',
-                'success',
-                NULL,
-                NULL,
-                'warehouse',
-                $1,
-                now() - make_interval(days => ($5 + 10)),
-                now() - make_interval(days => ($5 + 10)),
-                now() - make_interval(days => ($5 + 10))
-            ),
-            (
-                $4,
-                1,
-                $2,
-                'recent_task',
-                '{}',
-                'success',
-                NULL,
-                NULL,
-                'warehouse',
-                $1,
-                now() - make_interval(days => ($5 - 10)),
-                now() - make_interval(days => ($5 - 10)),
-                now() - make_interval(days => ($5 - 10))
-            )
-            "#,
-            project_id.as_str(),
-            warehouse_id,
-            old_task_id,
-            recent_task_id,
-            i32::from(days),
+        let new_task_id = schedule_and_finish_task_at(
+            pool.clone(),
+            &project_id,
+            TaskEntity::Warehouse { warehouse_id },
+            new_created_at,
         )
-        .execute(&mut *conn)
-        .await
-        .unwrap();
+        .await;
+        schedule_and_finish_task_at(
+            pool.clone(),
+            &project_id,
+            TaskEntity::Warehouse { warehouse_id },
+            old_created_at,
+        )
+        .await;
 
-        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id, filter)
+        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id)
             .await
             .unwrap();
 
-        let remaining_logs = sqlx::query_as!(
-            TaskLogRecord,
-            r#"SELECT task_id, attempt as _attempt FROM task_log"#
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .unwrap();
+        let remaining_task_logs = get_remaining_task_log_ids(pool, [&project_id]).await;
 
-        assert_eq!(remaining_logs.len(), 1);
-        assert_eq!(remaining_logs[0].task_id, recent_task_id);
+        assert_eq!(remaining_task_logs.len(), 1);
+        assert_eq!(new_task_id, remaining_task_logs[0]);
+    }
+
+    #[sqlx::test]
+    async fn test_cleanup_task_logs_older_than_removes_ignores_task_logs_of_other_projects(
+        pool: PgPool,
+    ) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        let project_id_a = setup_project(pool.clone()).await;
+        let project_id_b = setup_project(pool.clone()).await;
+
+        let retention_period = Duration::days(90);
+
+        let created_at = Utc::now() - retention_period - Duration::days(10);
+
+        schedule_and_finish_task_at(pool.clone(), &project_id_a, TaskEntity::Project, created_at)
+            .await;
+        let task_id_project_b = schedule_and_finish_task_at(
+            pool.clone(),
+            &project_id_b,
+            TaskEntity::Project,
+            created_at,
+        )
+        .await;
+
+        cleanup_task_logs_older_than(&mut conn, retention_period, &project_id_a)
+            .await
+            .unwrap();
+
+        let remaining_task_logs =
+            get_remaining_task_log_ids(pool, [&project_id_a, &project_id_b]).await;
+
+        assert_eq!(remaining_task_logs.len(), 1);
+        assert_eq!(task_id_project_b, remaining_task_logs[0]);
     }
 }

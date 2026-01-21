@@ -1,8 +1,8 @@
 #[cfg(feature = "open-api")]
 use std::collections::HashMap;
-use std::{sync::LazyLock, time::Duration};
+use std::sync::LazyLock;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 #[cfg(feature = "open-api")]
@@ -10,7 +10,6 @@ use utoipa::{
     PartialSchema, ToSchema,
     openapi::{RefOr, Schema},
 };
-use uuid::Uuid;
 
 #[cfg(feature = "open-api")]
 use super::QueueApiConfig;
@@ -26,7 +25,6 @@ use crate::{
             TaskExecutionDetails,
         },
     },
-    utils::period::{NonZeroDays, Period},
 };
 
 const QN_STR: &str = "task_log_cleanup";
@@ -52,12 +50,6 @@ pub(crate) static DEPENDENT_SCHEMAS: LazyLock<HashMap<String, RefOr<Schema>>> =
         map
     });
 
-#[derive(Debug)]
-pub enum TaskLogCleanupFilter {
-    Project,
-    Warehouse { warehouse_id: Uuid },
-}
-
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;
 
@@ -78,62 +70,25 @@ impl TaskLogCleanupPayload {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Default, Debug)]
-#[cfg_attr(feature = "open-api", derive(ToSchema))]
-pub struct RetentionPeriod(Period);
-impl RetentionPeriod {
-    #[must_use]
-    pub fn new(period: Period) -> Self {
-        Self(period)
-    }
-
-    pub fn with_days(days: u16) -> Result<Self> {
-        let non_zero_days = NonZeroDays::try_from(days)?;
-        let period = Period::with_days(non_zero_days);
-        Ok(RetentionPeriod(period))
-    }
-
-    #[must_use]
-    pub fn period(&self) -> Period {
-        self.0
-    }
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Default, Debug)]
-#[cfg_attr(feature = "open-api", derive(ToSchema))]
-pub struct CleanupPeriod(Period);
-impl CleanupPeriod {
-    #[must_use]
-    pub fn new(period: Period) -> Self {
-        Self(period)
-    }
-
-    pub fn with_days(days: u16) -> Result<Self> {
-        let non_zero_days = NonZeroDays::try_from(days)?;
-        let period = Period::with_days(non_zero_days);
-        Ok(CleanupPeriod(period))
-    }
-
-    #[must_use]
-    pub fn period(&self) -> Period {
-        self.0
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
 #[cfg_attr(feature = "open-api", derive(ToSchema))]
+#[serde(rename_all = "kebab-case")]
 pub struct TaskLogCleanupConfig {
-    cleanup_period: CleanupPeriod,
-    retention_period: RetentionPeriod,
+    #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
+    #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
+    cleanup_period: Option<Duration>,
+    #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
+    #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
+    retention_period: Option<Duration>,
 }
 impl TaskLogCleanupConfig {
     #[must_use]
-    pub fn cleanup_period(&self) -> CleanupPeriod {
+    pub fn cleanup_period(&self) -> Option<Duration> {
         self.cleanup_period
     }
 
     #[must_use]
-    pub fn retention_period(&self) -> RetentionPeriod {
+    pub fn retention_period(&self) -> Option<Duration> {
         self.retention_period
     }
 }
@@ -153,7 +108,7 @@ impl TaskExecutionDetails for TaskLogCleanupExecutionDetails {}
 
 pub(crate) async fn log_cleanup_worker<C: CatalogStore>(
     catalog_state: C::State,
-    poll_interval: Duration,
+    poll_interval: core::time::Duration,
     cancellation_token: CancellationToken,
 ) {
     loop {
@@ -201,13 +156,6 @@ async fn cleanup_tasks<C: CatalogStore>(
     let retention_period = get_retention_period(task)?;
 
     let project_id = task.task_metadata.project_id();
-    let filter = match task.task_metadata.entity {
-        TaskEntity::Project => TaskLogCleanupFilter::Project,
-        TaskEntity::Warehouse { warehouse_id }
-        | TaskEntity::EntityInWarehouse { warehouse_id, .. } => TaskLogCleanupFilter::Warehouse {
-            warehouse_id: *warehouse_id,
-        },
-    };
 
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
@@ -215,7 +163,7 @@ async fn cleanup_tasks<C: CatalogStore>(
             e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue."))
         })?;
 
-    C::cleanup_task_logs_older_than(trx.transaction(), retention_period, project_id, filter)
+    C::cleanup_task_logs_older_than(trx.transaction(), retention_period, project_id)
         .await
         .map_err(|e| {
             e.append_detail(format!(
@@ -261,32 +209,32 @@ async fn cleanup_tasks<C: CatalogStore>(
     Ok(())
 }
 
-const DEFAULT_CLEANUP_PERIOD_DAYS: u16 = 1;
-fn get_cleanup_period(task: &TaskLogCleanupTask) -> Result<CleanupPeriod> {
+const DEFAULT_CLEANUP_PERIOD_DAYS: Duration = Duration::days(1);
+fn get_cleanup_period(task: &TaskLogCleanupTask) -> Result<Duration> {
     if let Some(config) = &task.config {
-        Ok(config.cleanup_period())
+        let Some(cleanup_period) = config.cleanup_period() else {
+            return Ok(DEFAULT_CLEANUP_PERIOD_DAYS);
+        };
+        Ok(cleanup_period)
     } else {
-        let non_zero_days = NonZeroDays::try_from(DEFAULT_CLEANUP_PERIOD_DAYS)?;
-        let period = Period::with_days(non_zero_days);
-        Ok(CleanupPeriod(period))
+        Ok(DEFAULT_CLEANUP_PERIOD_DAYS)
     }
 }
 
-const DEFAULT_RETENTION_PERIOD_DAYS: u16 = 90;
-fn get_retention_period(task: &TaskLogCleanupTask) -> Result<RetentionPeriod> {
+const DEFAULT_RETENTION_PERIOD_DAYS: Duration = Duration::days(90);
+fn get_retention_period(task: &TaskLogCleanupTask) -> Result<Duration> {
     if let Some(config) = &task.config {
-        Ok(config.retention_period())
+        let Some(retention_period) = config.retention_period() else {
+            return Ok(DEFAULT_RETENTION_PERIOD_DAYS);
+        };
+        Ok(retention_period)
     } else {
-        let non_zero_days = NonZeroDays::try_from(DEFAULT_RETENTION_PERIOD_DAYS)?;
-        let period = Period::with_days(non_zero_days);
-        Ok(RetentionPeriod(period))
+        Ok(DEFAULT_RETENTION_PERIOD_DAYS)
     }
 }
 
-fn calculate_next_schedule_date(cleanup_period: CleanupPeriod) -> DateTime<Utc> {
-    match cleanup_period.period() {
-        Period::Days(days) => Utc::now() + chrono::Duration::days(days.into()),
-    }
+fn calculate_next_schedule_date(cleanup_period: Duration) -> DateTime<Utc> {
+    Utc::now() + cleanup_period
 }
 
 #[cfg(test)]
@@ -298,23 +246,10 @@ mod test {
     #[test]
     fn test_parsing_task_cleanup_config_from_json() {
         let config_json = r#"
-        {
-            "cleanup_period": {
-                "days": 7
-            },
-            "retention_period": {
-                "days": 90
-            }
-        }
+        {"cleanup-period":"P1W","retention-period":"P90D"}
         "#;
         let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
-        assert_eq!(
-            config.cleanup_period,
-            CleanupPeriod(Period::with_days(NonZeroDays::try_from(7).unwrap()))
-        );
-        assert_eq!(
-            config.retention_period,
-            RetentionPeriod(Period::with_days(NonZeroDays::try_from(90).unwrap()))
-        );
+        assert_eq!(config.cleanup_period.unwrap(), Duration::days(7));
+        assert_eq!(config.retention_period.unwrap(), Duration::days(90));
     }
 }
