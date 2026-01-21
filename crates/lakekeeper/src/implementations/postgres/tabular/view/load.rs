@@ -364,7 +364,7 @@ async fn get_default_namespace_ident(
     let namespace_ident = namespace.map_or_else(
         || {
             tracing::warn!(
-                "efault namespace id '{default_namespace}' not found; returning empty default namespace."
+                "Default namespace id '{default_namespace}' not found; returning empty default namespace."
             );
             EMPTY_NAMESPACE_IDENT.clone()
         },

@@ -440,7 +440,7 @@ Finally, we can create the Warehouse in Lakekeeper via the UI or API. A POST req
     {
         "type": "s3",
         "bucket": "<name of your cloudflare r2 bucket, lakekeeper-dev in our example>",
-        "region": "<your cloudflare region, i.e. eu>",
+        "region": "<your cloudflare region, i.e. weur>",
         "key-prefix": "path/to/my/warehouse",
         "endpoint": "<S3 API Endpoint, i.e. https://<account-id>.eu.r2.cloudflarestorage.com>"
     },
@@ -453,9 +453,7 @@ For cloudflare R2 credentials, the following parameters are automatically set:
 * `sts-enabled` is set to `true`
 * `flavor` is set to `s3-compat`
 
-It is required to specify the `endpoint`
-
-
+It is required to specify the `endpoint`. Use a [Data Location Hint](https://developers.cloudflare.com/r2/reference/data-location/#available-hints) as region.
 
 ## Azure Data Lake Storage Gen 2
 
