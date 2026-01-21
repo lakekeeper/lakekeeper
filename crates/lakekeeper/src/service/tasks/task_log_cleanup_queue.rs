@@ -135,6 +135,7 @@ pub(crate) async fn log_cleanup_worker<C: CatalogStore>(
         };
         let span = tracing::debug_span!(
             QN_STR,
+            project_id = %task.task_metadata.project_id(),
             attempt = %task.attempt(),
             task_id = %task.task_id(),
         );
