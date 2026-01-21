@@ -83,9 +83,11 @@ impl TaskLogCleanupPayload {
 #[cfg_attr(feature = "open-api", derive(ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct TaskLogCleanupConfig {
+    /// How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
     #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
     #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
     cleanup_period: Option<Duration>,
+    /// How long to retain task logs before deletion in ISO8601 duration format. Defaults to 90 days.
     #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
     #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
     retention_period: Option<Duration>,
