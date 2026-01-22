@@ -127,6 +127,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let request_metadata = Arc::new(request_metadata);
         let (table_infos, table_uuids, next_page_token) =
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,

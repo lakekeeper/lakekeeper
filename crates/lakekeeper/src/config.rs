@@ -210,6 +210,10 @@ pub struct DynAppConfig {
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
     /// Claim to use in provided JWT tokens as the subject.
     pub openid_subject_claim: Option<String>,
+    /// Claim to use in provided JWT tokens to extract roles.
+    /// The field should contain an array of strings or a single string.
+    /// Supports nested claims using dot notation, e.g., "resource_access.account.roles"
+    pub openid_roles_claim: Option<String>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -569,6 +573,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_audience: None,
             kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
+            openid_roles_claim: None,
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,

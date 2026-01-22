@@ -1121,6 +1121,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
+        let request_metadata = Arc::new(request_metadata);
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
         let (tabulars, ids, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
             pagination_query.page_size,

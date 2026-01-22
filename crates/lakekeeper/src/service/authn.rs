@@ -144,11 +144,11 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
             authenticator = authenticator.add_additional_issuers(iss.clone());
         }
         if let Some(scope) = &CONFIG.openid_scope {
-            tracing::debug!("Setting openid_scope: {}", scope);
+            tracing::debug!("Setting openid_scope: {scope}");
             authenticator = authenticator.set_scope(scope.clone());
         }
         if let Some(subject_claim) = &CONFIG.openid_subject_claim {
-            tracing::debug!("Setting openid_subject_claim: {}", subject_claim);
+            tracing::debug!("Setting openid_subject_claim: {subject_claim}");
             authenticator = authenticator.with_subject_claim(subject_claim.clone());
         } else {
             // "oid" should be used for entra-id, as the `sub` is different between applications.
@@ -159,6 +159,10 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
             tracing::debug!("Defaulting openid_subject_claim to: oid, sub");
             authenticator =
                 authenticator.with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
+        }
+        if let Some(roles_claim) = &CONFIG.openid_roles_claim {
+            tracing::debug!("Setting openid_roles_claim: {roles_claim}");
+            authenticator = authenticator.with_role_claim(roles_claim.clone());
         }
         tracing::info!("Running with OIDC authentication.");
         Some(authenticator)

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::FutureExt;
 use iceberg_ext::catalog::rest::ListTablesResponse;
 use itertools::Itertools;
@@ -59,6 +61,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
     // ------------------- BUSINESS LOGIC -------------------
     let mut t: <C as CatalogStore>::Transaction =
         C::Transaction::begin_read(state.v1_state.catalog).await?;
+    let request_metadata = Arc::new(request_metadata);
     let (view_infos, view_uuids, next_page_token) =
         crate::server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
