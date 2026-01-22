@@ -40,25 +40,17 @@ pub type TaskLogCleanupTask =
 
 impl TaskLogCleanupTask {
     fn cleanup_period(&self) -> Duration {
-        let Some(TaskLogCleanupConfig {
-            cleanup_period: Some(cleanup_period),
-            ..
-        }) = self.config
-        else {
-            return DEFAULT_CLEANUP_PERIOD_DAYS;
-        };
-        cleanup_period
+        self.config
+            .as_ref()
+            .map(|c| c.cleanup_period())
+            .unwrap_or(DEFAULT_CLEANUP_PERIOD_DAYS)
     }
 
     fn retention_period(&self) -> Duration {
-        let Some(TaskLogCleanupConfig {
-            retention_period: Some(retention_period),
-            ..
-        }) = self.config
-        else {
-            return DEFAULT_RETENTION_PERIOD_DAYS;
-        };
-        retention_period
+        self.config
+            .as_ref()
+            .map(|c| c.retention_period())
+            .unwrap_or(DEFAULT_RETENTION_PERIOD_DAYS)
     }
 }
 
@@ -94,13 +86,23 @@ pub struct TaskLogCleanupConfig {
 }
 impl TaskLogCleanupConfig {
     #[must_use]
-    pub fn cleanup_period(&self) -> Option<Duration> {
-        self.cleanup_period
+    pub fn cleanup_period(&self) -> Duration {
+        match self.cleanup_period {
+            Some(period) if period < DEFAULT_CLEANUP_PERIOD_DAYS => {
+                tracing::warn!(
+                    "cleanup_period is below default of {:?}, using default instead",
+                    DEFAULT_CLEANUP_PERIOD_DAYS
+                );
+                DEFAULT_CLEANUP_PERIOD_DAYS
+            }
+            Some(period) => period,
+            None => DEFAULT_CLEANUP_PERIOD_DAYS,
+        }
     }
 
     #[must_use]
-    pub fn retention_period(&self) -> Option<Duration> {
-        self.retention_period
+    pub fn retention_period(&self) -> Duration {
+        self.retention_period.unwrap_or(DEFAULT_RETENTION_PERIOD_DAYS)
     }
 }
 impl TaskConfig for TaskLogCleanupConfig {
@@ -237,7 +239,16 @@ mod test {
         {"cleanup-period":"P1W","retention-period":"P90D"}
         "#;
         let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
-        assert_eq!(config.cleanup_period.unwrap(), Duration::days(7));
-        assert_eq!(config.retention_period.unwrap(), Duration::days(90));
+        assert_eq!(config.cleanup_period(), Duration::days(7));
+        assert_eq!(config.retention_period(), Duration::days(90));
+    }
+    
+    #[test]
+    fn test_parsing_task_cleanup_config_sets_period_to_minimum_value_when_period_to_small() {
+        let config_json = r#"
+        {"cleanup-period":"PT23H59M59S","retention-period":"P90D"}
+        "#;
+        let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
+        assert_eq!(config.cleanup_period(), Duration::days(1));
     }
 }
