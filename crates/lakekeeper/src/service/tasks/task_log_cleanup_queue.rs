@@ -40,17 +40,17 @@ pub type TaskLogCleanupTask =
 
 impl TaskLogCleanupTask {
     fn cleanup_period(&self) -> Duration {
-        self.config
-            .as_ref()
-            .map(|c| c.cleanup_period())
-            .unwrap_or(DEFAULT_CLEANUP_PERIOD_DAYS)
+        self.config.as_ref().map_or(
+            DEFAULT_CLEANUP_PERIOD_DAYS,
+            TaskLogCleanupConfig::cleanup_period,
+        )
     }
 
     fn retention_period(&self) -> Duration {
-        self.config
-            .as_ref()
-            .map(|c| c.retention_period())
-            .unwrap_or(DEFAULT_RETENTION_PERIOD_DAYS)
+        self.config.as_ref().map_or(
+            DEFAULT_RETENTION_PERIOD_DAYS,
+            TaskLogCleanupConfig::retention_period,
+        )
     }
 }
 
@@ -102,7 +102,8 @@ impl TaskLogCleanupConfig {
 
     #[must_use]
     pub fn retention_period(&self) -> Duration {
-        self.retention_period.unwrap_or(DEFAULT_RETENTION_PERIOD_DAYS)
+        self.retention_period
+            .unwrap_or(DEFAULT_RETENTION_PERIOD_DAYS)
     }
 }
 impl TaskConfig for TaskLogCleanupConfig {
@@ -242,7 +243,7 @@ mod test {
         assert_eq!(config.cleanup_period(), Duration::days(7));
         assert_eq!(config.retention_period(), Duration::days(90));
     }
-    
+
     #[test]
     fn test_parsing_task_cleanup_config_sets_period_to_minimum_value_when_period_to_small() {
         let config_json = r#"
