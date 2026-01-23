@@ -254,13 +254,13 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
         None => Actor::Principal(user_id),
     };
 
-    // Ensure assume role, if present, is allowed
-    if let Err(err) = authorizer.check_actor(&actor).await {
-        return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
-    }
-
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
         request_metadata.set_authentication(actor.clone(), authentication);
+
+        // Ensure assume role, if present, is allowed
+        if let Err(err) = authorizer.check_actor(&actor, request_metadata).await {
+            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
+        }
     }
 
     next.run(request).await

@@ -180,7 +180,11 @@ pub trait AuthZServerOps: Authorizer {
         }
     }
 
-    async fn check_actor(&self, actor: &Actor) -> Result<(), ErrorModel> {
+    async fn check_actor(
+        &self,
+        actor: &Actor,
+        request_metadata: &RequestMetadata,
+    ) -> Result<(), ErrorModel> {
         match actor {
             Actor::Principal(_user_id) => Ok(()),
             Actor::Anonymous => Ok(()),
@@ -189,7 +193,7 @@ pub trait AuthZServerOps: Authorizer {
                 assumed_role,
             } => {
                 let assume_role_allowed = self
-                    .check_assume_role_impl(principal, *assumed_role)
+                    .check_assume_role_impl(principal, *assumed_role, request_metadata)
                     .await?;
 
                 if assume_role_allowed {

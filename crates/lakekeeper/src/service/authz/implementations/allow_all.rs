@@ -86,6 +86,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _principal: &UserId,
         _assumed_role: RoleId,
+        _request_metadata: &RequestMetadata,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)
     }

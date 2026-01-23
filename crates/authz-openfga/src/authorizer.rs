@@ -104,6 +104,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         principal: &UserId,
         assumed_role: RoleId,
+        _request_metadata: &RequestMetadata,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: Actor::Principal(principal.clone()).to_openfga(),

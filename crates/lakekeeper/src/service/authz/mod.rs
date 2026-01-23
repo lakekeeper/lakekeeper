@@ -567,6 +567,7 @@ where
         &self,
         principal: &UserId,
         assumed_role: RoleId,
+        request_metadata: &RequestMetadata,
     ) -> Result<bool, AuthorizationBackendUnavailable>;
 
     /// Check if this server can be bootstrapped by the provided user.
@@ -1133,6 +1134,7 @@ pub(crate) mod tests {
             &self,
             _principal: &UserId,
             _assumed_role: RoleId,
+            _request_metadata: &RequestMetadata,
         ) -> Result<bool, AuthorizationBackendUnavailable> {
             Ok(true)
         }
