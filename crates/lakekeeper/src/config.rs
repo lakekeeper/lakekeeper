@@ -212,7 +212,7 @@ pub struct DynAppConfig {
     pub openid_subject_claim: Option<String>,
     /// Claim to use in provided JWT tokens to extract roles.
     /// The field should contain an array of strings or a single string.
-    /// Supports nested claims using dot notation, e.g., "resource_access.account.roles"
+    /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
