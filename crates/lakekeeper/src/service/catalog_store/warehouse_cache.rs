@@ -171,7 +171,7 @@ pub(super) async fn warehouse_cache_get_by_name(
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         return None;
     };
-    tracing::debug!("Warehouse name {name} found in name-to-id cache");
+    tracing::debug!("Warehouse name {name} resolved in name-to-id cache to id {warehouse_id}");
 
     if let Some(value) = WAREHOUSE_CACHE.get(&(warehouse_id)).await {
         tracing::debug!("Warehouse id {warehouse_id} found in cache");
