@@ -59,7 +59,6 @@ pub struct ChronoDurationVisitor;
 /// let duration = visitor.visit_str::<serde_json::Error>("P3DT4H").unwrap();
 /// assert_eq!(duration.num_days(), 3);
 /// ```
-
 impl Visitor<'_> for ChronoDurationVisitor {
     type Value = chrono::Duration;
 
