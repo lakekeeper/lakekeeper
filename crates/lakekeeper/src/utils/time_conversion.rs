@@ -1,6 +1,11 @@
 use iceberg_ext::catalog::rest::ErrorModel;
 
-pub(crate) fn iso_8601_duration_to_chrono(
+pub mod duration_serde_visitor;
+/// Module for serializing `chrono::Duration` as ISO8601 duration strings
+pub mod iso8601_duration_serde;
+pub mod iso8601_option_duration_serde;
+
+pub fn iso_8601_duration_to_chrono(
     duration: &iso8601::Duration,
 ) -> Result<chrono::Duration, ErrorModel> {
     match duration {
@@ -30,7 +35,7 @@ pub(crate) fn iso_8601_duration_to_chrono(
     }
 }
 
-pub(crate) fn chrono_to_iso_8601_duration(
+pub fn chrono_to_iso_8601_duration(
     duration: &chrono::Duration,
 ) -> Result<iso8601::Duration, crate::api::ErrorModel> {
     // Check for negative duration
@@ -109,79 +114,6 @@ pub(crate) fn chrono_to_iso_8601_duration(
         second: seconds,
         millisecond: milliseconds,
     })
-}
-
-/// Module for serializing `chrono::Duration` as ISO8601 duration strings
-pub(crate) mod iso8601_duration_serde {
-    use std::str::FromStr;
-
-    use chrono::Duration;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::{chrono_to_iso_8601_duration, iso_8601_duration_to_chrono};
-
-    pub(crate) fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Convert chrono::Duration to iso8601::Duration
-        let iso_duration =
-            chrono_to_iso_8601_duration(duration).map_err(serde::ser::Error::custom)?;
-
-        // Serialize to string
-        serializer.serialize_str(&iso_duration.to_string())
-    }
-
-    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let duration_str = String::deserialize(deserializer)?;
-
-        // Parse string into iso8601::Duration
-        let iso_duration = iso8601::Duration::from_str(&duration_str)
-            .map_err(|e| serde::de::Error::custom(format!("Invalid ISO8601 duration: {e}")))?;
-
-        // Convert to chrono::Duration
-        iso_8601_duration_to_chrono(&iso_duration).map_err(|e| serde::de::Error::custom(e.message))
-    }
-}
-
-pub(crate) mod iso8601_option_duration_serde {
-    use chrono::Duration;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::iso8601_duration_serde;
-
-    #[allow(clippy::ref_option)]
-    pub(crate) fn serialize<S>(
-        duration: &Option<Duration>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match duration {
-            Some(d) => iso8601_duration_serde::serialize(d, serializer),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let opt: Option<String> = Option::deserialize(deserializer)?;
-        match opt {
-            Some(duration_str) => {
-                let duration = iso8601_duration_serde::deserialize(
-                    serde::de::value::StrDeserializer::new(&duration_str),
-                )?;
-                Ok(Some(duration))
-            }
-            None => Ok(None),
-        }
-    }
 }
 
 #[cfg(test)]
