@@ -1,10 +1,96 @@
+//! Duration conversion utilities for ISO 8601 and chrono compatibility.
+//!
+//! This module provides functions to convert between [`iso8601::Duration`] and [`chrono::Duration`],
+//! along with serde support for serializing/deserializing durations in ISO 8601 format.
+//!
+//! # Examples
+//!
+//! ```
+//! use std::str::FromStr;
+//! use lakekeeper::utils::time_conversion::iso_8601_duration_to_chrono;
+//!
+//! let iso_duration = iso8601::Duration::from_str("P3DT4H5M").unwrap();
+//! let chrono_duration = iso_8601_duration_to_chrono(&iso_duration).unwrap();
+//! assert_eq!(chrono_duration.num_days(), 3);
+//! ```
+//!
+//! # Limitations
+//!
+//! - Years and months are not supported (will return an error)
+//! - Negative durations are not supported
+//! - The serde modules assume ISO 8601 duration string format
+
 use iceberg_ext::catalog::rest::ErrorModel;
 
+/// Serde visitors for deserializing ISO 8601 duration strings.
+///
+/// This module provides [`Visitor`](serde::de::Visitor) implementations that convert
+/// ISO 8601 duration strings into both [`iso8601::Duration`] and [`chrono::Duration`] types.
 pub mod duration_serde_visitor;
-/// Module for serializing `chrono::Duration` as ISO8601 duration strings
+
+/// Serialization support for `chrono::Duration` as ISO 8601 duration strings.
+///
+/// Use this module in your struct definitions with the `#[serde(with = "...")]` attribute
+/// to automatically serialize/deserialize `Duration` fields as ISO 8601 strings.
+///
+/// # Examples
+///
+/// ```ignore
+/// use chrono::Duration;
+/// use serde::{Deserialize, Serialize};
+/// use lakekeeper::utils::time_conversion::iso8601_duration_serde;
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct Task {
+///     #[serde(with = "iso8601_duration_serde")]
+///     timeout: Duration,
+/// }
+/// ```
 pub mod iso8601_duration_serde;
+
+/// Serialization support for `Option<chrono::Duration>` as ISO 8601 duration strings.
+///
+/// Similar to [`iso8601_duration_serde`], but handles `Option<Duration>` fields.
+/// `None` values are serialized as `null`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use chrono::Duration;
+/// use serde::{Deserialize, Serialize};
+/// use lakekeeper::utils::time_conversion::iso8601_option_duration_serde;
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct Config {
+///     #[serde(with = "iso8601_option_duration_serde")]
+///     optional_timeout: Option<Duration>,
+/// }
+/// ```
 pub mod iso8601_option_duration_serde;
 
+/// Converts an ISO 8601 duration to a `chrono::Duration`.
+///
+/// # Arguments
+///
+/// * `duration` - An ISO 8601 duration in either weeks (`P<n>W`) or date-time format (`P<d>DT<h>H<m>M<s>S`)
+///
+/// # Returns
+///
+/// * `Ok(chrono::Duration)` - Successfully converted duration
+/// * `Err(ErrorModel)` - If the duration contains years or months (not supported)
+///
+/// # Examples
+///
+/// ```
+/// use std::str::FromStr;
+/// use lakekeeper::utils::time_conversion::iso_8601_duration_to_chrono;
+///
+/// // Parse ISO 8601 duration string
+/// let iso_duration = iso8601::Duration::from_str("P3DT4H5M6S").unwrap();
+/// let chrono_duration = iso_8601_duration_to_chrono(&iso_duration).unwrap();
+/// assert_eq!(chrono_duration.num_days(), 3);
+/// assert_eq!(chrono_duration.num_hours() % 24, 4);
+/// ```
 pub fn iso_8601_duration_to_chrono(
     duration: &iso8601::Duration,
 ) -> Result<chrono::Duration, ErrorModel> {
@@ -35,10 +121,39 @@ pub fn iso_8601_duration_to_chrono(
     }
 }
 
+/// Converts a `chrono::Duration` to an ISO 8601 duration.
+///
+/// The conversion prefers the weeks representation (`P<n>W`) if the duration is divisible by 7 days,
+/// otherwise uses the YMDHMS format (`P<d>DT<h>H<m>M<s>S`).
+///
+/// # Arguments
+///
+/// * `duration` - A chrono duration (must be non-negative)
+///
+/// # Returns
+///
+/// * `Ok(iso8601::Duration)` - Successfully converted duration
+/// * `Err(ErrorModel)` - If the duration is negative or conversion would overflow
+///
+/// # Examples
+///
+/// ```
+/// use chrono::Duration;
+/// use lakekeeper::utils::time_conversion::chrono_to_iso_8601_duration;
+///
+/// // Convert duration with multiple components
+/// let duration = Duration::days(3) + Duration::hours(4) + Duration::minutes(5);
+/// let iso_duration = chrono_to_iso_8601_duration(&duration).unwrap();
+/// assert_eq!(iso_duration.to_string(), "P3DT4H5M");
+///
+/// // Convert week-divisible duration (uses weeks representation)
+/// let weeks = Duration::weeks(2);
+/// let iso_duration = chrono_to_iso_8601_duration(&weeks).unwrap();
+/// assert_eq!(iso_duration.to_string(), "P2W");
+/// ```
 pub fn chrono_to_iso_8601_duration(
     duration: &chrono::Duration,
 ) -> Result<iso8601::Duration, crate::api::ErrorModel> {
-    // Check for negative duration
     if duration.num_milliseconds() < 0 {
         return Err(crate::api::ErrorModel::bad_request(
             "Negative durations not supported for ISO8601 format".to_string(),

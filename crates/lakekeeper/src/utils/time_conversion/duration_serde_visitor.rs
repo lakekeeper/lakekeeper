@@ -1,9 +1,28 @@
+//! Serde visitors for deserializing ISO 8601 duration strings.
+//!
+//! This module provides [`Visitor`](serde::de::Visitor) implementations used by the
+//! serde modules to convert ISO 8601 duration strings into duration types.
+
 use std::{fmt::Formatter, str::FromStr};
 
 use serde::de::{Error, Visitor};
 
 use crate::utils::time_conversion::iso_8601_duration_to_chrono;
 
+/// Visitor for deserializing ISO 8601 duration strings into `iso8601::Duration`.
+///
+/// This visitor parses string input in ISO 8601 format (e.g., `P3DT4H5M6S` or `P2W`)
+/// and converts it to an [`iso8601::Duration`].
+///
+/// # Examples
+///
+/// ```
+/// use serde::de::Visitor;
+/// use lakekeeper::utils::time_conversion::duration_serde_visitor::ISO8601DurationVisitor;
+///
+/// let visitor = ISO8601DurationVisitor::default();
+/// let duration = visitor.visit_str::<serde_json::Error>("P3DT4H").unwrap();
+/// ```
 #[derive(Debug, Default)]
 pub struct ISO8601DurationVisitor;
 
@@ -24,6 +43,22 @@ impl<'de> Visitor<'de> for ISO8601DurationVisitor {
 
 #[derive(Debug, Default)]
 pub struct ChronoDurationVisitor;
+
+/// Visitor for deserializing ISO 8601 duration strings into `chrono::Duration`.
+///
+/// This visitor combines the ISO 8601 parsing with conversion to [`chrono::Duration`],
+/// validating that the duration doesn't contain unsupported components (years/months).
+///
+/// # Examples
+///
+/// ```
+/// use serde::de::Visitor;
+/// use lakekeeper::utils::time_conversion::duration_serde_visitor::ChronoDurationVisitor;
+///
+/// let visitor = ChronoDurationVisitor::default();
+/// let duration = visitor.visit_str::<serde_json::Error>("P3DT4H").unwrap();
+/// assert_eq!(duration.num_days(), 3);
+/// ```
 
 impl<'de> Visitor<'de> for ChronoDurationVisitor {
     type Value = chrono::Duration;
