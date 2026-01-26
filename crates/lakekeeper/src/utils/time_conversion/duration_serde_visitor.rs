@@ -26,7 +26,7 @@ use crate::utils::time_conversion::iso_8601_duration_to_chrono;
 #[derive(Debug, Default)]
 pub struct ISO8601DurationVisitor;
 
-impl<'de> Visitor<'de> for ISO8601DurationVisitor {
+impl Visitor<'_> for ISO8601DurationVisitor {
     type Value = iso8601::Duration;
 
     fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
@@ -60,7 +60,7 @@ pub struct ChronoDurationVisitor;
 /// assert_eq!(duration.num_days(), 3);
 /// ```
 
-impl<'de> Visitor<'de> for ChronoDurationVisitor {
+impl Visitor<'_> for ChronoDurationVisitor {
     type Value = chrono::Duration;
 
     fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
@@ -71,7 +71,7 @@ impl<'de> Visitor<'de> for ChronoDurationVisitor {
     where
         E: Error,
     {
-        let iso8601_duration_visitor = ISO8601DurationVisitor::default();
+        let iso8601_duration_visitor = ISO8601DurationVisitor;
         let duration = iso8601_duration_visitor.visit_str::<E>(value)?;
         iso_8601_duration_to_chrono(&duration).map_err(|e| E::custom(e))
     }
