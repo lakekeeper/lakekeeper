@@ -37,7 +37,7 @@ impl Visitor<'_> for ISO8601DurationVisitor {
     where
         E: Error,
     {
-        iso8601::Duration::from_str(value).map_err(|e| E::custom(e))
+        iso8601::Duration::from_str(value).map_err(E::custom)
     }
 }
 
@@ -72,7 +72,7 @@ impl Visitor<'_> for ChronoDurationVisitor {
     {
         let iso8601_duration_visitor = ISO8601DurationVisitor;
         let duration = iso8601_duration_visitor.visit_str::<E>(value)?;
-        iso_8601_duration_to_chrono(&duration).map_err(|e| E::custom(e))
+        iso_8601_duration_to_chrono(&duration).map_err(E::custom)
     }
 }
 
