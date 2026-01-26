@@ -41,9 +41,6 @@ impl Visitor<'_> for ISO8601DurationVisitor {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ChronoDurationVisitor;
-
 /// Visitor for deserializing ISO 8601 duration strings into `chrono::Duration`.
 ///
 /// This visitor combines the ISO 8601 parsing with conversion to [`chrono::Duration`],
@@ -59,6 +56,9 @@ pub struct ChronoDurationVisitor;
 /// let duration = visitor.visit_str::<serde_json::Error>("P3DT4H").unwrap();
 /// assert_eq!(duration.num_days(), 3);
 /// ```
+#[derive(Debug, Default)]
+pub struct ChronoDurationVisitor;
+
 impl Visitor<'_> for ChronoDurationVisitor {
     type Value = chrono::Duration;
 
