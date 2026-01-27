@@ -141,7 +141,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| {
             e.append_detail(format!(
-                "Failed to queue next `{}` task.",
+                "Failed to create `{}` task for new project with id {project_id}.",
                 task_log_cleanup_queue::QUEUE_NAME.as_str(),
             ))
         })?;

@@ -17,7 +17,9 @@ use crate::{
         Result,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName, TaskResolveScope
+            CancelTasksFilter, ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName,
+            TaskResolveScope,
         },
     },
 };
