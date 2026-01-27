@@ -14,7 +14,7 @@ use crate::{
     },
     service::{
         authz::Authorizer,
-        tasks::{BUILT_IN_DEPENDENT_SCHEMAS, QueueApiConfig},
+        tasks::{BUILT_IN_DEPENDENT_SCHEMAS, QueueApiConfig, QueueScope},
     },
 };
 
@@ -154,13 +154,11 @@ pub fn api_doc<A: Authorizer>(
 
     fix_task_queue_config_paths(
         &mut doc,
-        "task_queue_config",
         queue_api_configs,
         ManagementV1Endpoint::SetTaskQueueConfig.path(),
     );
     fix_task_queue_config_paths(
         &mut doc,
-        "project_task_queue_config",
         project_queue_api_configs,
         ManagementV1Endpoint::SetProjectTaskQueueConfig.path(),
     );
@@ -171,7 +169,6 @@ pub fn api_doc<A: Authorizer>(
 #[allow(clippy::too_many_lines)]
 fn fix_task_queue_config_paths(
     doc: &mut utoipa::openapi::OpenApi,
-    operation_object: &str,
     queue_api_configs: &[&QueueApiConfig],
     set_task_queue_config_path: &str,
 ) {
@@ -193,8 +190,14 @@ fn fix_task_queue_config_paths(
         queue_name,
         utoipa_type_name,
         utoipa_schema,
+        scope,
     } in queue_api_configs
     {
+        let operation_object = match scope {
+            QueueScope::Project => "project_task_queue_config",
+            QueueScope::Warehouse => "task_queue_config",
+        };
+
         let mut set_queue_config_schema = SetTaskQueueConfigRequest::schema();
         let mut get_queue_config_schema = GetTaskQueueConfigResponse::schema();
         let set_queue_config_type_name = format!("Set{utoipa_type_name}");

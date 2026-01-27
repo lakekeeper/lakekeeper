@@ -22,7 +22,7 @@ mod test {
         service::{
             CatalogStore, CatalogTaskOps, Transaction,
             tasks::{
-                QueueRegistration, ScheduleTaskMetadata, SpecializedTask,
+                QueueRegistration, QueueScope, ScheduleTaskMetadata, SpecializedTask,
                 TaskConfig as QueueConfigTrait, TaskData, TaskEntity, TaskExecutionDetails,
                 TaskInput, TaskQueueName, TaskQueueRegistry, WarehouseTaskEntityId,
             },
@@ -99,6 +99,7 @@ mod test {
                     })
                 }),
                 num_workers: 1,
+                scope: QueueScope::Warehouse,
             })
             .await;
         let mut transaction =

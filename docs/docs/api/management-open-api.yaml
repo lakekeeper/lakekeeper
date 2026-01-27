@@ -7204,7 +7204,9 @@ components:
           type:
             - string
             - 'null'
-          description: How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
+          description: |-
+            How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
+            If a value below 1 day is provided, it will be set to the default of 1 day.
           example: PT1H30M45.5S
         retention-period:
           type:

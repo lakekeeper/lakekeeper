@@ -117,6 +117,8 @@ pub struct QueueRegistration {
     pub worker_fn: TaskQueueWorkerFn,
     /// Number of workers that run locally for this queue
     pub num_workers: usize,
+    /// Scope of the queue configuration
+    pub scope: QueueScope,
 }
 
 impl std::fmt::Debug for QueueRegistration {
@@ -143,6 +145,7 @@ impl TaskQueueRegistry {
             queue_name,
             worker_fn,
             num_workers,
+            scope,
         } = task_queue;
         let schema_validator_fn = |v| serde_json::from_value::<T>(v).map(|_| ());
         let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
@@ -158,6 +161,7 @@ impl TaskQueueRegistry {
             utoipa_type_name: (),
             #[cfg(not(feature = "open-api"))]
             utoipa_schema: (),
+            scope,
         };
 
         if let Some(_prev) = self.registered_queues.write().await.insert(
@@ -209,6 +213,7 @@ impl TaskQueueRegistry {
                     })
                 }),
                 num_workers: CONFIG.task_tabular_expiration_workers,
+                scope: QueueScope::Warehouse,
             },
         )
         .await;
@@ -230,6 +235,7 @@ impl TaskQueueRegistry {
                 })
             }),
             num_workers: CONFIG.task_tabular_purge_workers,
+            scope: QueueScope::Warehouse,
         })
         .await;
 
@@ -248,6 +254,7 @@ impl TaskQueueRegistry {
                 })
             }),
             num_workers: CONFIG.task_log_cleanup_workers,
+            scope: QueueScope::Project,
         })
         .await;
 
@@ -305,6 +312,14 @@ impl TaskQueueRegistry {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum QueueScope {
+    /// Warehouse-specific configuration
+    Warehouse,
+    /// Project-specific configuration
+    Project,
+}
+
 #[derive(Clone)]
 /// Contains all required information to dynamically generate API documentation
 /// for the warehouse-specific configuration of a task queue.
@@ -321,6 +336,7 @@ pub struct QueueApiConfig {
     pub utoipa_schema: utoipa::openapi::RefOr<utoipa::openapi::Schema>,
     #[cfg(not(feature = "open-api"))]
     pub utoipa_schema: (),
+    pub scope: QueueScope,
 }
 
 impl std::fmt::Debug for QueueApiConfig {
@@ -329,6 +345,7 @@ impl std::fmt::Debug for QueueApiConfig {
             .field("queue_name", &self.queue_name)
             .field("utoipa_type_name", &self.utoipa_type_name)
             .field("utoipa_schema", &"<schema>")
+            .field("scope", &self.scope)
             .finish()
     }
 }
@@ -406,6 +423,7 @@ mod test {
                     })
                 }),
                 num_workers: 1,
+                scope: QueueScope::Warehouse,
             })
             .await;
 
@@ -460,6 +478,7 @@ mod test {
                     })
                 }),
                 num_workers: 2,
+                scope: QueueScope::Warehouse,
             })
             .await;
 

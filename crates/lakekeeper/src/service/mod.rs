@@ -42,7 +42,6 @@ pub struct State<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> {
     pub contract_verifiers: ContractVerifiers,
     pub hooks: EndpointHookCollection,
     pub registered_task_queues: RegisteredTaskQueues,
-    pub registered_project_task_queues: RegisteredTaskQueues,
     pub license_status: &'static LicenseStatus,
 }
 
