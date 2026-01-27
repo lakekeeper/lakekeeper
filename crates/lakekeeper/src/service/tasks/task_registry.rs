@@ -182,51 +182,6 @@ impl TaskQueueRegistry {
         self
     }
 
-    pub async fn register_project_queue<T: TaskConfig>(
-        &self,
-        task_queue: QueueRegistration,
-    ) -> &Self {
-        let QueueRegistration {
-            queue_name,
-            worker_fn,
-            num_workers,
-        } = task_queue;
-        let schema_validator_fn = |v| serde_json::from_value::<T>(v).map(|_| ());
-        let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
-        let api_config = QueueApiConfig {
-            queue_name,
-            #[cfg(feature = "open-api")]
-            utoipa_type_name: T::name().to_string().into(),
-            #[cfg(feature = "open-api")]
-            utoipa_schema: utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_schema_name(
-                T::name(),
-            )),
-            #[cfg(not(feature = "open-api"))]
-            utoipa_type_name: (),
-            #[cfg(not(feature = "open-api"))]
-            utoipa_schema: (),
-        };
-
-        if let Some(_prev) = self.registered_project_queues.write().await.insert(
-            queue_name,
-            RegisteredQueue {
-                api_config,
-                schema_validator_fn,
-            },
-        ) {
-            tracing::warn!("Overwriting registration for queue `{queue_name}`");
-        }
-
-        self.task_workers.write().await.insert(
-            queue_name,
-            RegisteredTaskQueueWorker {
-                worker_fn,
-                num_workers,
-            },
-        );
-        self
-    }
-
     pub async fn register_built_in_queues<C: CatalogStore, S: SecretStore, A: Authorizer>(
         &self,
         catalog_state: C::State,
@@ -281,23 +236,21 @@ impl TaskQueueRegistry {
         .await;
 
         let catalog_state_for_task_log_cleanup = catalog_state.clone();
-        self.register_project_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(
-            QueueRegistration {
-                queue_name: &task_log_cleanup_queue::QUEUE_NAME,
-                worker_fn: Arc::new(move |cancellation_token| {
-                    let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
-                    Box::pin(async move {
-                        task_log_cleanup_queue::log_cleanup_worker::<C>(
-                            catalog_state_clone,
-                            poll_interval,
-                            cancellation_token,
-                        )
-                        .await;
-                    })
-                }),
-                num_workers: CONFIG.task_log_cleanup_workers,
-            },
-        )
+        self.register_queue::<task_log_cleanup_queue::TaskLogCleanupConfig>(QueueRegistration {
+            queue_name: &task_log_cleanup_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move |cancellation_token| {
+                let catalog_state_clone = catalog_state_for_task_log_cleanup.clone();
+                Box::pin(async move {
+                    task_log_cleanup_queue::log_cleanup_worker::<C>(
+                        catalog_state_clone,
+                        poll_interval,
+                        cancellation_token,
+                    )
+                    .await;
+                })
+            }),
+            num_workers: CONFIG.task_log_cleanup_workers,
+        })
         .await;
 
         self

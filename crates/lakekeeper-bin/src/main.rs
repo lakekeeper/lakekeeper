@@ -8,7 +8,11 @@
 #![allow(clippy::module_name_repetitions, clippy::similar_names)]
 
 use clap::{Parser, Subcommand};
-use lakekeeper::{CONFIG, tokio, tracing};
+use lakekeeper::{
+    CONFIG,
+    implementations::{CatalogState, postgres::PostgresBackend},
+    tokio, tracing,
+};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 mod authorizer;
@@ -197,7 +201,7 @@ async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
 }
 
 async fn migrate() -> anyhow::Result<()> {
-    println!("Migrating database...");
+    tracing::info!("Migrating database...");
     let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
         CONFIG
             .to_pool_opts()
@@ -208,11 +212,15 @@ async fn migrate() -> anyhow::Result<()> {
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup
     let server_id = lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
-    println!("Database migration complete.");
+    tracing::info!("Database migration complete.");
 
-    println!("Migrating authorizer...");
+    tracing::info!("Migrating authorizer...");
     authorizer::migrate(server_id).await?;
-    println!("Authorizer migration complete.");
+    tracing::info!("Authorizer migration complete.");
+    tracing::info!("Running post-migration hooks...");
+    let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool.clone());
+    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state).await?;
+    tracing::info!("Post-migration hooks complete.");
 
     Ok(())
 }

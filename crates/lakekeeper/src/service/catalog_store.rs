@@ -36,8 +36,8 @@ use crate::{
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName, TaskResolveScope,
+            CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
+            TaskId, TaskInput, TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -638,7 +638,7 @@ where
     /// If `queue_name` is `None`, cancel tasks in all queues.
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
-        filter: TaskFilter,
+        filter: CancelTasksFilter,
         cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;

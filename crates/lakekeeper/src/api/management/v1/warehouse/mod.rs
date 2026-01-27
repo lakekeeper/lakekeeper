@@ -45,7 +45,9 @@ use crate::{
         require_namespace_for_tabular,
         secrets::SecretStore,
         task_configs::TaskQueueConfigFilter,
-        tasks::{TaskFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask},
+        tasks::{
+            CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
+        },
     },
 };
 
@@ -1020,7 +1022,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             C::clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction.transaction())
                 .await?;
         TabularExpirationTask::cancel_scheduled_tasks::<C>(
-            TaskFilter::TaskIds(
+            CancelTasksFilter::TaskIds(
                 undrop_tabular_responses
                     .iter()
                     .filter_map(|r| {

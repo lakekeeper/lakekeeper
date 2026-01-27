@@ -8,7 +8,14 @@ use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId,
     api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
-    service::{Actor, CatalogStore, Result, SecretStore, State, Transaction, authz::Authorizer},
+    service::{
+        Actor, CatalogStore, Result, SecretStore, State, Transaction,
+        authz::Authorizer,
+        tasks::{
+            ScheduleTaskMetadata, TaskEntity,
+            task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
+        },
+    },
 };
 
 #[derive(Debug, Deserialize, TypedBuilder)]
@@ -203,6 +210,23 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     t.transaction(),
                 )
                 .await?;
+                TaskLogCleanupTask::schedule_task::<C>(
+                    ScheduleTaskMetadata {
+                        project_id: default_project_id.clone(),
+                        parent_task_id: None,
+                        scheduled_for: None,
+                        entity: TaskEntity::Project,
+                    },
+                    TaskLogCleanupPayload::new(),
+                    t.transaction(),
+                )
+                .await
+                .map_err(|e| {
+                    e.append_detail(format!(
+                        "Failed to queue `{}` task for new project with id {default_project_id}.",
+                        task_log_cleanup_queue::QUEUE_NAME.as_str(),
+                    ))
+                })?;
                 authorizer
                     .create_project(&request_metadata, default_project_id)
                     .await?;

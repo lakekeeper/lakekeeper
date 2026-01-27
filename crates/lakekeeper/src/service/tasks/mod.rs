@@ -222,6 +222,19 @@ pub enum TaskFilter {
         project_id: ProjectId,
         include_sub_tasks: bool,
     },
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CancelTasksFilter {
+    WarehouseId {
+        warehouse_id: WarehouseId,
+    },
+    TaskIds(Vec<TaskId>),
+    ProjectId {
+        project_id: ProjectId,
+        include_sub_tasks: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -729,7 +742,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Returns an error on DB errors
     #[tracing::instrument(level = "info", skip(transaction), fields(queue_name = %Self::queue_name(), filter = ?filter, cancel_running_and_should_stop))]
     pub async fn cancel_scheduled_tasks<C: CatalogStore>(
-        filter: TaskFilter,
+        filter: CancelTasksFilter,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
         cancel_running_and_should_stop: bool,
     ) -> Result<(), IcebergErrorResponse> {

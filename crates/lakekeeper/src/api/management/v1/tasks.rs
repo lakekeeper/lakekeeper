@@ -22,9 +22,9 @@ use crate::{
         },
         require_namespace_for_tabular,
         tasks::{
-            ResolvedTaskEntity, TaskDetailsScope, TaskEntity, TaskFilter, TaskId, TaskInfo,
-            TaskIntermediateStatus, TaskMetadata, TaskOutcome, TaskQueueName, TaskResolveScope,
-            WarehouseTaskEntityId,
+            CancelTasksFilter, ResolvedTaskEntity, TaskDetailsScope, TaskEntity, TaskFilter,
+            TaskId, TaskInfo, TaskIntermediateStatus, TaskMetadata, TaskOutcome, TaskQueueName,
+            TaskResolveScope, WarehouseTaskEntityId,
             tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
         },
     },
@@ -848,7 +848,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 }
                 C::cancel_scheduled_tasks(
                     None,
-                    TaskFilter::TaskIds(task_ids),
+                    CancelTasksFilter::TaskIds(task_ids),
                     true,
                     t.transaction(),
                 )
@@ -992,7 +992,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ControlTaskAction::Cancel => {
                 C::cancel_scheduled_tasks(
                     None,
-                    TaskFilter::TaskIds(task_ids),
+                    CancelTasksFilter::TaskIds(task_ids),
                     true,
                     t.transaction(),
                 )

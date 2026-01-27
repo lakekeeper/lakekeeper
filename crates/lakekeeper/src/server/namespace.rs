@@ -30,7 +30,7 @@ use crate::{
         },
         secrets::SecretStore,
         tasks::{
-            ScheduleTaskMetadata, TaskEntity, TaskFilter, WarehouseTaskEntityId,
+            CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
     },
@@ -552,7 +552,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 
         C::cancel_scheduled_tasks(
             None,
-            TaskFilter::TaskIds(drop_info.open_tasks),
+            CancelTasksFilter::TaskIds(drop_info.open_tasks),
             false,
             t.transaction(),
         )

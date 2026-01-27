@@ -14,9 +14,9 @@ use crate::{
         TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter,
-            TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome, TaskQueueName,
-            WarehouseTaskEntityId,
+            CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
+            TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
+            TaskQueueName, WarehouseTaskEntityId,
         },
     },
 };
@@ -1034,7 +1034,7 @@ pub(crate) async fn check_and_heartbeat_task(
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn cancel_scheduled_tasks(
     connection: &mut PgConnection,
-    filter: TaskFilter,
+    filter: CancelTasksFilter,
     queue_name: Option<&TaskQueueName>,
     force_delete_running_tasks: bool,
 ) -> crate::api::Result<()> {
@@ -1042,7 +1042,7 @@ pub(crate) async fn cancel_scheduled_tasks(
     let queue_name = queue_name.map(TaskQueueName::as_str);
     let queue_name = queue_name.unwrap_or("");
     match filter {
-        TaskFilter::WarehouseId { warehouse_id, .. } => {
+        CancelTasksFilter::WarehouseId { warehouse_id } => {
             sqlx::query!(
                 r#"
                 WITH deleted as (
@@ -1112,7 +1112,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 ))
             })?;
         }
-        TaskFilter::TaskIds(task_ids) => {
+        CancelTasksFilter::TaskIds(task_ids) => {
             sqlx::query!(
                 r#"
                 WITH deleted as (
@@ -1177,7 +1177,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 e.into_error_model("Failed to cancel Tasks for specified ids")
             })?;
         }
-        TaskFilter::ProjectId {
+        CancelTasksFilter::ProjectId {
             project_id,
             include_sub_tasks,
         } => {
@@ -1639,7 +1639,7 @@ mod test {
 
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![id]),
+            CancelTasksFilter::TaskIds(vec![id]),
             Some(&tq_name),
             false,
         )
@@ -2863,7 +2863,7 @@ mod test {
         // Cancel the task first time
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             false,
         )
@@ -2879,7 +2879,7 @@ mod test {
         // Cancel the task second time - should be idempotent (no error)
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             false,
         )
@@ -2889,7 +2889,7 @@ mod test {
         // Cancel the task third time - should still be idempotent
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             false,
         )
@@ -2957,7 +2957,7 @@ mod test {
         // Cancel the running task with force_delete=true first time
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             true, // force_delete_running_tasks
         )
@@ -2973,7 +2973,7 @@ mod test {
         // Cancel the task second time - should be idempotent (no error)
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             true,
         )
@@ -2983,7 +2983,7 @@ mod test {
         // Cancel the task third time - should still be idempotent
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             true,
         )
@@ -3062,7 +3062,7 @@ mod test {
         // Try to cancel the already completed task - should be idempotent
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             true,
         )
@@ -3072,7 +3072,7 @@ mod test {
         // Try to cancel the already completed task - should be idempotent
         cancel_scheduled_tasks(
             &mut conn,
-            TaskFilter::TaskIds(vec![task_id]),
+            CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
             true,
         )

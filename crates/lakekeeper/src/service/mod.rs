@@ -13,6 +13,7 @@ pub mod tasks;
 pub use authn::{Actor, UserId};
 pub use catalog_store::*;
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;
+mod post_migration_hooks;
 #[allow(unused_imports)]
 pub(crate) use identifier::tabular::TabularIdentBorrowed;
 pub use identifier::tabular::{TabularId, TabularIdentOwned};
@@ -30,6 +31,7 @@ use crate::{
 mod identifier;
 
 pub use identifier::{generic::*, project::ProjectId};
+pub use post_migration_hooks::run_post_migration_hooks;
 
 // ---------------- State ----------------
 #[derive(Clone, Debug)]

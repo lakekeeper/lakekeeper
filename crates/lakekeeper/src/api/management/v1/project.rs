@@ -33,7 +33,10 @@ use crate::{
         },
         secrets::SecretStore,
         task_configs::TaskQueueConfigFilter,
-        tasks::TaskQueueName,
+        tasks::{
+            ScheduleTaskMetadata, TaskEntity, TaskQueueName,
+            task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
+        },
     },
 };
 
@@ -124,6 +127,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         authorizer
             .create_project(&request_metadata, &project_id)
             .await?;
+
+        TaskLogCleanupTask::schedule_task::<C>(
+            ScheduleTaskMetadata {
+                project_id: project_id.clone(),
+                parent_task_id: None,
+                scheduled_for: None,
+                entity: TaskEntity::Project,
+            },
+            TaskLogCleanupPayload::new(),
+            t.transaction(),
+        )
+        .await
+        .map_err(|e| {
+            e.append_detail(format!(
+                "Failed to queue next `{}` task.",
+                task_log_cleanup_queue::QUEUE_NAME.as_str(),
+            ))
+        })?;
+
         t.commit().await?;
 
         Ok(CreateProjectResponse { project_id })

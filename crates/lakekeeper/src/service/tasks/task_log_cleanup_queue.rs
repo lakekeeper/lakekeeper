@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Timelike as _, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 #[cfg(feature = "open-api")]
@@ -76,6 +76,7 @@ impl TaskLogCleanupPayload {
 #[serde(rename_all = "kebab-case")]
 pub struct TaskLogCleanupConfig {
     /// How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
+    /// If a value below 1 day is provided, it will be set to the default of 1 day.
     #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
     #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
     cleanup_period: Option<Duration>,
@@ -90,8 +91,7 @@ impl TaskLogCleanupConfig {
         match self.cleanup_period {
             Some(period) if period < DEFAULT_CLEANUP_PERIOD_DAYS => {
                 tracing::warn!(
-                    "cleanup_period is below default of {:?}, using default instead",
-                    DEFAULT_CLEANUP_PERIOD_DAYS
+                    "Specified cleanup_period {period} is below minimum of {DEFAULT_CLEANUP_PERIOD_DAYS}, using the minimum instead",
                 );
                 DEFAULT_CLEANUP_PERIOD_DAYS
             }
@@ -195,7 +195,10 @@ async fn cleanup_tasks<C: CatalogStore>(
         }
     };
 
-    TaskLogCleanupTask::schedule_task::<C>(
+    task.record_success_in_transaction::<C>(trx.transaction(), None)
+        .await;
+
+    let scheduled_task = TaskLogCleanupTask::schedule_task::<C>(
         ScheduleTaskMetadata {
             project_id: task.task_metadata.project_id.clone(),
             parent_task_id: Some(task.task_id()),
@@ -212,9 +215,17 @@ async fn cleanup_tasks<C: CatalogStore>(
             task.task_id()
         ))
     })?;
-
-    task.record_success_in_transaction::<C>(trx.transaction(), None)
-        .await;
+    if let Some(new_task_id) = scheduled_task {
+        tracing::debug!(
+            "Scheduled next `{QN_STR}` task with id `{new_task_id}` for project `{}` at `{schedule_date}`",
+            task.task_metadata.project_id(),
+        );
+    } else {
+        tracing::warn!(
+            "No next `{QN_STR}` task was scheduled for project `{}`. A scheduled cleanup task already exists.",
+            task.task_metadata.project_id()
+        );
+    }
 
     trx.commit().await.map_err(|e| {
         tracing::error!("Failed to commit transaction for `{QN_STR}` task. {e}");
@@ -225,7 +236,13 @@ async fn cleanup_tasks<C: CatalogStore>(
 }
 
 fn calculate_next_schedule_date(cleanup_period: Duration) -> DateTime<Utc> {
-    Utc::now() + cleanup_period
+    let next_schedule = Utc::now() + cleanup_period;
+    // Round to full minute
+    next_schedule
+        .with_second(0)
+        .unwrap_or(next_schedule)
+        .with_nanosecond(0)
+        .unwrap_or(next_schedule)
 }
 
 #[cfg(test)]

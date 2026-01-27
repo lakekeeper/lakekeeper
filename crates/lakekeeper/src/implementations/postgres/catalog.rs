@@ -79,8 +79,8 @@ use crate::{
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput,
-            TaskQueueName, TaskResolveScope,
+            CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
+            TaskId, TaskInput, TaskQueueName, TaskResolveScope,
         },
     },
 };
@@ -741,7 +741,7 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
-        filter: TaskFilter,
+        filter: CancelTasksFilter,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
