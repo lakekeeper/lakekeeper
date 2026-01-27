@@ -211,7 +211,7 @@ impl EndpointStatisticsTracker {
                 LoopState::Continue
             }
             EndpointStatisticsMessage::Shutdown => {
-                tracing::info!("Received shutdown message, breaking rcv loop.");
+                tracing::info!("Received shutdown message, exiting endpoint statistics tracker.");
                 LoopState::Break
             }
             EndpointStatisticsMessage::Flush => {

@@ -175,7 +175,8 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     let cancellation_token_clone = cancellation_token.clone();
     let shutdown_signal_handle = service_futures.spawn(async move {
         shutdown_signal(cancellation_token_clone).await;
-        Err(anyhow!("Shutdown signal received"))
+        tracing::info!("Shutdown signal received");
+        Ok(())
     });
     let shutdown_signal_id = shutdown_signal_handle.id();
     service_ids.insert(
