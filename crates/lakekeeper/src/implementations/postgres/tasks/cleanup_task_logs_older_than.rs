@@ -12,7 +12,7 @@ pub(crate) async fn cleanup_task_logs_older_than(
     query!(
         r#"
         DELETE FROM task_log
-        WHERE task_created_at < $1
+        WHERE created_at < $1
         AND project_id = $2
         "#,
         retention_date,
@@ -99,14 +99,20 @@ mod test {
             .collect();
         let mut task_ids: Vec<Uuid> = Vec::new();
         for filter in filters {
-            let tasks: Vec<Uuid> =
-                PostgresBackend::list_tasks(&filter, ListTasksRequest::default(), &mut tx)
-                    .await
-                    .unwrap()
-                    .tasks
-                    .into_iter()
-                    .map(|task| task.task_id().into())
-                    .collect();
+            let tasks: Vec<Uuid> = PostgresBackend::list_tasks(
+                &filter,
+                ListTasksRequest {
+                    queue_name: Some(vec![QUEUE_NAME.clone()]),
+                    ..Default::default()
+                },
+                &mut tx,
+            )
+            .await
+            .unwrap()
+            .tasks
+            .into_iter()
+            .map(|task| task.task_id().into())
+            .collect();
             task_ids.extend(tasks);
         }
 

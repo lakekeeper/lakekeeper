@@ -126,7 +126,6 @@ pub(crate) async fn list_tasks(
         ))?,
         TaskFilter::All => (None, None, true),
     };
-    let project_id_is_none = project_id.is_none();
 
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
     let previous_page_token = page_token.clone();
@@ -293,7 +292,7 @@ pub(crate) async fn list_tasks(
         &project_id.map(ProjectId::as_str).unwrap_or_default(), // 15
         warehouse_id.is_none(), // 16
         include_sub_tasks, // 17
-        project_id_is_none, // 18
+        project_id.is_none(), // 18
     )
     .fetch_all(&mut *transaction)
     .await
@@ -1983,10 +1982,12 @@ mod tests {
         )
         .await
         .unwrap();
-        // Queue project task
 
-        // Try to list tasks from wrong warehouse
-        let request = ListTasksRequest::default();
+        // Try to list tasks - filter by queue_name to exclude bootstrap tasks
+        let request = ListTasksRequest {
+            queue_name: Some(vec![tq_name.clone()]),
+            ..Default::default()
+        };
         let result = list_tasks(
             &TaskFilter::ProjectId {
                 project_id,
@@ -2002,6 +2003,7 @@ mod tests {
         let Some(task) = task else {
             panic!("Expected to find a task");
         };
+
         assert_eq!(task.task_metadata.warehouse_id(), None);
         assert_eq!(result.tasks.len(), 1);
     }
@@ -2070,10 +2072,12 @@ mod tests {
         )
         .await
         .unwrap();
-        // Queue project task
 
-        // Try to list tasks from wrong warehouse
-        let request = ListTasksRequest::default();
+        // List tasks - filter by queue_name to exclude bootstrap tasks
+        let request = ListTasksRequest {
+            queue_name: Some(vec![tq_name.clone()]),
+            ..Default::default()
+        };
         let result = list_tasks(
             &TaskFilter::ProjectId {
                 project_id: project_id.clone(),
