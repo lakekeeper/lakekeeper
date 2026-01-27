@@ -127,6 +127,7 @@ impl std::fmt::Debug for QueueRegistration {
             .field("queue_name", &self.queue_name)
             .field("worker_fn", &"Fn(...)")
             .field("num_workers", &self.num_workers)
+            .field("scope", &self.scope)
             .finish()
     }
 }
