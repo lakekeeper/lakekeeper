@@ -98,8 +98,7 @@ impl std::fmt::Debug for RegisteredTaskQueueWorker {
 pub struct TaskQueueRegistry {
     // Mapping of queue names to their configurations
     registered_queues: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredQueue>>>,
-    // Mapping of queue names to their configurations
-    registered_project_queues: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredQueue>>>,
+
     // Mapping of queue names to their worker configuration
     task_workers: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredTaskQueueWorker>>>,
 }
@@ -135,7 +134,6 @@ impl TaskQueueRegistry {
     pub fn new() -> Self {
         Self {
             registered_queues: Arc::new(RwLock::new(HashMap::new())),
-            registered_project_queues: Arc::new(RwLock::new(HashMap::new())),
             task_workers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
