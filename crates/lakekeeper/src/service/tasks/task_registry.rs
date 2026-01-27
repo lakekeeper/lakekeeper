@@ -265,17 +265,6 @@ impl TaskQueueRegistry {
         }
     }
 
-    /// Creates [`RegisteredTaskQueues`] for use in application state
-    #[must_use]
-    pub fn registered_project_task_queues(&self) -> RegisteredTaskQueues {
-        RegisteredTaskQueues {
-            // It is important to share the interior mutable state,
-            // so that tasks that register later are reflected to the state
-            // that previously registered tasks have a reference to.
-            queues: self.registered_project_queues.clone(),
-        }
-    }
-
     #[must_use]
     pub async fn len(&self) -> usize {
         self.registered_queues.read().await.len()
