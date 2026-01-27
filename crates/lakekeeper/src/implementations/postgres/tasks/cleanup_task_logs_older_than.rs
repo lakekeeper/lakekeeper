@@ -12,7 +12,7 @@ pub(crate) async fn cleanup_task_logs_older_than(
     query!(
         r#"
         DELETE FROM task_log
-        WHERE created_at < $1
+        WHERE task_created_at < $1
         AND project_id = $2
         "#,
         retention_date,
