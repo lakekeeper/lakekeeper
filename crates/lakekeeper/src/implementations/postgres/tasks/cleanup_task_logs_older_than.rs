@@ -11,8 +11,15 @@ pub(crate) async fn cleanup_task_logs_older_than(
     let retention_date = chrono::Utc::now() - retention_period;
     query!(
         r#"
+        WITH tasks_to_delete AS (
+            SELECT task_id
+            FROM task_log
+            WHERE project_id = $2
+            GROUP BY task_id, project_id
+            HAVING MAX(created_at) < $1
+        )
         DELETE FROM task_log
-        WHERE created_at < $1
+        WHERE task_id IN (SELECT task_id FROM tasks_to_delete)
         AND project_id = $2
         "#,
         retention_date,
