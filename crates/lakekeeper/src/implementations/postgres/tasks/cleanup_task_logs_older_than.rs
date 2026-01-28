@@ -15,6 +15,7 @@ pub(crate) async fn cleanup_task_logs_older_than(
             SELECT task_id
             FROM task_log
             WHERE project_id = $2
+            AND NOT EXISTS (SELECT 1 FROM task WHERE task.task_id = task_log.task_id)
             GROUP BY task_id, project_id
             HAVING MAX(created_at) < $1
         )

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH tasks_to_delete AS (\n            SELECT task_id\n            FROM task_log\n            WHERE project_id = $2\n            AND NOT EXISTS (SELECT 1 FROM task WHERE task.task_id = task_log.task_id)\n            GROUP BY task_id, project_id\n            HAVING MAX(created_at) < $1\n        )\n        DELETE FROM task_log\n        WHERE task_id IN (SELECT task_id FROM tasks_to_delete)\n        AND project_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10c39d3e39caeb3f9593cd54619d372134e07fb02c891f2086f3e8e887d1fae8"
+}
