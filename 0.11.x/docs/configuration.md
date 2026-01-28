@@ -205,6 +205,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
+| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Currently only has an effect when using the Cedar Authorizer. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
@@ -232,7 +233,7 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | <nobr>`LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE`</nobr> | `50`                                                                       | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
 
-##### Cedar
+##### Cedar <span class="lkp"></span>
 
 | Variable                                                 | Example                                               | Description |
 |----------------------------------------------------------|-------------------------------------------------------|-----|
@@ -241,6 +242,14 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | <nobr>`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`</nobr> | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
 | `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM`         | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
 | `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`               | `5`                                                   | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization.md#authorization-with-cedar) for more information. |
+| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES`   | `false`                                               | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and does not extract `Lakekeeper::Role` or `Lakekeeper::User` entities from the user's token. When set to `false` (default), Lakekeeper automatically provides `Lakekeeper::Role` and `Lakekeeper::User` entities to Cedar based on information extracted from the user's token. When set to `false`, ensure `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured to specify which claim in the token contains role information. |
+| `LAKEKEEPER__CEDAR__SCHEMA_FILE`                         | `/path/to/custom/schema.cedarschema`                  | Optional path to a custom Cedar schema file. If provided, this schema will be used instead of the embedded default schema. Useful for extending or customizing the Cedar schema. Compatibility with the Lakekeeper schema must be ensured for all entities provided by Lakekeeper (Server, Project, Namespace, Table, View. User & Role if externally managed roles is `false`). |
+
+**Debug configurations for Cedar**
+
+| Variable                                              | Example | Description |
+|-------------------------------------------------------|---------|------------|
+| <nobr>`LAKEKEEPER__CEDAR__DEBUG__LOG_ENTITIES`</nobr> | `false` | If `true`, logs all internal entities (excluding externally managed entities) for each authorization request at debug level. This is useful for debugging authorization issues but can be verbose and impacts performance. Logging only occurs when both this flag is `true` AND debug logging is enabled (`RUST_LOG=debug`). Default: `false`. |
 
 ### UI
 

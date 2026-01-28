@@ -3,18 +3,18 @@ namespace Lakekeeper {
   // ENTITY TYPE DEFINITIONS
   // ============================================================================
 
-  entity User in [Role, Server] {
-    display_name?: String,
+ entity User in [Role, Server] {
+    // Email of the user, extracted from the User's token.
+    // Not available for all token types.
+    email?: String,
+    // Roles of the user, extracted from the User's token.
+    // Only available if role extraction from tokens is configured and
+    // the token contains the configured claim.
+    roles: Set<Role>,
   };
 
   // Roles in Lakekeeper are scoped to projects.
   entity Role in [Role, Project] = {
-    // Name of the role in the project.
-    // Must be unique within the project
-    name: String,
-    // The project this role belongs to
-    project: Project,
-    description?: String,
   };
 
   // Server is the top-level administrative entity
