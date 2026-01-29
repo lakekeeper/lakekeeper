@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.11.2](https://github.com/lakekeeper/lakekeeper/compare/v0.11.1...v0.11.2) (2026-01-29)
+
+
+### Features
+
+* Add configuration option to extract roles from tokens ([#1574](https://github.com/lakekeeper/lakekeeper/issues/1574)) ([bcc9103](https://github.com/lakekeeper/lakekeeper/commit/bcc9103655c1b971c8eb3a7fb3d6e580b3bba77f))
+* Add DurationVisitors for serde for modular serialization and deserialization  ([#1575](https://github.com/lakekeeper/lakekeeper/issues/1575)) ([354f83f](https://github.com/lakekeeper/lakekeeper/commit/354f83fb11dad14a39335772fc7eed0d45456bdb))
+* Add Task Log Cleanup Queue ([#1565](https://github.com/lakekeeper/lakekeeper/issues/1565)) ([d16d07c](https://github.com/lakekeeper/lakekeeper/commit/d16d07c06c6459c84e20d59bd7c04ab6a918640b))
+* Update UI to 0.11.3 - Remember Tab on page reload ([ad1ec88](https://github.com/lakekeeper/lakekeeper/commit/ad1ec8801133814e935d9db363f7c8eba44ece4f))
+
+
+### Bug Fixes
+
+* Remove explicit schema qualification and update developer guide ([#1564](https://github.com/lakekeeper/lakekeeper/issues/1564)) ([b5f7cc9](https://github.com/lakekeeper/lakekeeper/commit/b5f7cc919c8102081453b2b627242647ad8a20c1))
+* **ui:** enable_permissions should be true for all authorizers except AllowAll ([5abb3ba](https://github.com/lakekeeper/lakekeeper/commit/5abb3badf425aa8f516f007f11d05a2f961b9c12))
+* Update UI to 0.11.2 - fix DuckDB Initialization ([#1578](https://github.com/lakekeeper/lakekeeper/issues/1578)) ([c4d3ad1](https://github.com/lakekeeper/lakekeeper/commit/c4d3ad16bf7c8dc84f17b503fab435095d463f0f))
+
+
+### Miscellaneous Chores
+
+* **docs:** Fix Cedar debug config table in docs ([26cf69d](https://github.com/lakekeeper/lakekeeper/commit/26cf69d0d2af606700e1580338b727ca380d8190))
+* **docs:** Improve Cloudflare R2 region docs ([2e914f5](https://github.com/lakekeeper/lakekeeper/commit/2e914f5e04380e802c8d1c02d6b799daad466b69))
+* **docs:** Update Management OpenAPI (plus) ([cdf8772](https://github.com/lakekeeper/lakekeeper/commit/cdf87722d80b66854764cc9e6eb4f88f34a9c7c9))
+* Update lakekeeper.cedarschema ([db5303c](https://github.com/lakekeeper/lakekeeper/commit/db5303c2c68cbe5896d7c2405e3bdfa33adbf378))
+
 ## [0.11.1](https://github.com/lakekeeper/lakekeeper/compare/v0.11.0...v0.11.1) (2026-01-06)
 
 
