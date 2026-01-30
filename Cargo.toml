@@ -27,6 +27,7 @@ async-nats = { version = "0.46.0", default-features = false, features = [
     "server_2_12",
     "aws-lc-rs",
     "service",
+    "nkeys",
 ] }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
