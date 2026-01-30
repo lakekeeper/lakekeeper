@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use axum::{Json, Router, response::IntoResponse, routing::get};
+use axum::{Json, Router, extract::DefaultBodyLimit, response::IntoResponse, routing::get};
 use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
 use http::{HeaderName, HeaderValue, Method, header};
@@ -124,7 +124,8 @@ pub async fn new_full_router<
 
     let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
-        .nest("/management/v1", management_routes);
+        .nest("/management/v1", management_routes)
+        .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body
     if CONFIG.debug.log_request_bodies {
@@ -177,7 +178,7 @@ pub async fn new_full_router<
                 )
                 .layer(TimeoutLayer::with_status_code(
                     http::StatusCode::REQUEST_TIMEOUT,
-                    std::time::Duration::from_secs(30),
+                    CONFIG.max_request_time,
                 ))
                 .layer(CatchPanicLayer::new())
                 .layer(maybe_cors_layer)
