@@ -108,30 +108,71 @@ OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
 
 ## Authorization with Cedar <span class="lkp"></span> {#authorization-with-cedar}
 
-Cedar is an enterprise-grade, policy-based authorization system built into Lakekeeper that requires no external services. Cedar uses a declarative policy language to define access controls, making it ideal for organizations that prefer infrastructure-as-code approaches to authorization management.
+<a href="api/lakekeeper.cedarschema" download class="md-button md-button--primary">
+  :material-download: Download Cedar Schema
+</a>
 
-Check the [Authorization Configuration](./configuration.md#authorization) for setup details.
+[Cedar](https://docs.cedarpolicy.com/) is an enterprise-grade, policy-based authorization system built into Lakekeeper that requires no external services. Cedar uses a declarative policy language to define access controls, making it ideal for organizations that prefer infrastructure-as-code approaches to authorization management.
 
-### Schema and Entity Model
+Check the [Authorization Configuration](./configuration.md#authorization) for configuration options.
 
-For each authorization request, Lakekeeper provides the complete entity hierarchy from the requested resource up to the server level. This ensures policies have full context for making authorization decisions.
+### How it Works
 
-When a user queries table `ns1.ns2.table1` in warehouse `wh-1` within project `my-project`, Cedar receives the following entities:
+Lakekeeper uses the built-in Cedar Authorizer to evaluate whether a request is allowed. Each Cedar authorization request consists of three components:
 
-- `Server` (root)
-- `Project::"my-project"`
-- `Warehouse::"wh-1"` (parent: `my-project`)
-- `Namespace::"ns1"` (parent: `wh-1`)
-- `Namespace::"ns2"` (parent: `ns1`)
-- `Table::"table1"` (parent: `ns2`)
+1. **Principal**: The entity performing the request. Example: `Lakekeeper::User::"oidc~peter"` ("oidc~" prefix indicates users from the OIDC identity provider)
+1. **Action**: The operation being performed. Example: `Lakekeeper::Action::"CommitTable"`
+1. **Resource**: The target of the action. Example: `transactions` table in namespace `finance` (`Lakekeeper::Table::<warehouse-id>/<table-id>`)
 
-This hierarchical context allows policies to reference any level in the path. For example, you can write policies that grant access based on the warehouse name, namespace hierarchy, or specific table properties.
+To evaluate authorization requests, Cedar requires the following information:
 
-The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All loaded entities and policies are validated against this schema on startup and refresh. You can download the schema here: [lakekeeper.cedarschema](api/lakekeeper.cedarschema) or find it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
+1. **Policies**: Define which principals can perform which actions on which resources. Policies are provided via files (`LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`) or Kubernetes ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`). See [Policy Examples](#policy-examples) below.
+1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Namespaces, Warehouses, etc.) for each decision. User roles are also included if present in the user's token and `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured. For scenarios where role information isn't available in tokens, you can provide external entities—see [External Entity Management](#external-entity-management).
+1. **Context**: Transient request-specific data related to an action. For example, the `table_properties_updated` field is available when checking `Lakekeeper::Action::"CommitTable"`. Context is handled internally by Lakekeeper and requires no configuration.
+1. **Schema**: Defines entity types recognized by the application. Lakekeeper uses a built-in schema (downloadable above) that can be customized via `LAKEKEEPER__CEDAR__SCHEMA_*` environment variables. We recommend schema customization only for advanced use cases.
 
-**Important**: Lakekeeper does not provide Roles as built-in entities. Roles must be defined as custom entities in your entity JSON files.
+Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` and optionally `LAKEKEEPER__OPENID_ROLES_CLAIM` if role information is available in user tokens.
+
+### Entity Hierarchy and Context
+
+For each authorization request, Lakekeeper provides Cedar with the complete entity hierarchy from the requested resource to the server root. This hierarchical context ensures policies have full visibility into the resource's location and relationships.
+
+**Example**: When a user queries table `ns1.ns2.transactions` in warehouse `wh-1` within project `my-project`, Cedar sees the following entities:
+
+- `Lakekeeper::Server::<server-id>` (root)
+- `Lakekeeper::Project::"<project-my-project-id>"`
+- `Lakekeeper::Warehouse::"<warehouse-wh-1-id>"` (parent: Project)
+- `Lakekeeper::Namespace::"<namespace-ns1-id>"` (parent: Warehouse)
+- `Lakekeeper::Namespace::"<namespace-ns2-id>"` (parent: ns1)
+- `Lakekeeper::Table::"<table-transactions-id>"` (parent: ns2)
+
+This hierarchy allows policies to reference any level in the path — you can grant access based on warehouse names, namespace hierarchies, or specific table properties.
+
+### External Entity Management
+
+**Default Behavior**: Lakekeeper automatically includes `Lakekeeper::User` entities with information extracted from user tokens. When `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured, Lakekeeper also provides `Lakekeeper::Role` entities, enabling role-based policies.
+
+**External Management**: In scenarios where role information isn't available in tokens, you can manage users and roles externally:
+
+1. Set `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` to `true`
+2. Provide entity definitions via `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES*` configurations
+3. Ensure your external entities conform to Lakekeeper's Cedar schema
+
+See [Entity Definition Example](#entity-definition-example) below for the JSON format.
+
+**Schema Reference**: The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All entities and policies are validated against this schema on startup and refresh. Download the schema above or view it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
+
 
 ### Policy Examples
+
+Allow everything for everyone:
+```cedar
+permit (
+    principal,
+    action,
+    resource
+);
+```
 
 Grant admin access to a specific user:
 ```cedar
@@ -239,3 +280,153 @@ Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SE
 4. **Error Handling**: If any reload fails, the previous configuration is retained, an error is logged, and health checks report unhealthy status
 
 This approach ensures that authorization policies remain consistent and that partial updates never compromise security.
+
+
+### Cedar Actions
+
+The following tables document all available Cedar actions. Use action groups for broad permissions or individual actions for fine-grained control.
+
+##### Server Actions
+
+| Action                                            | Description              |
+|---------------------------------------------------|--------------------------|
+| `ListServerCedarEntitySources`                    | List Cedar entity sources configured at server level |
+| <nobr>`ListCedarPoliciesFromServerSources`</nobr> | View Cedar policies from server-level sources |
+| `ListServerCedarPolicySources`                    | List Cedar policy sources configured at server level |
+| `CreateProject`                                   | Create new projects      |
+| `UpdateUsers`                                     | Modify user information  |
+| `DeleteUsers`                                     | Remove users from the system |
+| `ListUsers`                                       | View all users in the system |
+| `ProvisionUsers`                                  | Provision new users      |
+| `IntrospectServerAuthorization`                   | Check access permissions on the server for **other** users (applies when `identity` parameter doesn't match current user) |
+
+##### Project Actions
+
+| Action                                        | Description                  |
+|-----------------------------------------------|------------------------------|
+| `GetProjectMetadata`                          | View project details and configuration |
+| `ListWarehouses`                              | List all warehouses in the project |
+| `IncludeProjectInList`                        | Include project in list operations (visibility) |
+| `ListRoles`                                   | List all roles in the project |
+| `SearchRoles`                                 | Search for roles in the project |
+| `GetProjectEndpointStatistics`                | View API usage statistics for the project |
+| `GetProjectTaskQueueConfig`                   | View task queue configuration for the project |
+| `GetProjectTasks`                             | List background tasks in the project |
+| <nobr>`IntrospectProjectAuthorization`</nobr> | Check access permissions on the project for other users |
+| `CreateWarehouse`                             | Create new warehouses in the project |
+| `DeleteProject`                               | Delete the project           |
+| `RenameProject`                               | Change project name          |
+| `CreateRole`                                  | Create new roles in the project |
+| `ModifyProjectTaskQueueConfig`                | Update task queue configuration |
+| `ControlProjectTasks`                         | Manage background tasks (cancel, retry, etc.) |
+
+The following Action Groups are available: `ProjectDescribeActions` (read-only), `ProjectModifyActions` (includes Describe), `ProjectActions` (all)
+
+##### Role Actions
+
+| Action                                     | Description                     |
+|--------------------------------------------|---------------------------------|
+| `AssumeRole`                               | Assume this role (use role's permissions) |
+| `DeleteRole`                               | Delete the role                 |
+| `UpdateRole`                               | Modify role properties          |
+| `ReadRole`                                 | View role details               |
+| `ReadRoleMetadata`                         | View role metadata              |
+| <nobr>`IntrospectRoleAuthorization`</nobr> | Check access permissions on the role for other users |
+
+The following Action Groups are available: `RoleActions` (all role operations)
+
+##### Warehouse Actions
+
+| Action                                          | Description                |
+|-------------------------------------------------|----------------------------|
+| `UseWarehouse`                                  | Use the warehouse (required for any warehouse operations) |
+| `ListNamespacesInWarehouse`                     | List namespaces in the warehouse |
+| `GetWarehouseMetadata`                          | View warehouse configuration and details |
+| `GetConfig`                                     | Get warehouse configuration for clients |
+| `IncludeWarehouseInList`                        | Include warehouse in list operations (visibility) |
+| `ListDeletedTabulars`                           | List soft-deleted tables and views |
+| `GetTaskQueueConfig`                            | View task queue configuration |
+| `GetAllTasks`                                   | List all background tasks in the warehouse |
+| `ListEverythingInWarehouse`                     | List all objects (namespaces, tables, views) in warehouse |
+| `GetWarehouseEndpointStatistics`                | View API usage statistics for the warehouse |
+| <nobr>`IntrospectWarehouseAuthorization`</nobr> | Check access permissions on the warehouse for other users |
+| `DeleteWarehouse`                               | Delete the warehouse       |
+| `UpdateStorage`                                 | Modify storage configuration |
+| `UpdateStorageCredential`                       | Update storage credentials |
+| `DeactivateWarehouse`                           | Deactivate the warehouse (suspend operations) |
+| `ActivateWarehouse`                             | Activate a deactivated warehouse |
+| `RenameWarehouse`                               | Change warehouse name      |
+| `ModifySoftDeletion`                            | Configure soft-deletion settings |
+| `ModifyTaskQueueConfig`                         | Update task queue configuration |
+| `ControlAllTasks`                               | Manage all background tasks |
+| `SetWarehouseProtection`                        | Enable/disable deletion protection |
+| `CreateNamespaceInWarehouse`                    | Create namespaces directly in the warehouse |
+
+The following Action Groups are available: `WarehouseDescribeActions` (read-only), `WarehouseModifyActions` (includes Describe), `WarehouseActions` (all)
+
+##### Namespace Actions
+
+| Action                                          | Description                |
+|-------------------------------------------------|----------------------------|
+| `ListEverythingInNamespace`                     | List all objects (tables, views, child namespaces) in namespace |
+| `GetNamespaceMetadata`                          | View namespace properties and configuration |
+| `IncludeNamespaceInList`                        | Include namespace in list operations (visibility) |
+| `ListTables`                                    | List tables in the namespace |
+| `ListViews`                                     | List views in the namespace |
+| `ListNamespacesInNamespace`                     | List child namespaces      |
+| <nobr>`IntrospectNamespaceAuthorization`</nobr> | Check access permissions on the namespace for other users |
+| `DeleteNamespace`                               | Delete the namespace       |
+| `SetNamespaceProtection`                        | Enable/disable deletion protection |
+| `CreateTable`                                   | Create tables in the namespace |
+| `CreateView`                                    | Create views in the namespace |
+| `CreateNamespaceInNamespace`                    | Create child namespaces    |
+| `UpdateNamespaceProperties`                     | Modify namespace properties |
+
+The following Action Groups are available: `NamespaceDescribeActions` (read-only), `NamespaceModifyActions` (includes Describe), `NamespaceActions` (all)
+
+##### Table Actions
+
+| Action                                      | Description                    |
+|---------------------------------------------|--------------------------------|
+| `GetTableMetadata`                          | View table schema, metadata, and configuration |
+| `IncludeTableInList`                        | Include table in list operations (visibility) |
+| `GetTableTasks`                             | List background tasks for the table |
+| `ReadTableData`                             | Read data from the table (SELECT queries) |
+| <nobr>`IntrospectTableAuthorization`</nobr> | Check access permissions on the table for other users |
+| `DropTable`                                 | Delete the table               |
+| `WriteTableData`                            | Write data to the table (INSERT, UPDATE, DELETE) |
+| `RenameTable`                               | Change table name or move to different namespace |
+| `UndropTable`                               | Restore a soft-deleted table   |
+| `ControlTableTasks`                         | Manage table background tasks  |
+| `SetTableProtection`                        | Enable/disable deletion protection |
+| `CommitTable`                               | Commit table changes (schema updates, snapshots) |
+
+*Action Groups*: `TableDescribeActions` (metadata only), `TableSelectActions` (includes Describe + read data), `TableModifyActions` (includes Describe + Select + modifications), `TableActions` (all)
+
+##### View Actions
+
+| Action                                     | Description                     |
+|--------------------------------------------|---------------------------------|
+| `GetViewMetadata`                          | View view definition and metadata |
+| `IncludeViewInList`                        | Include view in list operations (visibility) |
+| `GetViewTasks`                             | List background tasks for the view |
+| <nobr>`IntrospectViewAuthorization`</nobr> | Check access permissions on the view for other users |
+| `DropView`                                 | Delete the view                 |
+| `RenameView`                               | Change view name or move to different namespace |
+| `UndropView`                               | Restore a soft-deleted view     |
+| `ControlViewTasks`                         | Manage view background tasks    |
+| `SetViewProtection`                        | Enable/disable deletion protection |
+| `CommitView`                               | Commit view changes (update definition, properties) |
+
+The following Action Groups are available: `ViewDescribeActions` (metadata only), `ViewModifyActions` (includes Describe + modifications), `ViewActions` (all)
+
+##### Context-Aware Actions
+
+Some actions include additional context information in authorization requests:
+
+- `CreateNamespaceInWarehouse`, `CreateNamespaceInNamespace`: Include `requested_namespace_properties`
+- `CreateTable`: Includes `requested_table_properties`
+- `CreateView`: Includes `requested_view_properties`
+- `UpdateNamespaceProperties`: Includes `namespace_properties_updated` and `namespace_properties_removed`
+- `CommitTable`: Includes `table_properties_updated` and `table_properties_removed`
+- `CommitView`: Includes `view_properties_updated` and `view_properties_removed`

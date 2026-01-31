@@ -42,17 +42,6 @@ namespace Lakekeeper {
     name: String,
     protected: Bool,    
     properties: Set<{key: String, value: String}>,
-
-    // If a table is created in this namespace, these properties are requested for the table
-    create_table_properties?: Set<{key: String, value: String}>,
-    // If a view is created in this namespace, these properties are requested for the view
-    create_view_properties?: Set<{key: String, value: String}>,
-    // If a child namespace is created in this namespace, these properties are requested for the child namespace
-    create_namespace_properties?: Set<{key: String, value: String}>,
-    // Properties to be updated on this namespace
-    namespace_properties_updated?: Set<{key: String, value: String}>,
-    // Properties to be removed from this namespace
-    namespace_properties_removed?: Set<String>,
   };
 
   // Table entity for Iceberg tables
@@ -65,11 +54,6 @@ namespace Lakekeeper {
     name: String,
     protected: Bool,
     properties: Set<{key: String, value: String}>,
-
-    // Properties to be updated on this table
-    table_properties_updated?: Set<{key: String, value: String}>,
-    // Properties to be removed from this table
-    table_properties_removed?: Set<String>,
   };
 
   // View entity for Iceberg views
@@ -82,11 +66,6 @@ namespace Lakekeeper {
     name: String,
     protected: Bool,
     properties: Set<{key: String, value: String}>,
-
-    // Properties to be updated on this view
-    view_properties_updated?: Set<{key: String, value: String}>,
-    // Properties to be removed from this view
-    view_properties_removed?: Set<String>,
   };
 
   // ============================================================================
@@ -137,13 +116,22 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Warehouse]
     };
-  action IntrospectWarehouseAuthorization, CreateNamespaceInWarehouse, DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
+  action IntrospectWarehouseAuthorization, DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
          DeactivateWarehouse, ActivateWarehouse,
          RenameWarehouse, ModifySoftDeletion,
          ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection in ["WarehouseModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Warehouse]
+    };
+  action CreateNamespaceInWarehouse in ["WarehouseModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // Requested properties for the namespace being created
+        requested_namespace_properties: Set<{key: String, value: String}>,
+      }
     };
 
   // ---------- Namespace Actions ----------
@@ -156,10 +144,48 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace]
     };  
-  action IntrospectNamespaceAuthorization, CreateTable, CreateView, CreateNamespaceInNamespace, DeleteNamespace, UpdateProperties, SetNamespaceProtection in ["NamespaceModifyActions"]
+  action IntrospectNamespaceAuthorization, DeleteNamespace, SetNamespaceProtection in ["NamespaceModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
+    };
+  action CreateTable in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Requested properties for the table being created
+        requested_table_properties: Set<{key: String, value: String}>,
+      }
+    };
+  action CreateView in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Requested properties for the view being created
+        requested_view_properties: Set<{key: String, value: String}>,
+      }
+    };
+  action CreateNamespaceInNamespace in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Requested properties for the namespace being created
+        requested_namespace_properties: Set<{key: String, value: String}>,
+      }
+    };
+  action UpdateNamespaceProperties in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Properties to be updated on this namespace
+        namespace_properties_updated: Set<{key: String, value: String}>,
+        // Properties to be removed from this namespace
+        namespace_properties_removed: Set<String>,
+      }
     };
 
   // ---------- Table Actions ----------
@@ -177,10 +203,21 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Table]
     };
-  action IntrospectTableAuthorization, DropTable, WriteTableData, CommitTable, RenameTable, UndropTable, ControlTableTasks, SetTableProtection in ["TableModifyActions"] 
+  action IntrospectTableAuthorization, DropTable, WriteTableData, RenameTable, UndropTable, ControlTableTasks, SetTableProtection in ["TableModifyActions"] 
     appliesTo {
       principal: [User, Role],
       resource: [Table]
+    };
+  action CommitTable in ["TableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Properties to be updated on this table
+        table_properties_updated: Set<{key: String, value: String}>,
+        // Properties to be removed from this table
+        table_properties_removed: Set<String>,
+      }
     };
 
   // ---------- View Actions ----------
@@ -192,9 +229,20 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [View]
     };
-  action IntrospectViewAuthorization, DropView, CommitView, RenameView, UndropView, ControlViewTasks, SetViewProtection in ["ViewModifyActions"]
+  action IntrospectViewAuthorization, DropView, RenameView, UndropView, ControlViewTasks, SetViewProtection in ["ViewModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
+    };
+  action CommitView in ["ViewModifyActions"] 
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Properties to be updated on this view
+        view_properties_updated: Set<{key: String, value: String}>,
+        // Properties to be removed from this view
+        view_properties_removed: Set<String>,
+      }
     };
 }
