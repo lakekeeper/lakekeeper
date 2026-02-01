@@ -136,6 +136,9 @@ To evaluate authorization requests, Cedar requires the following information:
 
 Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` and optionally `LAKEKEEPER__OPENID_ROLES_CLAIM` if role information is available in user tokens.
 
+### RBAC and ABAC Support
+Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for  authorization decisions. See the ABAC example in [Policy Examples](#policy-examples) below for a complete implementation.
+
 ### Entity Hierarchy and Context
 
 For each authorization request, Lakekeeper provides Cedar with the complete entity hierarchy from the requested resource to the server root. This hierarchical context ensures policies have full visibility into the resource's location and relationships.
@@ -273,6 +276,67 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ) when {
         (resource has warehouse && resource.warehouse.name == "dev") ||
         (resource is Lakekeeper::Warehouse && resource.name == "dev")
+    };
+    ```
+
+??? example "ABAC example using Table properties"
+    ```cedar
+    @id("abac-role-based-access-marketing-select")
+    @description("ABAC: Allow Read access to tables when user has marketing-select role matching access-role tag")
+    permit (
+        principal in Lakekeeper::Role::"marketing-select",
+        action in Lakekeeper::Action::"TableSelectActions",
+        resource is Lakekeeper::Table
+    )
+    when
+    {
+        resource.properties
+            .containsAny
+            (
+                [{key:"access-role-select", value:"marketing"}]
+            )
+    };
+
+    @id("abac-role-based-access-marketing-modify")
+    @description("ABAC: Allow Modify access to tables when user has marketing-modify role, but prevent modifying access-role property")
+    permit (
+        principal in Lakekeeper::Role::"marketing-modify",
+        action in Lakekeeper::Action::"TableModifyActions",
+        resource is Lakekeeper::Table
+    )
+    when
+    {
+        resource.properties
+            .containsAny
+            (
+                [{key:"access-role-modify", value:"marketing"}]
+            )
+    }
+    unless
+    {
+        action == Lakekeeper::Action::"CommitTable" &&
+        (context.table_properties_removed.contains("access-role-modify") ||
+        context.table_properties_updated
+            .containsAny
+            (
+                [{key:"access-role-modify", value:"marketing"}]
+            ))
+    };
+
+    @id("abac-role-based-access-marketing-admin")
+    @description("ABAC: Allow full Modify access to tables when user has marketing-admin role")
+    permit (
+        principal in Lakekeeper::Role::"marketing-admin",
+        action in Lakekeeper::Action::"TableModifyActions",
+        resource is Lakekeeper::Table
+    )
+    when
+    {
+        resource.properties
+            .containsAny
+            (
+                [{key:"access-role-modify", value:"marketing"}]
+            )
     };
     ```
 
@@ -636,7 +700,7 @@ The following Action Groups are available: `ViewDescribeActions` (metadata only)
 
 ##### Context-Aware Actions
 
-Some actions include additional context information in authorization requests:
+Some actions include additional context information in authorization requests. This enables ABAC policies to make decisions based on properties being created, updated, or removed—for example, preventing users from modifying specific property keys.
 
 - `CreateNamespaceInWarehouse`, `CreateNamespaceInNamespace`: Include `requested_namespace_properties`
 - `CreateTable`: Includes `requested_table_properties`
