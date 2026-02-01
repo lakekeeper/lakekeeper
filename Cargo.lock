@@ -1121,7 +1121,7 @@ dependencies = [
  "pin-project",
  "quick-xml 0.31.0",
  "rand 0.8.5",
- "reqwest 0.12.28",
+ "reqwest",
  "rustc_version",
  "serde",
  "serde_json",
@@ -2678,7 +2678,7 @@ dependencies = [
  "jsonwebtoken 10.2.0",
  "path-clean",
  "percent-encoding",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -2697,7 +2697,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61f706788c1b58712c513e4d403234707fd255f49caa89d1c930197418b5fb2c"
 dependencies = [
- "reqwest 0.12.28",
+ "reqwest",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -2719,8 +2719,8 @@ dependencies = [
  "percent-encoding",
  "pkcs8 0.10.2",
  "regex",
- "reqwest 0.12.28",
- "reqwest-middleware 0.4.2",
+ "reqwest",
+ "reqwest-middleware",
  "ring",
  "serde",
  "serde_json",
@@ -3253,7 +3253,7 @@ dependencies = [
  "parquet",
  "rand 0.8.5",
  "reqsign",
- "reqwest 0.12.28",
+ "reqwest",
  "roaring",
  "rust_decimal",
  "serde",
@@ -3284,7 +3284,7 @@ dependencies = [
  "lakekeeper-io",
  "lazy_static",
  "pastey",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3649,7 +3649,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "jsonwebtoken 9.3.1",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -3800,7 +3800,7 @@ dependencies = [
  "pretty_assertions",
  "quick-xml 0.38.4",
  "rdkafka",
- "reqwest 0.12.28",
+ "reqwest",
  "semver",
  "serde",
  "serde_json",
@@ -3874,7 +3874,7 @@ dependencies = [
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
  "limes",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "tracing-subscriber",
 ]
@@ -3920,8 +3920,8 @@ dependencies = [
  "md5",
  "moka",
  "pastey",
- "reqwest 0.12.28",
- "reqwest-middleware 0.4.2",
+ "reqwest",
+ "reqwest-middleware",
  "reqwest-retry",
  "serde",
  "serde_json",
@@ -4105,7 +4105,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "once_cell",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -4263,7 +4263,7 @@ checksum = "ab72da1c1153cd80d131419c1e7229a7de12445ab1d2f9d94e36493e509f6eff"
 dependencies = [
  "http 1.4.0",
  "oauth2 5.0.0",
- "reqwest 0.12.28",
+ "reqwest",
  "thiserror 2.0.17",
  "tokio",
  "tonic",
@@ -4541,7 +4541,7 @@ dependencies = [
  "getrandom 0.2.16",
  "http 1.4.0",
  "rand 0.8.5",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -4583,7 +4583,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml 0.38.4",
  "reqsign",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -5653,7 +5653,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml 0.37.5",
  "rand 0.8.5",
- "reqwest 0.12.28",
+ "reqwest",
  "rsa",
  "rust-ini",
  "serde",
@@ -5709,35 +5709,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reqwest"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04e9018c9d814e5f30cc16a0f03271aeab3571e609612d9fe78c1aa8d11c2f62"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures-core",
- "http 1.4.0",
- "http-body 1.0.1",
- "http-body-util",
- "hyper 1.8.1",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "sync_wrapper",
- "tokio",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "reqwest-middleware"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5746,31 +5717,17 @@ dependencies = [
  "anyhow",
  "async-trait",
  "http 1.4.0",
- "reqwest 0.12.28",
+ "reqwest",
  "serde",
  "thiserror 1.0.69",
  "tower-service",
 ]
 
 [[package]]
-name = "reqwest-middleware"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f42e2f48018a33d679ee7f477a446b697663a14e91ab0b3a0206792a22dd3aa8"
-dependencies = [
- "anyhow",
- "async-trait",
- "http 1.4.0",
- "reqwest 0.13.1",
- "thiserror 2.0.17",
- "tower-service",
-]
-
-[[package]]
 name = "reqwest-retry"
-version = "0.9.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "180e3930c1c07a59122f304ff269a634a4d5013afecbe646ccad4ff98e0803c2"
+checksum = "105747e3a037fe5bf17458d794de91149e575b6183fc72c85623a44abb9683f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5778,8 +5735,8 @@ dependencies = [
  "getrandom 0.2.16",
  "http 1.4.0",
  "hyper 1.8.1",
- "reqwest 0.13.1",
- "reqwest-middleware 0.5.0",
+ "reqwest",
+ "reqwest-middleware",
  "retry-policies",
  "thiserror 2.0.17",
  "tokio",
@@ -5967,7 +5924,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http 1.4.0",
- "reqwest 0.12.28",
+ "reqwest",
  "rustify_derive",
  "serde",
  "serde_json",
@@ -7808,7 +7765,7 @@ dependencies = [
  "bytes",
  "derive_builder 0.12.0",
  "http 1.4.0",
- "reqwest 0.12.28",
+ "reqwest",
  "rustify",
  "rustify_derive",
  "serde",
