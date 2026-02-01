@@ -108,6 +108,9 @@ OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
 
 ## Authorization with Cedar <span class="lkp"></span> {#authorization-with-cedar}
 
+!!! important "Using the Correct Cedar Schema Version"
+    Always use the Cedar schema version that exactly matches your Lakekeeper deployment when developing policies. Schema mismatches can cause policy validation failures or unexpected authorization behavior. Download the schema from the Lakekeeper UI (Lakekeeper Plus 0.11.2+) or retrieve it via the `/management/v1/permissions/cedar/schema` endpoint.
+
 <a href="api/lakekeeper.cedarschema" download class="md-button md-button--primary">
   :material-download: Download Cedar Schema
 </a>
@@ -165,61 +168,272 @@ See [Entity Definition Example](#entity-definition-example) below for the JSON f
 
 ### Policy Examples
 
-Allow everything for everyone:
-```cedar
-permit (
-    principal,
-    action,
-    resource
-);
-```
+The following examples demonstrate common Cedar policy patterns. Unless otherwise noted, examples assume a single-project setup (the project is not restricted). Note that warehouse names are only guaranteed to be unique within a project.
 
-Grant admin access to a specific user:
-```cedar
-permit (
-    principal == Lakekeeper::User::"oidc~<sub-field-from-user-token>",
-    action,
-    resource
-);
-```
+??? example "Allow everything for everyone"
+    ```cedar
+    permit (
+        principal,
+        action,
+        resource
+    );
+    ```
 
-Role-based warehouse access:
-```cedar
-// Grant full access to all entities in a warehouse with name "wh-1"
-permit (
-    principal in Lakekeeper::Role::"warehouse-1-admins",
-    action in [Lakekeeper::Action::"NamespaceActions",
-               Lakekeeper::Action::"TableActions",
-               Lakekeeper::Action::"ViewActions"],
-    resource
-)
-when { resource.warehouse.name == "wh-1" };
+??? example "Allow everything for a specific user"
+    ```cedar
+    permit (
+        principal == Lakekeeper::User::"oidc~<user-id>", // Add user name in comment for documentation
+        action,
+        resource
+    );
+    ```
 
-// Allow modification of the warehouse itself
-permit (
-    principal in Lakekeeper::Role::"warehouse-1-admins",
-    action in [Lakekeeper::Action::"WarehouseModifyActions"],
-    resource
-)
-when { resource.name == "wh-1" };
-```
+??? example "Allow everything for all users in a role/group"
+    ```cedar
+    permit (
+        principal in Lakekeeper::Role::"<role-id>", // Role id as contained in the user's token
+        action,
+        resource
+    );
+    ```
 
-Table read access for all tables in the `analytics` namespace of warehouse `wh-1`:
-```cedar
-permit (
-    principal == Lakekeeper::User::"oidc~<sub-field-from-user-token>",
-    action in [Lakekeeper::Action::"TableSelectActions"],
-    resource
-)
-when {
-    resource.namespace.name == "analytics" &&
-    resource.warehouse.name == "wh-1"
-};
-```
+??? example "Allow everything for multiple specific users"
+    ```cedar
+    permit (
+        principal is Lakekeeper::User,
+        action,
+        resource
+    ) when {
+        [
+            Lakekeeper::User::"oidc~<user-id-1>", // User 1 name for documentation
+            Lakekeeper::User::"oidc~<user-id-2>", // User 2 name for documentation
+            Lakekeeper::User::"oidc~<user-id-3>"  // User 3 name for documentation
+        ].contains(principal) 
+    };
+    ```
+
+??? example "Basic server and project permissions for all authenticated users"
+    ```cedar
+    permit (
+        principal,
+        action in [
+            Lakekeeper::Action::"ProjectDescribeActions", // Applies to all projects unless resource is restricted
+        ],
+        resource
+    );
+    ```
+
+??? example "Read and write access to a namespace and all its contents (recursive)"
+    ```cedar
+    permit (
+        principal == Lakekeeper::User::"oidc~<user-id>",
+        action in
+            [Lakekeeper::Action::"NamespaceModifyActions",
+            Lakekeeper::Action::"TableModifyActions",
+            Lakekeeper::Action::"ViewModifyActions"],
+        resource
+    ) when {
+        ( resource is Lakekeeper::Warehouse && resource.name == "dev" ) ||
+        ( resource is Lakekeeper::Namespace && resource.warehouse.name == "dev" && resource.name == "finance.revenue" ) ||
+        ( resource is Lakekeeper::Table && resource.warehouse.name == "dev" && resource.namespace.name like "finance.revenue*" ) || // Include sub-namespaces via wildcard
+        ( resource is Lakekeeper::View && resource.warehouse.name == "dev" && resource.namespace.name like "finance.revenue*" )
+    };
+    ```
+
+??? example "Read access to a warehouse and all its contents for a group"
+    ```cedar
+    permit (
+        principal in Lakekeeper::Role::"<role-id>",
+        action in
+            [
+                Lakekeeper::Action::"WarehouseDescribeActions",
+                Lakekeeper::Action::"NamespaceDescribeActions",
+                Lakekeeper::Action::"TableSelectActions",
+                Lakekeeper::Action::"ViewDescribeActions"
+            ],
+        resource
+    ) when {
+        (resource has warehouse && resource.warehouse.name == "dev") ||
+        (resource is Lakekeeper::Warehouse && resource.name == "dev")
+    };
+    ```
+
+??? example "Read access to a warehouse and all its contents in multi-project setups"
+    ```cedar
+    permit (
+        principal in Lakekeeper::Role::"<role-id>",
+        action in
+            [
+                Lakekeeper::Action::"WarehouseDescribeActions",
+                Lakekeeper::Action::"NamespaceDescribeActions",
+                Lakekeeper::Action::"TableSelectActions",
+                Lakekeeper::Action::"ViewDescribeActions"
+            ],
+        resource in Lakekeeper::Project::"<id of the project>"
+    ) when {
+        (resource has warehouse && resource.warehouse.name == "dev") ||
+        (resource is Lakekeeper::Warehouse && resource.name == "dev")
+    };
+    ```
+
+??? example "Recommended permissions for the OPA bridge user"
+    ```cedar
+    @id("opa-permissions")
+    @description("Grant global permission read access to OPA user")
+    permit (
+        principal == Lakekeeper::User::"oidc~<opa-user-id>", // OPA service account
+        action in [
+            Lakekeeper::Action::"IntrospectServerAuthorization",
+            Lakekeeper::Action::"IntrospectProjectAuthorization",
+            Lakekeeper::Action::"IntrospectRoleAuthorization",
+            Lakekeeper::Action::"WarehouseDescribeActions",
+            Lakekeeper::Action::"IntrospectWarehouseAuthorization",
+            Lakekeeper::Action::"NamespaceDescribeActions",
+            Lakekeeper::Action::"IntrospectNamespaceAuthorization",
+            Lakekeeper::Action::"TableDescribeActions",
+            Lakekeeper::Action::"IntrospectTableAuthorization",
+            Lakekeeper::Action::"ViewDescribeActions",
+            Lakekeeper::Action::"IntrospectViewAuthorization",
+        ],
+        resource
+    );
+    ```
 
 ### Entity Definition Example
+Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View. Additionally, if `` is set, also User and Roles are provided to Cedar. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
 
-Define roles and assign users to them using JSON entity files:
+??? example "Entities provided to Cedar internally"
+    ```json
+    [
+        {
+            "uid": {
+                "type": "Lakekeeper::Table",
+                "id": "d08dca76-ff69-11f0-9aa6-ab201d553ec5/019c192f-18d0-7390-9d90-93facfb8e3d3"
+            },
+            "attrs": {
+                "namespace": {
+                    "__entity": {
+                        "type": "Lakekeeper::Namespace",
+                        "id": "019c192f-18c2-7f93-848f-542d8f32bc3c"
+                    }
+                },
+                "protected": false,
+                "warehouse": {
+                    "__entity": {
+                        "type": "Lakekeeper::Warehouse",
+                        "id": "d08dca76-ff69-11f0-9aa6-ab201d553ec5"
+                    }
+                },
+                "properties": [],
+                "name": "transactions",
+                "project": {
+                    "__entity": {
+                        "type": "Lakekeeper::Project",
+                        "id": "019c192f-0613-7422-90f1-7dd6b09f033c"
+                    }
+                }
+            },
+            "parents": [
+                {
+                    "type": "Lakekeeper::Namespace",
+                    "id": "019c192f-18c2-7f93-848f-542d8f32bc3c"
+                }
+            ]
+        },
+        {
+            "uid": {
+                "type": "Lakekeeper::Server",
+                "id": "019c192e-cc20-7a13-a1ac-2e3390f81908"
+            },
+            "attrs": {},
+            "parents": []
+        },
+        {
+            "uid": {
+                "type": "Lakekeeper::Project",
+                "id": "019c192f-0613-7422-90f1-7dd6b09f033c"
+            },
+            "attrs": {},
+            "parents": [
+                {
+                    "type": "Lakekeeper::Server",
+                    "id": "019c192e-cc20-7a13-a1ac-2e3390f81908"
+                }
+            ]
+        },
+        {
+            "uid": {
+                "type": "Lakekeeper::Warehouse",
+                "id": "d08dca76-ff69-11f0-9aa6-ab201d553ec5"
+            },
+            "attrs": {
+                "is_active": true,
+                "protected": false,
+                "project": {
+                    "__entity": {
+                        "type": "Lakekeeper::Project",
+                        "id": "019c192f-0613-7422-90f1-7dd6b09f033c"
+                    }
+                },
+                "name": "wh-1"
+            },
+            "parents": [
+                {
+                    "type": "Lakekeeper::Project",
+                    "id": "019c192f-0613-7422-90f1-7dd6b09f033c"
+                }
+            ]
+        },
+        {
+            "uid": {
+                "type": "Lakekeeper::Namespace",
+                "id": "019c192f-18c2-7f93-848f-542d8f32bc3c"
+            },
+            "attrs": {
+                "protected": false,
+                "warehouse": {
+                    "__entity": {
+                        "type": "Lakekeeper::Warehouse",
+                        "id": "d08dca76-ff69-11f0-9aa6-ab201d553ec5"
+                    }
+                },
+                "project": {
+                    "__entity": {
+                        "type": "Lakekeeper::Project",
+                        "id": "019c192f-0613-7422-90f1-7dd6b09f033c"
+                    }
+                },
+                "name": "my-namespace",
+                "properties": [
+                    {
+                        "key": "location",
+                        "value": "s3://tests/075272e23ed548d8bfd722a7a383cd50/019c192f-18c2-7f93-848f-542d8f32bc3c"
+                    }
+                ]
+            },
+            "parents": [
+                {
+                    "type": "Lakekeeper::Warehouse",
+                    "id": "d08dca76-ff69-11f0-9aa6-ab201d553ec5"
+                }
+            ]
+        },
+        {
+            "uid": {
+                "type": "Lakekeeper::User",
+                "id": "oidc~2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
+            },
+            "attrs": {
+                "roles": []
+            },
+            "parents": []
+        }
+    ]
+    ```
+
+Lakekeeper can log all entities provided to Cedar for debugging purposes. See the [Cedar Configuration](./configuration.md#cedar) section for details on enabling entity logging.
+
+When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, Lakekeeper excludes User and Role entities from Cedar requests and expects you to provide them externally via `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES*` configurations. The following example shows an `entity.json` file defining user-to-role assignments:
 
 ```json
 [

@@ -235,6 +235,8 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 
 ##### Cedar <span class="lkp"></span>
 
+Please check the [Authorization User Guide](./authorization.md#authorization-with-cedar) for more information on Cedar.
+
 | Variable                                                 | Example                                               | Description |
 |----------------------------------------------------------|-------------------------------------------------------|-----|
 | `LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`         | `[/path/to/policies1.cedar,/path/to/policies2.cedar]` | List of local file paths containing Cedar policies in Cedar format (not JSON). |
@@ -355,10 +357,10 @@ You may be running Lakekeeper in your own environment which uses self-signed cer
 
 Lakekeeper allows you to configure limits on incoming requests to protect against resource exhaustion and denial-of-service attacks.
 
-| Variable                                            | Example | Description |
-|-----------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr>    | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
-| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>         | `30s`   | Maximum time allowed for a request to complete. Accepts format `{number}{ms|s}` (e.g., `30s` or `5000ms`). Default: `30s` |
+| Variable                                         | Example   | Description   |
+|--------------------------------------------------|-----------|---------------|
+| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
+| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms |
 
 ### Debug
 
