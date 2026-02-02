@@ -21,6 +21,7 @@ pub use service::{ProjectId, SecretId, WarehouseId};
 pub mod serve;
 
 pub mod implementations;
+pub mod logging;
 pub mod utils;
 
 pub mod api;

@@ -5,6 +5,7 @@ members = [
     "crates/io",
     "crates/lakekeeper",
     "crates/lakekeeper-bin",
+    "crates/lakekeeper-logging-derive",
 ]
 resolver = "2"
 
@@ -108,7 +109,9 @@ moka = { version = "^0.12", features = ["future"] }
 pastey = "0.2.1"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
+proc-macro2 = "1"
 quick-xml = { version = "0.38.3", features = ["serialize"] }
+quote = "1"
 rdkafka = { version = "0.38.0", default-features = false, features = [
     "tokio",
     "zstd",
@@ -142,6 +145,7 @@ sqlx = { version = "0.8.6", default-features = false, features = [
 ] }
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
+syn = { version = "2", features = ["full"] }
 thiserror = "2.0.0"
 time = "0.3.36"
 tokio = { version = "1.41", default-features = false, features = [
