@@ -11,6 +11,15 @@ pub trait AuditContext {
     fn log_audit<E: AuditEvent>(&self, event: E);
 }
 
+impl<T> AuditContext for T
+where
+    T: AuditContextData,
+{
+    fn log_audit<E: AuditEvent>(&self, event: E) {
+        event.log(self);
+    }
+}
+
 pub trait AuditContextData {
     fn request_metadata(&self) -> &RequestMetadata;
 }
@@ -23,6 +32,8 @@ impl AuditContextData for RequestMetadata {
 
 #[cfg(test)]
 mod tests {
+    use crate::service::UserId;
+
     use super::*;
 
     use lakekeeper_logging_derive::AuditEvent;
@@ -92,30 +103,24 @@ mod tests {
 
         assert!(
             combined.contains("audit_event"),
-            "Missing 'audit_event' in: {}",
-            combined
+            "Missing 'audit_event' in: {combined}"
         );
         assert!(
             combined.contains("event_source=\"audit\""),
-            "Missing event_source in: {}",
-            combined
+            "Missing event_source in: {combined}"
         );
         assert!(
             combined.contains("user=\"anonymous\""),
-            "Missing user in: {}",
-            combined
+            "Missing user in: {combined}"
         );
         assert!(
             combined.contains("action=\"dummy_event\""),
-            "Missing action in: {}",
-            combined
+            "Missing action in: {combined}"
         );
     }
 
     #[test]
     fn test_audit_logging_with_authenticated_user() {
-        use crate::service::UserId;
-
         let user_id = UserId::new_unchecked("test-idp", "test-user");
         let request_metadata = RequestMetadata::test_user(user_id.clone());
         let event = DummyEvent {};
@@ -160,7 +165,7 @@ mod tests {
         });
 
         let combined = logs.join("");
-        assert!(combined.contains(&format!("request_id={}", request_id)));
+        assert!(combined.contains(&format!("request_id={request_id}")));
     }
 
     #[test]
@@ -207,5 +212,37 @@ mod tests {
         let custom = CustomActionEvent {};
 
         assert_eq!(custom.action(), "custom_action");
+    }
+
+    #[test]
+    fn test_basic_audit_logging_works_on_audit_context() {
+        let user = UserId::new_unchecked("1", "test-user");
+        let context = RequestMetadata::test_user(user.clone());
+
+        let logs = capture_logs(|| {
+            context.log_audit(OptionalFieldsEvent {
+                resource_id: "resource1".to_string(),
+                operation_count: 42,
+            })
+        });
+
+        let combined = logs.join("");
+
+        assert!(
+            combined.contains("event_source=\"audit\""),
+            "Missing event_source in: {combined}"
+        );
+        assert!(
+            combined.contains(&format!("user=\"{user}\"")),
+            "Missing user in: {combined}"
+        );
+        assert!(
+            combined.contains("action=\"optional_fields_event\""),
+            "Missing action in: {combined}"
+        );
+        assert!(
+            combined.contains("resource_id=resource1"),
+            "Missing resource_id in: {combined}"
+        )
     }
 }
