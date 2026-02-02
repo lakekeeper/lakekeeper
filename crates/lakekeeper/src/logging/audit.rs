@@ -32,6 +32,11 @@ impl AuditContextData for RequestMetadata {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Result as IOResult, Write},
+        sync::{Arc, Mutex},
+    };
+
     use crate::service::UserId;
 
     use super::*;
@@ -75,17 +80,17 @@ mod tests {
     }
 
     struct LogWriter {
-        logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        logs: Arc<Mutex<Vec<String>>>,
     }
 
-    impl std::io::Write for LogWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    impl Write for LogWriter {
+        fn write(&mut self, buf: &[u8]) -> IOResult<usize> {
             let s = String::from_utf8_lossy(buf).to_string();
             self.logs.lock().unwrap().push(s);
             Ok(buf.len())
         }
 
-        fn flush(&mut self) -> std::io::Result<()> {
+        fn flush(&mut self) -> IOResult<()> {
             Ok(())
         }
     }
