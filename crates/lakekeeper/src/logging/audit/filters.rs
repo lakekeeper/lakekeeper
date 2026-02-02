@@ -21,7 +21,7 @@ impl<S: Subscriber> Filter<S> for AuditFilter {
         let mut has_audit_source = false;
         event.record(&mut |field: &Field, value: &dyn Debug| {
             if field.name() == "event_source" {
-                has_audit_source = format!("{:?}", value).contains(AUDIT_LOG_EVENT_SOURCE);
+                has_audit_source = format!("{value:?}").contains(AUDIT_LOG_EVENT_SOURCE);
             }
         });
         has_audit_source
@@ -71,9 +71,9 @@ mod tests {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             let mut records = Vec::new();
             event.record(&mut |field: &Field, value: &dyn Debug| {
-                records.push(format!("{}={value:?}", field.name()))
+                records.push(format!("{}={value:?}", field.name()));
             });
-            self.events.lock().unwrap().push(records.join(", "))
+            self.events.lock().unwrap().push(records.join(", "));
         }
     }
 

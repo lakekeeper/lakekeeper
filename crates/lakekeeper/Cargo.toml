@@ -20,7 +20,7 @@ all = [
     "vendored-protoc",
     "kafka",
     "open-api",
-    "subscriber-filters"
+    "subscriber-filters",
 ]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
@@ -99,7 +99,6 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
-tracing-subscriber = { workspace = true, optional = true}
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, optional = true }
@@ -110,6 +109,7 @@ tower-http = { workspace = true, optional = true, features = [
     "cors",
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+tracing-subscriber = { workspace = true, optional = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
