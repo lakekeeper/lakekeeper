@@ -3775,6 +3775,7 @@ dependencies = [
  "jwks_client_rs",
  "lakekeeper",
  "lakekeeper-io",
+ "lakekeeper-logging-derive",
  "lazy-regex",
  "lazy_static",
  "limes",

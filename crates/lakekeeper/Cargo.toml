@@ -77,6 +77,7 @@ lakekeeper-io = { path = "../io", features = [
     "storage-adls",
     "storage-gcs",
 ] }
+lakekeeper-logging-derive = { path = "../lakekeeper-logging-derive" }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
 limes = { workspace = true }

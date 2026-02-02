@@ -39,10 +39,16 @@ pub fn derive_audit_event(input: TokenStream) -> TokenStream {
 
             fn log<D: AuditContextData>(&self, ctx: &D) {
                 let request_metadata = ctx.request_metadata();
+
+                let user = request_metadata
+                    .user_id()
+                    .map(|user| user.to_string())
+                    .unwrap_or("anonymous".to_string());
+
                 tracing::info!(
                     event_source = AUDIT_LOG_EVENT_SOURCE,
                     request_id = %request_metadata.request_id(),
-                    user = %request_metadata.user_id(),
+                    user,
                     action = self.action(),
                     #(#field_logs,)*
                     "audit_event"

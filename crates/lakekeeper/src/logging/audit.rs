@@ -14,3 +14,198 @@ pub trait AuditContext {
 pub trait AuditContextData {
     fn request_metadata(&self) -> &RequestMetadata;
 }
+
+impl AuditContextData for RequestMetadata {
+    fn request_metadata(&self) -> &RequestMetadata {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use lakekeeper_logging_derive::AuditEvent;
+
+    #[derive(AuditEvent)]
+    struct DummyEvent {}
+
+    #[derive(AuditEvent)]
+    struct OptionalFieldsEvent {
+        resource_id: String,
+        operation_count: i32,
+    }
+
+    #[derive(AuditEvent)]
+    #[audit("custom_action")]
+    struct CustomActionEvent {}
+
+    fn capture_logs<F>(f: F) -> Vec<String>
+    where
+        F: FnOnce(),
+    {
+        use std::sync::{Arc, Mutex};
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = Arc::clone(&logs);
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(move || LogWriter {
+                logs: Arc::clone(&logs_clone),
+            })
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, f);
+
+        let logs = logs.lock().unwrap();
+        logs.clone()
+    }
+
+    struct LogWriter {
+        logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let s = String::from_utf8_lossy(buf).to_string();
+            self.logs.lock().unwrap().push(s);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_basic_audit_logging_works() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = DummyEvent {};
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+
+        assert!(
+            combined.contains("audit_event"),
+            "Missing 'audit_event' in: {}",
+            combined
+        );
+        assert!(
+            combined.contains("event_source=\"audit\""),
+            "Missing event_source in: {}",
+            combined
+        );
+        assert!(
+            combined.contains("user=\"anonymous\""),
+            "Missing user in: {}",
+            combined
+        );
+        assert!(
+            combined.contains("action=\"dummy_event\""),
+            "Missing action in: {}",
+            combined
+        );
+    }
+
+    #[test]
+    fn test_audit_logging_with_authenticated_user() {
+        use crate::service::UserId;
+
+        let user_id = UserId::new_unchecked("test-idp", "test-user");
+        let request_metadata = RequestMetadata::test_user(user_id.clone());
+        let event = DummyEvent {};
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(combined.contains("audit_event"));
+        assert!(combined.contains(&format!("user=\"{user_id}\"")));
+        assert!(combined.contains("action=\"dummy_event\""));
+        assert!(!combined.contains("anonymous"));
+    }
+
+    #[test]
+    fn test_optional_fields_logging() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = OptionalFieldsEvent {
+            resource_id: "sales_data".to_string(),
+            operation_count: 5432,
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(combined.contains("audit_event"));
+        assert!(combined.contains("resource_id=sales_data"));
+        assert!(combined.contains("operation_count=5432"));
+    }
+
+    #[test]
+    fn test_request_id_included() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let request_id = request_metadata.request_id();
+        let event = DummyEvent {};
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(combined.contains(&format!("request_id={}", request_id)));
+    }
+
+    #[test]
+    fn test_multiple_events_independent() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+
+        let logs = capture_logs(|| {
+            let event1 = OptionalFieldsEvent {
+                resource_id: "resource1".to_string(),
+                operation_count: 100,
+            };
+            let event2 = OptionalFieldsEvent {
+                resource_id: "resource2".to_string(),
+                operation_count: 200,
+            };
+
+            event1.log(&request_metadata);
+            event2.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+
+        assert!(combined.contains("resource_id=resource1"));
+        assert!(combined.contains("resource_id=resource2"));
+
+        let request_id = request_metadata.request_id().to_string();
+        assert_eq!(combined.matches(&request_id).count(), 2);
+    }
+
+    #[test]
+    fn test_action_method() {
+        let dummy = DummyEvent {};
+        let optional = OptionalFieldsEvent {
+            resource_id: "res".to_string(),
+            operation_count: 1,
+        };
+
+        assert_eq!(dummy.action(), "dummy_event");
+        assert_eq!(optional.action(), "optional_fields_event");
+    }
+
+    #[test]
+    fn test_custom_action_method() {
+        let custom = CustomActionEvent {};
+
+        assert_eq!(custom.action(), "custom_action");
+    }
+}
