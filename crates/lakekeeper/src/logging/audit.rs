@@ -1,3 +1,4 @@
+pub mod events;
 #[cfg(feature = "subscriber-filters")]
 pub mod filters;
 
