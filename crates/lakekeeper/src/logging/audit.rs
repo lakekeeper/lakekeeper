@@ -37,11 +37,10 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use crate::service::UserId;
+    use lakekeeper_logging_derive::AuditEvent;
 
     use super::*;
-
-    use lakekeeper_logging_derive::AuditEvent;
+    use crate::service::UserId;
 
     #[derive(AuditEvent)]
     struct DummyEvent {}
@@ -228,7 +227,7 @@ mod tests {
             context.log_audit(OptionalFieldsEvent {
                 resource_id: "resource1".to_string(),
                 operation_count: 42,
-            })
+            });
         });
 
         let combined = logs.join("");
@@ -248,6 +247,6 @@ mod tests {
         assert!(
             combined.contains("resource_id=resource1"),
             "Missing resource_id in: {combined}"
-        )
+        );
     }
 }
