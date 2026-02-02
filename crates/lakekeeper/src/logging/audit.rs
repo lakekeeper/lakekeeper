@@ -7,6 +7,10 @@ pub trait AuditEvent {
     fn log<D: AuditContextData>(&self, ctx: &D);
 }
 
+pub trait AuditContext {
+    fn log_audit<E: AuditEvent>(&self, event: E);
+}
+
 pub trait AuditContextData {
     fn request_metadata(&self) -> &RequestMetadata;
 }
