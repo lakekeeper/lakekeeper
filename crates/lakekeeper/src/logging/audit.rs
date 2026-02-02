@@ -1,3 +1,6 @@
+#[cfg(feature = "subscriber-filters")]
+pub mod filters;
+
 use crate::api::RequestMetadata;
 
 pub const AUDIT_LOG_EVENT_SOURCE: &str = "audit";
