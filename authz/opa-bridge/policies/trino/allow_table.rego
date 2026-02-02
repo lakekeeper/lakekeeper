@@ -101,7 +101,7 @@ allow_table_metadata if {
 }
 
 allow_table_read if {
-    input.action.operation in ["SelectFromColumns"]
+    input.action.operation in ["SelectFromColumns", "CreateViewWithSelectFromColumns"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
