@@ -137,8 +137,7 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        let subscriber = registry()
-            .with(collector.with_filter(NotFilter::new(AuditFilter)));
+        let subscriber = registry().with(collector.with_filter(NotFilter::new(AuditFilter)));
         let _guard = subscriber.set_default();
 
         event!(Level::INFO, action = "user_login");
@@ -153,8 +152,7 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        let subscriber = registry()
-            .with(collector.with_filter(NotFilter::new(AuditFilter)));
+        let subscriber = registry().with(collector.with_filter(NotFilter::new(AuditFilter)));
         let _guard = subscriber.set_default();
 
         event!(
