@@ -51,7 +51,6 @@ pub fn derive_audit_event(input: TokenStream) -> TokenStream {
                     user,
                     action = self.action(),
                     #(#field_logs,)*
-                    "audit_event"
                 );
             }
         }
