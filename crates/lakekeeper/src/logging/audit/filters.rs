@@ -82,7 +82,8 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        registry().with(collector.with_filter(AuditFilter)).init();
+        let subscriber = registry().with(collector.with_filter(AuditFilter));
+        let _guard = subscriber.set_default();
 
         event!(
             Level::INFO,
@@ -103,7 +104,8 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        registry().with(collector.with_filter(AuditFilter)).init();
+        let subscriber = registry().with(collector.with_filter(AuditFilter));
+        let _guard = subscriber.set_default();
 
         event!(
             Level::INFO,
@@ -121,7 +123,8 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        registry().with(collector.with_filter(AuditFilter)).init();
+        let subscriber = registry().with(collector.with_filter(AuditFilter));
+        let _guard = subscriber.set_default();
 
         event!(Level::INFO, action = "user_login", user_id = 42,);
 
@@ -134,9 +137,9 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        registry()
-            .with(collector.with_filter(NotFilter::new(AuditFilter)))
-            .init();
+        let subscriber = registry()
+            .with(collector.with_filter(NotFilter::new(AuditFilter)));
+        let _guard = subscriber.set_default();
 
         event!(Level::INFO, action = "user_login");
 
@@ -150,9 +153,9 @@ mod tests {
         let collector = EventCollector::default();
         let events_ref = collector.events.clone();
 
-        registry()
-            .with(collector.with_filter(NotFilter::new(AuditFilter)))
-            .init();
+        let subscriber = registry()
+            .with(collector.with_filter(NotFilter::new(AuditFilter)));
+        let _guard = subscriber.set_default();
 
         event!(
             Level::INFO,
