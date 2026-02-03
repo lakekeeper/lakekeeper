@@ -10,6 +10,7 @@ use crate::{
         },
         management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, GetConfigEvent}},
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
@@ -44,7 +45,13 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                     &project_id,
                     CatalogProjectAction::ListWarehouses,
                 )
-                .await?;
+                .await
+                .inspect_err(|e| {
+                    request_metadata.log_audit(AuthorizationDeniedEvent {
+                        action: "get_config_list_warehouses".to_string(),
+                        error: e.to_string(),
+                    });
+                })?;
             C::get_warehouse_by_name(
                 &warehouse_from_arg,
                 &project_id,
@@ -64,7 +71,17 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 Ok(Some(warehouse)),
                 CatalogWarehouseAction::GetConfig,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_config".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(GetConfigEvent {
+            warehouse_id: warehouse.warehouse_id,
+        });
 
         let mut config = warehouse.storage_profile.generate_catalog_config(
             warehouse.warehouse_id,

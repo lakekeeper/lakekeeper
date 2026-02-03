@@ -19,6 +19,13 @@ use crate::{
         },
         management::v1::warehouse::TabularDeleteProfile,
     },
+    logging::audit::{
+        AuditContext,
+        events::{
+            AuthorizationDeniedEvent, CreateNamespaceEvent, DropNamespaceEvent,
+            UpdateNamespacePropertiesEvent,
+        },
+    },
     request_metadata::RequestMetadata,
     server,
     service::{
@@ -107,7 +114,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     parent_namespace,
                     CatalogNamespaceAction::ListNamespaces,
                 )
-                .await?;
+                .await
+                .inspect_err(|e| {
+                    request_metadata.log_audit(AuthorizationDeniedEvent {
+                        action: "list_namespaces".to_string(),
+                        error: e.to_string(),
+                    });
+                })?;
             // Rely on short-circuit of `||` to query `namespace:can_list_everything` only if not
             // `warehouse:can_list_everything`.
             can_list_everything = can_list_everything
@@ -274,7 +287,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         properties: properties_btree,
                     },
                 )
-                .await?;
+                .await
+                .inspect_err(|e| {
+                    request_metadata.log_audit(AuthorizationDeniedEvent {
+                        action: "create_namespace".to_string(),
+                        error: e.to_string(),
+                    });
+                })?;
             (warehouse, Some(parent_namespace.namespace_id()))
         } else {
             let warehouse = authorizer
@@ -286,12 +305,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         properties: properties_btree,
                     },
                 )
-                .await?;
+                .await
+                .inspect_err(|e| {
+                    request_metadata.log_audit(AuthorizationDeniedEvent {
+                        action: "create_namespace".to_string(),
+                        error: e.to_string(),
+                    });
+                })?;
             (warehouse, None)
         };
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = NamespaceId::new_random();
+
+        request_metadata.log_audit(CreateNamespaceEvent {
+            warehouse_id,
+            namespace_id,
+        });
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
@@ -352,7 +382,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "load_namespace_metadata".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
@@ -383,7 +419,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "namespace_exists".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         Ok(())
     }
@@ -422,10 +464,22 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "drop_namespace".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        let namespace_id = namespace.namespace_id();
+
+        request_metadata.log_audit(DropNamespaceEvent {
+            warehouse_id,
+            namespace_id,
+        });
 
         //  ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let r = if flags.recursive {
             try_recursive_drop::<_, C>(
@@ -498,11 +552,22 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "update_namespace_properties".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
-        //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
 
+        request_metadata.log_audit(UpdateNamespacePropertiesEvent {
+            warehouse_id,
+            namespace_id,
+        });
+
+        //  ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let (updated_properties, r) =
             update_namespace_properties(namespace.properties().cloned(), updates, removals);

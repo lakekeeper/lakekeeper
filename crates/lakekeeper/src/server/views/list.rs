@@ -9,6 +9,7 @@ use crate::{
         ApiContext, Result,
         iceberg::v1::{ListTablesQuery, NamespaceParameters},
     },
+    logging::audit::{AuditContext, events::AuthorizationDeniedEvent},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tabular::list_entities},
     service::{
@@ -56,7 +57,13 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
             namespace,
             CatalogNamespaceAction::ListViews,
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "list_views".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t: <C as CatalogStore>::Transaction =

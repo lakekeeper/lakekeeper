@@ -31,6 +31,16 @@ use crate::{
             },
         },
     },
+    logging::audit::{
+        AuditContext,
+        events::{
+            ActivateWarehouseEvent, AuthorizationDeniedEvent, CreateWarehouseEvent,
+            DeactivateWarehouseEvent, DeleteWarehouseEvent, RenameWarehouseEvent,
+            SetWarehouseProtectionEvent, SetWarehouseTaskQueueConfigEvent, UndropTabularsEvent,
+            UpdateWarehouseCredentialEvent, UpdateWarehouseDeleteProfileEvent,
+            UpdateWarehouseStorageEvent,
+        },
+    },
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
@@ -345,7 +355,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::CreateWarehouse,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "create_warehouse".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(CreateWarehouseEvent {
+            warehouse_name: warehouse_name.clone(),
+            project_id: project_id.clone(),
+        });
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&warehouse_name)?;
@@ -442,7 +463,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::ListWarehouses,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "list_warehouses".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let warehouses = C::list_warehouses(
@@ -498,7 +525,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::GetMetadata,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_warehouse".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         Ok((*warehouse).clone().into())
     }
 
@@ -524,7 +557,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::GetMetadata,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_warehouse_statistics".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         C::get_warehouse_stats(
@@ -558,7 +597,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::Delete,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "delete_warehouse".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(DeleteWarehouseEvent {
+            warehouse_id,
+        });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -600,7 +649,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::SetProtection,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "set_warehouse_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(SetWarehouseProtectionEvent {
+            warehouse_id,
+            protected: protection,
+        });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -648,7 +708,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::Rename,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "rename_warehouse".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(RenameWarehouseEvent {
+            warehouse_id,
+            new_name: request.new_name.clone(),
+        });
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&request.new_name)?;
@@ -690,7 +761,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::ModifySoftDeletion,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "update_warehouse_delete_profile".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(UpdateWarehouseDeleteProfileEvent {
+            warehouse_id,
+        });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -737,7 +818,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::Deactivate,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "deactivate_warehouse".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(DeactivateWarehouseEvent {
+            warehouse_id,
+        });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -776,7 +867,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::Activate,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "activate_warehouse".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(ActivateWarehouseEvent {
+            warehouse_id,
+        });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -816,7 +917,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::UpdateStorage,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "update_warehouse_storage".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(UpdateWarehouseStorageEvent {
+            warehouse_id,
+        });
 
         // ------------------- Business Logic -------------------
         let request_for_hook = Arc::new(request.clone());
@@ -911,7 +1022,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::UpdateStorage,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "update_warehouse_credential".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(UpdateWarehouseCredentialEvent {
+            warehouse_id,
+        });
 
         // ------------------- Business Logic -------------------
         let request_for_hook = Arc::new(request.clone());
@@ -1003,7 +1124,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::Use,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "undrop_tabulars".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         undrop::require_undrop_permissions::<A, C>(
             &warehouse,
@@ -1013,6 +1140,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &request_metadata,
         )
         .await?;
+
+        request_metadata.log_audit(UndropTabularsEvent {
+            warehouse_id,
+            tabular_count: request.targets.len(),
+        });
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
@@ -1269,8 +1401,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::ModifyTaskQueueConfig,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "set_warehouse_task_queue_config".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         let project_id = warehouse_resolved.project_id.clone();
+
+        request_metadata.log_audit(SetWarehouseTaskQueueConfigEvent {
+            warehouse_id,
+            queue_name: queue_name.to_string(),
+        });
 
         // ------------------- Business Logic -------------------
         set_task_queue_config_authorized(
@@ -1301,7 +1444,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 warehouse,
                 CatalogWarehouseAction::GetTaskQueueConfig,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_warehouse_task_queue_config".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let filter = TaskQueueConfigFilter::WarehouseId { warehouse_id };

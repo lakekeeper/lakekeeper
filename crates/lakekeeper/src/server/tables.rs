@@ -48,7 +48,11 @@ use crate::{
     },
     logging::audit::{
         AuditContext,
-        events::{AccessEndpointEvent, CommitTablesFailedEvent, CommitTablesAccessTabularEvent},
+        events::{
+            AuthorizationDeniedEvent, CommitTableEvent, CommitTablesAccessTabularEvent,
+            CommitTablesFailedEvent, CommitTransactionEvent, DropTableEvent,
+            LoadTableCredentialsEvent, RegisterTableEvent, RenameTableEvent,
+        },
     },
     request_metadata::RequestMetadata,
     server::{
@@ -127,7 +131,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 namespace,
                 CatalogNamespaceAction::ListTables,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "list_tables".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
@@ -207,7 +217,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 warehouse,
                 CatalogWarehouseAction::Use,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "register_table".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
 
@@ -241,7 +257,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     ),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "register_table_create".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         let namespace_id = namespace.namespace_id();
 
         let table_metadata = Arc::new(table_metadata);
@@ -278,7 +300,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             previous_table_info,
                             CatalogTableAction::Drop,
                         )
-                        .await?,
+                        .await
+                        .inspect_err(|e| {
+                            request_metadata.log_audit(AuthorizationDeniedEvent {
+                                action: "register_table_overwrite".to_string(),
+                                error: e.to_string(),
+                            });
+                        })?,
                 );
             }
         }
@@ -294,6 +322,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }
 
         let tabular_id = TableId::from(table_metadata.uuid());
+
+        request_metadata.log_audit(RegisterTableEvent {
+            warehouse_id: warehouse.warehouse_id,
+            table_id: tabular_id,
+        });
 
         let (table_info, staged_table_id) = C::create_table(
             TableCreation {
@@ -419,7 +452,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "load_table_credentials".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+
+        request_metadata.log_audit(LoadTableCredentialsEvent {
+            warehouse_id,
+            table_id: tabular_info.tabular_id,
+        });
+
         let storage_permission = storage_permissions.ok_or(ErrorModel::forbidden(
             format!("User has no storage permissions for table `{table}`"),
             "NoStoragePermissions",
@@ -466,9 +511,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
-        request_metadata.log_audit(AccessEndpointEvent {
-            endpoint: "CatalogV1::UpdateTable".to_string(),
-            method: "POST".to_string(),
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
+        request_metadata.log_audit(CommitTableEvent {
+            warehouse_id,
+            table_name: parameters.table.to_string(),
         });
         request.identifier = Some(determine_table_ident(
             &parameters.table,
@@ -565,8 +611,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 table_info,
                 CatalogTableAction::Drop,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "drop_table".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         let table_id = table_info.tabular_id;
+
+        request_metadata.log_audit(DropTableEvent {
+            warehouse_id,
+            table_id,
+            purge: purge_requested,
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         state
@@ -719,7 +777,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 table_info,
                 CatalogTableAction::GetMetadata,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "table_exists".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
         Ok(())
@@ -807,8 +871,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
         );
 
-        let _destination_namespace = destination_namespace?;
-        let source_table_info = source_table_info?;
+        let _destination_namespace = destination_namespace.inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "rename_table".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+        let source_table_info = source_table_info.inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "rename_table".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+
+        request_metadata.log_audit(RenameTableEvent {
+            warehouse_id,
+            table_id: source_table_info.table_id(),
+            new_name: destination.name.clone(),
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         if source == destination {
@@ -856,7 +936,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
+        let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+        let table_count = request.table_changes.len();
+
+        request_metadata.log_audit(CommitTransactionEvent {
+            warehouse_id,
+            table_count,
+        });
+
+        let contexts =
+            commit_tables_with_authz(prefix, request, state, request_metadata).await?;
         tracing::debug!("Successfully committed {} table(s)", contexts.len());
         Ok(())
     }
@@ -1186,7 +1275,13 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
                     })
                 })?,
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "commit_tables".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     // ------------------- BUSINESS LOGIC -------------------
     commit_tables_inner(

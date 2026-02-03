@@ -1,21 +1,30 @@
 use crate::{
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::management::v1::user::UserType,
     logging::audit::{AUDIT_LOG_EVENT_SOURCE, AuditContextData, AuditEvent},
-    service::{TableId, UserId, authz::CatalogTableAction},
+    service::{NamespaceId, RoleId, TableId, UserId, ViewId, authz::CatalogTableAction},
 };
 
-#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
-pub struct AccessEndpointEvent {
-    pub endpoint: String,
-    pub method: String,
-}
+// ============================================================================
+// Authorization Events
+// ============================================================================
 
+/// Logged when authorization is denied for a request
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
-pub struct BootstrapFailedEvent {
+pub struct AuthorizationDeniedEvent {
+    pub action: String,
     pub error: String,
 }
 
+// ============================================================================
+// Bootstrap Events
+// ============================================================================
+
+/// Logged when bootstrap endpoint is accessed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct BootstrapEvent {}
+
+/// Logged when a user is created during bootstrap
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct BootstrapCreateUserEvent {
     pub user_name: String,
@@ -24,6 +33,11 @@ pub struct BootstrapCreateUserEvent {
     pub user_email: String,
 }
 
+// ============================================================================
+// CatalogV1 - Table Events
+// ============================================================================
+
+/// Logged when commit_tables authorization is performed for a tabular
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesAccessTabularEvent {
     pub warehouse_id: WarehouseId,
@@ -31,7 +45,343 @@ pub struct CommitTablesAccessTabularEvent {
     pub action: CatalogTableAction,
 }
 
+/// Logged when commit_tables fails
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesFailedEvent {
     pub error: String,
+}
+
+/// Logged when a table is dropped
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DropTableEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+    pub purge: bool,
+}
+
+/// Logged when a table is renamed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct RenameTableEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+    pub new_name: String,
+}
+
+/// Logged when a table is registered
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct RegisterTableEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+}
+
+/// Logged when a table is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateTableEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+}
+
+/// Logged when table credentials are loaded
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct LoadTableCredentialsEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+}
+
+/// Logged when a commit transaction is executed (multi-table commit)
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CommitTransactionEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_count: usize,
+}
+
+/// Logged when a single table commit (update) is performed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CommitTableEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_name: String,
+}
+
+// ============================================================================
+// CatalogV1 - Config Events
+// ============================================================================
+
+/// Logged when catalog config is retrieved
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetConfigEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+// ============================================================================
+// CatalogV1 - View Events
+// ============================================================================
+
+/// Logged when a view is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateViewEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+}
+
+/// Logged when a view is dropped
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DropViewEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+    pub purge: bool,
+}
+
+/// Logged when a view is renamed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct RenameViewEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+    pub new_name: String,
+}
+
+/// Logged when a view is updated (commit_view)
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CommitViewEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+}
+
+// ============================================================================
+// CatalogV1 - Namespace Events
+// ============================================================================
+
+/// Logged when a namespace is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateNamespaceEvent {
+    pub warehouse_id: WarehouseId,
+    pub namespace_id: NamespaceId,
+}
+
+/// Logged when a namespace is dropped
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DropNamespaceEvent {
+    pub warehouse_id: WarehouseId,
+    pub namespace_id: NamespaceId,
+}
+
+/// Logged when namespace properties are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateNamespacePropertiesEvent {
+    pub warehouse_id: WarehouseId,
+    pub namespace_id: NamespaceId,
+}
+
+// ============================================================================
+// S3 Sign Events
+// ============================================================================
+
+/// Logged when S3 signing is performed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct S3SignEvent {
+    pub warehouse_id: WarehouseId,
+    /// Table ID if known, otherwise "unknown"
+    pub table_id: String,
+}
+
+// ============================================================================
+// Management - User Events
+// ============================================================================
+
+/// Logged when a user is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateUserEvent {
+    pub user_id: UserId,
+    pub user_type: UserType,
+    pub is_self_provision: bool,
+}
+
+/// Logged when a user is updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateUserEvent {
+    pub user_id: UserId,
+}
+
+/// Logged when a user is deleted
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DeleteUserEvent {
+    pub user_id: UserId,
+}
+
+// ============================================================================
+// Management - Role Events
+// ============================================================================
+
+/// Logged when a role is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateRoleEvent {
+    pub project_id: ProjectId,
+    pub role_id: RoleId,
+}
+
+/// Logged when a role is updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateRoleEvent {
+    pub role_id: RoleId,
+}
+
+/// Logged when a role is deleted
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DeleteRoleEvent {
+    pub role_id: RoleId,
+}
+
+// ============================================================================
+// Management - Project Events
+// ============================================================================
+
+/// Logged when a project is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateProjectEvent {
+    pub project_id: ProjectId,
+}
+
+/// Logged when a project is renamed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct RenameProjectEvent {
+    pub project_id: ProjectId,
+}
+
+/// Logged when a project is deleted
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DeleteProjectEvent {
+    pub project_id: ProjectId,
+}
+
+// ============================================================================
+// Management - Warehouse Events
+// ============================================================================
+
+/// Logged when a warehouse is created
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct CreateWarehouseEvent {
+    pub project_id: ProjectId,
+    pub warehouse_name: String,
+}
+
+/// Logged when a warehouse is renamed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct RenameWarehouseEvent {
+    pub warehouse_id: WarehouseId,
+    pub new_name: String,
+}
+
+/// Logged when a warehouse is deleted
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DeleteWarehouseEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when a warehouse is activated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct ActivateWarehouseEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when a warehouse is deactivated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct DeactivateWarehouseEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when warehouse storage profile is updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateWarehouseStorageEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when warehouse storage credential is updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateWarehouseCredentialEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when warehouse delete profile is updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateWarehouseDeleteProfileEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when warehouse protection status is changed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetWarehouseProtectionEvent {
+    pub warehouse_id: WarehouseId,
+    pub protected: bool,
+}
+
+/// Logged when tabulars are undropped
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UndropTabularsEvent {
+    pub warehouse_id: WarehouseId,
+    pub tabular_count: usize,
+}
+
+// ============================================================================
+// Management - Table Protection Events
+// ============================================================================
+
+/// Logged when table protection status is changed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetTableProtectionEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+    pub protected: bool,
+}
+
+// ============================================================================
+// Management - View Protection Events
+// ============================================================================
+
+/// Logged when view protection status is changed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetViewProtectionEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+    pub protected: bool,
+}
+
+// ============================================================================
+// Management - Namespace Protection Events
+// ============================================================================
+
+/// Logged when namespace protection status is changed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetNamespaceProtectionEvent {
+    pub warehouse_id: WarehouseId,
+    pub namespace_id: NamespaceId,
+    pub protected: bool,
+}
+
+// ============================================================================
+// Management - Task Queue Events
+// ============================================================================
+
+/// Logged when task queue configuration is updated for a warehouse
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetWarehouseTaskQueueConfigEvent {
+    pub warehouse_id: WarehouseId,
+    pub queue_name: String,
+}
+
+/// Logged when task queue configuration is updated for a project
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetProjectTaskQueueConfigEvent {
+    pub project_id: ProjectId,
+    pub queue_name: String,
+}
+
+/// Logged when tasks are controlled (cancel, retry, etc.) for a project
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct ControlProjectTasksEvent {
+    pub project_id: ProjectId,
+}
+
+/// Logged when tasks are controlled (cancel, retry, etc.) for a warehouse
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct ControlWarehouseTasksEvent {
+    pub warehouse_id: WarehouseId,
 }

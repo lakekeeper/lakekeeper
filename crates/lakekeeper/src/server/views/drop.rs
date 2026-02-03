@@ -6,6 +6,7 @@ use crate::{
         iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, DropViewEvent}},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
@@ -48,8 +49,20 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             CatalogViewAction::Drop,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "drop_view".to_string(),
+                error: e.to_string(),
+            });
+        })?;
     let view_id = view_info.view_id();
+
+    request_metadata.log_audit(DropViewEvent {
+        warehouse_id,
+        view_id,
+        purge: purge_requested,
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     state

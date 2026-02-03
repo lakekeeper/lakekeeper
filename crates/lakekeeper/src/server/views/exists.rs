@@ -1,5 +1,6 @@
 use crate::{
     api::{ApiContext, iceberg::v1::ViewParameters},
+    logging::audit::{AuditContext, events::AuthorizationDeniedEvent},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
@@ -30,7 +31,13 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
             CatalogViewAction::GetMetadata,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "view_exists".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     Ok(())
 }

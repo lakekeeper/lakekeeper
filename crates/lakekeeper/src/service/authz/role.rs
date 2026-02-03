@@ -116,6 +116,21 @@ pub enum RequireRoleActionError {
     CatalogBackendError(CatalogBackendError),
     InvalidPaginationToken(InvalidPaginationToken),
 }
+
+impl std::fmt::Display for RequireRoleActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthZRoleActionForbidden(_) => write!(f, "Forbidden"),
+            Self::AuthorizationBackendUnavailable(_) => write!(f, "AuthorizationBackendUnavailable"),
+            Self::CannotInspectPermissions(_) => write!(f, "CannotInspectPermissions"),
+            Self::AuthorizationCountMismatch(_) => write!(f, "AuthorizationCountMismatch"),
+            Self::AuthZCannotSeeRole(_) => write!(f, "Forbidden"),
+            Self::CatalogBackendError(_) => write!(f, "CatalogBackendError"),
+            Self::InvalidPaginationToken(_) => write!(f, "InvalidPaginationToken"),
+        }
+    }
+}
+
 impl From<BackendUnavailableOrCountMismatch> for RequireRoleActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {

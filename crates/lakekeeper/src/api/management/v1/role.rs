@@ -11,6 +11,7 @@ use crate::{
         iceberg::{types::PageToken, v1::PaginationQuery},
         management::v1::ApiServer,
     },
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, CreateRoleEvent, DeleteRoleEvent, UpdateRoleEvent}},
     request_metadata::RequestMetadata,
     service::{
         CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps, CatalogStore, Result,
@@ -231,11 +232,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::CreateRole,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "create_role".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // -------------------- Business Logic --------------------
         let description = request.description.filter(|d| !d.is_empty());
         let role_id = RoleId::new_random();
+
+        request_metadata.log_audit(CreateRoleEvent {
+            project_id: project_id.clone(),
+            role_id,
+        });
+
         let mut t: <C as CatalogStore>::Transaction =
             C::Transaction::begin_write(context.v1_state.catalog).await?;
         let catalog_create_role_request = CatalogCreateRoleRequest {
@@ -278,7 +291,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::ListRoles,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "list_roles".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // -------------------- Business Logic --------------------
         C::list_roles(
@@ -315,7 +334,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let role = authorizer
             .require_role_action(&request_metadata, role, CatalogRoleAction::Read)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_role".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         Ok(role)
     }
@@ -331,7 +356,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let role = authorizer
             .require_role_action(&request_metadata, Ok(role), CatalogRoleAction::ReadMetadata)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_role_metadata".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         let role_metadata = RoleMetadata {
             id: role.id,
@@ -361,7 +392,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::SearchRoles,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "search_role".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         if search.chars().count() > 64 {
@@ -384,7 +421,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         authorizer
             .require_role_action(&request_metadata, role, CatalogRoleAction::Delete)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "delete_role".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(DeleteRoleEvent { role_id });
 
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         C::delete_role(&project_id, role_id, t.transaction()).await?;
@@ -416,7 +461,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         authorizer
             .require_role_action(&request_metadata, role, CatalogRoleAction::Update)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "update_role".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(UpdateRoleEvent { role_id });
 
         // -------------------- Business Logic --------------------
         let description = request.description.filter(|d| !d.is_empty());
@@ -448,7 +501,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         authorizer
             .require_role_action(&request_metadata, role, CatalogRoleAction::Update)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "update_role_source_system".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // -------------------- Business Logic --------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;

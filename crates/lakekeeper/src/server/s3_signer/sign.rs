@@ -14,6 +14,7 @@ use crate::{
         ApiContext, ErrorModel, IcebergErrorResponse, Result, S3SignRequest, S3SignResponse,
         iceberg::types::Prefix,
     },
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, S3SignEvent}},
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
@@ -206,9 +207,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 Ok::<_, RequireTableActionError>(Some(table_info)),
                 action,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "s3_sign".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         let table_id = table_info.table_id();
         let location = table_info.location;
+
+        request_metadata.log_audit(S3SignEvent {
+            warehouse_id,
+            table_id: table_id.to_string(),
+        });
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e

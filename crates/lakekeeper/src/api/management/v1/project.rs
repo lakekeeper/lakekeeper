@@ -23,6 +23,13 @@ use crate::{
             },
         },
     },
+    logging::audit::{
+        AuditContext,
+        events::{
+            AuthorizationDeniedEvent, CreateProjectEvent, DeleteProjectEvent, RenameProjectEvent,
+            SetProjectTaskQueueConfigEvent,
+        },
+    },
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, State, Transaction,
@@ -113,7 +120,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_server_action(&request_metadata, None, CatalogServerAction::CreateProject)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "create_project".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let CreateProjectRequest {
@@ -123,6 +136,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_project_name(&project_name)?;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let project_id = project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7()));
+
+        request_metadata.log_audit(CreateProjectEvent {
+            project_id: project_id.clone(),
+        });
+
         C::create_project(&project_id, project_name, t.transaction()).await?;
         authorizer
             .create_project(&request_metadata, &project_id)
@@ -162,7 +180,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_project_action(&request_metadata, &project_id, CatalogProjectAction::Rename)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "rename_project".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(RenameProjectEvent {
+            project_id: project_id.clone(),
+        });
 
         // ------------------- Business Logic -------------------
         validate_project_name(&request.new_name)?;
@@ -187,7 +215,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::GetMetadata,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_project".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
@@ -217,7 +251,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_project_action(&request_metadata, &project_id, CatalogProjectAction::Delete)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "delete_project".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(DeleteProjectEvent {
+            project_id: project_id.clone(),
+        });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -311,7 +355,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         warehouse,
                         CatalogWarehouseAction::GetEndpointStatistics,
                     )
-                    .await?;
+                    .await
+                    .inspect_err(|e| {
+                        request_metadata.log_audit(AuthorizationDeniedEvent {
+                            action: "get_endpoint_statistics".to_string(),
+                            error: e.to_string(),
+                        });
+                    })?;
             }
             WarehouseFilter::All | WarehouseFilter::Unmapped => {
                 authorizer
@@ -320,7 +370,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         &project_id,
                         CatalogProjectAction::GetEndpointStatistics,
                     )
-                    .await?;
+                    .await
+                    .inspect_err(|e| {
+                        request_metadata.log_audit(AuthorizationDeniedEvent {
+                            action: "get_endpoint_statistics".to_string(),
+                            error: e.to_string(),
+                        });
+                    })?;
             }
         }
 
@@ -356,7 +412,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::ModifyTaskQueueConfig,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "set_project_task_queue_config".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(SetProjectTaskQueueConfigEvent {
+            project_id: project_id.clone(),
+            queue_name: queue_name.to_string(),
+        });
 
         // ------------------- Business Logic -------------------
         set_task_queue_config_in_store(project_id, None, queue_name, request, context).await
@@ -377,7 +444,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::GetTaskQueueConfig,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_project_task_queue_config".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let filter = TaskQueueConfigFilter::ProjectId { project_id };

@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, management::v1::ApiServer},
+    logging::audit::{
+        AuditContext,
+        events::{ControlProjectTasksEvent, ControlWarehouseTasksEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
@@ -832,6 +836,8 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
         }
 
+        request_metadata.log_audit(ControlWarehouseTasksEvent { warehouse_id });
+
         // -------------------- Business Logic --------------------
         let task_ids: Vec<TaskId> = query.task_ids;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -978,11 +984,15 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // If some tasks are not part of this project, this will return an error.
         C::resolve_required_tasks(
-            TaskResolveScope::Project { project_id },
+            TaskResolveScope::Project { project_id: project_id.clone() },
             &query.task_ids,
             context.v1_state.catalog.clone(),
         )
         .await?;
+
+        request_metadata.log_audit(ControlProjectTasksEvent {
+            project_id: project_id.clone(),
+        });
 
         // -------------------- Business Logic --------------------
         let task_ids: Vec<TaskId> = query.task_ids;

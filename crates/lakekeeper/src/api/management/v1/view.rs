@@ -2,6 +2,7 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, SetViewProtectionEvent}},
     service::{
         CatalogStore, CatalogTabularOps, SecretStore, State, TabularId, TabularListFlags,
         Transaction, ViewId,
@@ -39,7 +40,19 @@ where
                 CatalogViewAction::SetProtection,
                 state_catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "set_view_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(SetViewProtectionEvent {
+            view_id,
+            warehouse_id,
+            protected,
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state_catalog).await?;
@@ -76,7 +89,13 @@ where
                 CatalogViewAction::GetMetadata,
                 state_catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "get_view_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         Ok(ProtectionResponse {
             protected: view.protected,

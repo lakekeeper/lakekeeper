@@ -4,6 +4,7 @@ use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
     api::{ApiContext, iceberg::types::Prefix},
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, RenameViewEvent}},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
@@ -98,8 +99,24 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             CatalogViewAction::Rename,
         )
     );
-    let source_view_info = source_view_info?;
-    let _destination_namespace = destination_namespace?;
+    let source_view_info = source_view_info.inspect_err(|e| {
+        request_metadata.log_audit(AuthorizationDeniedEvent {
+            action: "rename_view".to_string(),
+            error: e.to_string(),
+        });
+    })?;
+    let _destination_namespace = destination_namespace.inspect_err(|e| {
+        request_metadata.log_audit(AuthorizationDeniedEvent {
+            action: "rename_view_create_destination".to_string(),
+            error: e.to_string(),
+        });
+    })?;
+
+    request_metadata.log_audit(RenameViewEvent {
+        warehouse_id,
+        view_id: source_view_info.view_id(),
+        new_name: destination.name.clone(),
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     if source == destination {

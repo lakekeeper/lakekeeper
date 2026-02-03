@@ -9,7 +9,7 @@ use crate::{
     api::{ApiContext, management::v1::ApiServer},
     logging::audit::{
         AuditContext,
-        events::{AccessEndpointEvent, BootstrapCreateUserEvent, BootstrapFailedEvent},
+        events::{AuthorizationDeniedEvent, BootstrapCreateUserEvent, BootstrapEvent},
     },
     request_metadata::RequestMetadata,
     service::{
@@ -129,10 +129,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         request: BootstrapRequest,
     ) -> Result<()> {
-        request_metadata.log_audit(AccessEndpointEvent {
-            endpoint: "ManagementV1::Bootstrap".to_string(),
-            method: request_metadata.request_method().to_string(),
-        });
+        request_metadata.log_audit(BootstrapEvent {});
         let BootstrapRequest {
             user_name,
             user_email,
@@ -159,7 +156,8 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .can_bootstrap(&request_metadata)
             .await
             .inspect_err(|error| {
-                request_metadata.log_audit(BootstrapFailedEvent {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "bootstrap".to_string(),
                     error: error.to_string(),
                 })
             })?;
@@ -221,7 +219,8 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .bootstrap(&request_metadata, is_operator)
             .await
             .inspect_err(|error| {
-                request_metadata.log_audit(BootstrapFailedEvent {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    action: "bootstrap".to_string(),
                     error: error.to_string(),
                 })
             })?;
@@ -259,7 +258,8 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .create_project(&request_metadata, default_project_id)
                     .await
                     .inspect_err(|error| {
-                        request_metadata.log_audit(BootstrapFailedEvent {
+                        request_metadata.log_audit(AuthorizationDeniedEvent {
+                            action: "create_project".to_string(),
                             error: error.to_string(),
                         })
                     })?;

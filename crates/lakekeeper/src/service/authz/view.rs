@@ -124,6 +124,23 @@ pub enum RequireViewActionError {
     InternalParseLocationError(InternalParseLocationError),
 }
 
+impl std::fmt::Display for RequireViewActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthZViewActionForbidden(_) => write!(f, "Forbidden"),
+            Self::AuthorizationBackendUnavailable(_) => write!(f, "AuthorizationBackendUnavailable"),
+            Self::AuthorizationCountMismatch(_) => write!(f, "AuthorizationCountMismatch"),
+            Self::CannotInspectPermissions(_) => write!(f, "CannotInspectPermissions"),
+            Self::AuthZCannotSeeView(_) => write!(f, "Forbidden"),
+            Self::CatalogBackendError(_) => write!(f, "CatalogBackendError"),
+            Self::InvalidNamespaceIdentifier(_) => write!(f, "InvalidNamespaceIdentifier"),
+            Self::SerializationError(_) => write!(f, "SerializationError"),
+            Self::UnexpectedTabularInResponse(_) => write!(f, "UnexpectedTabularInResponse"),
+            Self::InternalParseLocationError(_) => write!(f, "InternalParseLocationError"),
+        }
+    }
+}
+
 impl From<BackendUnavailableOrCountMismatch> for RequireViewActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
