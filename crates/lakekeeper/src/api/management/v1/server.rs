@@ -130,7 +130,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: BootstrapRequest,
     ) -> Result<()> {
         request_metadata.log_audit(AccessEndpointEvent {
-            endpoint: "/management/v1/bootstrap".to_string(),
+            endpoint: "ManagementV1::Bootstrap".to_string(),
             method: request_metadata.request_method().to_string(),
         });
         let BootstrapRequest {
