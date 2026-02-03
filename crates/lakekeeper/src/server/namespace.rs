@@ -51,6 +51,7 @@ pub const NAMESPACE_ID_PROPERTY: &str = "namespace_id";
 pub(crate) const MANAGED_ACCESS_PROPERTY: &str = "managed_access";
 
 #[async_trait::async_trait]
+#[allow(clippy::too_many_lines)]
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::namespace::NamespaceService<State<A, C, S>>
     for CatalogServer<C, A, S>

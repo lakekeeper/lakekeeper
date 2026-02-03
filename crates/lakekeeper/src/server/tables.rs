@@ -89,6 +89,7 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
 #[async_trait::async_trait]
+#[allow(clippy::too_many_lines)]
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::tables::TablesService<State<A, C, S>> for CatalogServer<C, A, S>
 {

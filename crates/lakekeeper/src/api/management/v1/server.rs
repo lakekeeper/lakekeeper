@@ -123,6 +123,7 @@ pub struct ServerInfo {
 impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
+#[allow(clippy::too_many_lines)]
 pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn bootstrap(
         state: ApiContext<State<A, C, S>>,

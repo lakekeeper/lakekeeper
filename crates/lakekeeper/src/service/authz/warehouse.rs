@@ -154,13 +154,14 @@ pub enum RequireWarehouseActionError {
 impl std::fmt::Display for RequireWarehouseActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AuthZWarehouseActionForbidden(_) => write!(f, "Forbidden"),
+            Self::AuthZWarehouseActionForbidden(_) | Self::AuthZCannotUseWarehouseId(_) => {
+                write!(f, "Forbidden")
+            }
             Self::AuthorizationBackendUnavailable(_) => {
                 write!(f, "AuthorizationBackendUnavailable")
             }
             Self::AuthorizationCountMismatch(_) => write!(f, "AuthorizationCountMismatch"),
             Self::CannotInspectPermissions(_) => write!(f, "CannotInspectPermissions"),
-            Self::AuthZCannotUseWarehouseId(_) => write!(f, "Forbidden"),
             Self::CatalogBackendError(_) => write!(f, "CatalogBackendError"),
             Self::DatabaseIntegrityError(_) => write!(f, "DatabaseIntegrityError"),
         }

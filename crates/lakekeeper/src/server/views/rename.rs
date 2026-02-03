@@ -22,6 +22,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
     request: RenameTableRequest,
