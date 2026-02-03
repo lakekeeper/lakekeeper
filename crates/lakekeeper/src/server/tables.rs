@@ -46,6 +46,10 @@ use crate::{
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
+    logging::audit::{
+        AuditContext,
+        events::{AccessEndpointEvent, CommitTablesFailedEvent, CommitTablesAccessTabularEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         self,
@@ -56,7 +60,7 @@ use crate::{
         AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
         CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
         ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
@@ -462,6 +466,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
+        request_metadata.log_audit(AccessEndpointEvent {
+            endpoint: "CatalogV1::UpdateTable".to_string(),
+            method: "POST".to_string(),
+        });
         request.identifier = Some(determine_table_ident(
             &parameters.table,
             request.identifier.as_ref(),
@@ -1161,10 +1169,22 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             &namespaces,
             &table_info_with_actions
                 .into_iter()
+                .inspect(|(TabularInfo { tabular_id, .. }, action)| {
+                    request_metadata.log_audit(CommitTablesAccessTabularEvent {
+                        warehouse_id,
+                        table_id: *tabular_id,
+                        action: action.clone(),
+                    });
+                })
                 .map(|(ti, a)| {
                     Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
                 })
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, _>>()
+                .inspect_err(|error| {
+                    request_metadata.log_audit(CommitTablesFailedEvent {
+                        error: error.to_string(),
+                    })
+                })?,
         )
         .await?;
 
