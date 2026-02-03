@@ -2675,7 +2675,7 @@ dependencies = [
  "hex",
  "hmac",
  "home",
- "jsonwebtoken 10.2.0",
+ "jsonwebtoken 10.3.0",
  "path-clean",
  "percent-encoding",
  "reqwest",
@@ -3625,9 +3625,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.2.0"
+version = "10.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c76e1c7d7df3e34443b3621b459b066a7b79644f059fc8b2db7070c825fd417e"
+checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -3784,7 +3784,7 @@ dependencies = [
  "iceberg-ext",
  "iso8601",
  "itertools 0.14.0",
- "jsonwebtoken 10.2.0",
+ "jsonwebtoken 10.3.0",
  "jwks_client_rs",
  "lakekeeper",
  "lakekeeper-io",
@@ -3916,7 +3916,7 @@ dependencies = [
  "futures",
  "gcloud-auth",
  "gcloud-storage",
- "jsonwebtoken 10.2.0",
+ "jsonwebtoken 10.3.0",
  "md5",
  "moka",
  "pastey",
@@ -4100,7 +4100,7 @@ checksum = "c7c491517894ddfd5c53c41d9b66d64b5b0b071bdee0aefc3d5dcb63e9f14b8c"
 dependencies = [
  "axum",
  "axum-extra",
- "jsonwebtoken 10.2.0",
+ "jsonwebtoken 10.3.0",
  "jwks_client_rs",
  "k8s-openapi",
  "kube",
