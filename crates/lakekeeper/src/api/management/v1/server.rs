@@ -7,6 +7,10 @@ use super::user::{CreateUserRequest, UserLastUpdatedWith, UserType, parse_create
 use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId,
     api::{ApiContext, management::v1::ApiServer},
+    logging::audit::{
+        AuditContext,
+        events::{AccessEndpointEvent, BootstrapCreateUserEvent, BootstrapFailedEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         Actor, CatalogStore, Result, SecretStore, State, Transaction,
@@ -125,6 +129,10 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         request: BootstrapRequest,
     ) -> Result<()> {
+        request_metadata.log_audit(AccessEndpointEvent {
+            endpoint: "/management/v1/bootstrap".to_string(),
+            method: request_metadata.request_method().to_string(),
+        });
         let BootstrapRequest {
             user_name,
             user_email,
@@ -147,7 +155,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // AuthZ just checks if the request metadata could be added as the servers
         // global admin
         let authorizer = state.v1_state.authz;
-        authorizer.can_bootstrap(&request_metadata).await?;
+        authorizer
+            .can_bootstrap(&request_metadata)
+            .await
+            .inspect_err(|error| {
+                request_metadata.log_audit(BootstrapFailedEvent {
+                    error: error.to_string(),
+                })
+            })?;
 
         // ------------------- Business Logic -------------------
         let server_info = C::get_server_info(state.v1_state.catalog.clone()).await?;
@@ -185,6 +200,12 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     update_if_exists: false, // Ignored in `parse_create_user_request`
                 }),
             )?;
+            request_metadata.log_audit(BootstrapCreateUserEvent {
+                user_name: name.clone(),
+                user_id: creation_user_id.clone(),
+                user_type: user_type,
+                user_email: email.clone().unwrap_or_default(),
+            });
             C::create_or_update_user(
                 &creation_user_id,
                 &name,
@@ -196,7 +217,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
         }
 
-        authorizer.bootstrap(&request_metadata, is_operator).await?;
+        authorizer
+            .bootstrap(&request_metadata, is_operator)
+            .await
+            .inspect_err(|error| {
+                request_metadata.log_audit(BootstrapFailedEvent {
+                    error: error.to_string(),
+                })
+            })?;
         t.commit().await?;
 
         // If default project is specified, and the project does not exist, create it
@@ -229,7 +257,12 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 })?;
                 authorizer
                     .create_project(&request_metadata, default_project_id)
-                    .await?;
+                    .await
+                    .inspect_err(|error| {
+                        request_metadata.log_audit(BootstrapFailedEvent {
+                            error: error.to_string(),
+                        })
+                    })?;
                 t.commit().await?;
             }
         }

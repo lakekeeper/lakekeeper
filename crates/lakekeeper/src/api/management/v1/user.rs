@@ -48,6 +48,16 @@ impl From<limes::PrincipalType> for UserType {
     }
 }
 
+impl std::fmt::Display for UserType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let user_type = match self {
+            UserType::Human => "human",
+            UserType::Application => "application",
+        };
+        write!(f, "{user_type}")
+    }
+}
+
 /// User of the catalog
 #[derive(Debug, Serialize, Clone)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
