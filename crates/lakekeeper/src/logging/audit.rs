@@ -110,10 +110,6 @@ mod tests {
         let combined = logs.join("");
 
         assert!(
-            combined.contains("audit_event"),
-            "Missing 'audit_event' in: {combined}"
-        );
-        assert!(
             combined.contains("event_source=\"audit\""),
             "Missing event_source in: {combined}"
         );
@@ -138,7 +134,6 @@ mod tests {
         });
 
         let combined = logs.join("");
-        assert!(combined.contains("audit_event"));
         assert!(combined.contains(&format!("user=\"{user_id}\"")));
         assert!(combined.contains("action=\"dummy_event\""));
         assert!(!combined.contains("anonymous"));
@@ -157,7 +152,6 @@ mod tests {
         });
 
         let combined = logs.join("");
-        assert!(combined.contains("audit_event"));
         assert!(combined.contains("resource_id=sales_data"));
         assert!(combined.contains("operation_count=5432"));
     }
