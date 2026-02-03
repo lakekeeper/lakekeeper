@@ -354,10 +354,10 @@ You may be running Lakekeeper in your own environment which uses self-signed cer
 
 Lakekeeper allows you to configure limits on incoming requests to protect against resource exhaustion and denial-of-service attacks.
 
-| Variable                                            | Example | Description |
-|-----------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr>    | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
-| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>         | `30s`   | Maximum time allowed for a request to complete. Accepts format `{number}{ms|s}` (e.g., `30s` or `5000ms`). Default: `30s` |
+| Variable                                         | Example   | Description   |
+|--------------------------------------------------|-----------|---------------|
+| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
+| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms |
 
 ### Debug
 
@@ -376,3 +376,12 @@ Lakekeeper provides debugging options to help troubleshoot issues during develop
 | Variable                                          | Example | Description    |
 |---------------------------------------------------|---------|----------------|
 | <nobr>`LAKEKEEPER__SKIP_STORAGE_VALIDATION`<nobr> | true    | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. Default: false |
+
+
+### License Configuration
+<nobr><span class="lkp"></span></nobr>, the enterprise distribution of Lakekeeper, requires a License to operate. The license can be provided via either of the following environment variables. If both are set, `LAKEKEEPER__LICENSE__KEY` takes precedence.
+
+| Variable                                     | Example                | Description |
+|----------------------------------------------|------------------------|------|
+| <nobr>`LAKEKEEPER__LICENSE__KEY`</nobr>      | `<license-key>`        | License key as a string. Takes precedence over `LAKEKEEPER__LICENSE__KEY_PATH` if both are set. |
+| <nobr>`LAKEKEEPER__LICENSE__KEY_PATH`</nobr> | `/path/to/license.lic` | Path to a file containing the license key. |
