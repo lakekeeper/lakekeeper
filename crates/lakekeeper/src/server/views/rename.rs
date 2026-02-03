@@ -4,7 +4,10 @@ use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
     api::{ApiContext, iceberg::types::Prefix},
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, RenameViewEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, RenameViewEvent},
+    },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{

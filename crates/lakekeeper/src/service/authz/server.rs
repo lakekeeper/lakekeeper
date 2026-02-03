@@ -70,7 +70,9 @@ impl std::fmt::Display for RequireServerActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AuthZServerActionForbidden(_) => write!(f, "Forbidden"),
-            Self::AuthorizationBackendUnavailable(_) => write!(f, "AuthorizationBackendUnavailable"),
+            Self::AuthorizationBackendUnavailable(_) => {
+                write!(f, "AuthorizationBackendUnavailable")
+            }
             Self::CannotInspectPermissions(_) => write!(f, "CannotInspectPermissions"),
             Self::AuthorizationCountMismatch(_) => write!(f, "AuthorizationCountMismatch"),
         }

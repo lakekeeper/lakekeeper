@@ -8,7 +8,10 @@ use crate::{
         ApiContext,
         iceberg::v1::{DataAccessMode, NamespaceParameters},
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, CreateViewEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CreateViewEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,

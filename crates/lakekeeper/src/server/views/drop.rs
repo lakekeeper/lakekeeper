@@ -6,7 +6,10 @@ use crate::{
         iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, DropViewEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, DropViewEvent},
+    },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{

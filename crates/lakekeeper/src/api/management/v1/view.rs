@@ -2,7 +2,10 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, SetViewProtectionEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, SetViewProtectionEvent},
+    },
     service::{
         CatalogStore, CatalogTabularOps, SecretStore, State, TabularId, TabularListFlags,
         Transaction, ViewId,
@@ -49,8 +52,8 @@ where
             })?;
 
         request_metadata.log_audit(SetViewProtectionEvent {
-            view_id,
             warehouse_id,
+            view_id,
             protected,
         });
 

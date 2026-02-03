@@ -944,8 +944,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             table_count,
         });
 
-        let contexts =
-            commit_tables_with_authz(prefix, request, state, request_metadata).await?;
+        let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
         tracing::debug!("Successfully committed {} table(s)", contexts.len());
         Ok(())
     }
@@ -1272,7 +1271,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
                 .inspect_err(|error| {
                     request_metadata.log_audit(CommitTablesFailedEvent {
                         error: error.to_string(),
-                    })
+                    });
                 })?,
         )
         .await

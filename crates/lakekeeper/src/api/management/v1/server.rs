@@ -159,7 +159,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
                     action: "bootstrap".to_string(),
                     error: error.to_string(),
-                })
+                });
             })?;
 
         // ------------------- Business Logic -------------------
@@ -201,7 +201,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.log_audit(BootstrapCreateUserEvent {
                 user_name: name.clone(),
                 user_id: creation_user_id.clone(),
-                user_type: user_type,
+                user_type,
                 user_email: email.clone().unwrap_or_default(),
             });
             C::create_or_update_user(
@@ -222,7 +222,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
                     action: "bootstrap".to_string(),
                     error: error.to_string(),
-                })
+                });
             })?;
         t.commit().await?;
 
@@ -261,7 +261,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         request_metadata.log_audit(AuthorizationDeniedEvent {
                             action: "create_project".to_string(),
                             error: error.to_string(),
-                        })
+                        });
                     })?;
                 t.commit().await?;
             }

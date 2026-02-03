@@ -8,7 +8,10 @@ use crate::{
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::ApiServer,
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, CreateUserEvent, DeleteUserEvent, UpdateUserEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CreateUserEvent, DeleteUserEvent, UpdateUserEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,

@@ -11,7 +11,10 @@ use crate::{
         ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, CommitViewEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CommitViewEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,

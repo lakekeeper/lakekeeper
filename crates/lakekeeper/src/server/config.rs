@@ -10,7 +10,10 @@ use crate::{
         },
         management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, GetConfigEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, GetConfigEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,

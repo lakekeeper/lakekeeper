@@ -14,7 +14,10 @@ use crate::{
         ApiContext, ErrorModel, IcebergErrorResponse, Result, S3SignRequest, S3SignResponse,
         iceberg::types::Prefix,
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, S3SignEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, S3SignEvent},
+    },
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{

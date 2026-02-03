@@ -984,7 +984,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // If some tasks are not part of this project, this will return an error.
         C::resolve_required_tasks(
-            TaskResolveScope::Project { project_id: project_id.clone() },
+            TaskResolveScope::Project {
+                project_id: project_id.clone(),
+            },
             &query.task_ids,
             context.v1_state.catalog.clone(),
         )

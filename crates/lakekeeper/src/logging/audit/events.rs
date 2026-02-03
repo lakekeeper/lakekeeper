@@ -37,7 +37,7 @@ pub struct BootstrapCreateUserEvent {
 // CatalogV1 - Table Events
 // ============================================================================
 
-/// Logged when commit_tables authorization is performed for a tabular
+/// Logged when `commit_tables` authorization is performed for a tabular
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesAccessTabularEvent {
     pub warehouse_id: WarehouseId,
@@ -45,7 +45,7 @@ pub struct CommitTablesAccessTabularEvent {
     pub action: CatalogTableAction,
 }
 
-/// Logged when commit_tables fails
+/// Logged when `commit_tables` fails
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesFailedEvent {
     pub error: String,
@@ -139,7 +139,7 @@ pub struct RenameViewEvent {
     pub new_name: String,
 }
 
-/// Logged when a view is updated (commit_view)
+/// Logged when a view is updated (`commit_view`)
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitViewEvent {
     pub warehouse_id: WarehouseId,

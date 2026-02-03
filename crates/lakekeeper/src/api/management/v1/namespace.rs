@@ -4,7 +4,10 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, SetNamespaceProtectionEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, SetNamespaceProtectionEvent},
+    },
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,

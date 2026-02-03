@@ -605,9 +605,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
-        request_metadata.log_audit(DeleteWarehouseEvent {
-            warehouse_id,
-        });
+        request_metadata.log_audit(DeleteWarehouseEvent { warehouse_id });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -769,9 +767,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
-        request_metadata.log_audit(UpdateWarehouseDeleteProfileEvent {
-            warehouse_id,
-        });
+        request_metadata.log_audit(UpdateWarehouseDeleteProfileEvent { warehouse_id });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -826,9 +822,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
-        request_metadata.log_audit(DeactivateWarehouseEvent {
-            warehouse_id,
-        });
+        request_metadata.log_audit(DeactivateWarehouseEvent { warehouse_id });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -875,9 +869,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
-        request_metadata.log_audit(ActivateWarehouseEvent {
-            warehouse_id,
-        });
+        request_metadata.log_audit(ActivateWarehouseEvent { warehouse_id });
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -925,9 +917,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
-        request_metadata.log_audit(UpdateWarehouseStorageEvent {
-            warehouse_id,
-        });
+        request_metadata.log_audit(UpdateWarehouseStorageEvent { warehouse_id });
 
         // ------------------- Business Logic -------------------
         let request_for_hook = Arc::new(request.clone());
@@ -1030,9 +1020,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
-        request_metadata.log_audit(UpdateWarehouseCredentialEvent {
-            warehouse_id,
-        });
+        request_metadata.log_audit(UpdateWarehouseCredentialEvent { warehouse_id });
 
         // ------------------- Business Logic -------------------
         let request_for_hook = Arc::new(request.clone());

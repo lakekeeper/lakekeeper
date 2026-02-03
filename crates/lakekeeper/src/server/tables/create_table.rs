@@ -18,7 +18,10 @@ use crate::{
         ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters, Result,
         TableIdent, tables::DataAccessMode,
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, CreateTableEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CreateTableEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec, tables::validate_table_or_view_ident_creation,

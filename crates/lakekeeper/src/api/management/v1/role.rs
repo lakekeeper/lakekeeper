@@ -11,7 +11,10 @@ use crate::{
         iceberg::{types::PageToken, v1::PaginationQuery},
         management::v1::ApiServer,
     },
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, CreateRoleEvent, DeleteRoleEvent, UpdateRoleEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CreateRoleEvent, DeleteRoleEvent, UpdateRoleEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps, CatalogStore, Result,
