@@ -271,6 +271,16 @@ pub struct DynAppConfig {
     // ------------- Debug -------------
     #[serde(default)]
     pub debug: DebugConfig,
+
+    // ------------- Request Limits -------------
+    /// Maximum request body size in bytes. Defaults to 2 MB.
+    pub max_request_body_size: usize,
+    /// Maximum request time. Defaults to 30 seconds.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub max_request_time: Duration,
 }
 
 pub(crate) fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
@@ -593,6 +603,8 @@ impl Default for DynAppConfig {
             skip_storage_validation: false,
             debug: DebugConfig::default(),
             cache: Cache::default(),
+            max_request_body_size: 2 * 1024 * 1024, // 2 MB
+            max_request_time: Duration::from_secs(30),
         }
     }
 }

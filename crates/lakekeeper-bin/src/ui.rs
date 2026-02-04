@@ -65,7 +65,7 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
             }
         },
         enable_authentication: CONFIG.openid_provider_uri.is_some(),
-        enable_permissions: CONFIG.authz_backend == AuthZBackend::External("openfga".to_string()),
+        enable_permissions: CONFIG.authz_backend != AuthZBackend::AllowAll,
         app_lakekeeper_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
             .ok()
             .or(CONFIG.base_uri.as_ref().map(ToString::to_string)),

@@ -1522,6 +1522,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/task-queue/task_log_cleanup/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Project-level Task Queue.
+      description: These configurations are global per project and shared across all instances of this kind of task.
+      operationId: get_project_task_queue_config_task_log_cleanup
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTaskLogCleanupConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Project-level Task Queue.
+      description: These configurations are global per project and shared across all instances of this kind of task.
+      operationId: set_project_task_queue_config_task_log_cleanup
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTaskLogCleanupConfig'
+        required: true
+      responses:
+        '204':
+          description: Project-level Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/task/by-id/{task_id}:
     get:
       tags:
@@ -5081,6 +5146,18 @@ components:
             task-data:
               type: object
               description: Task-specific data
+    GetTaskLogCleanupConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/TaskLogCleanupConfig'
     GetViewAccessResponse:
       type: object
       required:
@@ -7193,6 +7270,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/TabularExpirationQueueConfig'
+    SetTaskLogCleanupConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/TaskLogCleanupConfig'
     StorageCredential:
       oneOf:
         - allOf:
@@ -7612,6 +7701,23 @@ components:
         status:
           $ref: '#/components/schemas/TaskStatus'
           description: Status of this attempt
+    TaskLogCleanupConfig:
+      type: object
+      properties:
+        cleanup-period:
+          type:
+            - string
+            - 'null'
+          description: |-
+            How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
+            If a value below 1 day is provided, it will be set to the default of 1 day.
+          example: PT1H30M45.5S
+        retention-period:
+          type:
+            - string
+            - 'null'
+          description: How long to retain task logs before deletion in ISO8601 duration format. Defaults to 90 days.
+          example: PT1H30M45.5S
     TaskStatus:
       type: string
       enum:
