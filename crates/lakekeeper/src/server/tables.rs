@@ -1225,11 +1225,22 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
                 ))
             })
         })
-        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()?;
+        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "commit_tables".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     for user_provided_ident in identifiers {
         if !table_ident_to_info.contains_key(user_provided_ident) {
-            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
+            let error = AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone());
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                action: "commit_tables".to_string(),
+                error: error.to_string(),
+            });
+            return Err(error.into());
         }
     }
     let namespaces = namespaces?;

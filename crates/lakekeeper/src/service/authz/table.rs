@@ -291,6 +291,15 @@ impl From<AuthZCannotSeeTable> for IcebergErrorResponse {
         ErrorModel::from(err).into()
     }
 }
+impl std::fmt::Display for AuthZCannotSeeTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "AuthZCannotSeeTable {{ warehouse_id: {}, table: {} }}",
+            self.warehouse_id, self.table
+        )
+    }
+}
 // ------------------ Action Forbidden Error ------------------
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZTableActionForbidden {
