@@ -512,6 +512,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 });
             })?;
 
+        request_metadata.log_audit(UpdateRoleEvent { role_id });
+
         // -------------------- Business Logic --------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let role =
