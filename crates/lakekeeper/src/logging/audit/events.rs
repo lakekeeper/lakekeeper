@@ -1,3 +1,5 @@
+use std::string::ToString;
+
 use http::StatusCode;
 use url::Url;
 
@@ -28,8 +30,7 @@ impl AuditEvent for UserCreatedDebugEvent {
         let request_metadata = ctx.request_metadata();
         let user = request_metadata
             .user_id()
-            .map(|user| user.to_string())
-            .unwrap_or("anonymous".to_string());
+            .map_or("anonymous".to_string(), ToString::to_string);
         tracing::debug!(
             event_source = AUDIT_LOG_EVENT_SOURCE,
             request_id = %request_metadata.request_id(),
@@ -63,8 +64,7 @@ impl AuditEvent for NATSConnectionEvent {
         let request_metadata = ctx.request_metadata();
         let user = request_metadata
             .user_id()
-            .map(|user| user.to_string())
-            .unwrap_or("anonymous".to_string());
+            .map_or("anonymous".to_string(), ToString::to_string);
         tracing::debug!(
             event_source = AUDIT_LOG_EVENT_SOURCE,
             request_id = %request_metadata.request_id(),
@@ -103,8 +103,7 @@ impl AuditEvent for BufferingRequestBodyDebugEvent {
         let request_metadata = ctx.request_metadata();
         let user = request_metadata
             .user_id()
-            .map(|user| user.to_string())
-            .unwrap_or("anonymous".to_string());
+            .map_or("anonymous".to_string(), ToString::to_string);
         tracing::debug!(
             event_source = AUDIT_LOG_EVENT_SOURCE,
             request_id = %request_metadata.request_id(),
@@ -150,8 +149,7 @@ impl AuditEvent for BufferingResponseBodyDebugEvent {
         let request_metadata = ctx.request_metadata();
         let user = request_metadata
             .user_id()
-            .map(|user| user.to_string())
-            .unwrap_or("anonymous".to_string());
+            .map_or("anonymous".to_string(), ToString::to_string);
         tracing::debug!(
             event_source = AUDIT_LOG_EVENT_SOURCE,
             user,

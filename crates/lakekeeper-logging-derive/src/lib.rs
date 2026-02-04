@@ -42,8 +42,7 @@ pub fn derive_audit_event(input: TokenStream) -> TokenStream {
 
                 let user = request_metadata
                     .user_id()
-                    .map(|user| user.to_string())
-                    .unwrap_or("anonymous".to_string());
+                    .map_or("anonymous".to_string(), std::string::ToString::to_string);
 
                 tracing::info!(
                     event_source = AUDIT_LOG_EVENT_SOURCE,
