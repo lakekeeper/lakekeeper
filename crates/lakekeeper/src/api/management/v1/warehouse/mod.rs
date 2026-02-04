@@ -358,7 +358,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "create_warehouse".to_string(),
+                    denied_action: "create_warehouse".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -466,7 +466,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "list_warehouses".to_string(),
+                    denied_action: "list_warehouses".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -528,7 +528,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_warehouse".to_string(),
+                    denied_action: "get_warehouse".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -560,7 +560,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_warehouse_statistics".to_string(),
+                    denied_action: "get_warehouse_statistics".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -600,7 +600,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "delete_warehouse".to_string(),
+                    denied_action: "delete_warehouse".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -650,7 +650,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "set_warehouse_protection".to_string(),
+                    denied_action: "set_warehouse_protection".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -709,7 +709,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "rename_warehouse".to_string(),
+                    denied_action: "rename_warehouse".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -762,7 +762,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_warehouse_delete_profile".to_string(),
+                    denied_action: "update_warehouse_delete_profile".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -817,7 +817,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "deactivate_warehouse".to_string(),
+                    denied_action: "deactivate_warehouse".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -864,7 +864,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "activate_warehouse".to_string(),
+                    denied_action: "activate_warehouse".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -912,7 +912,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_warehouse_storage".to_string(),
+                    denied_action: "update_warehouse_storage".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -1015,7 +1015,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_warehouse_credential".to_string(),
+                    denied_action: "update_warehouse_credential".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -1115,7 +1115,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "undrop_tabulars".to_string(),
+                    denied_action: "undrop_tabulars".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -1392,7 +1392,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "set_warehouse_task_queue_config".to_string(),
+                    denied_action: "set_warehouse_task_queue_config".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -1435,7 +1435,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_warehouse_task_queue_config".to_string(),
+                    denied_action: "get_warehouse_task_queue_config".to_string(),
                     error: e.to_string(),
                 });
             })?;

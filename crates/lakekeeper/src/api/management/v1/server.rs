@@ -158,7 +158,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|error| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "bootstrap".to_string(),
+                    denied_action: "bootstrap".to_string(),
                     error: error.to_string(),
                 });
             })?;
@@ -221,7 +221,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|error| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "bootstrap".to_string(),
+                    denied_action: "bootstrap".to_string(),
                     error: error.to_string(),
                 });
             })?;
@@ -260,7 +260,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .await
                     .inspect_err(|error| {
                         request_metadata.log_audit(AuthorizationDeniedEvent {
-                            action: "create_project".to_string(),
+                            denied_action: "create_project".to_string(),
                             error: error.to_string(),
                         });
                     })?;

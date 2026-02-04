@@ -60,7 +60,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "list_views".to_string(),
+                denied_action: "list_views".to_string(),
                 error: e.to_string(),
             });
         })?;

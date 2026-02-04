@@ -92,7 +92,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     if !can_load {
         request_metadata.log_audit(AuthorizationDeniedEvent {
-            action: "load_view".to_string(),
+            denied_action: "load_view".to_string(),
             error: "Cannot load view metadata".to_string(),
         });
         return Err(AuthZCannotSeeView::new(warehouse_id, view.clone()).into());

@@ -123,7 +123,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "create_project".to_string(),
+                    denied_action: "create_project".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -183,7 +183,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "rename_project".to_string(),
+                    denied_action: "rename_project".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -218,7 +218,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_project".to_string(),
+                    denied_action: "get_project".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -254,7 +254,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "delete_project".to_string(),
+                    denied_action: "delete_project".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -358,7 +358,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .await
                     .inspect_err(|e| {
                         request_metadata.log_audit(AuthorizationDeniedEvent {
-                            action: "get_endpoint_statistics".to_string(),
+                            denied_action: "get_endpoint_statistics".to_string(),
                             error: e.to_string(),
                         });
                     })?;
@@ -373,7 +373,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .await
                     .inspect_err(|e| {
                         request_metadata.log_audit(AuthorizationDeniedEvent {
-                            action: "get_endpoint_statistics".to_string(),
+                            denied_action: "get_endpoint_statistics".to_string(),
                             error: e.to_string(),
                         });
                     })?;
@@ -415,7 +415,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "set_project_task_queue_config".to_string(),
+                    denied_action: "set_project_task_queue_config".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -447,7 +447,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_project_task_queue_config".to_string(),
+                    denied_action: "get_project_task_queue_config".to_string(),
                     error: e.to_string(),
                 });
             })?;

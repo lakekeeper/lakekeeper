@@ -183,7 +183,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "create_table".to_string(),
+                denied_action: "create_table".to_string(),
                 error: e.to_string(),
             });
         })?;

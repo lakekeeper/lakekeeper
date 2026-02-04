@@ -80,7 +80,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "commit_view".to_string(),
+                denied_action: "commit_view".to_string(),
                 error: e.to_string(),
             });
         })?;

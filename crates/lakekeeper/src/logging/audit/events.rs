@@ -183,7 +183,7 @@ impl AuditEvent for BufferingResponseBodyDebugEvent {
 /// Logged when authorization is denied for a request
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct AuthorizationDeniedEvent {
-    pub action: String,
+    pub denied_action: String,
     pub error: String,
 }
 

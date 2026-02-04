@@ -51,7 +51,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 .await
                 .inspect_err(|e| {
                     request_metadata.log_audit(AuthorizationDeniedEvent {
-                        action: "get_config_list_warehouses".to_string(),
+                        denied_action: "get_config_list_warehouses".to_string(),
                         error: e.to_string(),
                     });
                 })?;
@@ -77,7 +77,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_config".to_string(),
+                    denied_action: "get_config".to_string(),
                     error: e.to_string(),
                 });
             })?;

@@ -105,13 +105,13 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     );
     let source_view_info = source_view_info.inspect_err(|e| {
         request_metadata.log_audit(AuthorizationDeniedEvent {
-            action: "rename_view".to_string(),
+            denied_action: "rename_view".to_string(),
             error: e.to_string(),
         });
     })?;
     let _destination_namespace = destination_namespace.inspect_err(|e| {
         request_metadata.log_audit(AuthorizationDeniedEvent {
-            action: "rename_view_create_destination".to_string(),
+            denied_action: "rename_view_create_destination".to_string(),
             error: e.to_string(),
         });
     })?;

@@ -238,7 +238,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "create_role".to_string(),
+                    denied_action: "create_role".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -297,7 +297,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "list_roles".to_string(),
+                    denied_action: "list_roles".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -340,7 +340,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_role".to_string(),
+                    denied_action: "get_role".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -362,7 +362,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_role_metadata".to_string(),
+                    denied_action: "get_role_metadata".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -398,7 +398,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "search_role".to_string(),
+                    denied_action: "search_role".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -427,7 +427,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "delete_role".to_string(),
+                    denied_action: "delete_role".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -467,7 +467,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_role".to_string(),
+                    denied_action: "update_role".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -507,7 +507,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_role_source_system".to_string(),
+                    denied_action: "update_role_source_system".to_string(),
                     error: e.to_string(),
                 });
             })?;

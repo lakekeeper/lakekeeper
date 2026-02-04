@@ -55,7 +55,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "drop_view".to_string(),
+                denied_action: "drop_view".to_string(),
                 error: e.to_string(),
             });
         })?;

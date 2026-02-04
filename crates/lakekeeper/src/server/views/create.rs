@@ -76,7 +76,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "create_view".to_string(),
+                denied_action: "create_view".to_string(),
                 error: e.to_string(),
             });
         })?;

@@ -46,7 +46,7 @@ where
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "set_view_protection".to_string(),
+                    denied_action: "set_view_protection".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -95,7 +95,7 @@ where
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_view_protection".to_string(),
+                    denied_action: "get_view_protection".to_string(),
                     error: e.to_string(),
                 });
             })?;

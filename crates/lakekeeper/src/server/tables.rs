@@ -135,7 +135,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "list_tables".to_string(),
+                    denied_action: "list_tables".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -221,7 +221,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "register_table".to_string(),
+                    denied_action: "register_table".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -261,7 +261,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "register_table_create".to_string(),
+                    denied_action: "register_table_create".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -304,7 +304,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         .await
                         .inspect_err(|e| {
                             request_metadata.log_audit(AuthorizationDeniedEvent {
-                                action: "register_table_overwrite".to_string(),
+                                denied_action: "register_table_overwrite".to_string(),
                                 error: e.to_string(),
                             });
                         })?,
@@ -456,7 +456,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "load_table_credentials".to_string(),
+                denied_action: "load_table_credentials".to_string(),
                 error: e.to_string(),
             });
         })?;
@@ -615,7 +615,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "drop_table".to_string(),
+                    denied_action: "drop_table".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -781,7 +781,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "table_exists".to_string(),
+                    denied_action: "table_exists".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -874,13 +874,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let _destination_namespace = destination_namespace.inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "rename_table".to_string(),
+                denied_action: "rename_table".to_string(),
                 error: e.to_string(),
             });
         })?;
         let source_table_info = source_table_info.inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "rename_table".to_string(),
+                denied_action: "rename_table".to_string(),
                 error: e.to_string(),
             });
         })?;
@@ -1228,7 +1228,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "commit_tables".to_string(),
+                denied_action: "commit_tables".to_string(),
                 error: e.to_string(),
             });
         })?;
@@ -1237,7 +1237,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         if !table_ident_to_info.contains_key(user_provided_ident) {
             let error = AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone());
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "commit_tables".to_string(),
+                denied_action: "commit_tables".to_string(),
                 error: error.to_string(),
             });
             return Err(error.into());
@@ -1289,7 +1289,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "commit_tables".to_string(),
+                denied_action: "commit_tables".to_string(),
                 error: e.to_string(),
             });
         })?;

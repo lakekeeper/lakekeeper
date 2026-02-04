@@ -34,7 +34,7 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "view_exists".to_string(),
+                denied_action: "view_exists".to_string(),
                 error: e.to_string(),
             });
         })?;

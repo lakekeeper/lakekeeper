@@ -213,7 +213,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "s3_sign".to_string(),
+                    denied_action: "s3_sign".to_string(),
                     error: e.to_string(),
                 });
             })?;

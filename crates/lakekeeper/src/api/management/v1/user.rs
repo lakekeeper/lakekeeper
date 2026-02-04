@@ -321,7 +321,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .await
                 .inspect_err(|e| {
                     request_metadata.log_audit(AuthorizationDeniedEvent {
-                        action: "provision_user".to_string(),
+                        denied_action: "provision_user".to_string(),
                         error: e.to_string(),
                     });
                 })?;
@@ -383,7 +383,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "search_users".to_string(),
+                    denied_action: "search_users".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -408,7 +408,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_user".to_string(),
+                    denied_action: "get_user".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -448,7 +448,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "list_users".to_string(),
+                    denied_action: "list_users".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -483,7 +483,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_user".to_string(),
+                    denied_action: "update_user".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -525,7 +525,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "delete_user".to_string(),
+                    denied_action: "delete_user".to_string(),
                     error: e.to_string(),
                 });
             })?;

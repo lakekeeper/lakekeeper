@@ -664,7 +664,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .inspect_err(|e| {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "list_tasks".to_string(),
+                denied_action: "list_tasks".to_string(),
                 error: e.to_string(),
             });
         })?;
@@ -710,7 +710,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         if !authz_can_use {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "get_task_details".to_string(),
+                denied_action: "get_task_details".to_string(),
                 error: "Cannot use warehouse".to_string(),
             });
             return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
@@ -750,7 +750,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_task_details".to_string(),
+                    denied_action: "get_task_details".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -808,7 +808,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         if !authz_can_use {
             request_metadata.log_audit(AuthorizationDeniedEvent {
-                action: "control_tasks".to_string(),
+                denied_action: "control_tasks".to_string(),
                 error: "Cannot use warehouse".to_string(),
             });
             return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
@@ -856,7 +856,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "control_tasks".to_string(),
+                    denied_action: "control_tasks".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -916,7 +916,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "list_project_tasks".to_string(),
+                    denied_action: "list_project_tasks".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -952,7 +952,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "get_project_task_details".to_string(),
+                    denied_action: "get_project_task_details".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -1021,7 +1021,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "control_project_tasks".to_string(),
+                    denied_action: "control_project_tasks".to_string(),
                     error: e.to_string(),
                 });
             })?;

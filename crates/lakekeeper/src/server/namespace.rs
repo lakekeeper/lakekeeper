@@ -118,7 +118,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await
                 .inspect_err(|e| {
                     request_metadata.log_audit(AuthorizationDeniedEvent {
-                        action: "list_namespaces".to_string(),
+                        denied_action: "list_namespaces".to_string(),
                         error: e.to_string(),
                     });
                 })?;
@@ -291,7 +291,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await
                 .inspect_err(|e| {
                     request_metadata.log_audit(AuthorizationDeniedEvent {
-                        action: "create_namespace".to_string(),
+                        denied_action: "create_namespace".to_string(),
                         error: e.to_string(),
                     });
                 })?;
@@ -309,7 +309,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await
                 .inspect_err(|e| {
                     request_metadata.log_audit(AuthorizationDeniedEvent {
-                        action: "create_namespace".to_string(),
+                        denied_action: "create_namespace".to_string(),
                         error: e.to_string(),
                     });
                 })?;
@@ -386,7 +386,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "load_namespace_metadata".to_string(),
+                    denied_action: "load_namespace_metadata".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -423,7 +423,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "namespace_exists".to_string(),
+                    denied_action: "namespace_exists".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -468,7 +468,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "drop_namespace".to_string(),
+                    denied_action: "drop_namespace".to_string(),
                     error: e.to_string(),
                 });
             })?;
@@ -556,7 +556,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             .inspect_err(|e| {
                 request_metadata.log_audit(AuthorizationDeniedEvent {
-                    action: "update_namespace_properties".to_string(),
+                    denied_action: "update_namespace_properties".to_string(),
                     error: e.to_string(),
                 });
             })?;
