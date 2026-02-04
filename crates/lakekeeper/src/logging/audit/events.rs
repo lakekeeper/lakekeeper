@@ -1,9 +1,183 @@
+use http::StatusCode;
+use url::Url;
+
 use crate::{
     ProjectId, WarehouseId,
-    api::management::v1::user::UserType,
+    api::management::v1::user::{User, UserType},
     logging::audit::{AUDIT_LOG_EVENT_SOURCE, AuditContextData, AuditEvent},
     service::{NamespaceId, RoleId, TableId, UserId, ViewId, authz::CatalogTableAction},
 };
+
+// ============================================================================
+// Debug Events
+// ============================================================================
+
+// Maybe improve AuditEvent derive macro to support debug level logging by adding a new attribute?
+
+#[derive(Debug)]
+pub struct UserCreatedDebugEvent {
+    pub user: User,
+}
+
+impl AuditEvent for UserCreatedDebugEvent {
+    fn action(&self) -> &'static str {
+        "user_created_debug_event"
+    }
+
+    fn log<D: AuditContextData>(&self, ctx: &D) {
+        let request_metadata = ctx.request_metadata();
+        let user = request_metadata
+            .user_id()
+            .map(|user| user.to_string())
+            .unwrap_or("anonymous".to_string());
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            request_id = %request_metadata.request_id(),
+            user,
+            action = self.action(),
+            created_user = %self.user,
+        );
+    }
+
+    fn log_without_context(&self) {
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            action = self.action(),
+            created_user = %self.user,
+        );
+    }
+}
+
+#[derive(Debug)]
+pub struct NATSConnectionEvent {
+    pub nats_address: Url,
+    pub user: String,
+}
+
+impl AuditEvent for NATSConnectionEvent {
+    fn action(&self) -> &'static str {
+        "nats_connection_event"
+    }
+
+    fn log<D: AuditContextData>(&self, ctx: &D) {
+        let request_metadata = ctx.request_metadata();
+        let user = request_metadata
+            .user_id()
+            .map(|user| user.to_string())
+            .unwrap_or("anonymous".to_string());
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            request_id = %request_metadata.request_id(),
+            user,
+            action = self.action(),
+            nats_address = %self.nats_address,
+            nats_user = %self.user,
+        );
+    }
+
+    fn log_without_context(&self) {
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            action = self.action(),
+            nats_address = %self.nats_address,
+            nats_user = %self.user,
+        );
+    }
+}
+
+#[derive(Debug)]
+pub struct BufferingRequestBodyDebugEvent {
+    pub method: String,
+    pub path: String,
+    pub request_id: String,
+    pub request_body: String,
+    pub user_agent: String,
+}
+
+impl AuditEvent for BufferingRequestBodyDebugEvent {
+    fn action(&self) -> &'static str {
+        "buffering_request_body_debug_event"
+    }
+
+    fn log<D: AuditContextData>(&self, ctx: &D) {
+        let request_metadata = ctx.request_metadata();
+        let user = request_metadata
+            .user_id()
+            .map(|user| user.to_string())
+            .unwrap_or("anonymous".to_string());
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            request_id = %request_metadata.request_id(),
+            user,
+            action = self.action(),
+            method = %self.method,
+            path = %self.path,
+            request_id = %self.request_id,
+            request_body = %self.request_body,
+            user_agent = %self.user_agent,
+        );
+    }
+
+    fn log_without_context(&self) {
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            action = self.action(),
+            method = %self.method,
+            path = %self.path,
+            request_id = %self.request_id,
+            request_body = %self.request_body,
+            user_agent = %self.user_agent,
+        );
+    }
+}
+
+#[derive(Debug)]
+pub struct BufferingResponseBodyDebugEvent {
+    pub method: String,
+    pub path: String,
+    pub request_id: String,
+    pub user_agent: String,
+    pub status: StatusCode,
+    pub response_body: String,
+}
+
+impl AuditEvent for BufferingResponseBodyDebugEvent {
+    fn action(&self) -> &'static str {
+        "buffering_response_body_debug_event"
+    }
+
+    fn log<D: AuditContextData>(&self, ctx: &D) {
+        let request_metadata = ctx.request_metadata();
+        let user = request_metadata
+            .user_id()
+            .map(|user| user.to_string())
+            .unwrap_or("anonymous".to_string());
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            user,
+            action = self.action(),
+            method = %self.method,
+            path = %self.path,
+            request_id = %self.request_id,
+            user_agent = %self.user_agent,
+            status = %self.status,
+            response_body = %self.response_body,
+        );
+    }
+
+    fn log_without_context(&self) {
+        tracing::debug!(
+            event_source = AUDIT_LOG_EVENT_SOURCE,
+            action = self.action(),
+            method = %self.method,
+            path = %self.path,
+            request_id = %self.request_id,
+            user_agent = %self.user_agent,
+            status = %self.status,
+            response_body = %self.response_body,
+        );
+    }
+}
 
 // ============================================================================
 // Authorization Events

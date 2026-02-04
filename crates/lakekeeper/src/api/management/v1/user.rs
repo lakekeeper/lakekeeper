@@ -10,7 +10,10 @@ use crate::{
     },
     logging::audit::{
         AuditContext,
-        events::{AuthorizationDeniedEvent, CreateUserEvent, DeleteUserEvent, UpdateUserEvent},
+        events::{
+            AuthorizationDeniedEvent, CreateUserEvent, DeleteUserEvent, UpdateUserEvent,
+            UserCreatedDebugEvent,
+        },
     },
     request_metadata::RequestMetadata,
     service::{
@@ -83,6 +86,19 @@ pub struct User {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the user was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl std::fmt::Display for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "User {{ id: {}, name: {}, email: {}, user_type: {} }}",
+            self.id,
+            self.name,
+            self.email.clone().as_deref().unwrap_or("null"),
+            self.user_type
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -342,7 +358,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
-        tracing::debug!("User created: {:?}", user);
+        let event = match &user {
+            CreateOrUpdateUserResponse::Created(user)
+            | CreateOrUpdateUserResponse::Updated(user) => {
+                UserCreatedDebugEvent { user: user.clone() }
+            }
+        };
+        request_metadata.log_audit(event);
 
         t.commit().await?;
 

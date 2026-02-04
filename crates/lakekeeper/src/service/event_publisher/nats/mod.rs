@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use cloudevents::Event;
 
 use super::CloudEventBackend;
-use crate::CONFIG;
+use crate::{
+    CONFIG,
+    logging::audit::{AuditEvent, events::NATSConnectionEvent},
+};
 
 /// Generate a NATS publisher from the crates configuration.
 /// Returns `None` if the NATS address or topic is not set.
@@ -30,7 +33,12 @@ pub async fn build_nats_publisher_from_config() -> anyhow::Result<Option<NatsBac
     };
 
     let builder = if let (Some(user), Some(pw)) = (&CONFIG.nats_user, &CONFIG.nats_password) {
-        tracing::debug!("Connecting to NATS at {nats_addr} with user: {user}");
+        NATSConnectionEvent {
+            nats_address: nats_addr.clone(),
+            user: user.clone(),
+        }
+        .log_without_context();
+
         builder.user_and_password(user.clone(), pw.clone())
     } else {
         builder

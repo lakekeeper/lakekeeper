@@ -9,6 +9,7 @@ pub const AUDIT_LOG_EVENT_SOURCE: &str = "audit";
 pub trait AuditEvent {
     fn action(&self) -> &'static str;
     fn log<D: AuditContextData>(&self, ctx: &D);
+    fn log_without_context(&self);
 }
 
 pub trait AuditContext {

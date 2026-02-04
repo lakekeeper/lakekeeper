@@ -28,6 +28,10 @@ use crate::{
         },
         management::v1::ApiServer,
     },
+    logging::audit::{
+        AuditEvent,
+        events::{BufferingRequestBodyDebugEvent, BufferingResponseBodyDebugEvent},
+    },
     request_metadata::{
         X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
         create_request_metadata_with_trace_and_project_fn,
@@ -239,14 +243,15 @@ async fn buffer_response_body(
     let s = String::from_utf8_lossy(&bytes).to_string();
     let status = parts.status;
 
-    tracing::debug!(
-        method = method,
-        path = path,
-        request_id = request_id,
-        user_agent = user_agent,
-        status = %status,
-        response_body = s,
-    );
+    BufferingResponseBodyDebugEvent {
+        method: method.to_string(),
+        path: path.to_string(),
+        request_id: request_id.to_string(),
+        user_agent: user_agent.to_string(),
+        status,
+        response_body: s,
+    }
+    .log_without_context();
 
     Ok(axum::response::Response::from_parts(
         parts,
@@ -277,13 +282,14 @@ async fn buffer_request_body(
         .to_bytes();
 
     let s = String::from_utf8_lossy(&bytes).to_string();
-    tracing::debug!(
-        method = method,
-        path = path,
-        request_body = s,
-        request_id = request_id,
-        user_agent = user_agent
-    );
+    BufferingRequestBodyDebugEvent {
+        method: method.to_string(),
+        path: path.to_string(),
+        request_body: s,
+        request_id: request_id.to_string(),
+        user_agent: user_agent.to_string(),
+    }
+    .log_without_context();
 
     Ok(axum::extract::Request::from_parts(
         parts,

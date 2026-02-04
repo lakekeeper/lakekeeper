@@ -53,6 +53,14 @@ pub fn derive_audit_event(input: TokenStream) -> TokenStream {
                     #(#field_logs,)*
                 );
             }
+
+            fn log_without_context(&self) {
+                tracing::info!(
+                    event_source = AUDIT_LOG_EVENT_SOURCE,
+                    action = self.action(),
+                    #(#field_logs,)*
+                );
+            }
         }
     };
 
