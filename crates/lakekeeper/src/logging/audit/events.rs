@@ -106,7 +106,6 @@ impl AuditEvent for BufferingRequestBodyDebugEvent {
             .map_or("anonymous".to_string(), ToString::to_string);
         tracing::debug!(
             event_source = AUDIT_LOG_EVENT_SOURCE,
-            request_id = %request_metadata.request_id(),
             user,
             action = self.action(),
             method = %self.method,
