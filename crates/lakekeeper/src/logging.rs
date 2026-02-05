@@ -1,6 +1,6 @@
 pub mod audit;
 
-use std::fmt;
+use std::fmt::{Debug, Display, Formatter, Result};
 
 use url::Url;
 
@@ -8,8 +8,15 @@ use url::Url;
 ///
 /// This should be used for logging URLs that may contain sensitive information.
 /// For example, `nats://user:password@host:4222` becomes `nats://[REDACTED]@host:4222`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RedactedUrl(Url);
+
+impl Debug for RedactedUrl {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        // Delegate to Display to ensure credentials are never leaked via Debug
+        write!(f, "RedactedUrl({self})")
+    }
+}
 
 impl RedactedUrl {
     /// Create a new `RedactedUrl` from a `Url`.
@@ -37,8 +44,8 @@ impl From<Url> for RedactedUrl {
     }
 }
 
-impl fmt::Display for RedactedUrl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for RedactedUrl {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         let url = &self.0;
 
         // Check if URL has any credentials
