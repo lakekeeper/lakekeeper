@@ -9,6 +9,7 @@ use lakekeeper::{
     api::{ApiContext, IcebergErrorResponse, RequestMetadata, management::v1::role::Role},
     async_trait,
     axum::Router,
+    logging::audit::{AuditContext, events::AuthorizationDeniedEvent},
     service::{
         Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel,
         NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
@@ -1112,6 +1113,10 @@ impl OpenFGAAuthorizer {
             .await?;
 
         if !allowed {
+            metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: action.to_string(),
+                error: format!("Action {action} not allowed for object {object}"),
+            });
             return Err(ErrorModel::forbidden(
                 format!("Action {action} not allowed for object {object}"),
                 "ActionForbidden",

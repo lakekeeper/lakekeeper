@@ -7,13 +7,15 @@ use lakekeeper::{
     },
     axum::{Extension, Json, extract::State as AxumState},
     iceberg::TableIdent,
+    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, PermissionCheckEvent}},
     service::{
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, NamespaceIdentOrId, Result, SecretStore, State, TableId,
         TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
         authz::{
             AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
-            RequireTableActionError, RequireViewActionError, UserOrRole,
+            RequireNamespaceActionError, RequireTableActionError, RequireViewActionError,
+            RequireWarehouseActionError, UserOrRole,
         },
     },
     tokio,
@@ -34,6 +36,62 @@ use super::{
 };
 use crate::entities::OpenFgaEntity;
 
+/// Logs an `AuthorizationDeniedEvent` if the error is authorization-related for warehouse actions.
+fn log_warehouse_auth_error(metadata: &RequestMetadata, err: &RequireWarehouseActionError) {
+    if matches!(
+        err,
+        RequireWarehouseActionError::AuthZWarehouseActionForbidden(_)
+            | RequireWarehouseActionError::AuthZCannotUseWarehouseId(_)
+    ) {
+        metadata.log_audit(AuthorizationDeniedEvent {
+            denied_action: "warehouse".to_string(),
+            error: format!("{err}"),
+        });
+    }
+}
+
+/// Logs an `AuthorizationDeniedEvent` if the error is authorization-related for namespace actions.
+fn log_namespace_auth_error(metadata: &RequestMetadata, err: &RequireNamespaceActionError) {
+    if matches!(
+        err,
+        RequireNamespaceActionError::AuthZNamespaceActionForbidden(_)
+            | RequireNamespaceActionError::AuthZCannotSeeNamespace(_)
+    ) {
+        metadata.log_audit(AuthorizationDeniedEvent {
+            denied_action: "namespace".to_string(),
+            error: format!("{err}"),
+        });
+    }
+}
+
+/// Logs an `AuthorizationDeniedEvent` if the error is authorization-related for table actions.
+fn log_table_auth_error(metadata: &RequestMetadata, err: &RequireTableActionError) {
+    if matches!(
+        err,
+        RequireTableActionError::AuthZTableActionForbidden(_)
+            | RequireTableActionError::AuthZCannotSeeTable(_)
+    ) {
+        metadata.log_audit(AuthorizationDeniedEvent {
+            denied_action: "table".to_string(),
+            error: format!("{err}"),
+        });
+    }
+}
+
+/// Logs an `AuthorizationDeniedEvent` if the error is authorization-related for view actions.
+fn log_view_auth_error(metadata: &RequestMetadata, err: &RequireViewActionError) {
+    if matches!(
+        err,
+        RequireViewActionError::AuthZViewActionForbidden(_)
+            | RequireViewActionError::AuthZCannotSeeView(_)
+    ) {
+        metadata.log_audit(AuthorizationDeniedEvent {
+            denied_action: "view".to_string(),
+            error: format!("{err}"),
+        });
+    }
+}
+
 /// Check if a specific action is allowed on the given object
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
@@ -49,6 +107,12 @@ pub(super) async fn check<C: CatalogStore, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<CheckRequest>,
 ) -> Result<(StatusCode, Json<CheckResponse>)> {
+    let (object_type, action) = request.operation.object_type_and_action();
+    metadata.log_audit(PermissionCheckEvent {
+        object_type,
+        action,
+    });
+
     let allowed = check_internal(api_context, &metadata, request).await?;
     Ok((StatusCode::OK, Json(CheckResponse { allowed })))
 }
@@ -230,10 +294,13 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
             api_context.v1_state.catalog,
         )
     );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let warehouse = authorizer
+        .require_warehouse_presence(warehouse_id, warehouse)
+        .inspect_err(|e| log_warehouse_auth_error(metadata, e))?;
     let namespace = authorizer
         .require_namespace_action(metadata, &warehouse, user_provided_ns, namespace, action)
-        .await?;
+        .await
+        .inspect_err(|e| log_namespace_auth_error(metadata, e))?;
 
     Ok(namespace.namespace_id().to_openfga())
 }
@@ -276,19 +343,21 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
             api_context.v1_state.catalog.clone(),
         )
     );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
+    let warehouse = authorizer
+        .require_warehouse_presence(warehouse_id, warehouse)
+        .inspect_err(|e| log_warehouse_auth_error(metadata, e))?;
+    let table_info = authorizer
+        .require_table_presence(warehouse_id, table.clone(), table_info)
+        .inspect_err(|e| log_table_auth_error(metadata, e))?;
     let namespace = C::get_namespace(
         warehouse_id,
         table_info.namespace_id(),
         api_context.v1_state.catalog,
     )
     .await;
-    let namespace = authorizer.require_namespace_presence(
-        warehouse_id,
-        table_info.namespace_id(),
-        namespace,
-    )?;
+    let namespace = authorizer
+        .require_namespace_presence(warehouse_id, table_info.namespace_id(), namespace)
+        .inspect_err(|e| log_namespace_auth_error(metadata, e))?;
     let table_info = authorizer
         .require_table_action(
             metadata,
@@ -298,7 +367,8 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
             Ok::<_, RequireTableActionError>(Some(table_info)),
             action,
         )
-        .await?;
+        .await
+        .inspect_err(|e| log_table_auth_error(metadata, e))?;
 
     Ok((warehouse_id, table_info.table_id()).to_openfga())
 }
@@ -341,16 +411,21 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
             api_context.v1_state.catalog.clone(),
         )
     );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let view_info = authorizer.require_view_presence(warehouse_id, view.clone(), table_info)?;
+    let warehouse = authorizer
+        .require_warehouse_presence(warehouse_id, warehouse)
+        .inspect_err(|e| log_warehouse_auth_error(metadata, e))?;
+    let view_info = authorizer
+        .require_view_presence(warehouse_id, view.clone(), table_info)
+        .inspect_err(|e| log_view_auth_error(metadata, e))?;
     let namespace = C::get_namespace(
         warehouse_id,
         view_info.namespace_id(),
         api_context.v1_state.catalog,
     )
     .await;
-    let namespace =
-        authorizer.require_namespace_presence(warehouse_id, view_info.namespace_id(), namespace)?;
+    let namespace = authorizer
+        .require_namespace_presence(warehouse_id, view_info.namespace_id(), namespace)
+        .inspect_err(|e| log_namespace_auth_error(metadata, e))?;
 
     let view_info = authorizer
         .require_view_action(
@@ -361,7 +436,8 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
             Ok::<_, RequireViewActionError>(Some(view_info)),
             action,
         )
-        .await?;
+        .await
+        .inspect_err(|e| log_view_auth_error(metadata, e))?;
 
     Ok((warehouse_id, view_info.view_id()).to_openfga())
 }
@@ -401,6 +477,24 @@ pub(super) enum CheckOperation {
         #[serde(flatten)]
         view: TabularIdentOrUuid,
     },
+}
+
+impl CheckOperation {
+    /// Returns the object type and action as strings for audit logging.
+    pub(crate) fn object_type_and_action(&self) -> (String, String) {
+        match self {
+            CheckOperation::Server { action } => ("server".to_string(), format!("{action:?}")),
+            CheckOperation::Project { action, .. } => ("project".to_string(), format!("{action:?}")),
+            CheckOperation::Warehouse { action, .. } => {
+                ("warehouse".to_string(), format!("{action:?}"))
+            }
+            CheckOperation::Namespace { action, .. } => {
+                ("namespace".to_string(), format!("{action:?}"))
+            }
+            CheckOperation::Table { action, .. } => ("table".to_string(), format!("{action:?}")),
+            CheckOperation::View { action, .. } => ("view".to_string(), format!("{action:?}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

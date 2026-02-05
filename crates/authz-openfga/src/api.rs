@@ -17,6 +17,7 @@ use lakekeeper::{
         extract::{Path, Query, State as AxumState},
         routing::{get, post},
     },
+    logging::audit::AuditContext,
     service::{
         Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
         authz::UserOrRole,
@@ -58,6 +59,17 @@ use crate::{
         OpenFGANamespaceAction, OpenFGAProjectAction, OpenFGARoleAction, OpenFGAServerAction,
         OpenFGATableAction, OpenFGAViewAction, OpenFGAWarehouseAction,
     },
+};
+use lakekeeper::logging::audit::events::{
+    AuthorizationDeniedEvent, GetNamespaceActionsEvent, GetNamespaceAssignmentsEvent,
+    GetNamespaceAuthPropertiesEvent, GetProjectActionsEvent, GetProjectAssignmentsEvent,
+    GetRoleActionsEvent, GetRoleAssignmentsEvent, GetServerActionsEvent,
+    GetServerAssignmentsEvent, GetTableActionsEvent, GetTableAssignmentsEvent,
+    GetViewActionsEvent, GetViewAssignmentsEvent, GetWarehouseActionsEvent,
+    GetWarehouseAssignmentsEvent, GetWarehouseAuthPropertiesEvent, SetNamespaceManagedAccessEvent,
+    SetWarehouseManagedAccessEvent, UpdateNamespaceAssignmentsEvent, UpdateProjectAssignmentsEvent,
+    UpdateRoleAssignmentsEvent, UpdateServerAssignmentsEvent, UpdateTableAssignmentsEvent,
+    UpdateViewAssignmentsEvent, UpdateWarehouseAssignmentsEvent,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -370,9 +382,10 @@ async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetRoleAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetRoleActionsEvent { role_id });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &role_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -410,9 +423,10 @@ async fn get_authorizer_role_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGARoleActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetRoleActionsEvent { role_id });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &role_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -451,9 +465,10 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
     let openfga_server = authorizer.openfga_server().clone();
+    metadata.log_audit(GetServerActionsEvent {});
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &openfga_server,
         query.principal.as_ref(),
     )
@@ -488,9 +503,10 @@ async fn get_authorizer_server_actions<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
     let openfga_server = authorizer.openfga_server().clone();
+    metadata.log_audit(GetServerActionsEvent {});
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &openfga_server,
         query.principal.as_ref(),
     )
@@ -531,9 +547,10 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
+    metadata.log_audit(GetProjectActionsEvent { project_id: project_id.clone() });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &project_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -570,9 +587,10 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
+    metadata.log_audit(GetProjectActionsEvent { project_id: project_id.clone() });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &project_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -614,9 +632,10 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetProjectActionsEvent { project_id: project_id.clone() });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &project_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -658,9 +677,10 @@ async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetWarehouseAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetWarehouseActionsEvent { warehouse_id });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &warehouse_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -698,9 +718,10 @@ async fn get_authorizer_warehouse_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGAWarehouseActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetWarehouseActionsEvent { warehouse_id });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &warehouse_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -732,6 +753,7 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<(StatusCode, Json<GetWarehouseAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    metadata.log_audit(GetWarehouseAuthPropertiesEvent { warehouse_id });
     authorizer
         .require_action(
             &metadata,
@@ -767,6 +789,10 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
     Json(request): Json<SetManagedAccessRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    metadata.log_audit(SetWarehouseManagedAccessEvent {
+        warehouse_id,
+        managed_access: request.managed_access,
+    });
     authorizer
         .require_action(
             &metadata,
@@ -800,6 +826,10 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
     Json(request): Json<SetManagedAccessRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    metadata.log_audit(SetNamespaceManagedAccessEvent {
+        namespace_id,
+        managed_access: request.managed_access,
+    });
     authorizer
         .require_action(
             &metadata,
@@ -831,6 +861,7 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<(StatusCode, Json<GetNamespaceAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    metadata.log_audit(GetNamespaceAuthPropertiesEvent { namespace_id });
     authorizer
         .require_action(
             &metadata,
@@ -885,9 +916,10 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetNamespaceAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetNamespaceActionsEvent { namespace_id });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &namespace_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -925,9 +957,10 @@ async fn get_authorizer_namespace_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGANamespaceActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetNamespaceActionsEvent { namespace_id });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &namespace_id.to_openfga(),
         query.principal.as_ref(),
     )
@@ -970,9 +1003,13 @@ async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetTableActionsEvent {
+        warehouse_id,
+        table_id,
+    });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &(warehouse_id, table_id).to_openfga(),
         query.principal.as_ref(),
     )
@@ -1011,9 +1048,13 @@ async fn get_authorizer_table_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGATableActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetTableActionsEvent {
+        warehouse_id,
+        table_id,
+    });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &(warehouse_id, table_id).to_openfga(),
         query.principal.as_ref(),
     )
@@ -1056,9 +1097,13 @@ async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetViewActionsEvent {
+        warehouse_id,
+        view_id,
+    });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &(warehouse_id, view_id).to_openfga(),
         query.principal.as_ref(),
     )
@@ -1097,9 +1142,13 @@ async fn get_authorizer_view_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGAViewActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    metadata.log_audit(GetViewActionsEvent {
+        warehouse_id,
+        view_id,
+    });
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        &metadata,
         &(warehouse_id, view_id).to_openfga(),
         query.principal.as_ref(),
     )
@@ -1133,6 +1182,9 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Query(query): Query<GetRoleAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetRoleAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    metadata.log_audit(GetRoleAssignmentsEvent {
+        role_id: role_id.clone(),
+    });
     authorizer
         .require_action(
             &metadata,
@@ -1140,6 +1192,7 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
             &role_id.to_openfga(),
         )
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &role_id.to_openfga()).await?;
 
     Ok((
@@ -1165,9 +1218,11 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let server_id = authorizer.openfga_server().clone();
+    metadata.log_audit(GetServerAssignmentsEvent {});
     authorizer
         .require_action(&metadata, AllServerAction::CanReadAssignments, &server_id)
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &server_id).await?;
 
     Ok((
@@ -1195,6 +1250,9 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
+    metadata.log_audit(GetProjectAssignmentsEvent {
+        project_id: project_id.clone(),
+    });
     authorizer
         .require_action(
             &metadata,
@@ -1202,6 +1260,7 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
             &project_id.to_openfga(),
         )
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &project_id.to_openfga()).await?;
 
     Ok((
@@ -1239,6 +1298,9 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Query(query): Query<GetProjectAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    metadata.log_audit(GetProjectAssignmentsEvent {
+        project_id: project_id.clone(),
+    });
     authorizer
         .require_action(
             &metadata,
@@ -1246,6 +1308,7 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
             &project_id.to_openfga(),
         )
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &project_id.to_openfga()).await?;
 
     Ok((
@@ -1278,9 +1341,11 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetWarehouseAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = warehouse_id.to_openfga();
+    metadata.log_audit(GetWarehouseAssignmentsEvent { warehouse_id });
     authorizer
         .require_action(&metadata, AllWarehouseRelation::CanReadAssignments, &object)
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &object).await?;
 
     Ok((
@@ -1310,6 +1375,7 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetNamespaceAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = namespace_id.to_openfga();
+    metadata.log_audit(GetNamespaceAssignmentsEvent { namespace_id });
     authorizer
         .require_action(
             &metadata,
@@ -1317,6 +1383,7 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
             &object,
         )
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &object).await?;
 
     Ok((
@@ -1347,9 +1414,14 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = (warehouse_id, table_id).to_openfga();
+    metadata.log_audit(GetTableAssignmentsEvent {
+        warehouse_id,
+        table_id,
+    });
     authorizer
         .require_action(&metadata, AllTableRelations::CanReadAssignments, &object)
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &object).await?;
 
     Ok((
@@ -1380,9 +1452,14 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetViewAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = (warehouse_id, view_id).to_openfga();
+    metadata.log_audit(GetViewAssignmentsEvent {
+        warehouse_id,
+        view_id,
+    });
     authorizer
         .require_action(&metadata, AllViewRelations::CanReadAssignments, &object)
         .await?;
+
     let assignments = get_relations(authorizer, query.relations, &object).await?;
 
     Ok((
@@ -1408,12 +1485,18 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     let server_id = authorizer.openfga_server().clone();
+
+    metadata.log_audit(UpdateServerAssignmentsEvent {
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &server_id,
+        &metadata,
     )
     .await?;
 
@@ -1439,12 +1522,19 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
+
+    metadata.log_audit(UpdateProjectAssignmentsEvent {
+        project_id: project_id.clone(),
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &project_id.to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1471,12 +1561,19 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateProjectAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+
+    metadata.log_audit(UpdateProjectAssignmentsEvent {
+        project_id: project_id.clone(),
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &project_id.to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1503,12 +1600,19 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+
+    metadata.log_audit(UpdateWarehouseAssignmentsEvent {
+        warehouse_id,
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &warehouse_id.to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1535,12 +1639,19 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+
+    metadata.log_audit(UpdateNamespaceAssignmentsEvent {
+        namespace_id,
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &namespace_id.to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1568,12 +1679,20 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateTableAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+
+    metadata.log_audit(UpdateTableAssignmentsEvent {
+        warehouse_id,
+        table_id,
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &(warehouse_id, table_id).to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1601,12 +1720,20 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateViewAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+
+    metadata.log_audit(UpdateViewAssignmentsEvent {
+        warehouse_id,
+        view_id,
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &(warehouse_id, view_id).to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1642,12 +1769,19 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
             return Err(OpenFGAError::SelfAssignment(role_id.to_string()).into());
         }
     }
+
+    metadata.log_audit(UpdateRoleAssignmentsEvent {
+        role_id: role_id.clone(),
+        writes_count: request.writes.len(),
+        deletes_count: request.deletes.len(),
+    });
+
     checked_write(
         authorizer,
-        metadata.actor(),
         request.writes,
         request.deletes,
         &role_id.to_openfga(),
+        &metadata,
     )
     .await?;
 
@@ -1852,10 +1986,11 @@ async fn get_relations<RA: Assignment>(
 
 async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     authorizer: OpenFGAAuthorizer,
-    actor: &Actor,
+    metadata: &RequestMetadata,
     object: &str,
     for_principal: Option<&UserOrRole>,
 ) -> OpenFGAResult<Vec<A>> {
+    let actor = metadata.actor();
     let openfga_actor = actor.to_openfga();
     let openfga_object = object.to_string();
 
@@ -1870,11 +2005,16 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
         let allowed = authorizer.clone().check(key).await?;
         if !allowed {
-            return Err(OpenFGAError::Unauthorized {
+            let err = OpenFGAError::Unauthorized {
                 user: openfga_actor.clone(),
                 relation: RoleAction::ReadAssignments.to_openfga().to_string(),
                 object: object.to_string(),
+            };
+            metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: RoleAction::ReadAssignments.to_openfga().to_string(),
+                error: err.to_string(),
             });
+            return Err(err);
         }
     }
 
@@ -1905,14 +2045,20 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
 async fn checked_write<RA: Assignment>(
     authorizer: OpenFGAAuthorizer,
-    actor: &Actor,
     writes: Vec<RA>,
     deletes: Vec<RA>,
     object: &str,
+    metadata: &RequestMetadata,
 ) -> OpenFGAResult<()> {
+    let actor = metadata.actor();
     // Fail fast
     if actor == &Actor::Anonymous {
-        return Err(OpenFGAError::AuthenticationRequired);
+        let err = OpenFGAError::AuthenticationRequired;
+        metadata.log_audit(AuthorizationDeniedEvent {
+            denied_action: "checked_write".to_string(),
+            error: err.to_string(),
+        });
+        return Err(err);
     }
     let all_modifications = writes.iter().chain(deletes.iter()).collect::<Vec<_>>();
     // ---------------------------- AUTHZ CHECKS ----------------------------
@@ -1948,11 +2094,16 @@ async fn checked_write<RA: Assignment>(
         if allowed {
             Ok(())
         } else {
-            Err(OpenFGAError::Unauthorized {
+            let err = OpenFGAError::Unauthorized {
                 user: openfga_actor.clone(),
                 relation: relation.to_string(),
                 object: object.to_string(),
-            })
+            };
+            metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: relation.to_string(),
+                error: err.to_string(),
+            });
+            Err(err)
         }
     }))
     .await?;
@@ -2133,10 +2284,10 @@ mod tests {
 
             let result = checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user_id.clone()),
                 vec![RoleAssignment::Assignee(role_id.into_assignees().into())],
                 vec![],
                 &role_id.to_openfga(),
+                &RequestMetadata::test_user(user_id.clone()),
             )
             .await;
             result.unwrap_err();
@@ -2291,10 +2442,9 @@ mod tests {
         async fn test_get_allowed_actions_as_user() {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let actor = Actor::Principal(user_id.clone());
             let openfga_server = authorizer.openfga_server();
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user(user_id.clone()), &openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -2313,7 +2463,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user(user_id.clone()), &openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -2327,12 +2477,8 @@ mod tests {
             let openfga_server = authorizer.openfga_server();
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let actor = Actor::Role {
-                principal: user_id.clone(),
-                assumed_role: role_id,
-            };
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user_assumed_role(user_id.clone(), role_id), &openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -2351,7 +2497,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user_assumed_role(user_id.clone(), role_id), &openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -2365,7 +2511,7 @@ mod tests {
             let openfga_server = authorizer.openfga_server();
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let role_id = RoleId::new(Uuid::now_v7());
-            let actor = Actor::Principal(user_id.clone());
+            let metadata = RequestMetadata::test_user(user_id.clone());
 
             authorizer
                 .write(
@@ -2382,7 +2528,7 @@ mod tests {
 
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
-                &actor,
+                &metadata,
                 &openfga_server,
                 Some(&role_id.into_assignees().into()),
             )
@@ -2405,7 +2551,7 @@ mod tests {
 
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
-                &actor,
+                &metadata,
                 &openfga_server,
                 Some(&role_id.into_assignees().into()),
             )
@@ -2440,10 +2586,10 @@ mod tests {
 
             checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user1_id.clone()),
                 vec![ServerAssignment::Admin(user2_id.into())],
                 vec![],
                 &openfga_server,
+                &RequestMetadata::test_user(user1_id.clone()),
             )
             .await
             .unwrap();
@@ -2478,13 +2624,13 @@ mod tests {
 
             checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user_id_owner.clone()),
                 vec![
-                    RoleAssignment::Assignee(user_id_owner.into()),
+                    RoleAssignment::Assignee(user_id_owner.clone().into()),
                     RoleAssignment::Assignee(role_id_2.into_assignees().into()),
                 ],
                 vec![],
                 &role_id_1.to_openfga(),
+                &RequestMetadata::test_user(user_id_owner),
             )
             .await
             .unwrap();
@@ -2520,7 +2666,6 @@ mod tests {
 
             checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user_id_owner.clone()),
                 vec![
                     ProjectAssignment::Describe(UserOrRole::Role(role_id.into_assignees())),
                     ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_assignees())),
@@ -2528,6 +2673,7 @@ mod tests {
                 ],
                 vec![],
                 &project_id.to_openfga(),
+                &RequestMetadata::test_user(user_id_owner.clone()),
             )
             .await
             .unwrap();
@@ -2888,10 +3034,10 @@ mod tests {
             // User A grants select on namespace to user B - should succeed (no managed access yet)
             let result = checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user_a.clone()),
                 vec![NamespaceAssignment::Select(user_b.clone().into())],
                 vec![],
                 &namespace_id.to_openfga(),
+                &RequestMetadata::test_user(user_a.clone()),
             )
             .await;
 
@@ -2914,10 +3060,10 @@ mod tests {
             // User A tries to grant select on namespace to user B again - should FAIL
             let result = checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user_a.clone()),
                 vec![NamespaceAssignment::Select(user_c.clone().into())],
                 vec![],
                 &namespace_id.to_openfga(),
+                &RequestMetadata::test_user(user_a.clone()),
             )
             .await;
 
@@ -2935,11 +3081,6 @@ mod tests {
             // Create two users: user A will be namespace owner, user B will receive grants
             let user_a = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let role_a = RoleId::new(Uuid::now_v7());
-
-            let actor = Actor::Role {
-                principal: user_a.clone(),
-                assumed_role: role_a,
-            };
 
             // Create warehouse and namespace
             let warehouse_id = WarehouseId::from(Uuid::now_v7());
@@ -2985,12 +3126,12 @@ mod tests {
             // User A tries to grant select on namespace to user B again - should FAIL
             let result = checked_write(
                 authorizer.clone(),
-                &Actor::Principal(user_a.clone()),
                 vec![NamespaceAssignment::Select(
                     UserId::new_unchecked("oidc", &Uuid::now_v7().to_string()).into(),
                 )],
                 vec![],
                 &namespace_id.to_openfga(),
+                &RequestMetadata::test_user(user_a.clone()),
             )
             .await;
             assert!(
@@ -2999,12 +3140,12 @@ mod tests {
             );
             let result = checked_write(
                 authorizer.clone(),
-                &actor,
                 vec![NamespaceAssignment::Select(
                     UserId::new_unchecked("oidc", &Uuid::now_v7().to_string()).into(),
                 )],
                 vec![],
                 &namespace_id.to_openfga(),
+                &RequestMetadata::test_user_assumed_role(user_a.clone(), role_a),
             )
             .await;
             assert!(

@@ -556,3 +556,194 @@ pub struct ControlProjectTasksEvent {
 pub struct ControlWarehouseTasksEvent {
     pub warehouse_id: WarehouseId,
 }
+
+// ============================================================================
+// OpenFGA Authorization Events
+// ============================================================================
+
+/// Logged when server assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetServerAssignmentsEvent {}
+
+/// Logged when server assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateServerAssignmentsEvent {
+    /// Number of assignments being written
+    pub writes_count: usize,
+    /// Number of assignments being deleted
+    pub deletes_count: usize,
+}
+
+/// Logged when project assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetProjectAssignmentsEvent {
+    pub project_id: ProjectId,
+}
+
+/// Logged when project assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateProjectAssignmentsEvent {
+    pub project_id: ProjectId,
+    pub writes_count: usize,
+    pub deletes_count: usize,
+}
+
+/// Logged when warehouse assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetWarehouseAssignmentsEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when warehouse assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateWarehouseAssignmentsEvent {
+    pub warehouse_id: WarehouseId,
+    pub writes_count: usize,
+    pub deletes_count: usize,
+}
+
+/// Logged when namespace assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetNamespaceAssignmentsEvent {
+    pub namespace_id: NamespaceId,
+}
+
+/// Logged when namespace assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateNamespaceAssignmentsEvent {
+    pub namespace_id: NamespaceId,
+    pub writes_count: usize,
+    pub deletes_count: usize,
+}
+
+/// Logged when table assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetTableAssignmentsEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+}
+
+/// Logged when table assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateTableAssignmentsEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+    pub writes_count: usize,
+    pub deletes_count: usize,
+}
+
+/// Logged when view assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetViewAssignmentsEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+}
+
+/// Logged when view assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateViewAssignmentsEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+    pub writes_count: usize,
+    pub deletes_count: usize,
+}
+
+/// Logged when role assignments are read
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetRoleAssignmentsEvent {
+    pub role_id: RoleId,
+}
+
+/// Logged when role assignments are updated
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct UpdateRoleAssignmentsEvent {
+    pub role_id: RoleId,
+    pub writes_count: usize,
+    pub deletes_count: usize,
+}
+
+/// Logged when warehouse managed access is changed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetWarehouseManagedAccessEvent {
+    pub warehouse_id: WarehouseId,
+    pub managed_access: bool,
+}
+
+/// Logged when namespace managed access is changed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct SetNamespaceManagedAccessEvent {
+    pub namespace_id: NamespaceId,
+    pub managed_access: bool,
+}
+
+/// Logged when a permission check is performed
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct PermissionCheckEvent {
+    /// The type of object being checked (server, project, warehouse, etc.)
+    pub object_type: String,
+    /// The action being checked
+    pub action: String,
+}
+
+// ============================================================================
+// OpenFGA Authorizer Actions Events
+// ============================================================================
+
+/// Logged when role authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetRoleActionsEvent {
+    pub role_id: RoleId,
+}
+
+/// Logged when server authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetServerActionsEvent {}
+
+/// Logged when project authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetProjectActionsEvent {
+    pub project_id: ProjectId,
+}
+
+/// Logged when warehouse authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetWarehouseActionsEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when namespace authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetNamespaceActionsEvent {
+    pub namespace_id: NamespaceId,
+}
+
+/// Logged when table authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetTableActionsEvent {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+}
+
+/// Logged when view authorizer actions are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetViewActionsEvent {
+    pub warehouse_id: WarehouseId,
+    pub view_id: ViewId,
+}
+
+// ============================================================================
+// OpenFGA Authorization Properties Events
+// ============================================================================
+
+/// Logged when warehouse authorization properties are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetWarehouseAuthPropertiesEvent {
+    pub warehouse_id: WarehouseId,
+}
+
+/// Logged when namespace authorization properties are queried
+#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
+pub struct GetNamespaceAuthPropertiesEvent {
+    pub namespace_id: NamespaceId,
+}
+
