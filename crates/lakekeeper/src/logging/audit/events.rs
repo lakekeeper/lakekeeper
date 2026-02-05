@@ -1,12 +1,14 @@
 use std::string::ToString;
 
 use http::StatusCode;
-use url::Url;
 
 use crate::{
     ProjectId, WarehouseId,
     api::management::v1::user::{User, UserType},
-    logging::audit::{AUDIT_LOG_EVENT_SOURCE, AuditContextData, AuditEvent},
+    logging::{
+        RedactedUrl,
+        audit::{AUDIT_LOG_EVENT_SOURCE, AuditContextData, AuditEvent},
+    },
     service::{NamespaceId, RoleId, TableId, UserId, ViewId, authz::CatalogTableAction},
 };
 
@@ -51,7 +53,7 @@ impl AuditEvent for UserCreatedDebugEvent {
 
 #[derive(Debug)]
 pub struct NATSConnectionEvent {
-    pub nats_address: Url,
+    pub nats_address: RedactedUrl,
     pub user: String,
 }
 
