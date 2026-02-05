@@ -746,4 +746,3 @@ pub struct GetWarehouseAuthPropertiesEvent {
 pub struct GetNamespaceAuthPropertiesEvent {
     pub namespace_id: NamespaceId,
 }
-

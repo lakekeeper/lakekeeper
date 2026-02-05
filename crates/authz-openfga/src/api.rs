@@ -17,7 +17,21 @@ use lakekeeper::{
         extract::{Path, Query, State as AxumState},
         routing::{get, post},
     },
-    logging::audit::AuditContext,
+    logging::audit::{
+        AuditContext,
+        events::{
+            AuthorizationDeniedEvent, GetNamespaceActionsEvent, GetNamespaceAssignmentsEvent,
+            GetNamespaceAuthPropertiesEvent, GetProjectActionsEvent, GetProjectAssignmentsEvent,
+            GetRoleActionsEvent, GetRoleAssignmentsEvent, GetServerActionsEvent,
+            GetServerAssignmentsEvent, GetTableActionsEvent, GetTableAssignmentsEvent,
+            GetViewActionsEvent, GetViewAssignmentsEvent, GetWarehouseActionsEvent,
+            GetWarehouseAssignmentsEvent, GetWarehouseAuthPropertiesEvent,
+            SetNamespaceManagedAccessEvent, SetWarehouseManagedAccessEvent,
+            UpdateNamespaceAssignmentsEvent, UpdateProjectAssignmentsEvent,
+            UpdateRoleAssignmentsEvent, UpdateServerAssignmentsEvent, UpdateTableAssignmentsEvent,
+            UpdateViewAssignmentsEvent, UpdateWarehouseAssignmentsEvent,
+        },
+    },
     service::{
         Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
         authz::UserOrRole,
@@ -59,17 +73,6 @@ use crate::{
         OpenFGANamespaceAction, OpenFGAProjectAction, OpenFGARoleAction, OpenFGAServerAction,
         OpenFGATableAction, OpenFGAViewAction, OpenFGAWarehouseAction,
     },
-};
-use lakekeeper::logging::audit::events::{
-    AuthorizationDeniedEvent, GetNamespaceActionsEvent, GetNamespaceAssignmentsEvent,
-    GetNamespaceAuthPropertiesEvent, GetProjectActionsEvent, GetProjectAssignmentsEvent,
-    GetRoleActionsEvent, GetRoleAssignmentsEvent, GetServerActionsEvent,
-    GetServerAssignmentsEvent, GetTableActionsEvent, GetTableAssignmentsEvent,
-    GetViewActionsEvent, GetViewAssignmentsEvent, GetWarehouseActionsEvent,
-    GetWarehouseAssignmentsEvent, GetWarehouseAuthPropertiesEvent, SetNamespaceManagedAccessEvent,
-    SetWarehouseManagedAccessEvent, UpdateNamespaceAssignmentsEvent, UpdateProjectAssignmentsEvent,
-    UpdateRoleAssignmentsEvent, UpdateServerAssignmentsEvent, UpdateTableAssignmentsEvent,
-    UpdateViewAssignmentsEvent, UpdateWarehouseAssignmentsEvent,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -547,7 +550,9 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
-    metadata.log_audit(GetProjectActionsEvent { project_id: project_id.clone() });
+    metadata.log_audit(GetProjectActionsEvent {
+        project_id: project_id.clone(),
+    });
     let relations = get_allowed_actions(
         authorizer,
         &metadata,
@@ -587,7 +592,9 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
-    metadata.log_audit(GetProjectActionsEvent { project_id: project_id.clone() });
+    metadata.log_audit(GetProjectActionsEvent {
+        project_id: project_id.clone(),
+    });
     let relations = get_allowed_actions(
         authorizer,
         &metadata,
@@ -632,7 +639,9 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
-    metadata.log_audit(GetProjectActionsEvent { project_id: project_id.clone() });
+    metadata.log_audit(GetProjectActionsEvent {
+        project_id: project_id.clone(),
+    });
     let relations = get_allowed_actions(
         authorizer,
         &metadata,
@@ -1182,9 +1191,7 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Query(query): Query<GetRoleAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetRoleAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    metadata.log_audit(GetRoleAssignmentsEvent {
-        role_id: role_id.clone(),
-    });
+    metadata.log_audit(GetRoleAssignmentsEvent { role_id });
     authorizer
         .require_action(
             &metadata,
@@ -1771,7 +1778,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     }
 
     metadata.log_audit(UpdateRoleAssignmentsEvent {
-        role_id: role_id.clone(),
+        role_id,
         writes_count: request.writes.len(),
         deletes_count: request.deletes.len(),
     });
@@ -2443,10 +2450,14 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let openfga_server = authorizer.openfga_server();
-            let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user(user_id.clone()), &openfga_server, None)
-                    .await
-                    .unwrap();
+            let access: Vec<ServerAction> = get_allowed_actions(
+                authorizer.clone(),
+                &RequestMetadata::test_user(user_id.clone()),
+                &openfga_server,
+                None,
+            )
+            .await
+            .unwrap();
             assert!(access.is_empty());
 
             authorizer
@@ -2462,10 +2473,14 @@ mod tests {
                 .await
                 .unwrap();
 
-            let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user(user_id.clone()), &openfga_server, None)
-                    .await
-                    .unwrap();
+            let access: Vec<ServerAction> = get_allowed_actions(
+                authorizer.clone(),
+                &RequestMetadata::test_user(user_id.clone()),
+                &openfga_server,
+                None,
+            )
+            .await
+            .unwrap();
             for action in ServerAction::iter() {
                 assert!(access.contains(&action));
             }
@@ -2477,10 +2492,14 @@ mod tests {
             let openfga_server = authorizer.openfga_server();
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user_assumed_role(user_id.clone(), role_id), &openfga_server, None)
-                    .await
-                    .unwrap();
+            let access: Vec<ServerAction> = get_allowed_actions(
+                authorizer.clone(),
+                &RequestMetadata::test_user_assumed_role(user_id.clone(), role_id),
+                &openfga_server,
+                None,
+            )
+            .await
+            .unwrap();
             assert!(access.is_empty());
 
             authorizer
@@ -2496,10 +2515,14 @@ mod tests {
                 .await
                 .unwrap();
 
-            let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &RequestMetadata::test_user_assumed_role(user_id.clone(), role_id), &openfga_server, None)
-                    .await
-                    .unwrap();
+            let access: Vec<ServerAction> = get_allowed_actions(
+                authorizer.clone(),
+                &RequestMetadata::test_user_assumed_role(user_id.clone(), role_id),
+                &openfga_server,
+                None,
+            )
+            .await
+            .unwrap();
             for action in ServerAction::iter() {
                 assert!(access.contains(&action));
             }

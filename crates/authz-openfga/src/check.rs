@@ -7,7 +7,10 @@ use lakekeeper::{
     },
     axum::{Extension, Json, extract::State as AxumState},
     iceberg::TableIdent,
-    logging::audit::{AuditContext, events::{AuthorizationDeniedEvent, PermissionCheckEvent}},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, PermissionCheckEvent},
+    },
     service::{
         AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
         CatalogWarehouseOps, NamespaceIdentOrId, Result, SecretStore, State, TableId,
@@ -484,7 +487,9 @@ impl CheckOperation {
     pub(crate) fn object_type_and_action(&self) -> (String, String) {
         match self {
             CheckOperation::Server { action } => ("server".to_string(), format!("{action:?}")),
-            CheckOperation::Project { action, .. } => ("project".to_string(), format!("{action:?}")),
+            CheckOperation::Project { action, .. } => {
+                ("project".to_string(), format!("{action:?}"))
+            }
             CheckOperation::Warehouse { action, .. } => {
                 ("warehouse".to_string(), format!("{action:?}"))
             }
