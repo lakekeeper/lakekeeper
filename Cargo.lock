@@ -3865,6 +3865,7 @@ dependencies = [
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
+ "valuable",
  "vaultrs",
  "vaultrs-login",
  "veil",

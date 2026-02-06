@@ -198,6 +198,7 @@ pub struct AuthorizationDeniedEvent {
 pub struct BootstrapEvent {
     pub user_name: String,
     pub email: String,
+    #[audit(debug)]
     pub user_type: UserType,
     pub accept_terms_of_use: bool,
     pub is_operator: bool,
@@ -207,7 +208,9 @@ pub struct BootstrapEvent {
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct BootstrapCreateUserEvent {
     pub user_name: String,
+    #[audit(debug)]
     pub user_id: UserId,
+    #[audit(debug)]
     pub user_type: UserType,
     pub user_email: String,
 }
@@ -219,24 +222,29 @@ pub struct BootstrapCreateUserEvent {
 /// Logged when `commit_tables` authorization is performed for a tabular
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesAccessTabularEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
+    #[audit(debug)]
     pub catalog_table_action: CatalogTableAction,
 }
 
 /// Logged when `commit_tables` fails
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesFailedEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
     pub error: String,
@@ -245,11 +253,13 @@ pub struct CommitTablesFailedEvent {
 /// Logged when a table is dropped
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DropTableEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
     pub purge: bool,
@@ -258,11 +268,13 @@ pub struct DropTableEvent {
 /// Logged when a table is renamed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RenameTableEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
     pub new_name: String,
@@ -271,11 +283,13 @@ pub struct RenameTableEvent {
 /// Logged when a table is registered
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RegisterTableEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
 }
@@ -283,11 +297,13 @@ pub struct RegisterTableEvent {
 /// Logged when a table is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateTableEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
 }
@@ -295,11 +311,13 @@ pub struct CreateTableEvent {
 /// Logged when table credentials are loaded
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct LoadTableCredentialsEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub namespace_id: NamespaceId,
     #[audit(debug)]
+    pub namespace_id: NamespaceId,
     pub namespace_path: Vec<String>,
+    #[audit(debug)]
     pub table_id: TableId,
     pub table_name: String,
 }
@@ -311,6 +329,7 @@ pub struct LoadTableCredentialsEvent {
 /// Logged when catalog config is retrieved
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct GetConfigEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
@@ -321,14 +340,18 @@ pub struct GetConfigEvent {
 /// Logged when a view is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateViewEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub view_id: ViewId,
 }
 
 /// Logged when a view is dropped
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DropViewEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub view_id: ViewId,
     pub purge: bool,
 }
@@ -336,7 +359,9 @@ pub struct DropViewEvent {
 /// Logged when a view is renamed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RenameViewEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub view_id: ViewId,
     pub new_name: String,
 }
@@ -344,7 +369,9 @@ pub struct RenameViewEvent {
 /// Logged when a view is updated (`commit_view`)
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitViewEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub view_id: ViewId,
 }
 
@@ -355,21 +382,27 @@ pub struct CommitViewEvent {
 /// Logged when a namespace is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateNamespaceEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub namespace_id: NamespaceId,
 }
 
 /// Logged when a namespace is dropped
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DropNamespaceEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub namespace_id: NamespaceId,
 }
 
 /// Logged when namespace properties are updated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UpdateNamespacePropertiesEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub namespace_id: NamespaceId,
 }
 
@@ -380,6 +413,7 @@ pub struct UpdateNamespacePropertiesEvent {
 /// Logged when S3 signing is performed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct S3SignEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     /// Table ID if known, otherwise "unknown"
     pub table_id: String,
@@ -392,7 +426,9 @@ pub struct S3SignEvent {
 /// Logged when a user is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateUserEvent {
+    #[audit(debug)]
     pub user_id: UserId,
+    #[audit(debug)]
     pub user_type: UserType,
     pub is_self_provision: bool,
 }
@@ -400,12 +436,14 @@ pub struct CreateUserEvent {
 /// Logged when a user is updated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UpdateUserEvent {
+    #[audit(debug)]
     pub user_id: UserId,
 }
 
 /// Logged when a user is deleted
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DeleteUserEvent {
+    #[audit(debug)]
     pub user_id: UserId,
 }
 
@@ -416,19 +454,23 @@ pub struct DeleteUserEvent {
 /// Logged when a role is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateRoleEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
+    #[audit(debug)]
     pub role_id: RoleId,
 }
 
 /// Logged when a role is updated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UpdateRoleEvent {
+    #[audit(debug)]
     pub role_id: RoleId,
 }
 
 /// Logged when a role is deleted
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DeleteRoleEvent {
+    #[audit(debug)]
     pub role_id: RoleId,
 }
 
@@ -439,18 +481,21 @@ pub struct DeleteRoleEvent {
 /// Logged when a project is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateProjectEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
 }
 
 /// Logged when a project is renamed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RenameProjectEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
 }
 
 /// Logged when a project is deleted
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DeleteProjectEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
 }
 
@@ -461,6 +506,7 @@ pub struct DeleteProjectEvent {
 /// Logged when a warehouse is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateWarehouseEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
     pub warehouse_name: String,
 }
@@ -468,6 +514,7 @@ pub struct CreateWarehouseEvent {
 /// Logged when a warehouse is renamed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RenameWarehouseEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub new_name: String,
 }
@@ -475,42 +522,49 @@ pub struct RenameWarehouseEvent {
 /// Logged when a warehouse is deleted
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DeleteWarehouseEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
 /// Logged when a warehouse is activated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct ActivateWarehouseEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
 /// Logged when a warehouse is deactivated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DeactivateWarehouseEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
 /// Logged when warehouse storage profile is updated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UpdateWarehouseStorageEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
 /// Logged when warehouse storage credential is updated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UpdateWarehouseCredentialEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
 /// Logged when warehouse delete profile is updated
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UpdateWarehouseDeleteProfileEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }
 
 /// Logged when warehouse protection status is changed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct SetWarehouseProtectionEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub protected: bool,
 }
@@ -518,6 +572,7 @@ pub struct SetWarehouseProtectionEvent {
 /// Logged when tabulars are undropped
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct UndropTabularsEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub tabular_count: usize,
 }
@@ -529,7 +584,9 @@ pub struct UndropTabularsEvent {
 /// Logged when table protection status is changed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct SetTableProtectionEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub table_id: TableId,
     pub protected: bool,
 }
@@ -541,7 +598,9 @@ pub struct SetTableProtectionEvent {
 /// Logged when view protection status is changed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct SetViewProtectionEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub view_id: ViewId,
     pub protected: bool,
 }
@@ -553,7 +612,9 @@ pub struct SetViewProtectionEvent {
 /// Logged when namespace protection status is changed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct SetNamespaceProtectionEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
+    #[audit(debug)]
     pub namespace_id: NamespaceId,
     pub protected: bool,
 }
@@ -565,6 +626,7 @@ pub struct SetNamespaceProtectionEvent {
 /// Logged when task queue configuration is updated for a warehouse
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct SetWarehouseTaskQueueConfigEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
     pub queue_name: String,
 }
@@ -572,6 +634,7 @@ pub struct SetWarehouseTaskQueueConfigEvent {
 /// Logged when task queue configuration is updated for a project
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct SetProjectTaskQueueConfigEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
     pub queue_name: String,
 }
@@ -579,11 +642,13 @@ pub struct SetProjectTaskQueueConfigEvent {
 /// Logged when tasks are controlled (cancel, retry, etc.) for a project
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct ControlProjectTasksEvent {
+    #[audit(debug)]
     pub project_id: ProjectId,
 }
 
 /// Logged when tasks are controlled (cancel, retry, etc.) for a warehouse
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct ControlWarehouseTasksEvent {
+    #[audit(debug)]
     pub warehouse_id: WarehouseId,
 }

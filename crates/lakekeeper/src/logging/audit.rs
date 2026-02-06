@@ -118,9 +118,10 @@ mod tests {
             combined.contains("user=\"anonymous\""),
             "Missing user in: {combined}"
         );
+
         assert!(
-            combined.contains("action=\"dummy_event\""),
-            "Missing action in: {combined}"
+            combined.contains("dummy_event{"),
+            "Missing action as span name in: {combined}"
         );
     }
 
@@ -136,7 +137,8 @@ mod tests {
 
         let combined = logs.join("");
         assert!(combined.contains(&format!("user=\"{user_id}\"")));
-        assert!(combined.contains("action=\"dummy_event\""));
+
+        assert!(combined.contains("dummy_event{"));
         assert!(!combined.contains("anonymous"));
     }
 
@@ -153,7 +155,7 @@ mod tests {
         });
 
         let combined = logs.join("");
-        assert!(combined.contains("resource_id=sales_data"));
+        assert!(combined.contains("resource_id=\"sales_data\""));
         assert!(combined.contains("operation_count=5432"));
     }
 
@@ -191,8 +193,8 @@ mod tests {
 
         let combined = logs.join("");
 
-        assert!(combined.contains("resource_id=resource1"));
-        assert!(combined.contains("resource_id=resource2"));
+        assert!(combined.contains("resource_id=\"resource1\""));
+        assert!(combined.contains("resource_id=\"resource2\""));
 
         let request_id = request_metadata.request_id().to_string();
         assert_eq!(combined.matches(&request_id).count(), 2);
@@ -239,13 +241,183 @@ mod tests {
             combined.contains(&format!("user=\"{user}\"")),
             "Missing user in: {combined}"
         );
+
         assert!(
-            combined.contains("action=\"optional_fields_event\""),
-            "Missing action in: {combined}"
+            combined.contains("optional_fields_event{"),
+            "Missing action as span name in: {combined}"
         );
         assert!(
-            combined.contains("resource_id=resource1"),
+            combined.contains("resource_id=\"resource1\""),
             "Missing resource_id in: {combined}"
+        );
+    }
+
+    #[derive(AuditEvent)]
+    #[allow(dead_code)]
+    struct SkipFieldEvent {
+        visible_field: String,
+        #[audit(skip)]
+        secret_field: String,
+    }
+
+    #[test]
+    fn test_skip_field_not_logged() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = SkipFieldEvent {
+            visible_field: "visible_value".to_string(),
+            secret_field: "secret_value".to_string(),
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(
+            combined.contains("visible_field=\"visible_value\""),
+            "Missing visible_field in: {combined}"
+        );
+        assert!(
+            !combined.contains("secret_field"),
+            "secret_field should not be logged: {combined}"
+        );
+        assert!(
+            !combined.contains("secret_value"),
+            "secret_value should not appear: {combined}"
+        );
+    }
+
+    #[derive(AuditEvent)]
+    struct SkipNoneEvent {
+        always_present: String,
+        #[audit(skip_none)]
+        optional_field: Option<String>,
+    }
+
+    #[test]
+    fn test_skip_none_some_value_logged() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = SkipNoneEvent {
+            always_present: "always".to_string(),
+            optional_field: Some("optional_value".to_string()),
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(
+            combined.contains("always_present=\"always\""),
+            "Missing always_present in: {combined}"
+        );
+        assert!(
+            combined.contains("optional_field=\"optional_value\""),
+            "Missing optional_field in: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_skip_none_none_value_not_logged() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = SkipNoneEvent {
+            always_present: "always".to_string(),
+            optional_field: None,
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(
+            combined.contains("always_present=\"always\""),
+            "Missing always_present in: {combined}"
+        );
+        // Field should not appear when None
+        assert!(
+            !combined.contains("optional_field"),
+            "optional_field should not be logged when None: {combined}"
+        );
+    }
+
+    #[derive(AuditEvent)]
+    struct SkipNoneDebugEvent {
+        #[audit(skip_none, debug)]
+        debug_optional: Option<Vec<String>>,
+    }
+
+    #[test]
+    fn test_skip_none_with_debug_combination() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = SkipNoneDebugEvent {
+            debug_optional: Some(vec!["item1".to_string(), "item2".to_string()]),
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(
+            combined.contains("debug_optional="),
+            "Missing debug_optional in: {combined}"
+        );
+
+        assert!(
+            combined.contains('[') && combined.contains(']'),
+            "Should use debug format with brackets for Vec: {combined}"
+        );
+        assert!(
+            combined.contains("item1") && combined.contains("item2"),
+            "Missing values in debug output: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_skip_none_with_debug_none_skipped() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = SkipNoneDebugEvent {
+            debug_optional: None,
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(
+            !combined.contains("debug_optional"),
+            "debug_optional should not be logged when None: {combined}"
+        );
+    }
+
+    #[derive(AuditEvent)]
+    struct DebugFieldEvent {
+        #[audit(debug)]
+        debug_field: Vec<String>,
+    }
+
+    #[test]
+    fn test_debug_field_format() {
+        let request_metadata = RequestMetadata::new_unauthenticated();
+        let event = DebugFieldEvent {
+            debug_field: vec!["a".to_string(), "b".to_string()],
+        };
+
+        let logs = capture_logs(|| {
+            event.log(&request_metadata);
+        });
+
+        let combined = logs.join("");
+        assert!(
+            combined.contains("debug_field="),
+            "Missing debug_field in: {combined}"
+        );
+
+        assert!(
+            combined.contains('[') && combined.contains(']'),
+            "Should use debug format with brackets: {combined}"
         );
     }
 }
