@@ -118,6 +118,7 @@ urlencoding = { workspace = true }
 utoipa = { workspace = true, features = ["uuid"], optional = true }
 utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
+valuable = { workspace = true }
 vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
 veil = { workspace = true }
