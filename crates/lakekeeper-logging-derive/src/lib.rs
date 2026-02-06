@@ -23,11 +23,23 @@ pub fn derive_audit_event(input: TokenStream) -> TokenStream {
         _ => panic!("AuditEvent only supports structs"),
     };
 
-    let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let field_logs: Vec<_> = field_names
+    let field_logs: Vec<_> = fields
         .iter()
-        .map(|name| {
-            quote! { #name = %self.#name }
+        .map(|field| {
+            let name = &field.ident;
+            let use_debug = field.attrs.iter().any(|attr| {
+                attr.path().is_ident("audit")
+                    && attr
+                        .parse_args::<syn::Ident>()
+                        .map(|ident| ident == "debug")
+                        .unwrap_or(false)
+            });
+
+            if use_debug {
+                quote! { #name = ?self.#name }
+            } else {
+                quote! { #name = %self.#name }
+            }
         })
         .collect();
 

@@ -130,7 +130,6 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         request: BootstrapRequest,
     ) -> Result<()> {
-        request_metadata.log_audit(BootstrapEvent {});
         let BootstrapRequest {
             user_name,
             user_email,
@@ -138,6 +137,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             accept_terms_of_use,
             is_operator,
         } = request;
+        request_metadata.log_audit(BootstrapEvent {
+            user_name: user_name.clone().unwrap_or("Anonymous".to_string()),
+            email: user_email.clone().unwrap_or("Unknown".to_string()),
+            user_type: user_type.unwrap_or(UserType::Application),
+            accept_terms_of_use,
+            is_operator,
+        });
 
         if !accept_terms_of_use {
             return Err(ErrorModel::builder()
