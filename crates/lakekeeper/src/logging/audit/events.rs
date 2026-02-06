@@ -195,7 +195,13 @@ pub struct AuthorizationDeniedEvent {
 
 /// Logged when bootstrap endpoint is accessed
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
-pub struct BootstrapEvent {}
+pub struct BootstrapEvent {
+    pub user_name: String,
+    pub email: String,
+    pub user_type: UserType,
+    pub accept_terms_of_use: bool,
+    pub is_operator: bool,
+}
 
 /// Logged when a user is created during bootstrap
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
@@ -214,13 +220,25 @@ pub struct BootstrapCreateUserEvent {
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesAccessTabularEvent {
     pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
     pub table_id: TableId,
-    pub action: CatalogTableAction,
+    pub table_name: String,
+    pub catalog_table_action: CatalogTableAction,
 }
 
 /// Logged when `commit_tables` fails
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CommitTablesFailedEvent {
+    pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
+    pub table_id: TableId,
+    pub table_name: String,
     pub error: String,
 }
 
@@ -228,7 +246,12 @@ pub struct CommitTablesFailedEvent {
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct DropTableEvent {
     pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
     pub table_id: TableId,
+    pub table_name: String,
     pub purge: bool,
 }
 
@@ -236,7 +259,12 @@ pub struct DropTableEvent {
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RenameTableEvent {
     pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
     pub table_id: TableId,
+    pub table_name: String,
     pub new_name: String,
 }
 
@@ -244,34 +272,35 @@ pub struct RenameTableEvent {
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct RegisterTableEvent {
     pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
     pub table_id: TableId,
+    pub table_name: String,
 }
 
 /// Logged when a table is created
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct CreateTableEvent {
     pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
     pub table_id: TableId,
+    pub table_name: String,
 }
 
 /// Logged when table credentials are loaded
 #[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
 pub struct LoadTableCredentialsEvent {
     pub warehouse_id: WarehouseId,
+    pub warehouse_name: String,
+    pub namespace_id: NamespaceId,
+    #[audit(debug)]
+    pub namespace_path: Vec<String>,
     pub table_id: TableId,
-}
-
-/// Logged when a commit transaction is executed (multi-table commit)
-#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
-pub struct CommitTransactionEvent {
-    pub warehouse_id: WarehouseId,
-    pub table_count: usize,
-}
-
-/// Logged when a single table commit (update) is performed
-#[derive(Debug, lakekeeper_logging_derive::AuditEvent)]
-pub struct CommitTableEvent {
-    pub warehouse_id: WarehouseId,
     pub table_name: String,
 }
 

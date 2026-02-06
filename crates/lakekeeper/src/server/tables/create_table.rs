@@ -310,7 +310,11 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     request_metadata.log_audit(CreateTableEvent {
         warehouse_id,
+        warehouse_name: warehouse.name.clone(),
+        namespace_id: ns_hierarchy.namespace_id(),
+        namespace_path: ns_hierarchy.namespace_ident().clone().inner(),
         table_id,
+        table_name: table.name.clone(),
     });
 
     guard.mark_authorizer_created();

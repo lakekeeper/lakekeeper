@@ -49,9 +49,8 @@ use crate::{
     logging::audit::{
         AuditContext,
         events::{
-            AuthorizationDeniedEvent, CommitTableEvent, CommitTablesAccessTabularEvent,
-            CommitTablesFailedEvent, CommitTransactionEvent, DropTableEvent,
-            LoadTableCredentialsEvent, RegisterTableEvent, RenameTableEvent,
+            AuthorizationDeniedEvent, CommitTablesAccessTabularEvent, CommitTablesFailedEvent,
+            DropTableEvent, LoadTableCredentialsEvent, RegisterTableEvent, RenameTableEvent,
         },
     },
     request_metadata::RequestMetadata,
@@ -326,7 +325,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         request_metadata.log_audit(RegisterTableEvent {
             warehouse_id: warehouse.warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: namespace.namespace_id(),
+            namespace_path: namespace.namespace_ident().clone().inner(),
             table_id: tabular_id,
+            table_name: table_ident.name.clone(),
         });
 
         let (table_info, staged_table_id) = C::create_table(
@@ -463,7 +466,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         request_metadata.log_audit(LoadTableCredentialsEvent {
             warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: tabular_info.namespace_id,
+            namespace_path: tabular_info.namespace_ident().clone().inner(),
             table_id: tabular_info.tabular_id,
+            table_name: tabular_info.tabular_ident.name.clone(),
         });
 
         let storage_permission = storage_permissions.ok_or(ErrorModel::forbidden(
@@ -512,11 +519,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
-        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
-        request_metadata.log_audit(CommitTableEvent {
-            warehouse_id,
-            table_name: parameters.table.to_string(),
-        });
         request.identifier = Some(determine_table_ident(
             &parameters.table,
             request.identifier.as_ref(),
@@ -623,7 +625,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         request_metadata.log_audit(DropTableEvent {
             warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: table_info.namespace_id,
+            namespace_path: table_info.namespace_ident().clone().inner(),
             table_id,
+            table_name: table_info.tabular_ident.name.clone(),
             purge: purge_requested,
         });
 
@@ -887,7 +893,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         request_metadata.log_audit(RenameTableEvent {
             warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: source_namespace.namespace_id(),
+            namespace_path: source_namespace.namespace_ident().clone().inner(),
             table_id: source_table_info.table_id(),
+            table_name: source_table_info.tabular_ident.name.clone(),
             new_name: destination.name.clone(),
         });
 
@@ -937,14 +947,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-        let table_count = request.table_changes.len();
-
-        request_metadata.log_audit(CommitTransactionEvent {
-            warehouse_id,
-            table_count,
-        });
-
         let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
         tracing::debug!("Successfully committed {} table(s)", contexts.len());
         Ok(())
@@ -1269,22 +1271,57 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             &namespaces,
             &table_info_with_actions
                 .into_iter()
-                .inspect(|(TabularInfo { tabular_id, .. }, action)| {
-                    request_metadata.log_audit(CommitTablesAccessTabularEvent {
-                        warehouse_id,
-                        table_id: *tabular_id,
-                        action: action.clone(),
-                    });
-                })
+                .inspect(
+                    |(
+                        TabularInfo {
+                            namespace_id,
+                            tabular_id,
+                            tabular_ident,
+                            ..
+                        },
+                        action,
+                    )| {
+                        request_metadata.log_audit(CommitTablesAccessTabularEvent {
+                            warehouse_id,
+                            warehouse_name: warehouse.name.clone(),
+                            namespace_id: *namespace_id,
+                            namespace_path: tabular_ident.namespace.clone().inner(),
+                            table_id: *tabular_id,
+                            table_name: tabular_ident.name().to_string(),
+                            catalog_table_action: action.clone(),
+                        });
+                    },
+                )
                 .map(|(ti, a)| {
-                    Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
+                    Ok::<_, ErrorModel>((
+                        require_namespace_for_tabular(&namespaces, ti).inspect_err(|error| {
+                            let TabularInfo {
+                                tabular_id,
+                                namespace_id,
+                                tabular_ident:
+                                    TableIdent {
+                                        namespace, name, ..
+                                    },
+                                ..
+                            } = ti;
+                            let warehouse_id = warehouse.warehouse_id;
+                            let warehouse_name = warehouse.name.clone();
+
+                            request_metadata.log_audit(CommitTablesFailedEvent {
+                                warehouse_id,
+                                warehouse_name,
+                                namespace_id: *namespace_id,
+                                namespace_path: namespace.clone().inner(),
+                                table_id: *tabular_id,
+                                table_name: name.clone(),
+                                error: error.to_string(),
+                            });
+                        })?,
+                        ti,
+                        a,
+                    ))
                 })
-                .collect::<Result<Vec<_>, _>>()
-                .inspect_err(|error| {
-                    request_metadata.log_audit(CommitTablesFailedEvent {
-                        error: error.to_string(),
-                    });
-                })?,
+                .collect::<Result<Vec<_>, _>>()?,
         )
         .await
         .inspect_err(|e| {
