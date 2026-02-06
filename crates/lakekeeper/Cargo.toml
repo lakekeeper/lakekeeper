@@ -20,6 +20,7 @@ all = [
     "vendored-protoc",
     "kafka",
     "open-api",
+    "subscriber-filters",
 ]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
@@ -31,6 +32,7 @@ kafka = ["dep:rdkafka"]
 vendored-protoc = []
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
+subscriber-filters = ["dep:tracing-subscriber"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -77,6 +79,7 @@ lakekeeper-io = { path = "../io", features = [
     "storage-adls",
     "storage-gcs",
 ] }
+lakekeeper-logging-derive = { path = "../lakekeeper-logging-derive" }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
 limes = { workspace = true }
@@ -106,6 +109,7 @@ tower-http = { workspace = true, optional = true, features = [
     "cors",
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+tracing-subscriber = { workspace = true, optional = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
@@ -114,6 +118,7 @@ urlencoding = { workspace = true }
 utoipa = { workspace = true, features = ["uuid"], optional = true }
 utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
+valuable = { workspace = true }
 vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
 veil = { workspace = true }

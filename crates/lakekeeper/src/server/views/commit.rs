@@ -11,6 +11,10 @@ use crate::{
         ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CommitViewEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
@@ -73,7 +77,18 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             },
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "commit_view".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+
+    request_metadata.log_audit(CommitViewEvent {
+        warehouse_id,
+        view_id: view_info.view_id(),
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     // Verify assertions

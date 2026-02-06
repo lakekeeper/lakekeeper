@@ -7,6 +7,10 @@ use super::user::{CreateUserRequest, UserLastUpdatedWith, UserType, parse_create
 use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId,
     api::{ApiContext, management::v1::ApiServer},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, BootstrapCreateUserEvent, BootstrapEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         Actor, CatalogStore, Result, SecretStore, State, Transaction,
@@ -119,6 +123,7 @@ pub struct ServerInfo {
 impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
+#[allow(clippy::too_many_lines)]
 pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn bootstrap(
         state: ApiContext<State<A, C, S>>,
@@ -132,6 +137,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             accept_terms_of_use,
             is_operator,
         } = request;
+        request_metadata.log_audit(BootstrapEvent {
+            user_name: user_name.clone().unwrap_or("Anonymous".to_string()),
+            email: user_email.clone().unwrap_or("Unknown".to_string()),
+            user_type: user_type.unwrap_or(UserType::Application),
+            accept_terms_of_use,
+            is_operator,
+        });
 
         if !accept_terms_of_use {
             return Err(ErrorModel::builder()
@@ -147,7 +159,15 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // AuthZ just checks if the request metadata could be added as the servers
         // global admin
         let authorizer = state.v1_state.authz;
-        authorizer.can_bootstrap(&request_metadata).await?;
+        authorizer
+            .can_bootstrap(&request_metadata)
+            .await
+            .inspect_err(|error| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "bootstrap".to_string(),
+                    error: error.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let server_info = C::get_server_info(state.v1_state.catalog.clone()).await?;
@@ -185,6 +205,12 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     update_if_exists: false, // Ignored in `parse_create_user_request`
                 }),
             )?;
+            request_metadata.log_audit(BootstrapCreateUserEvent {
+                user_name: name.clone(),
+                user_id: creation_user_id.clone(),
+                user_type,
+                user_email: email.clone().unwrap_or_default(),
+            });
             C::create_or_update_user(
                 &creation_user_id,
                 &name,
@@ -196,7 +222,15 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await?;
         }
 
-        authorizer.bootstrap(&request_metadata, is_operator).await?;
+        authorizer
+            .bootstrap(&request_metadata, is_operator)
+            .await
+            .inspect_err(|error| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "bootstrap".to_string(),
+                    error: error.to_string(),
+                });
+            })?;
         t.commit().await?;
 
         // If default project is specified, and the project does not exist, create it
@@ -229,7 +263,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 })?;
                 authorizer
                     .create_project(&request_metadata, default_project_id)
-                    .await?;
+                    .await
+                    .inspect_err(|error| {
+                        request_metadata.log_audit(AuthorizationDeniedEvent {
+                            denied_action: "create_project".to_string(),
+                            error: error.to_string(),
+                        });
+                    })?;
                 t.commit().await?;
             }
         }

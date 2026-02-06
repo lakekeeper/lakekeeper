@@ -128,6 +128,25 @@ pub enum RequireNamespaceActionError {
     InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
     SerializationError(SerializationError),
 }
+
+impl std::fmt::Display for RequireNamespaceActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthZNamespaceActionForbidden(_) | Self::AuthZCannotSeeNamespace(_) => {
+                write!(f, "Forbidden")
+            }
+            Self::AuthorizationBackendUnavailable(_) => {
+                write!(f, "AuthorizationBackendUnavailable")
+            }
+            Self::AuthorizationCountMismatch(_) => write!(f, "AuthorizationCountMismatch"),
+            Self::CannotInspectPermissions(_) => write!(f, "CannotInspectPermissions"),
+            Self::CatalogBackendError(_) => write!(f, "CatalogBackendError"),
+            Self::InvalidNamespaceIdentifier(_) => write!(f, "InvalidNamespaceIdentifier"),
+            Self::SerializationError(_) => write!(f, "SerializationError"),
+        }
+    }
+}
+
 impl From<IsAllowedActionError> for RequireNamespaceActionError {
     fn from(err: IsAllowedActionError) -> Self {
         match err {

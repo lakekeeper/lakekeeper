@@ -2,6 +2,10 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, SetTableProtectionEvent},
+    },
     service::{
         CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularId, TabularListFlags,
         Transaction,
@@ -39,7 +43,20 @@ where
                 CatalogTableAction::SetProtection,
                 state_catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "set_table_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(SetTableProtectionEvent {
+            warehouse_id,
+            table_id,
+            protected,
+        });
+
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state_catalog).await?;
         let status = C::set_tabular_protected(
@@ -74,7 +91,13 @@ where
                 CatalogTableAction::GetMetadata,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "get_table_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         Ok(ProtectionResponse {
             protected: table.protected,

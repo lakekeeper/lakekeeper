@@ -432,6 +432,24 @@ impl CatalogTableAction {
 }
 impl CatalogAction for CatalogTableAction {}
 
+impl std::fmt::Display for CatalogTableAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CatalogTableAction::Drop => write!(f, "drop"),
+            CatalogTableAction::WriteData => write!(f, "write_data"),
+            CatalogTableAction::ReadData => write!(f, "read_data"),
+            CatalogTableAction::GetMetadata => write!(f, "get_metadata"),
+            CatalogTableAction::Commit { .. } => write!(f, "commit"),
+            CatalogTableAction::Rename => write!(f, "rename"),
+            CatalogTableAction::IncludeInList => write!(f, "include_in_list"),
+            CatalogTableAction::Undrop => write!(f, "undrop"),
+            CatalogTableAction::GetTasks => write!(f, "get_tasks"),
+            CatalogTableAction::ControlTasks => write!(f, "control_tasks"),
+            CatalogTableAction::SetProtection => write!(f, "set_protection"),
+        }
+    }
+}
+
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]

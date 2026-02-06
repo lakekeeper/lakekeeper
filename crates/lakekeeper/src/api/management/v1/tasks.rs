@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, management::v1::ApiServer},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, ControlProjectTasksEvent, ControlWarehouseTasksEvent},
+    },
     request_metadata::RequestMetadata,
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
@@ -657,7 +661,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &warehouse,
             query.entities.as_ref(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "list_tasks".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
         // -------------------- Business Logic --------------------
         let project_id = &warehouse.project_id;
@@ -699,6 +709,10 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into_inner();
 
         if !authz_can_use {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "get_task_details".to_string(),
+                error: "Cannot use warehouse".to_string(),
+            });
             return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
         }
 
@@ -733,7 +747,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &warehouse,
                 &task_details,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "get_task_details".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         }
 
         Ok(task_details)
@@ -787,6 +807,10 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into_inner();
 
         if !authz_can_use {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "control_tasks".to_string(),
+                error: "Cannot use warehouse".to_string(),
+            });
             return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
         }
         if query.task_ids.is_empty() {
@@ -829,8 +853,16 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &resolved_tasks.values().collect::<Vec<_>>(),
                 context.v1_state.catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "control_tasks".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         }
+
+        request_metadata.log_audit(ControlWarehouseTasksEvent { warehouse_id });
 
         // -------------------- Business Logic --------------------
         let task_ids: Vec<TaskId> = query.task_ids;
@@ -881,7 +913,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::GetProjectTasks,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "list_project_tasks".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // -------------------- Business Logic --------------------
         let filter = TaskFilter::ProjectId {
@@ -911,7 +949,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::GetProjectTasks,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "get_project_task_details".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // -------------------- Business Logic --------------------
         let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
@@ -974,15 +1018,27 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &project_id,
                 CatalogProjectAction::ControlProjectTasks,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "control_project_tasks".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // If some tasks are not part of this project, this will return an error.
         C::resolve_required_tasks(
-            TaskResolveScope::Project { project_id },
+            TaskResolveScope::Project {
+                project_id: project_id.clone(),
+            },
             &query.task_ids,
             context.v1_state.catalog.clone(),
         )
         .await?;
+
+        request_metadata.log_audit(ControlProjectTasksEvent {
+            project_id: project_id.clone(),
+        });
 
         // -------------------- Business Logic --------------------
         let task_ids: Vec<TaskId> = query.task_ids;

@@ -8,6 +8,7 @@ use crate::{
         ApiContext,
         iceberg::v1::{DataAccessMode, ViewParameters},
     },
+    logging::audit::{AuditContext, events::AuthorizationDeniedEvent},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
@@ -22,6 +23,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     state: ApiContext<State<A, C, S>>,
@@ -89,6 +91,10 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .into_inner();
 
     if !can_load {
+        request_metadata.log_audit(AuthorizationDeniedEvent {
+            denied_action: "load_view".to_string(),
+            error: "Cannot load view metadata".to_string(),
+        });
         return Err(AuthZCannotSeeView::new(warehouse_id, view.clone()).into());
     }
 
