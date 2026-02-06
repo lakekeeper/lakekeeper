@@ -8,6 +8,10 @@ use crate::{
         ApiContext,
         iceberg::v1::{DataAccessMode, NamespaceParameters},
     },
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CreateViewEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
@@ -69,7 +73,13 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "create_view".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
@@ -172,6 +182,12 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             ns_hierarchy.namespace_id(),
         )
         .await?;
+
+    let view_id = ViewId::from(metadata_build_result.metadata.uuid());
+    request_metadata.log_audit(CreateViewEvent {
+        warehouse_id,
+        view_id,
+    });
 
     t.commit().await?;
 

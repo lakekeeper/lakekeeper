@@ -4,6 +4,10 @@ use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, SetNamespaceProtectionEvent},
+    },
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,
@@ -40,7 +44,19 @@ where
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "set_namespace_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(SetNamespaceProtectionEvent {
+            namespace_id,
+            warehouse_id,
+            protected: protected_request,
+        });
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         tracing::debug!(
@@ -89,7 +105,13 @@ where
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "get_namespace_protection".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         Ok(ProtectionResponse {
             protected: namespace.is_protected(),

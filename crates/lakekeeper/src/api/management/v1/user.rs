@@ -8,6 +8,13 @@ use crate::{
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::ApiServer,
     },
+    logging::audit::{
+        AuditContext,
+        events::{
+            AuthorizationDeniedEvent, CreateUserEvent, DeleteUserEvent, UpdateUserEvent,
+            UserCreatedDebugEvent,
+        },
+    },
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
@@ -48,6 +55,16 @@ impl From<limes::PrincipalType> for UserType {
     }
 }
 
+impl std::fmt::Display for UserType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let user_type = match self {
+            UserType::Human => "human",
+            UserType::Application => "application",
+        };
+        write!(f, "{user_type}")
+    }
+}
+
 /// User of the catalog
 #[derive(Debug, Serialize, Clone)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -69,6 +86,19 @@ pub struct User {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the user was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl std::fmt::Display for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "User {{ id: {}, name: {}, email: {}, user_type: {} }}",
+            self.id,
+            self.name,
+            self.email.clone().as_deref().unwrap_or("null"),
+            self.user_type
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -288,13 +318,25 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         if !self_provision {
             authorizer
                 .require_server_action(&request_metadata, None, CatalogServerAction::ProvisionUsers)
-                .await?;
+                .await
+                .inspect_err(|e| {
+                    request_metadata.log_audit(AuthorizationDeniedEvent {
+                        denied_action: "provision_user".to_string(),
+                        error: e.to_string(),
+                    });
+                })?;
         }
 
         // ------------------- Business Logic -------------------
         let update_if_exists = request.update_if_exists;
         let (creation_user_id, name, user_type, email) =
             parse_create_user_request(&request_metadata, Some(request))?;
+
+        request_metadata.log_audit(CreateUserEvent {
+            user_id: creation_user_id.clone(),
+            user_type,
+            is_self_provision: self_provision,
+        });
 
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let user = C::create_or_update_user(
@@ -316,7 +358,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
-        tracing::debug!("User created: {:?}", user);
+        let event = match &user {
+            CreateOrUpdateUserResponse::Created(user)
+            | CreateOrUpdateUserResponse::Updated(user) => {
+                UserCreatedDebugEvent { user: user.clone() }
+            }
+        };
+        request_metadata.log_audit(event);
 
         t.commit().await?;
 
@@ -330,7 +378,15 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<SearchUserResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer.require_search_users(&request_metadata).await?;
+        authorizer
+            .require_search_users(&request_metadata)
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "search_users".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let SearchUserRequest { mut search } = request;
@@ -349,7 +405,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_user_action(&request_metadata, &user_id, CatalogUserAction::Read)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "get_user".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let filter_user_id = Some(vec![user_id.clone()]);
@@ -383,7 +445,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_server_action(&request_metadata, None, CatalogServerAction::ListUsers)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "list_users".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- Business Logic -------------------
         let filter_user_id = None;
@@ -412,7 +480,17 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_user_action(&request_metadata, &user_id, CatalogUserAction::Update)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "update_user".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(UpdateUserEvent {
+            user_id: user_id.clone(),
+        });
 
         // ------------------- Business Logic -------------------
         let email = request.email.as_deref().filter(|e| !e.is_empty());
@@ -444,7 +522,17 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         authorizer
             .require_user_action(&request_metadata, &user_id, CatalogUserAction::Delete)
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "delete_user".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
+
+        request_metadata.log_audit(DeleteUserEvent {
+            user_id: user_id.clone(),
+        });
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;

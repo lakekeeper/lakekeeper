@@ -291,6 +291,15 @@ impl From<AuthZCannotSeeTable> for IcebergErrorResponse {
         ErrorModel::from(err).into()
     }
 }
+impl std::fmt::Display for AuthZCannotSeeTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "AuthZCannotSeeTable {{ warehouse_id: {}, table: {} }}",
+            self.warehouse_id, self.table
+        )
+    }
+}
 // ------------------ Action Forbidden Error ------------------
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZTableActionForbidden {
@@ -353,6 +362,27 @@ pub enum RequireTableActionError {
     UnexpectedTabularInResponse(UnexpectedTabularInResponse),
     InternalParseLocationError(InternalParseLocationError),
 }
+
+impl std::fmt::Display for RequireTableActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthZTableActionForbidden(_) | Self::AuthZCannotSeeTable(_) => {
+                write!(f, "Forbidden")
+            }
+            Self::AuthorizationBackendUnavailable(_) => {
+                write!(f, "AuthorizationBackendUnavailable")
+            }
+            Self::AuthorizationCountMismatch(_) => write!(f, "AuthorizationCountMismatch"),
+            Self::CannotInspectPermissions(_) => write!(f, "CannotInspectPermissions"),
+            Self::CatalogBackendError(_) => write!(f, "CatalogBackendError"),
+            Self::InvalidNamespaceIdentifier(_) => write!(f, "InvalidNamespaceIdentifier"),
+            Self::SerializationError(_) => write!(f, "SerializationError"),
+            Self::UnexpectedTabularInResponse(_) => write!(f, "UnexpectedTabularInResponse"),
+            Self::InternalParseLocationError(_) => write!(f, "InternalParseLocationError"),
+        }
+    }
+}
+
 impl From<BackendUnavailableOrCountMismatch> for RequireTableActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {

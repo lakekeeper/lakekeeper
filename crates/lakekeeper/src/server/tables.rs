@@ -46,6 +46,13 @@ use crate::{
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
+    logging::audit::{
+        AuditContext,
+        events::{
+            AuthorizationDeniedEvent, CommitTablesAccessTabularEvent, CommitTablesFailedEvent,
+            DropTableEvent, LoadTableCredentialsEvent, RegisterTableEvent, RenameTableEvent,
+        },
+    },
     request_metadata::RequestMetadata,
     server::{
         self,
@@ -56,7 +63,7 @@ use crate::{
         AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
         CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
         ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
@@ -81,6 +88,7 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
 #[async_trait::async_trait]
+#[allow(clippy::too_many_lines)]
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::tables::TablesService<State<A, C, S>> for CatalogServer<C, A, S>
 {
@@ -123,7 +131,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 namespace,
                 CatalogNamespaceAction::ListTables,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "list_tables".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
@@ -203,7 +217,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 warehouse,
                 CatalogWarehouseAction::Use,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "register_table".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
 
@@ -237,7 +257,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     ),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "register_table_create".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         let namespace_id = namespace.namespace_id();
 
         let table_metadata = Arc::new(table_metadata);
@@ -274,7 +300,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             previous_table_info,
                             CatalogTableAction::Drop,
                         )
-                        .await?,
+                        .await
+                        .inspect_err(|e| {
+                            request_metadata.log_audit(AuthorizationDeniedEvent {
+                                denied_action: "register_table_overwrite".to_string(),
+                                error: e.to_string(),
+                            });
+                        })?,
                 );
             }
         }
@@ -290,6 +322,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }
 
         let tabular_id = TableId::from(table_metadata.uuid());
+
+        request_metadata.log_audit(RegisterTableEvent {
+            warehouse_id: warehouse.warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: namespace.namespace_id(),
+            namespace_path: namespace.namespace_ident().clone().inner(),
+            table_id: tabular_id,
+            table_name: table_ident.name.clone(),
+        });
 
         let (table_info, staged_table_id) = C::create_table(
             TableCreation {
@@ -415,7 +456,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "load_table_credentials".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+
+        request_metadata.log_audit(LoadTableCredentialsEvent {
+            warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: tabular_info.namespace_id,
+            namespace_path: tabular_info.namespace_ident().clone().inner(),
+            table_id: tabular_info.tabular_id,
+            table_name: tabular_info.tabular_ident.name.clone(),
+        });
+
         let storage_permission = storage_permissions.ok_or(ErrorModel::forbidden(
             format!("User has no storage permissions for table `{table}`"),
             "NoStoragePermissions",
@@ -557,8 +614,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 table_info,
                 CatalogTableAction::Drop,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "drop_table".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
         let table_id = table_info.tabular_id;
+
+        request_metadata.log_audit(DropTableEvent {
+            warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: table_info.namespace_id,
+            namespace_path: table_info.namespace_ident().clone().inner(),
+            table_id,
+            table_name: table_info.tabular_ident.name.clone(),
+            purge: purge_requested,
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         state
@@ -711,7 +784,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 table_info,
                 CatalogTableAction::GetMetadata,
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                request_metadata.log_audit(AuthorizationDeniedEvent {
+                    denied_action: "table_exists".to_string(),
+                    error: e.to_string(),
+                });
+            })?;
 
         // ------------------- BUSINESS LOGIC -------------------
         Ok(())
@@ -799,8 +878,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
         );
 
-        let _destination_namespace = destination_namespace?;
-        let source_table_info = source_table_info?;
+        let _destination_namespace = destination_namespace.inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "rename_table".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+        let source_table_info = source_table_info.inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "rename_table".to_string(),
+                error: e.to_string(),
+            });
+        })?;
+
+        request_metadata.log_audit(RenameTableEvent {
+            warehouse_id,
+            warehouse_name: warehouse.name.clone(),
+            namespace_id: source_namespace.namespace_id(),
+            namespace_path: source_namespace.namespace_ident().clone().inner(),
+            table_id: source_table_info.table_id(),
+            table_name: source_table_info.tabular_ident.name.clone(),
+            new_name: destination.name.clone(),
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         if source == destination {
@@ -1128,11 +1227,22 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
                 ))
             })
         })
-        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()?;
+        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "commit_tables".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     for user_provided_ident in identifiers {
         if !table_ident_to_info.contains_key(user_provided_ident) {
-            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
+            let error = AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone());
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "commit_tables".to_string(),
+                error: error.to_string(),
+            });
+            return Err(error.into());
         }
     }
     let namespaces = namespaces?;
@@ -1161,12 +1271,65 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             &namespaces,
             &table_info_with_actions
                 .into_iter()
+                .inspect(
+                    |(
+                        TabularInfo {
+                            namespace_id,
+                            tabular_id,
+                            tabular_ident,
+                            ..
+                        },
+                        action,
+                    )| {
+                        request_metadata.log_audit(CommitTablesAccessTabularEvent {
+                            warehouse_id,
+                            warehouse_name: warehouse.name.clone(),
+                            namespace_id: *namespace_id,
+                            namespace_path: tabular_ident.namespace.clone().inner(),
+                            table_id: *tabular_id,
+                            table_name: tabular_ident.name().to_string(),
+                            catalog_table_action: action.clone(),
+                        });
+                    },
+                )
                 .map(|(ti, a)| {
-                    Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
+                    Ok::<_, ErrorModel>((
+                        require_namespace_for_tabular(&namespaces, ti).inspect_err(|error| {
+                            let TabularInfo {
+                                tabular_id,
+                                namespace_id,
+                                tabular_ident:
+                                    TableIdent {
+                                        namespace, name, ..
+                                    },
+                                ..
+                            } = ti;
+                            let warehouse_id = warehouse.warehouse_id;
+                            let warehouse_name = warehouse.name.clone();
+
+                            request_metadata.log_audit(CommitTablesFailedEvent {
+                                warehouse_id,
+                                warehouse_name,
+                                namespace_id: *namespace_id,
+                                namespace_path: namespace.clone().inner(),
+                                table_id: *tabular_id,
+                                table_name: name.clone(),
+                                error: error.to_string(),
+                            });
+                        })?,
+                        ti,
+                        a,
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "commit_tables".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     // ------------------- BUSINESS LOGIC -------------------
     commit_tables_inner(

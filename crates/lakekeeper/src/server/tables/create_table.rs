@@ -18,6 +18,10 @@ use crate::{
         ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters, Result,
         TableIdent, tables::DataAccessMode,
     },
+    logging::audit::{
+        AuditContext,
+        events::{AuthorizationDeniedEvent, CreateTableEvent},
+    },
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec, tables::validate_table_or_view_ident_creation,
@@ -176,7 +180,13 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| {
+            request_metadata.log_audit(AuthorizationDeniedEvent {
+                denied_action: "create_table".to_string(),
+                error: e.to_string(),
+            });
+        })?;
 
     // ------------------- BUSINESS LOGIC -------------------
     let table_id = guard.table_id();
@@ -297,6 +307,15 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             ns_hierarchy.namespace_id(),
         )
         .await?;
+
+    request_metadata.log_audit(CreateTableEvent {
+        warehouse_id,
+        warehouse_name: warehouse.name.clone(),
+        namespace_id: ns_hierarchy.namespace_id(),
+        namespace_path: ns_hierarchy.namespace_ident().clone().inner(),
+        table_id,
+        table_name: table.name.clone(),
+    });
 
     guard.mark_authorizer_created();
 
