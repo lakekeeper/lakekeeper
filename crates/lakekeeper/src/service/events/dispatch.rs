@@ -190,12 +190,14 @@ impl EventDispatcher {
 
     pub(crate) async fn warehouse_protection_set(&self, event: types::SetWarehouseProtectionEvent) {
         futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_protection_set(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on warehouse_protection_set: {e:?}",
-                    listener.to_string()
-                );
-            })
+            listener
+                .warehouse_protection_set(event.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Listener '{}' encountered error on warehouse_protection_set: {e:?}",
+                        listener.to_string()
+                    );
+                })
         }))
         .await;
     }
@@ -233,12 +235,14 @@ impl EventDispatcher {
         event: types::UpdateWarehouseStorageEvent,
     ) {
         futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_storage_updated(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on warehouse_storage_updated: {e:?}",
-                    listener.to_string()
-                );
-            })
+            listener
+                .warehouse_storage_updated(event.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Listener '{}' encountered error on warehouse_storage_updated: {e:?}",
+                        listener.to_string()
+                    );
+                })
         }))
         .await;
     }
@@ -261,12 +265,14 @@ impl EventDispatcher {
 
     pub(crate) async fn namespace_protection_set(&self, event: types::SetNamespaceProtectionEvent) {
         futures::future::join_all(self.0.iter().map(|listener| {
-            listener.namespace_protection_set(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on namespace_protection_set: {e:?}",
-                    listener.to_string()
-                );
-            })
+            listener
+                .namespace_protection_set(event.clone())
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Listener '{}' encountered error on namespace_protection_set: {e:?}",
+                        listener.to_string()
+                    );
+                })
         }))
         .await;
     }
@@ -300,7 +306,8 @@ impl EventDispatcher {
         event: types::UpdateNamespacePropertiesEvent,
     ) {
         futures::future::join_all(self.0.iter().map(|listener| {
-            listener.namespace_properties_updated(event.clone())
+            listener
+                .namespace_properties_updated(event.clone())
                 .map_err(|e| {
                     tracing::warn!(
                         "Listener '{}' encountered error on namespace_properties_updated: {e:?}",
