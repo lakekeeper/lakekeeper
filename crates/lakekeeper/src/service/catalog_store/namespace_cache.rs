@@ -6,7 +6,7 @@ use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
 #[cfg(feature = "router")]
-use crate::service::endpoint_hooks::{EndpointHook, events};
+use crate::service::events::{self, EndpointHook};
 use crate::{
     CONFIG, WarehouseId,
     service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
@@ -274,7 +274,7 @@ impl std::fmt::Display for NamespaceCacheEndpointHook {
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
 impl EndpointHook for NamespaceCacheEndpointHook {
-    async fn create_namespace(&self, event: events::CreateNamespaceEvent) -> anyhow::Result<()> {
+    async fn namespace_created(&self, event: events::CreateNamespaceEvent) -> anyhow::Result<()> {
         let events::CreateNamespaceEvent {
             warehouse_id: _warehouse_id,
             namespace,
@@ -284,7 +284,7 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         Ok(())
     }
 
-    async fn drop_namespace(&self, event: events::DropNamespaceEvent) -> anyhow::Result<()> {
+    async fn namespace_dropped(&self, event: events::DropNamespaceEvent) -> anyhow::Result<()> {
         let events::DropNamespaceEvent {
             warehouse_id: _warehouse_id,
             namespace_id,
@@ -296,7 +296,7 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         Ok(())
     }
 
-    async fn update_namespace_properties(
+    async fn namespace_properties_updated(
         &self,
         event: events::UpdateNamespacePropertiesEvent,
     ) -> anyhow::Result<()> {
@@ -310,7 +310,7 @@ impl EndpointHook for NamespaceCacheEndpointHook {
         Ok(())
     }
 
-    async fn set_namespace_protection(
+    async fn namespace_protection_set(
         &self,
         event: events::SetNamespaceProtectionEvent,
     ) -> anyhow::Result<()> {

@@ -15,7 +15,7 @@ use crate::{
             refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::ContractVerification,
-        endpoint_hooks::events::RenameViewEvent,
+        events::RenameViewEvent,
     },
 };
 
@@ -130,7 +130,7 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     state
         .v1_state
         .hooks
-        .rename_view(RenameViewEvent {
+        .view_renamed(RenameViewEvent {
             warehouse_id,
             view_id: source_id,
             request: Arc::new(request),

@@ -15,7 +15,7 @@ use crate::{
     service::{
         UserId,
         contract_verification::ContractVerifiers,
-        endpoint_hooks::EndpointHookCollection,
+        events::EndpointHookCollection,
         namespace_cache::NamespaceCacheEndpointHook,
         storage::{StorageCredential, StorageProfile},
         warehouse_cache::WarehouseCacheEndpointHook,

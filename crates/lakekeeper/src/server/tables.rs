@@ -63,9 +63,7 @@ use crate::{
             RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
-        endpoint_hooks::events::{
-            CommitTransactionEvent, DropTableEvent, RegisterTableEvent, RenameTableEvent,
-        },
+        events::{CommitTransactionEvent, DropTableEvent, RegisterTableEvent, RenameTableEvent},
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
@@ -361,7 +359,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .register_table(RegisterTableEvent {
+            .table_registered(RegisterTableEvent {
                 warehouse_id,
                 parameters,
                 request: Arc::new(request),
@@ -655,7 +653,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .drop_table(DropTableEvent {
+            .table_dropped(DropTableEvent {
                 warehouse_id,
                 parameters,
                 drop_params: DropParams {
@@ -832,7 +830,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .rename_table(RenameTableEvent {
+            .table_renamed(RenameTableEvent {
                 warehouse_id,
                 table_id: source_table_info.table_id(),
                 request: Arc::new(request),
@@ -1028,7 +1026,7 @@ async fn commit_tables_inner<
                 state
                     .v1_state
                     .hooks
-                    .commit_transaction(CommitTransactionEvent {
+                    .transaction_committed(CommitTransactionEvent {
                         warehouse_id,
                         request: Arc::new(request),
                         commits: Arc::new(commits.clone()),

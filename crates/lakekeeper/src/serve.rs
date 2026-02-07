@@ -17,13 +17,12 @@ use crate::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
-        endpoint_hooks::EndpointHookCollection,
         endpoint_statistics::{
             EndpointStatisticsMessage, EndpointStatisticsSink, EndpointStatisticsTracker, FlushMode,
         },
-        event_publisher::{
+        events::{
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
-            CloudEventsPublisherBackgroundTask,
+            CloudEventsPublisherBackgroundTask, EndpointHookCollection,
         },
         health::ServiceHealthProvider,
         tasks::TaskQueueRegistry,

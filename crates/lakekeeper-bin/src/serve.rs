@@ -9,7 +9,7 @@ use lakekeeper::{
         authn::{BuiltInAuthenticators, get_default_authenticator_from_config},
         authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
-        event_publisher::get_default_cloud_event_backends_from_config,
+        events::get_default_cloud_event_backends_from_config,
     },
     tracing,
 };

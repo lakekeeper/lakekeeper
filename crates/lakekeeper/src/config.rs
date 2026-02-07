@@ -176,7 +176,7 @@ pub struct DynAppConfig {
     // ------------- KAFKA CLOUDEVENTS -------------
     pub kafka_topic: Option<String>,
     #[cfg(feature = "kafka")]
-    pub kafka_config: Option<crate::service::event_publisher::kafka::KafkaConfig>,
+    pub kafka_config: Option<crate::service::events::backends::kafka::KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -739,7 +739,7 @@ mod test {
     #[allow(unused_imports)]
     use super::*;
     #[cfg(feature = "kafka")]
-    use crate::service::event_publisher::kafka::KafkaConfig;
+    use crate::service::events::backends::kafka::KafkaConfig;
 
     #[test]
     fn test_authz_backend_default() {

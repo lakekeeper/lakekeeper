@@ -21,7 +21,7 @@ use crate::{
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
         Transaction, ViewId,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
-        endpoint_hooks::events::CreateViewEvent,
+        events::CreateViewEvent,
         storage::{StorageLocations as _, StoragePermissions},
     },
 };
@@ -179,7 +179,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     state
         .v1_state
         .hooks
-        .create_view(CreateViewEvent {
+        .view_created(CreateViewEvent {
             warehouse_id,
             parameters,
             request: Arc::new(request),

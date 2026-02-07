@@ -28,7 +28,7 @@ use crate::{
         ViewInfo,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
-        endpoint_hooks::events::CommitViewEvent,
+        events::{CommitViewEvent, ViewEventTransition},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
     },
@@ -105,7 +105,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
                 state
                     .v1_state
                     .hooks
-                    .commit_view(CommitViewEvent {
+                    .view_committed(CommitViewEvent {
                         warehouse_id,
                         parameters,
                         request: request.clone(),
@@ -153,7 +153,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
-) -> Result<(LoadViewResult, crate::service::endpoint_hooks::ViewCommit)> {
+) -> Result<(LoadViewResult, ViewEventTransition)> {
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
@@ -283,7 +283,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata: new_metadata.clone(),
             config: Some(config.config.into()),
         },
-        crate::service::endpoint_hooks::ViewCommit {
+        ViewEventTransition {
             old_metadata: previous_view.metadata,
             new_metadata,
             old_metadata_location: previous_metadata_location,

@@ -8,7 +8,7 @@ use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
 #[cfg(feature = "router")]
-use crate::service::endpoint_hooks::{EndpointHook, events};
+use crate::service::events::{self, EndpointHook};
 use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
 
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
@@ -187,7 +187,7 @@ impl std::fmt::Display for WarehouseCacheEndpointHook {
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
 impl EndpointHook for WarehouseCacheEndpointHook {
-    async fn create_warehouse(&self, event: events::CreateWarehouseEvent) -> anyhow::Result<()> {
+    async fn warehouse_created(&self, event: events::CreateWarehouseEvent) -> anyhow::Result<()> {
         let events::CreateWarehouseEvent {
             warehouse,
             request_metadata: _request_metadata,
@@ -196,7 +196,7 @@ impl EndpointHook for WarehouseCacheEndpointHook {
         Ok(())
     }
 
-    async fn delete_warehouse(&self, event: events::DeleteWarehouseEvent) -> anyhow::Result<()> {
+    async fn warehouse_deleted(&self, event: events::DeleteWarehouseEvent) -> anyhow::Result<()> {
         let events::DeleteWarehouseEvent {
             warehouse_id,
             request_metadata: _request_metadata,
@@ -207,7 +207,7 @@ impl EndpointHook for WarehouseCacheEndpointHook {
         Ok(())
     }
 
-    async fn set_warehouse_protection(
+    async fn warehouse_protection_set(
         &self,
         event: events::SetWarehouseProtectionEvent,
     ) -> anyhow::Result<()> {
@@ -220,7 +220,7 @@ impl EndpointHook for WarehouseCacheEndpointHook {
         Ok(())
     }
 
-    async fn rename_warehouse(&self, event: events::RenameWarehouseEvent) -> anyhow::Result<()> {
+    async fn warehouse_renamed(&self, event: events::RenameWarehouseEvent) -> anyhow::Result<()> {
         let events::RenameWarehouseEvent {
             request: _request,
             updated_warehouse,
@@ -230,7 +230,7 @@ impl EndpointHook for WarehouseCacheEndpointHook {
         Ok(())
     }
 
-    async fn update_warehouse_delete_profile(
+    async fn warehouse_delete_profile_updated(
         &self,
         event: events::UpdateWarehouseDeleteProfileEvent,
     ) -> anyhow::Result<()> {
@@ -243,7 +243,7 @@ impl EndpointHook for WarehouseCacheEndpointHook {
         Ok(())
     }
 
-    async fn update_warehouse_storage(
+    async fn warehouse_storage_updated(
         &self,
         event: events::UpdateWarehouseStorageEvent,
     ) -> anyhow::Result<()> {
@@ -256,7 +256,7 @@ impl EndpointHook for WarehouseCacheEndpointHook {
         Ok(())
     }
 
-    async fn update_warehouse_storage_credential(
+    async fn warehouse_storage_credential_updated(
         &self,
         event: events::UpdateWarehouseStorageCredentialEvent,
     ) -> anyhow::Result<()> {

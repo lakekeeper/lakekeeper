@@ -13,7 +13,7 @@ use crate::{
         State, TabularId, TabularListFlags, Transaction,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
-        endpoint_hooks::events::DropViewEvent,
+        events::DropViewEvent,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -140,7 +140,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     state
         .v1_state
         .hooks
-        .drop_view(DropViewEvent {
+        .view_dropped(DropViewEvent {
             warehouse_id,
             parameters,
             drop_params: DropParams {
