@@ -63,6 +63,9 @@ use crate::{
             RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
+        endpoint_hooks::events::{
+            CommitTransactionEvent, DropTableEvent, RegisterTableEvent, RenameTableEvent,
+        },
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
@@ -358,14 +361,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .register_table(
+            .register_table(RegisterTableEvent {
                 warehouse_id,
                 parameters,
-                Arc::new(request),
-                table_metadata.clone(),
-                Arc::new(metadata_location.clone()),
-                Arc::new(request_metadata),
-            )
+                request: Arc::new(request),
+                metadata: table_metadata.clone(),
+                metadata_location: Arc::new(metadata_location.clone()),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(LoadTableResult {
@@ -652,16 +655,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .drop_table(
+            .drop_table(DropTableEvent {
                 warehouse_id,
                 parameters,
-                DropParams {
+                drop_params: DropParams {
                     purge_requested,
                     force,
                 },
-                TableId::from(*table_id),
-                Arc::new(request_metadata),
-            )
+                table_id: TableId::from(*table_id),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(())
@@ -829,12 +832,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .rename_table(
+            .rename_table(RenameTableEvent {
                 warehouse_id,
-                source_table_info.table_id(),
-                Arc::new(request),
-                Arc::new(request_metadata),
-            )
+                table_id: source_table_info.table_id(),
+                request: Arc::new(request),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(())
@@ -1011,16 +1014,27 @@ async fn commit_tables_inner<
         match result {
             Ok(commits) => {
                 // Fire hooks
+                let table_ident_to_id_fn = {
+                    let map = table_ident_map.clone();
+                    Arc::new(move |ident: &iceberg::TableIdent| {
+                        map.get(ident).map(|t| t.tabular_id)
+                    })
+                        as Arc<
+                            dyn Fn(&iceberg::TableIdent) -> Option<crate::service::TableId>
+                                + Send
+                                + Sync,
+                        >
+                };
                 state
                     .v1_state
                     .hooks
-                    .commit_transaction(
+                    .commit_transaction(CommitTransactionEvent {
                         warehouse_id,
-                        Arc::new(request),
-                        Arc::new(commits.clone()),
-                        table_ident_map,
-                        Arc::new(request_metadata),
-                    )
+                        request: Arc::new(request),
+                        commits: Arc::new(commits.clone()),
+                        table_ident_to_id_fn,
+                        request_metadata: Arc::new(request_metadata),
+                    })
                     .await;
                 return Ok(commits);
             }

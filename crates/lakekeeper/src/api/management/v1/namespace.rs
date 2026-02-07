@@ -8,6 +8,7 @@ use crate::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        endpoint_hooks::events::SetNamespaceProtectionEvent,
     },
 };
 
@@ -62,7 +63,11 @@ where
         state
             .v1_state
             .hooks
-            .set_namespace_protection(protected_request, status, Arc::new(request_metadata))
+            .set_namespace_protection(SetNamespaceProtectionEvent {
+                requested_protected: protected_request,
+                updated_namespace: status,
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         let protection_response = ProtectionResponse {

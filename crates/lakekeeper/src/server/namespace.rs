@@ -28,6 +28,9 @@ use crate::{
             AuthZCannotListNamespaces, AuthZCannotUseWarehouseId, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent,
         },
+        endpoint_hooks::events::{
+            CreateNamespaceEvent, DropNamespaceEvent, UpdateNamespacePropertiesEvent,
+        },
         secrets::SecretStore,
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
@@ -317,7 +320,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .create_namespace(warehouse_id, r.clone(), Arc::new(request_metadata))
+            .create_namespace(CreateNamespaceEvent {
+                warehouse_id,
+                namespace: r.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         let r_namespace = r.namespace.clone();
@@ -451,7 +458,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 state
                     .v1_state
                     .hooks
-                    .drop_namespace(warehouse_id, namespace_id, Arc::new(request_metadata))
+                    .drop_namespace(DropNamespaceEvent {
+                        warehouse_id,
+                        namespace_id,
+                        request_metadata: Arc::new(request_metadata),
+                    })
                     .await;
                 Ok(())
             }
@@ -518,12 +529,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .hooks
-            .update_namespace_properties(
+            .update_namespace_properties(UpdateNamespacePropertiesEvent {
                 warehouse_id,
-                updated_namespace,
-                Arc::new(r.clone()),
-                Arc::new(request_metadata),
-            )
+                namespace: updated_namespace,
+                updated_properties: Arc::new(r.clone()),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(r)

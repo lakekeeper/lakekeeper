@@ -28,6 +28,7 @@ use crate::{
         ViewInfo,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
+        endpoint_hooks::events::CommitViewEvent,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
     },
@@ -104,14 +105,14 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
                 state
                     .v1_state
                     .hooks
-                    .commit_view(
+                    .commit_view(CommitViewEvent {
                         warehouse_id,
                         parameters,
-                        request.clone(),
-                        Arc::new(commit),
+                        request: request.clone(),
+                        view_commit: Arc::new(commit),
                         data_access,
-                        Arc::new(request_metadata),
-                    )
+                        request_metadata: Arc::new(request_metadata),
+                    })
                     .await;
 
                 return Ok(result);

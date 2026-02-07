@@ -6,32 +6,20 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 use cloudevents::Event;
-use iceberg::{
-    TableIdent,
-    spec::{TableMetadata, ViewMetadata},
-};
-use iceberg_ext::catalog::rest::{
-    CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
-    RegisterTableRequest, RenameTableRequest,
-};
-use lakekeeper_io::Location;
+use iceberg::TableIdent;
 use uuid::Uuid;
 
-use super::{TableId, ViewId, WarehouseId};
+use super::{TableId, WarehouseId};
 use crate::{
     CONFIG,
-    api::{
-        RequestMetadata,
-        iceberg::{
-            types::{DropParams, Prefix},
-            v1::{DataAccessMode, NamespaceParameters, TableParameters, ViewParameters},
-        },
-        management::v1::warehouse::UndropTabularsRequest,
+    api::iceberg::{
+        types::Prefix,
+        v1::{NamespaceParameters, TableParameters},
     },
-    server::tables::{CommitContext, maybe_body_to_json},
+    server::tables::maybe_body_to_json,
     service::{
-        TabularId, ViewOrTableInfo,
-        endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
+        TabularId,
+        endpoint_hooks::{EndpointHook, events},
     },
 };
 
@@ -80,18 +68,21 @@ pub async fn get_default_cloud_event_backends_from_config()
 impl EndpointHook for CloudEventsPublisher {
     async fn commit_transaction(
         &self,
-        warehouse_id: WarehouseId,
-        request: Arc<CommitTransactionRequest>,
-        _commits: Arc<Vec<CommitContext>>,
-        table_ident_to_id_fn: &TableIdentToIdFn,
-        request_metadata: Arc<RequestMetadata>,
+        event: events::CommitTransactionEvent,
     ) -> anyhow::Result<()> {
+        let events::CommitTransactionEvent {
+            warehouse_id,
+            request,
+            commits: _commits,
+            table_ident_to_id_fn,
+            request_metadata,
+        } = event;
         let estimated = request.table_changes.len();
         let mut events = Vec::with_capacity(estimated);
         let mut event_table_ids: Vec<(TableIdent, TableId)> = Vec::with_capacity(estimated);
         for commit_table_request in &request.table_changes {
             if let Some(id) = &commit_table_request.identifier
-                && let Some(uuid) = table_ident_to_id_fn(id)
+                && let Some(uuid) = (*table_ident_to_id_fn)(id)
             {
                 events.push(maybe_body_to_json(commit_table_request));
                 event_table_ids.push((id.clone(), uuid));
@@ -128,14 +119,14 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn drop_table(
-        &self,
-        warehouse_id: WarehouseId,
-        TableParameters { prefix, table }: TableParameters,
-        _drop_params: DropParams,
-        table_ident_uuid: TableId,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn drop_table(&self, event: events::DropTableEvent) -> anyhow::Result<()> {
+        let events::DropTableEvent {
+            warehouse_id,
+            parameters: TableParameters { prefix, table },
+            drop_params: _drop_params,
+            table_id: table_ident_uuid,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "dropTable",
@@ -157,15 +148,15 @@ impl EndpointHook for CloudEventsPublisher {
         .context("Failed to publish `dropTable` event")?;
         Ok(())
     }
-    async fn register_table(
-        &self,
-        warehouse_id: WarehouseId,
-        NamespaceParameters { prefix, namespace }: NamespaceParameters,
-        request: Arc<RegisterTableRequest>,
-        metadata: Arc<TableMetadata>,
-        _metadata_location: Arc<Location>,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn register_table(&self, event: events::RegisterTableEvent) -> anyhow::Result<()> {
+        let events::RegisterTableEvent {
+            warehouse_id,
+            parameters: NamespaceParameters { prefix, namespace },
+            request,
+            metadata,
+            metadata_location: _metadata_location,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "registerTable",
@@ -188,16 +179,16 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn create_table(
-        &self,
-        warehouse_id: WarehouseId,
-        NamespaceParameters { prefix, namespace }: NamespaceParameters,
-        request: Arc<CreateTableRequest>,
-        metadata: Arc<TableMetadata>,
-        _metadata_location: Option<Arc<Location>>,
-        _data_access: DataAccessMode,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn create_table(&self, event: events::CreateTableEvent) -> anyhow::Result<()> {
+        let events::CreateTableEvent {
+            warehouse_id,
+            parameters: NamespaceParameters { prefix, namespace },
+            request,
+            metadata,
+            metadata_location: _metadata_location,
+            data_access: _data_access,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "createTable",
@@ -220,13 +211,13 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn rename_table(
-        &self,
-        warehouse_id: WarehouseId,
-        table_ident_uuid: TableId,
-        request: Arc<RenameTableRequest>,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn rename_table(&self, event: events::RenameTableEvent) -> anyhow::Result<()> {
+        let events::RenameTableEvent {
+            warehouse_id,
+            table_id: table_ident_uuid,
+            request,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "renameTable",
@@ -249,16 +240,16 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn create_view(
-        &self,
-        warehouse_id: WarehouseId,
-        parameters: NamespaceParameters,
-        request: Arc<CreateViewRequest>,
-        metadata: Arc<ViewMetadata>,
-        _metadata_location: Arc<Location>,
-        _data_access: DataAccessMode,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn create_view(&self, event: events::CreateViewEvent) -> anyhow::Result<()> {
+        let events::CreateViewEvent {
+            warehouse_id,
+            parameters,
+            request,
+            metadata,
+            metadata_location: _metadata_location,
+            data_access: _data_access,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "createView",
@@ -284,15 +275,15 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn commit_view(
-        &self,
-        warehouse_id: WarehouseId,
-        parameters: ViewParameters,
-        request: Arc<CommitViewRequest>,
-        metadata: Arc<ViewCommit>,
-        _data_access: DataAccessMode,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn commit_view(&self, event: events::CommitViewEvent) -> anyhow::Result<()> {
+        let events::CommitViewEvent {
+            warehouse_id,
+            parameters,
+            request,
+            view_commit: metadata,
+            data_access: _data_access,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "updateView",
@@ -318,14 +309,14 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn drop_view(
-        &self,
-        warehouse_id: WarehouseId,
-        parameters: ViewParameters,
-        _drop_params: DropParams,
-        view_ident_uuid: ViewId,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn drop_view(&self, event: events::DropViewEvent) -> anyhow::Result<()> {
+        let events::DropViewEvent {
+            warehouse_id,
+            parameters,
+            drop_params: _drop_params,
+            view_id: view_ident_uuid,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "dropView",
@@ -351,13 +342,13 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn rename_view(
-        &self,
-        warehouse_id: WarehouseId,
-        view_ident_uuid: ViewId,
-        request: Arc<RenameTableRequest>,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn rename_view(&self, event: events::RenameViewEvent) -> anyhow::Result<()> {
+        let events::RenameViewEvent {
+            warehouse_id,
+            view_id: view_ident_uuid,
+            request,
+            request_metadata,
+        } = event;
         self.publish(
             Uuid::now_v7(),
             "renameView",
@@ -380,13 +371,13 @@ impl EndpointHook for CloudEventsPublisher {
         Ok(())
     }
 
-    async fn undrop_tabular(
-        &self,
-        warehouse_id: WarehouseId,
-        _request: Arc<UndropTabularsRequest>,
-        responses: Arc<Vec<ViewOrTableInfo>>,
-        request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn undrop_tabular(&self, event: events::UndropTabularEvent) -> anyhow::Result<()> {
+        let events::UndropTabularEvent {
+            warehouse_id,
+            request: _request,
+            responses,
+            request_metadata,
+        } = event;
         let num_tabulars = responses.len();
         let mut futs = Vec::with_capacity(responses.len());
         for (idx, tabular_info) in responses.iter().enumerate() {

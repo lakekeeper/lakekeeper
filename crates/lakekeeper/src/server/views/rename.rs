@@ -14,7 +14,7 @@ use crate::{
             CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
-        contract_verification::ContractVerification,
+        contract_verification::ContractVerification, endpoint_hooks::events::RenameViewEvent,
     },
 };
 
@@ -129,12 +129,12 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     state
         .v1_state
         .hooks
-        .rename_view(
+        .rename_view(RenameViewEvent {
             warehouse_id,
-            source_id,
-            Arc::new(request),
-            Arc::new(request_metadata),
-        )
+            view_id: source_id,
+            request: Arc::new(request),
+            request_metadata: Arc::new(request_metadata),
+        })
         .await;
 
     Ok(())

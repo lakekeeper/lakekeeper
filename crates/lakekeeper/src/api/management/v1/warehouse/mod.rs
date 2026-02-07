@@ -42,6 +42,11 @@ use crate::{
             CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
             CatalogWarehouseAction,
         },
+        endpoint_hooks::events::{
+            CreateWarehouseEvent, DeleteWarehouseEvent, RenameWarehouseEvent,
+            SetWarehouseProtectionEvent, UndropTabularEvent, UpdateWarehouseDeleteProfileEvent,
+            UpdateWarehouseStorageCredentialEvent, UpdateWarehouseStorageEvent,
+        },
         require_namespace_for_tabular,
         secrets::SecretStore,
         task_configs::TaskQueueConfigFilter,
@@ -419,7 +424,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .create_warehouse(resolved_warehouse.clone(), Arc::new(request_metadata))
+            .create_warehouse(CreateWarehouseEvent {
+                warehouse: resolved_warehouse.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(CreateWarehouseResponse(
@@ -571,7 +579,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .delete_warehouse(warehouse_id, Arc::new(request_metadata))
+            .delete_warehouse(DeleteWarehouseEvent {
+                warehouse_id,
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(())
@@ -612,11 +623,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .set_warehouse_protection(
-                protection,
-                resolved_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
+            .set_warehouse_protection(SetWarehouseProtectionEvent {
+                requested_protected: protection,
+                updated_warehouse: resolved_warehouse.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(ProtectionResponse {
@@ -662,11 +673,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .rename_warehouse(
-                Arc::new(request),
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
+            .rename_warehouse(RenameWarehouseEvent {
+                request: Arc::new(request),
+                updated_warehouse: updated_warehouse.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok((*updated_warehouse).clone().into())
@@ -705,11 +716,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .update_warehouse_delete_profile(
-                Arc::new(request),
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
+            .update_warehouse_delete_profile(UpdateWarehouseDeleteProfileEvent {
+                request: Arc::new(request),
+                updated_warehouse: updated_warehouse.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok((*updated_warehouse).clone().into())
@@ -865,11 +876,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .update_warehouse_storage(
-                request_for_hook,
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
+            .update_warehouse_storage(UpdateWarehouseStorageEvent {
+                request: request_for_hook,
+                updated_warehouse: updated_warehouse.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         // Delete the old secret if it exists - never fail the request if the deletion fails
@@ -953,12 +964,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .update_warehouse_storage_credential(
-                request_for_hook,
+            .update_warehouse_storage_credential(UpdateWarehouseStorageCredentialEvent {
+                request: request_for_hook,
                 old_secret_id,
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
+                updated_warehouse: updated_warehouse.clone(),
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         // Delete the old secret if it exists - never fail the request if the deletion fails
@@ -1044,17 +1055,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context
             .v1_state
             .hooks
-            .undrop_tabular(
+            .undrop_tabular(UndropTabularEvent {
                 warehouse_id,
-                Arc::new(request),
-                Arc::new(
+                request: Arc::new(request),
+                responses: Arc::new(
                     undrop_tabular_responses
                         .into_iter()
                         .map(ViewOrTableDeletionInfo::into_table_or_view_info)
                         .collect(),
                 ),
-                Arc::new(request_metadata),
-            )
+                request_metadata: Arc::new(request_metadata),
+            })
             .await;
 
         Ok(())

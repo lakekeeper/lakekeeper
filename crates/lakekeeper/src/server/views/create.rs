@@ -21,6 +21,7 @@ use crate::{
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
         Transaction, ViewId,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        endpoint_hooks::events::CreateViewEvent,
         storage::{StorageLocations as _, StoragePermissions},
     },
 };
@@ -178,15 +179,15 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     state
         .v1_state
         .hooks
-        .create_view(
+        .create_view(CreateViewEvent {
             warehouse_id,
-            parameters.clone(),
-            Arc::new(request),
-            Arc::new(metadata_build_result.metadata.clone()),
-            Arc::new(metadata_location.clone()),
+            parameters: parameters.clone(),
+            request: Arc::new(request),
+            metadata: Arc::new(metadata_build_result.metadata.clone()),
+            metadata_location: Arc::new(metadata_location.clone()),
             data_access,
-            Arc::new(request_metadata),
-        )
+            request_metadata: Arc::new(request_metadata),
+        })
         .await;
 
     let load_view_result = LoadViewResult {
