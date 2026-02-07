@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.11.2](https://github.com/lakekeeper/lakekeeper/compare/v0.11.2...v0.11.2) (2026-02-07)
+
+
+### Features
+
+* Adds max_request_body_size and max_request_time configuration variables ([#1583](https://github.com/lakekeeper/lakekeeper/issues/1583)) ([bbdf892](https://github.com/lakekeeper/lakekeeper/commit/bbdf89201bfa6a08ab1b24e0c48eae1206f319cc))
+
+
+### Bug Fixes
+
+* **ci:** Pin botocore & s3fs Versions ([#1603](https://github.com/lakekeeper/lakekeeper/issues/1603)) ([735ee8c](https://github.com/lakekeeper/lakekeeper/commit/735ee8c24afc145124e98a2d82ab6f5118f236ec))
+* **ui:** Better Safari support, Add Task Log Cleanup configuration ([#1593](https://github.com/lakekeeper/lakekeeper/issues/1593)) ([4738d4a](https://github.com/lakekeeper/lakekeeper/commit/4738d4a925f43fd7bcd51bb623e1d4c98e91c266))
+
+
+### Miscellaneous Chores
+
+* **deps:** Add cargo-deny with License checker ([#1580](https://github.com/lakekeeper/lakekeeper/issues/1580)) ([b1cdcd5](https://github.com/lakekeeper/lakekeeper/commit/b1cdcd51f715a24f8a258879e10f6e8a8c49ce41))
+* **deps:** update rust crate bytes to v1.11.1 [security] ([#1597](https://github.com/lakekeeper/lakekeeper/issues/1597)) ([0ec6a00](https://github.com/lakekeeper/lakekeeper/commit/0ec6a008f674b8dca87a1ed813e345b9973e1a57))
+* **deps:** update rust crate time to v0.3.47 [security] ([#1600](https://github.com/lakekeeper/lakekeeper/issues/1600)) ([bc994e5](https://github.com/lakekeeper/lakekeeper/commit/bc994e542f108fc9a502ff92d7365d9723761c10))
+* **docs:** Add Lakekeeper Plus license configuration ([#1595](https://github.com/lakekeeper/lakekeeper/issues/1595)) ([239dc5d](https://github.com/lakekeeper/lakekeeper/commit/239dc5d97b312dfedbf1d9eaef4288e5234e5625))
+* **events:** restructure event system service::events with clearer naming conventions ([#1602](https://github.com/lakekeeper/lakekeeper/issues/1602)) ([f6aaa45](https://github.com/lakekeeper/lakekeeper/commit/f6aaa4570cf62d54943581e7a00b9f882d9c992d))
+* **hooks:** restructure EndpointHook to use event structs ([#1601](https://github.com/lakekeeper/lakekeeper/issues/1601)) ([7db8da6](https://github.com/lakekeeper/lakekeeper/commit/7db8da6eb001979f7bf4d3c1cf1e9e21ad2250e5))
+* **opa-bridge:** Add CreateViewWithSelectFromColumns permissions based on "read_data" of underlying table ([#1594](https://github.com/lakekeeper/lakekeeper/issues/1594)) ([c378f6e](https://github.com/lakekeeper/lakekeeper/commit/c378f6e69f0e11e56d992c32b3939e73a4ed0ef0))
+
 ## [0.11.2](https://github.com/lakekeeper/lakekeeper/compare/v0.11.1...v0.11.2) (2026-01-29)
 
 
