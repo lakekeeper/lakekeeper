@@ -24,7 +24,12 @@ use crate::{
         tabular::determine_tabular_location,
     },
     service::{
-        CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId, Transaction, authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction}, endpoint_hooks::events::CreateTableEvent, secrets::SecretStore, storage::{StorageLocations as _, StoragePermissions, ValidationError}
+        CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
+        Transaction,
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        endpoint_hooks::events::CreateTableEvent,
+        secrets::SecretStore,
+        storage::{StorageLocations as _, StoragePermissions, ValidationError},
     },
 };
 

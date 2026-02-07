@@ -14,7 +14,8 @@ use crate::{
             CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
-        contract_verification::ContractVerification, endpoint_hooks::events::RenameViewEvent,
+        contract_verification::ContractVerification,
+        endpoint_hooks::events::RenameViewEvent,
     },
 };
 
