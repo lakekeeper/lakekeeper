@@ -26,7 +26,7 @@ pub async fn build_nats_publisher_from_config() -> anyhow::Result<Option<NatsBac
         );
         builder.credentials_file(file).await?
     } else {
-        builder
+        async_nats::ConnectOptions::new()
     };
 
     let builder = if let (Some(user), Some(pw)) = (&CONFIG.nats_user, &CONFIG.nats_password) {

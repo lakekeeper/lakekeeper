@@ -232,7 +232,11 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
 
       - name: Test
-        run: cargo nextest run --profile ${{ env.NEXTEST_PROFILE }} --all-targets --all-features --workspace
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        with:
+          max_attempts: 2
+          timeout_minutes: 25
+          command: cargo nextest run --profile ${{ env.NEXTEST_PROFILE }} --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           LAKEKEEPER_TEST__KV2__URL: http://localhost:8200

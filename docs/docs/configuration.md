@@ -379,3 +379,12 @@ Lakekeeper provides debugging options to help troubleshoot issues during develop
 | Variable                                          | Example | Description    |
 |---------------------------------------------------|---------|----------------|
 | <nobr>`LAKEKEEPER__SKIP_STORAGE_VALIDATION`<nobr> | true    | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. Default: false |
+
+
+### License Configuration
+<nobr><span class="lkp"></span></nobr>, the enterprise distribution of Lakekeeper, requires a License to operate. The license can be provided via either of the following environment variables. If both are set, `LAKEKEEPER__LICENSE__KEY` takes precedence.
+
+| Variable                                     | Example                | Description |
+|----------------------------------------------|------------------------|------|
+| <nobr>`LAKEKEEPER__LICENSE__KEY`</nobr>      | `<license-key>`        | License key as a string. Takes precedence over `LAKEKEEPER__LICENSE__KEY_PATH` if both are set. |
+| <nobr>`LAKEKEEPER__LICENSE__KEY_PATH`</nobr> | `/path/to/license.lic` | Path to a file containing the license key. |

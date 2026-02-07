@@ -1,13 +1,9 @@
 # See https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
 [advisories]
 ignore = [
-    "RUSTSEC-2023-0071", # we're using postgres, this is likely a false positive: https://github.com/launchbadge/sqlx/issues/2911
-    "RUSTSEC-2024-0373", # we're not using http3 in reqwest, we end up getting quinn due to a bug in cargo, it's not being compiled: https://github.com/seanmonstar/reqwest/issues/2318 / https://github.com/rust-lang/cargo/issues/10802
-    "RUSTSEC-2024-0370", # we are aware of the issue, once we migrate to utoipa 0.5 the dependency will be gone, it is also "only" an unmaintained dependency without direct harm.
-    "RUSTSEC-2024-0399", # we are using tls only in clients
-    "RUSTSEC-2024-0384", # unmaintained without direct harm
-    "RUSTSEC-2025-0009", # we do not enable overflow-checks
+    "RUSTSEC-2023-0071", # https://github.com/RustCrypto/RSA/issues/19#issuecomment-1822995643
+    "RUSTSEC-2024-0384", # instant unmaintained but no direct harm, resolved eventually by azure library updates to the new official SDK once SAS is supported.
     "RUSTSEC-2024-0436", # paste is unmaintained but has no direct harm. We already removed direct dependencies.
     "RUSTSEC-2026-0001", # Review once https://github.com/paupino/rust-decimal/issues/766 is merged
-    "RUSTSEC-2025-0134", # https://github.com/nats-io/nats.rs/issues/1502
+    "RUSTSEC-2025-0134", # https://github.com/nats-io/nats.rs/issues/1502, will be fixed in v0.47
 ]

@@ -21,18 +21,19 @@ anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-async-nats = { version = "0.45.0", default-features = false, features = [
+async-nats = { version = "0.46.0", default-features = false, features = [
     "server_2_10",
     "server_2_11",
     "server_2_12",
     "aws-lc-rs",
     "service",
+    "nkeys",
 ] }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.2" }
-aws-sdk-s3 = { version = "1.65" }
+aws-sdk-s3 = { version = "1.121" }
 aws-sdk-sts = "1.82.0"
 aws-sigv4 = { version = "1.2" }
 aws-smithy-async = { version = "1.2.5" }
@@ -63,7 +64,7 @@ azure_storage_datalake = { version = "0.21.0", default-features = false, feature
 base64 = "0.22.1"
 bytes = "1.10"
 chrono = "^0.4"
-cloudevents-sdk = { version = "0.8.0" }
+cloudevents-sdk = { version = "0.9.0" }
 derive_more = { version = "^2.0.0", features = ["from", "debug"] }
 fastrand = "2.3.0"
 figment = { version = "^0.10", features = ["env"] }
