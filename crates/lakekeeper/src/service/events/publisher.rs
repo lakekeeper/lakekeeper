@@ -12,10 +12,12 @@ use uuid::Uuid;
 use super::{dispatch::EventListener, types};
 use crate::{
     CONFIG,
-    api::RequestMetadata,
-    api::iceberg::{
-        types::Prefix,
-        v1::{NamespaceParameters, TableParameters},
+    api::{
+        RequestMetadata,
+        iceberg::{
+            types::Prefix,
+            v1::{NamespaceParameters, TableParameters},
+        },
     },
     server::tables::maybe_body_to_json,
     service::{TableId, TabularId, WarehouseId},
