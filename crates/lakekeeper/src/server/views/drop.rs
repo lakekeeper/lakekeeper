@@ -139,7 +139,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
     state
         .v1_state
-        .hooks
+        .events
         .view_dropped(DropViewEvent {
             warehouse_id,
             parameters,

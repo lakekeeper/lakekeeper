@@ -314,7 +314,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     state
         .v1_state
-        .hooks
+        .events
         .table_created(CreateTableEvent {
             warehouse_id,
             parameters,

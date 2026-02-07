@@ -9,7 +9,7 @@ use cloudevents::Event;
 use iceberg::TableIdent;
 use uuid::Uuid;
 
-use super::{hooks::EndpointHook, types};
+use super::{dispatch::EventListener, types};
 use crate::{
     CONFIG,
     api::iceberg::{
@@ -57,7 +57,7 @@ pub async fn get_default_cloud_event_backends_from_config()
 }
 
 #[async_trait::async_trait]
-impl EndpointHook for CloudEventsPublisher {
+impl EventListener for CloudEventsPublisher {
     async fn transaction_committed(
         &self,
         event: types::CommitTransactionEvent,
@@ -530,7 +530,7 @@ impl CloudEventsPublisherBackgroundTask {
                 actor,
             } = metadata;
             // TODO: this could be more elegant with a proc macro to give us IntoIter for EventMetadata
-            let event = event_builder
+            let event = match event_builder
                 .extension("tabular-type", tabular_id.typ_str())
                 .extension("tabular-id", tabular_id.to_string())
                 .extension("warehouse-id", warehouse_id.to_string())
@@ -545,7 +545,14 @@ impl CloudEventsPublisherBackgroundTask {
                 // Implement distributed tracing: https://github.com/lakekeeper/lakekeeper/issues/63
                 .extension("trace-id", trace_id.to_string())
                 .extension("actor", actor)
-                .build()?;
+                .build()
+            {
+                Ok(event) => event,
+                Err(e) => {
+                    tracing::warn!("Failed to build CloudEvent with id '{id}': {e}");
+                    continue;
+                }
+            };
 
             let publish_futures = self.sinks.iter().map(|sink| {
                 let event = event.clone();

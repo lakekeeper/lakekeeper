@@ -8,7 +8,7 @@ use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
 #[cfg(feature = "router")]
-use crate::service::events::{self, EndpointHook};
+use crate::service::events::{self, EventListener};
 use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
 
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
@@ -175,18 +175,18 @@ pub(super) async fn warehouse_cache_get_by_name(
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct WarehouseCacheEndpointHook;
+pub(crate) struct WarehouseCacheEventListener;
 
 #[cfg(feature = "router")]
-impl std::fmt::Display for WarehouseCacheEndpointHook {
+impl std::fmt::Display for WarehouseCacheEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WarehouseCacheEndpointHook")
+        write!(f, "WarehouseCacheEventListener")
     }
 }
 
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
-impl EndpointHook for WarehouseCacheEndpointHook {
+impl EventListener for WarehouseCacheEventListener {
     async fn warehouse_created(&self, event: events::CreateWarehouseEvent) -> anyhow::Result<()> {
         let events::CreateWarehouseEvent {
             warehouse,

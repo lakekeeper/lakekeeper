@@ -317,7 +317,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         state
             .v1_state
-            .hooks
+            .events
             .namespace_created(CreateNamespaceEvent {
                 warehouse_id,
                 namespace: r.clone(),
@@ -455,7 +455,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Ok(()) => {
                 state
                     .v1_state
-                    .hooks
+                    .events
                     .namespace_dropped(DropNamespaceEvent {
                         warehouse_id,
                         namespace_id,
@@ -526,7 +526,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         state
             .v1_state
-            .hooks
+            .events
             .namespace_properties_updated(UpdateNamespacePropertiesEvent {
                 warehouse_id,
                 namespace: updated_namespace,

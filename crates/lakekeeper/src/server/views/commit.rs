@@ -104,7 +104,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             Ok((result, commit)) => {
                 state
                     .v1_state
-                    .hooks
+                    .events
                     .view_committed(CommitViewEvent {
                         warehouse_id,
                         parameters,

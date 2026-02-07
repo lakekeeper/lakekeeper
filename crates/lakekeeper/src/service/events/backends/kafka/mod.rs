@@ -27,6 +27,13 @@ pub fn build_kafka_publisher_from_config() -> anyhow::Result<Option<KafkaBackend
         return Ok(None);
     };
 
+    if topic.trim().is_empty() {
+        tracing::info!(
+            "Kafka topic is empty or contains only whitespace. Events are not published to Kafka."
+        );
+        return Ok(None);
+    }
+
     if !(config.conf.contains_key("bootstrap.servers")
         || config.conf.contains_key("metadata.broker.list"))
     {

@@ -178,7 +178,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     state
         .v1_state
-        .hooks
+        .events
         .view_created(CreateViewEvent {
             warehouse_id,
             parameters,

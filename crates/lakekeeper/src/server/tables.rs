@@ -358,7 +358,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // Fire hooks
         state
             .v1_state
-            .hooks
+            .events
             .table_registered(RegisterTableEvent {
                 warehouse_id,
                 parameters,
@@ -652,7 +652,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         state
             .v1_state
-            .hooks
+            .events
             .table_dropped(DropTableEvent {
                 warehouse_id,
                 parameters,
@@ -829,7 +829,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         state
             .v1_state
-            .hooks
+            .events
             .table_renamed(RenameTableEvent {
                 warehouse_id,
                 table_id: source_table_info.table_id(),
@@ -1025,7 +1025,7 @@ async fn commit_tables_inner<
                 };
                 state
                     .v1_state
-                    .hooks
+                    .events
                     .transaction_committed(CommitTransactionEvent {
                         warehouse_id,
                         request: Arc::new(request),

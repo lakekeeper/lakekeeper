@@ -62,7 +62,7 @@ where
 
         state
             .v1_state
-            .hooks
+            .events
             .namespace_protection_set(SetNamespaceProtectionEvent {
                 requested_protected: protected_request,
                 updated_namespace: status,

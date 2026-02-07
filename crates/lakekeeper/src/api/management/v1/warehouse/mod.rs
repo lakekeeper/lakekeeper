@@ -423,7 +423,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_created(CreateWarehouseEvent {
                 warehouse: resolved_warehouse.clone(),
                 request_metadata: Arc::new(request_metadata),
@@ -578,7 +578,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_deleted(DeleteWarehouseEvent {
                 warehouse_id,
                 request_metadata: Arc::new(request_metadata),
@@ -622,7 +622,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_protection_set(SetWarehouseProtectionEvent {
                 requested_protected: protection,
                 updated_warehouse: resolved_warehouse.clone(),
@@ -672,7 +672,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_renamed(RenameWarehouseEvent {
                 request: Arc::new(request),
                 updated_warehouse: updated_warehouse.clone(),
@@ -715,7 +715,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_delete_profile_updated(UpdateWarehouseDeleteProfileEvent {
                 request: Arc::new(request),
                 updated_warehouse: updated_warehouse.clone(),
@@ -875,7 +875,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_storage_updated(UpdateWarehouseStorageEvent {
                 request: request_for_hook,
                 updated_warehouse: updated_warehouse.clone(),
@@ -963,7 +963,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .warehouse_storage_credential_updated(UpdateWarehouseStorageCredentialEvent {
                 request: request_for_hook,
                 old_secret_id,
@@ -1054,7 +1054,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         context
             .v1_state
-            .hooks
+            .events
             .tabular_undropped(UndropTabularEvent {
                 warehouse_id,
                 request: Arc::new(request),
