@@ -239,10 +239,6 @@ impl EndpointHook for WarehouseCacheEndpointHook {
             updated_warehouse,
             request_metadata: _request_metadata,
         } = event;
-        println!(
-            "Updating delete profile in cache hook for warehouse id {}",
-            updated_warehouse.warehouse_id
-        );
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }

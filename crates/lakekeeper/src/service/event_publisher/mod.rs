@@ -287,7 +287,7 @@ impl EndpointHook for CloudEventsPublisher {
         self.publish(
             Uuid::now_v7(),
             "updateView",
-            maybe_body_to_json(request),
+            maybe_body_to_json(&request),
             EventMetadata {
                 tabular_id: TabularId::View(metadata.new_metadata.uuid().into()),
                 warehouse_id,
