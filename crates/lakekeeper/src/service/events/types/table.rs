@@ -21,8 +21,10 @@ use crate::{
 
 /// Function type used by event listeners to resolve a `TableIdent` to its `TableId`.
 /// Implementations should be cheap and non-blocking.
-/// Note: Listeners receive this as a borrowed reference valid only for the duration of the call.
-/// Do not store it for use outside the async method invocation.
+///
+/// When received as a borrowed reference (`&TableIdentToIdFn`), it is valid only for the
+/// duration of the call and should not be stored. However, when wrapped in `Arc<TableIdentToIdFn>`
+/// (as in event structs like `CommitTransactionEvent`), it can be safely cloned and stored.
 pub type TableIdentToIdFn = dyn Fn(&iceberg::TableIdent) -> Option<TableId> + Send + Sync;
 
 // ===== Table Events =====

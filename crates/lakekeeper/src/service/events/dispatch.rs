@@ -7,6 +7,27 @@ use futures::TryFutureExt;
 
 use super::types;
 
+/// Macro to dispatch events to all listeners with error logging.
+///
+/// Reduces boilerplate by handling the common pattern of:
+/// - Cloning the event for each listener
+/// - Calling the listener method
+/// - Logging errors without propagating them
+macro_rules! dispatch_event {
+    ($self:ident, $method:ident, $event:expr) => {
+        futures::future::join_all($self.0.iter().map(|listener| {
+            listener.$method($event.clone()).map_err(|e| {
+                tracing::warn!(
+                    "Listener '{}' encountered error on {}: {e:?}",
+                    listener.to_string(),
+                    stringify!($method),
+                );
+            })
+        }))
+        .await;
+    };
+}
+
 /// Collection of event listeners that are invoked after successful operations
 #[derive(Clone)]
 pub struct EventDispatcher(pub(crate) Vec<Arc<dyn EventListener>>);
@@ -32,12 +53,11 @@ impl EventDispatcher {
 impl Display for EventDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "EventDispatcher with [")?;
-        for idx in 0..self.0.len() {
-            if idx == self.0.len() - 1 {
-                write!(f, "{}", self.0[idx])?;
-            } else {
-                write!(f, "{}, ", self.0[idx])?;
+        for (idx, hook) in self.0.iter().enumerate() {
+            if idx > 0 {
+                write!(f, ", ")?;
             }
+            write!(f, "{hook}")?;
         }
         write!(f, "]")
     }
@@ -45,277 +65,99 @@ impl Display for EventDispatcher {
 
 impl EventDispatcher {
     pub(crate) async fn transaction_committed(&self, event: types::CommitTransactionEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.transaction_committed(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on transaction_committed: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, transaction_committed, event);
     }
 
     pub(crate) async fn table_dropped(&self, event: types::DropTableEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.table_dropped(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on table_dropped: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, table_dropped, event);
     }
 
     pub(crate) async fn table_registered(&self, event: types::RegisterTableEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.table_registered(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on table_registered: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, table_registered, event);
     }
 
     pub(crate) async fn table_created(&self, event: types::CreateTableEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.table_created(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on table_created: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, table_created, event);
     }
 
     pub(crate) async fn table_renamed(&self, event: types::RenameTableEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.table_renamed(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on table_renamed: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, table_renamed, event);
     }
 
     pub(crate) async fn view_created(&self, event: types::CreateViewEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.view_created(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on view_created: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, view_created, event);
     }
 
     pub(crate) async fn view_committed(&self, event: types::CommitViewEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.view_committed(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on view_committed: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, view_committed, event);
     }
 
     pub(crate) async fn view_dropped(&self, event: types::DropViewEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.view_dropped(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on view_dropped: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, view_dropped, event);
     }
 
     pub(crate) async fn view_renamed(&self, event: types::RenameViewEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.view_renamed(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on view_renamed: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, view_renamed, event);
     }
 
     pub(crate) async fn tabular_undropped(&self, event: types::UndropTabularEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.tabular_undropped(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on tabular_undropped: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, tabular_undropped, event);
     }
 
     pub(crate) async fn warehouse_created(&self, event: types::CreateWarehouseEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_created(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on warehouse_created: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_created, event);
     }
 
     pub(crate) async fn warehouse_deleted(&self, event: types::DeleteWarehouseEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_deleted(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on warehouse_deleted: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_deleted, event);
     }
 
     pub(crate) async fn warehouse_protection_set(&self, event: types::SetWarehouseProtectionEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener
-                .warehouse_protection_set(event.clone())
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Listener '{}' encountered error on warehouse_protection_set: {e:?}",
-                        listener.to_string()
-                    );
-                })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_protection_set, event);
     }
 
     pub(crate) async fn warehouse_renamed(&self, event: types::RenameWarehouseEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_renamed(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on warehouse_renamed: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_renamed, event);
     }
 
     pub(crate) async fn warehouse_delete_profile_updated(
         &self,
         event: types::UpdateWarehouseDeleteProfileEvent,
     ) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_delete_profile_updated(event.clone())
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Listener '{}' encountered error on warehouse_delete_profile_updated: {e:?}",
-                        listener.to_string()
-                    );
-                })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_delete_profile_updated, event);
     }
 
     pub(crate) async fn warehouse_storage_updated(
         &self,
         event: types::UpdateWarehouseStorageEvent,
     ) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener
-                .warehouse_storage_updated(event.clone())
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Listener '{}' encountered error on warehouse_storage_updated: {e:?}",
-                        listener.to_string()
-                    );
-                })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_storage_updated, event);
     }
 
     pub(crate) async fn warehouse_storage_credential_updated(
         &self,
         event: types::UpdateWarehouseStorageCredentialEvent,
     ) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.warehouse_storage_credential_updated(event.clone())
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Listener '{}' encountered error on warehouse_storage_credential_updated: {e:?}",
-                        listener.to_string()
-                    );
-                })
-        }))
-        .await;
+        dispatch_event!(self, warehouse_storage_credential_updated, event);
     }
 
     pub(crate) async fn namespace_protection_set(&self, event: types::SetNamespaceProtectionEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener
-                .namespace_protection_set(event.clone())
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Listener '{}' encountered error on namespace_protection_set: {e:?}",
-                        listener.to_string()
-                    );
-                })
-        }))
-        .await;
+        dispatch_event!(self, namespace_protection_set, event);
     }
 
     pub(crate) async fn namespace_created(&self, event: types::CreateNamespaceEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.namespace_created(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on namespace_created: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, namespace_created, event);
     }
 
     pub(crate) async fn namespace_dropped(&self, event: types::DropNamespaceEvent) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener.namespace_dropped(event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on namespace_dropped: {e:?}",
-                    listener.to_string()
-                );
-            })
-        }))
-        .await;
+        dispatch_event!(self, namespace_dropped, event);
     }
 
     pub(crate) async fn namespace_properties_updated(
         &self,
         event: types::UpdateNamespacePropertiesEvent,
     ) {
-        futures::future::join_all(self.0.iter().map(|listener| {
-            listener
-                .namespace_properties_updated(event.clone())
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Listener '{}' encountered error on namespace_properties_updated: {e:?}",
-                        listener.to_string()
-                    );
-                })
-        }))
-        .await;
+        dispatch_event!(self, namespace_properties_updated, event);
     }
 }
 

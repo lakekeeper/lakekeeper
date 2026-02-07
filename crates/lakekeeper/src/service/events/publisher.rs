@@ -1,6 +1,6 @@
 use std::{
     fmt::{Debug, Display},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use anyhow::Context;
@@ -12,6 +12,7 @@ use uuid::Uuid;
 use super::{dispatch::EventListener, types};
 use crate::{
     CONFIG,
+    api::RequestMetadata,
     api::iceberg::{
         types::Prefix,
         v1::{NamespaceParameters, TableParameters},
@@ -19,6 +20,23 @@ use crate::{
     server::tables::maybe_body_to_json,
     service::{TableId, TabularId, WarehouseId},
 };
+
+/// Cached hostname for CloudEvents source URI. Resolved once at first access.
+static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
+    hostname::get().map_or_else(
+        |_| "hostname-unavailable".into(),
+        |os| os.to_string_lossy().to_string(),
+    )
+});
+
+/// Serializes the actor from request metadata to a JSON string.
+///
+/// # Errors
+/// Returns an error if the actor cannot be serialized.
+fn serialize_actor(request_metadata: &RequestMetadata) -> anyhow::Result<String> {
+    serde_json::to_string(request_metadata.actor())
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))
+}
 
 /// Builds the default cloud event backends from the configuration.
 ///
@@ -85,25 +103,22 @@ impl EventListener for CloudEventsPublisher {
         for (event_sequence_number, (body, (table_ident, table_id))) in
             events.into_iter().zip(event_table_ids).enumerate()
         {
-            futs.push(
-                self.publish(
-                    Uuid::now_v7(),
-                    "updateTable",
-                    body,
-                    EventMetadata {
-                        tabular_id: TabularId::Table(table_id),
-                        warehouse_id,
-                        name: table_ident.name,
-                        namespace: table_ident.namespace.to_url_string(),
-                        prefix: String::new(),
-                        num_events: number_of_events,
-                        sequence_number: event_sequence_number,
-                        trace_id: request_metadata.request_id(),
-                        actor: serde_json::to_string(request_metadata.actor())
-                            .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
-                    },
-                ),
-            );
+            futs.push(self.publish(
+                Uuid::now_v7(),
+                "updateTable",
+                body,
+                EventMetadata {
+                    tabular_id: TabularId::Table(table_id),
+                    warehouse_id,
+                    name: table_ident.name,
+                    namespace: table_ident.namespace.to_url_string(),
+                    prefix: String::new(),
+                    num_events: number_of_events,
+                    sequence_number: event_sequence_number,
+                    trace_id: request_metadata.request_id(),
+                    actor: serialize_actor(&request_metadata)?,
+                },
+            ));
         }
         futures::future::try_join_all(futs)
             .await
@@ -132,8 +147,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -163,8 +177,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -195,8 +208,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -224,8 +236,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -259,8 +270,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -293,8 +303,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -326,8 +335,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -355,8 +363,7 @@ impl EventListener for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
-                actor: serde_json::to_string(request_metadata.actor())
-                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                actor: serialize_actor(&request_metadata)?,
             },
         )
         .await
@@ -374,25 +381,22 @@ impl EventListener for CloudEventsPublisher {
         let num_tabulars = responses.len();
         let mut futs = Vec::with_capacity(responses.len());
         for (idx, tabular_info) in responses.iter().enumerate() {
-            futs.push(
-                self.publish(
-                    Uuid::now_v7(),
-                    "undropTabulars",
-                    serde_json::Value::Null,
-                    EventMetadata {
-                        tabular_id: tabular_info.tabular_id(),
-                        warehouse_id,
-                        name: tabular_info.tabular_ident().name.clone(),
-                        namespace: tabular_info.tabular_ident().namespace.to_url_string(),
-                        prefix: String::new(),
-                        num_events: num_tabulars,
-                        sequence_number: idx,
-                        trace_id: request_metadata.request_id(),
-                        actor: serde_json::to_string(request_metadata.actor())
-                            .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
-                    },
-                ),
-            );
+            futs.push(self.publish(
+                Uuid::now_v7(),
+                "undropTabulars",
+                serde_json::Value::Null,
+                EventMetadata {
+                    tabular_id: tabular_info.tabular_id(),
+                    warehouse_id,
+                    name: tabular_info.tabular_ident().name.clone(),
+                    namespace: tabular_info.tabular_ident().namespace.to_url_string(),
+                    prefix: String::new(),
+                    num_events: num_tabulars,
+                    sequence_number: idx,
+                    trace_id: request_metadata.request_id(),
+                    actor: serialize_actor(&request_metadata)?,
+                },
+            ));
         }
         futures::future::try_join_all(futs)
             .await
@@ -509,12 +513,7 @@ impl CloudEventsPublisherBackgroundTask {
 
             let event_builder = EventBuilderV10::new()
                 .id(id.to_string())
-                .source(format!(
-                    "uri:iceberg-catalog-service:{}",
-                    hostname::get()
-                        .map(|os| os.to_string_lossy().to_string())
-                        .unwrap_or("hostname-unavailable".into())
-                ))
+                .source(format!("uri:iceberg-catalog-service:{}", &*HOSTNAME))
                 .ty(typ)
                 .data("application/json", data);
 
