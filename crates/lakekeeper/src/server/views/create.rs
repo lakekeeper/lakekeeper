@@ -181,7 +181,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .hooks
         .create_view(CreateViewEvent {
             warehouse_id,
-            parameters: parameters.clone(),
+            parameters,
             request: Arc::new(request),
             metadata: Arc::new(metadata_build_result.metadata.clone()),
             metadata_location: Arc::new(metadata_location.clone()),

@@ -302,10 +302,6 @@ pub struct ViewCommit {
     pub new_metadata_location: Location,
 }
 
-/// Function type used by hooks to resolve a `TableIdent` to its `TableId`.
-/// Implementations should be cheap and non-blocking.
-/// Note: Hooks receive this as a borrowed reference valid only for the duration of the call.
-/// Do not store it for use outside the async method invocation.
 pub type TableIdentToIdFn = dyn Fn(&TableIdent) -> Option<TableId> + Send + Sync;
 
 impl EndpointHookCollection {
