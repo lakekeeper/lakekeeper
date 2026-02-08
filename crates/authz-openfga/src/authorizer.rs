@@ -15,8 +15,8 @@ use lakekeeper::{
         TableId, UserId, ViewId,
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
-            CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
-            NamespaceParent, UserOrRole,
+            CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListAllowedEntitiesResponse,
+            ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::Health,
     },
@@ -35,7 +35,7 @@ use utoipa::OpenApi as _;
 
 use crate::{
     AUTH_CONFIG, FgaType, MAX_TUPLES_PER_WRITE,
-    entities::{OpenFgaEntity, ParseOpenFgaEntity},
+    entities::{OpenFgaEntity, ParseOpenFgaEntity, parse_namespace_from_openfga, parse_table_from_openfga, parse_view_from_openfga},
     error::{
         BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
         OpenFGAResult, UnexpectedCorrelationId,
@@ -870,6 +870,90 @@ impl Authorizer for OpenFGAAuthorizer {
         view_id: ViewId,
     ) -> AuthorizerResult<()> {
         self.delete_all_relations(&(warehouse_id, view_id)).await
+    }
+
+    async fn list_allowed_tables(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<TableId>, AuthorizationBackendUnavailable> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all tables the user can see
+        let tables = self
+            .list_objects(
+                FgaType::Table.to_string(),
+                TableRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await?
+            .into_iter()
+            .filter_map(|obj| {
+                parse_table_from_openfga(&obj, warehouse_id)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse table id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<TableId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(tables))
+    }
+
+    async fn list_allowed_views(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<ViewId>, AuthorizationBackendUnavailable> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all views the user can see
+        let views = self
+            .list_objects(
+                FgaType::View.to_string(),
+                ViewRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await?
+            .into_iter()
+            .filter_map(|obj| {
+                parse_view_from_openfga(&obj, warehouse_id)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse view id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<ViewId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(views))
+    }
+
+    async fn list_allowed_namespaces(
+        &self,
+        metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<NamespaceId>, AuthorizationBackendUnavailable> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all namespaces the user can see
+        let namespaces = self
+            .list_objects(
+                FgaType::Namespace.to_string(),
+                NamespaceRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await?
+            .into_iter()
+            .filter_map(|obj| {
+                parse_namespace_from_openfga(&obj)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse namespace id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<NamespaceId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(namespaces))
     }
 }
 

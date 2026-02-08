@@ -11,6 +11,102 @@ use crate::{
     error::{OpenFGAError, OpenFGAResult},
 };
 
+/// Parse a table ID from an OpenFGA object string.
+/// Format: `lakekeeper_table:{warehouse_id}/{table_id}`
+/// Only returns the table ID if it belongs to the specified warehouse.
+///
+/// # Arguments
+/// * `obj` - The OpenFGA object string to parse
+/// * `warehouse_id` - The warehouse ID to filter by
+///
+/// # Returns
+/// * `Ok(TableId)` - The parsed table ID if it belongs to the specified warehouse
+/// * `Err(OpenFGAError::InvalidEntity)` - If the object string is malformed or belongs to a different warehouse
+pub(crate) fn parse_table_from_openfga(obj: &str, warehouse_id: WarehouseId) -> OpenFGAResult<TableId> {
+    // Expected format: "lakekeeper_table:{warehouse_uuid}/{table_uuid}"
+    let parts: Vec<&str> = obj.split(':').collect();
+    if parts.len() != 2 || parts[0] != FgaType::Table.to_string() {
+        return Err(OpenFGAError::InvalidEntity(obj.to_string()));
+    }
+
+    let id_parts: Vec<&str> = parts[1].split('/').collect();
+    if id_parts.len() != 2 {
+        return Err(OpenFGAError::InvalidEntity(obj.to_string()));
+    }
+
+    let parsed_warehouse_id = WarehouseId::from_str_or_bad_request(id_parts[0])
+        .map_err(|e| OpenFGAError::InvalidEntity(format!("{}: {}", obj, e.message)))?;
+
+    // Filter to only include tables from the requested warehouse
+    if parsed_warehouse_id != warehouse_id {
+        return Err(OpenFGAError::InvalidEntity(format!(
+            "Table {} belongs to different warehouse",
+            obj
+        )));
+    }
+
+    TableId::from_str_or_bad_request(id_parts[1])
+        .map_err(|e| OpenFGAError::InvalidEntity(format!("{}: {}", obj, e.message)))
+}
+
+/// Parse a view ID from an OpenFGA object string.
+/// Format: `lakekeeper_view:{warehouse_id}/{view_id}`
+/// Only returns the view ID if it belongs to the specified warehouse.
+///
+/// # Arguments
+/// * `obj` - The OpenFGA object string to parse
+/// * `warehouse_id` - The warehouse ID to filter by
+///
+/// # Returns
+/// * `Ok(ViewId)` - The parsed view ID if it belongs to the specified warehouse
+/// * `Err(OpenFGAError::InvalidEntity)` - If the object string is malformed or belongs to a different warehouse
+pub(crate) fn parse_view_from_openfga(obj: &str, warehouse_id: WarehouseId) -> OpenFGAResult<ViewId> {
+    // Expected format: "lakekeeper_view:{warehouse_uuid}/{view_uuid}"
+    let parts: Vec<&str> = obj.split(':').collect();
+    if parts.len() != 2 || parts[0] != FgaType::View.to_string() {
+        return Err(OpenFGAError::InvalidEntity(obj.to_string()));
+    }
+
+    let id_parts: Vec<&str> = parts[1].split('/').collect();
+    if id_parts.len() != 2 {
+        return Err(OpenFGAError::InvalidEntity(obj.to_string()));
+    }
+
+    let parsed_warehouse_id = WarehouseId::from_str_or_bad_request(id_parts[0])
+        .map_err(|e| OpenFGAError::InvalidEntity(format!("{}: {}", obj, e.message)))?;
+
+    // Filter to only include views from the requested warehouse
+    if parsed_warehouse_id != warehouse_id {
+        return Err(OpenFGAError::InvalidEntity(format!(
+            "View {} belongs to different warehouse",
+            obj
+        )));
+    }
+
+    ViewId::from_str_or_bad_request(id_parts[1])
+        .map_err(|e| OpenFGAError::InvalidEntity(format!("{}: {}", obj, e.message)))
+}
+
+/// Parse a namespace ID from an OpenFGA object string.
+/// Format: `lakekeeper_namespace:{namespace_id}`
+///
+/// # Arguments
+/// * `obj` - The OpenFGA object string to parse
+///
+/// # Returns
+/// * `Ok(NamespaceId)` - The parsed namespace ID
+/// * `Err(OpenFGAError::InvalidEntity)` - If the object string is malformed
+pub(crate) fn parse_namespace_from_openfga(obj: &str) -> OpenFGAResult<NamespaceId> {
+    // Expected format: "lakekeeper_namespace:{namespace_uuid}"
+    let parts: Vec<&str> = obj.split(':').collect();
+    if parts.len() != 2 || parts[0] != FgaType::Namespace.to_string() {
+        return Err(OpenFGAError::InvalidEntity(obj.to_string()));
+    }
+
+    NamespaceId::from_str_or_bad_request(parts[1])
+        .map_err(|e| OpenFGAError::InvalidEntity(format!("{}: {}", obj, e.message)))
+}
+
 pub(crate) trait ParseOpenFgaEntity: Sized {
     fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {
         let parts = s.split(':').collect::<Vec<&str>>();
@@ -274,5 +370,287 @@ mod test {
         let entity = id.to_openfga();
         let previous_entity = format!("server:{id}");
         assert_eq!(entity, previous_entity);
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_valid() {
+        let warehouse_id = WarehouseId::new_random();
+        let table_id = TableId::new_random();
+        let openfga_obj = (warehouse_id, table_id).to_openfga();
+
+        let parsed = parse_table_from_openfga(&openfga_obj, warehouse_id).unwrap();
+        assert_eq!(parsed, table_id);
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_wrong_warehouse() {
+        let warehouse_id = WarehouseId::new_random();
+        let other_warehouse_id = WarehouseId::new_random();
+        let table_id = TableId::new_random();
+        let openfga_obj = (warehouse_id, table_id).to_openfga();
+
+        let result = parse_table_from_openfga(&openfga_obj, other_warehouse_id);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OpenFGAError::InvalidEntity(_)));
+        assert!(err.to_string().contains("belongs to different warehouse"));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_wrong_type() {
+        let warehouse_id = WarehouseId::new_random();
+        let view_id = ViewId::new_random();
+        // Create a view object string instead of table
+        let openfga_obj = (warehouse_id, view_id).to_openfga();
+
+        let result = parse_table_from_openfga(&openfga_obj, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_missing_colon() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = "lakekeeper_table_no_colon";
+
+        let result = parse_table_from_openfga(malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_missing_slash() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = format!("lakekeeper_table:{}", warehouse_id);
+
+        let result = parse_table_from_openfga(&malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_invalid_warehouse_uuid() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = "lakekeeper_table:not-a-uuid/550e8400-e29b-41d4-a716-446655440000";
+
+        let result = parse_table_from_openfga(malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_invalid_table_uuid() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = format!("lakekeeper_table:{}/not-a-uuid", warehouse_id);
+
+        let result = parse_table_from_openfga(&malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_empty_string() {
+        let warehouse_id = WarehouseId::new_random();
+
+        let result = parse_table_from_openfga("", warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_extra_colons() {
+        let warehouse_id = WarehouseId::new_random();
+        let table_id = TableId::new_random();
+        let malformed = format!("lakekeeper_table:{}:{}:{}", warehouse_id, table_id, "extra");
+
+        let result = parse_table_from_openfga(&malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_table_from_openfga_round_trip() {
+        // Test that to_openfga and parse_table_from_openfga are inverses
+        let warehouse_id = WarehouseId::new_random();
+        let table_id = TableId::new_random();
+
+        let openfga_str = (warehouse_id, table_id).to_openfga();
+        let parsed = parse_table_from_openfga(&openfga_str, warehouse_id).unwrap();
+
+        assert_eq!(parsed, table_id);
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_valid() {
+        let warehouse_id = WarehouseId::new_random();
+        let view_id = ViewId::new_random();
+        let openfga_obj = (warehouse_id, view_id).to_openfga();
+
+        let parsed = parse_view_from_openfga(&openfga_obj, warehouse_id).unwrap();
+        assert_eq!(parsed, view_id);
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_wrong_warehouse() {
+        let warehouse_id = WarehouseId::new_random();
+        let other_warehouse_id = WarehouseId::new_random();
+        let view_id = ViewId::new_random();
+        let openfga_obj = (warehouse_id, view_id).to_openfga();
+
+        let result = parse_view_from_openfga(&openfga_obj, other_warehouse_id);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OpenFGAError::InvalidEntity(_)));
+        assert!(err.to_string().contains("belongs to different warehouse"));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_wrong_type() {
+        let warehouse_id = WarehouseId::new_random();
+        let table_id = TableId::new_random();
+        // Create a table object string instead of view
+        let openfga_obj = (warehouse_id, table_id).to_openfga();
+
+        let result = parse_view_from_openfga(&openfga_obj, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_missing_colon() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = "lakekeeper_view_no_colon";
+
+        let result = parse_view_from_openfga(malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_missing_slash() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = format!("lakekeeper_view:{}", warehouse_id);
+
+        let result = parse_view_from_openfga(&malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_invalid_warehouse_uuid() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = "lakekeeper_view:not-a-uuid/550e8400-e29b-41d4-a716-446655440000";
+
+        let result = parse_view_from_openfga(malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_invalid_view_uuid() {
+        let warehouse_id = WarehouseId::new_random();
+        let malformed = format!("lakekeeper_view:{}/not-a-uuid", warehouse_id);
+
+        let result = parse_view_from_openfga(&malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_empty_string() {
+        let warehouse_id = WarehouseId::new_random();
+
+        let result = parse_view_from_openfga("", warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_extra_colons() {
+        let warehouse_id = WarehouseId::new_random();
+        let view_id = ViewId::new_random();
+        let malformed = format!("lakekeeper_view:{}:{}:{}", warehouse_id, view_id, "extra");
+
+        let result = parse_view_from_openfga(&malformed, warehouse_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_view_from_openfga_round_trip() {
+        // Test that to_openfga and parse_view_from_openfga are inverses
+        let warehouse_id = WarehouseId::new_random();
+        let view_id = ViewId::new_random();
+
+        let openfga_str = (warehouse_id, view_id).to_openfga();
+        let parsed = parse_view_from_openfga(&openfga_str, warehouse_id).unwrap();
+
+        assert_eq!(parsed, view_id);
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_valid() {
+        let namespace_id = NamespaceId::new_random();
+        let openfga_obj = namespace_id.to_openfga();
+
+        let parsed = parse_namespace_from_openfga(&openfga_obj).unwrap();
+        assert_eq!(parsed, namespace_id);
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_wrong_type() {
+        let warehouse_id = WarehouseId::new_random();
+        // Create a warehouse object string instead of namespace
+        let openfga_obj = warehouse_id.to_openfga();
+
+        let result = parse_namespace_from_openfga(&openfga_obj);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_missing_colon() {
+        let malformed = "lakekeeper_namespace_no_colon";
+
+        let result = parse_namespace_from_openfga(malformed);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_invalid_uuid() {
+        let malformed = "lakekeeper_namespace:not-a-uuid";
+
+        let result = parse_namespace_from_openfga(malformed);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_empty_string() {
+        let result = parse_namespace_from_openfga("");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_extra_colons() {
+        let namespace_id = NamespaceId::new_random();
+        let malformed = format!("lakekeeper_namespace:{}:extra", namespace_id);
+
+        let result = parse_namespace_from_openfga(&malformed);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OpenFGAError::InvalidEntity(_)));
+    }
+
+    #[test]
+    fn test_parse_namespace_from_openfga_round_trip() {
+        // Test that to_openfga and parse_namespace_from_openfga are inverses
+        let namespace_id = NamespaceId::new_random();
+
+        let openfga_str = namespace_id.to_openfga();
+        let parsed = parse_namespace_from_openfga(&openfga_str).unwrap();
+
+        assert_eq!(parsed, namespace_id);
     }
 }

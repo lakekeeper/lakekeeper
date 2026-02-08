@@ -19,7 +19,7 @@ use crate::{
             AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
-            ListProjectsResponse, NamespaceParent, UserOrRole,
+            ListAllowedEntitiesResponse, ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -288,5 +288,29 @@ impl Authorizer for AllowAllAuthorizer {
 
     async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
         Ok(())
+    }
+
+    async fn list_allowed_tables(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<TableId>, AuthorizationBackendUnavailable> {
+        Ok(ListAllowedEntitiesResponse::All)
+    }
+
+    async fn list_allowed_views(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<ViewId>, AuthorizationBackendUnavailable> {
+        Ok(ListAllowedEntitiesResponse::All)
+    }
+
+    async fn list_allowed_namespaces(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<NamespaceId>, AuthorizationBackendUnavailable> {
+        Ok(ListAllowedEntitiesResponse::All)
     }
 }
