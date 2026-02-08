@@ -35,7 +35,11 @@ cd examples/access-control-cedar
 ./lakekeeper.sh
 ```
 
-The script will prompt you for your license key on first run and save it to `.env`.
+The script will:
+1. Automatically detect your host IP address (required for MinIO access from both containers and browser)
+2. Prompt you for your license key on first run and save it to `.env`
+3. Start MinIO standalone on the host network
+4. Start all other services via docker compose
 
 **To run in detached mode:**
 
@@ -48,6 +52,12 @@ The script will prompt you for your license key on first run and save it to `.en
 ```bash
 ./lakekeeper.sh up --new-license
 ```
+
+**Note**: The script automatically detects your host IP address to enable MinIO access from:
+- Docker/Podman containers (for Lakekeeper storage operations)
+- Your browser (for DuckDB table previews)
+
+If automatic detection fails, the script will prompt you to enter your IP address manually.
 
 **Option 2: Manual setup with docker compose**
 

@@ -94,9 +94,37 @@ case "$COMMAND" in
             echo ""
         fi
 
-        # Run docker compose up
-        echo "Starting services..."
-        $DOCKER_CMD compose up "${REMAINING_ARGS[@]}"
+        # Detect host IP address
+        echo "Detecting host IP address..."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS - try common interfaces
+            HOST_IP=$(ifconfig en0 2>/dev/null | grep 'inet ' | awk '{print $2}')
+            if [ -z "$HOST_IP" ]; then
+                HOST_IP=$(ifconfig en1 2>/dev/null | grep 'inet ' | awk '{print $2}')
+            fi
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            # Linux - try to get default route interface
+            DEFAULT_IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+            if [ -n "$DEFAULT_IFACE" ]; then
+                HOST_IP=$(ip addr show "$DEFAULT_IFACE" | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+            fi
+        fi
+        
+        if [ -z "$HOST_IP" ]; then
+            echo "Error: Could not detect host IP address automatically."
+            echo "Please enter your host IP address manually:"
+            read -p "Host IP: " HOST_IP
+            if [ -z "$HOST_IP" ]; then
+                echo "Error: Host IP cannot be empty"
+                exit 1
+            fi
+        fi
+        
+        echo "Using host IP: $HOST_IP"
+        export HOST_IP
+        
+        echo "Starting services with HOST_IP=$HOST_IP..."
+        HOST_IP="$HOST_IP" $DOCKER_CMD compose up "${REMAINING_ARGS[@]}"
         ;;
     
     down)
