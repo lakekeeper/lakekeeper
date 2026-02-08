@@ -109,32 +109,28 @@ Once all services are up, you can access:
 
 ### Testing Authorization
 
-This example demonstrates Cedar's table-level access control by comparing two users:
+This example demonstrates Cedar's table-level access control. Follow the notebooks in order:
 
-**Workflow:**
+**Step-by-step workflow:**
 
-1. **Setup**: Run `01-Bootstrap.ipynb` and `02-Trino-Preparation.ipynb` to initialize the environment.
+1. **Bootstrap** (`01-Bootstrap.ipynb`): Initialize Lakekeeper, create the warehouse, and register Peter as admin.
 
-2. **Test Peter (Full Access)**: 
-   - Run `03-Peter-Can-Query.ipynb` to verify Peter can query all tables.
-   - Login to Trino UI as Peter to explore the catalog.
+2. **Setup Trino** (`02-Trino-Preparation.ipynb`): Create the Trino catalog connection (run as Peter).
 
-3. **Test Anna (No Access)**: 
-   - Open an incognito window or another browser.
-   - Login to Trino UI as Anna (username: `anna`, password: `iceberg`).
-   - Try to query `SELECT * FROM lakekeeper.finance.products` - **should fail**.
+3. **Create Tables** (`03-Create-Tables.ipynb`): Peter creates the `finance.revenue` and `finance.products` tables and verifies he can query them.
 
-4. **Grant Anna Access**:
-   - Run `04-Grant-Anna-Access.ipynb` to add a Cedar policy granting Anna read access to only the `products` table.
+4. **Grant Anna Access** (`04-Grant-Anna-Access.ipynb`): Add a Cedar policy granting Anna read access to only the `products` table (not `revenue`).
 
-5. **Verify Anna's Limited Access**:
-   - Refresh Anna's Trino session.
-   - Query `SELECT * FROM lakekeeper.finance.products` - **should now succeed**.
-   - Try querying other tables like `SELECT * FROM lakekeeper.finance.revenue` - **should fail**.
+5. **Test Anna's Access** (`05-Test-Anna-Access.ipynb`): Anna can query `products` but cannot access `revenue`, demonstrating table-level authorization.
 
-6. **Cleanup**: Run the last cell in `04-Grant-Anna-Access.ipynb` to remove Anna's policy.
+**Testing in Trino UI:**
 
-**Note**: To simulate different users simultaneously, use incognito mode or a different browser, since each browser session maintains its own OAuth authentication.
+To test different users in the browser:
+- Login to Trino UI at [https://localhost/ui/](https://localhost/ui/) as Peter
+- Open an incognito window or different browser to login as Anna (username: `anna`, password: `iceberg`)
+- Try querying tables to verify Peter has full access while Anna can only access `products`
+
+**Note**: Use incognito mode or a different browser for simultaneous multi-user testing, as each browser session maintains its own OAuth authentication.
 
 ### Cedar Policies
 
@@ -143,15 +139,15 @@ This example uses Cedar policies for authorization. The policies are stored in a
 **Policy Files**:
 - Initial policies are copied from `policies/` directory on startup
 - Policies are shared between Jupyter and Lakekeeper containers
-- Edit policies live using the Jupyter notebook at [http://localhost:8888](http://localhost:8888)
+- Edit policies directly in the notebooks (see `04-Grant-Anna-Access.ipynb` for an example)
 
 **Auto-Reload**: Lakekeeper polls policy files every 5 seconds - changes are applied automatically without restart!
 
-**Managing Policies**:
-1. Open the `00-Manage-Cedar-Policies.ipynb` notebook in Jupyter
-2. Edit policies using Python code
-3. Wait 5-6 seconds for Lakekeeper to detect and apply changes
-4. No restart needed!
+**How it works**:
+- Peter's admin policy is defined in `policies/policies.cedar` and loaded on startup
+- Anna's policy is added programmatically in `04-Grant-Anna-Access.ipynb`
+- Changes to policy files are detected within 5-6 seconds automatically
+- No service restart needed when modifying policies!
 
 ### Configuration
 
