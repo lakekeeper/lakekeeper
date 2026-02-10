@@ -159,6 +159,7 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
+    #[must_use]
     pub fn new(last_modified: DateTime<Utc>, location: Location) -> Self {
         Self {
             last_modified,
@@ -166,10 +167,12 @@ impl FileInfo {
         }
     }
 
+    #[must_use]
     pub fn last_modified(&self) -> DateTime<Utc> {
         self.last_modified
     }
 
+    #[must_use]
     pub fn location(&self) -> &Location {
         &self.location
     }

@@ -10,11 +10,13 @@ use crate::{
     Location, ReadError, WriteError, error::ErrorKind,
 };
 
+type MemoryFile = (Bytes, DateTime<Utc>);
+
 /// In-memory storage implementation for testing and development purposes.
 /// All data is stored in memory and persists across instances within the same thread.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
-    data: Arc<RwLock<HashMap<String, (Bytes, DateTime<Utc>)>>>,
+    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
     use_global_store: bool,
 }
 
@@ -228,7 +230,7 @@ impl LakekeeperStorage for MemoryStorage {
                 Ok(location) => {
                     let file_info = FileInfo {
                         last_modified,
-                        location: location,
+                        location,
                     };
                     all_file_infos.push(file_info);
                 }

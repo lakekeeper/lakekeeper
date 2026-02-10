@@ -484,8 +484,8 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
                 })
             })?;
         Ok(FileInfo {
-            location,
             last_modified,
+            location,
         })
     }
 }

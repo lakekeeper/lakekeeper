@@ -440,12 +440,12 @@ fn try_parse_file_info(
 ) -> impl FnMut(&Object) -> Option<FileInfo> {
     move |object| {
         let key = object.key()?;
-        let last_modified = object.last_modified()?; // Should this fail if no last_modified?
+        let last_modified = object.last_modified()?;
         let last_modified =
             DateTime::from_timestamp(last_modified.secs(), last_modified.subsec_nanos())?;
         let scheme = base_location.scheme();
         let full_path = format!("{scheme}://{s3_bucket}/{key}");
-        let location = Location::from_str(&full_path).unwrap_or_else(|_| base_location.clone());
+        let location = Location::from_str(&full_path).ok()?;
         Some(FileInfo {
             last_modified,
             location,

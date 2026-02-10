@@ -557,17 +557,17 @@ async fn test_batch_delete_many_items_some_nonexistant_impl(
 
     // Verify files exist by listing directory (much faster than reading each file)
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut listed_locations = Vec::new();
+    let mut listed_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        listed_locations.extend(locations);
+        let file_infos = result?;
+        listed_file_infos.extend(file_infos);
     }
 
     // Filter out directory entries (ending with '/')
-    let listed_files: Vec<_> = listed_locations
+    let listed_files: Vec<_> = listed_file_infos
         .iter()
-        .filter(|loc| !loc.to_string().ends_with('/'))
+        .filter(|file_info| !file_info.location().to_string().ends_with('/'))
         .collect();
 
     // Just verify we have at least as many files as we wrote
@@ -596,17 +596,17 @@ async fn test_batch_delete_many_items_some_nonexistant_impl(
 
     // Verify deletion using list operation instead of individual reads
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut remaining_locations = Vec::new();
+    let mut remaining_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        remaining_locations.extend(locations);
+        let file_infos = result?;
+        remaining_file_infos.extend(file_infos);
     }
 
     // Filter out directory entries (ending with '/')
-    let remaining_files: Vec<_> = remaining_locations
+    let remaining_files: Vec<_> = remaining_file_infos
         .iter()
-        .filter(|loc| !loc.to_string().ends_with('/'))
+        .filter(|file_info| !file_info.location().to_string().ends_with('/'))
         .collect();
 
     assert!(
@@ -642,21 +642,21 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
 
     // List all files in the base directory
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut all_locations = Vec::new();
+    let mut all_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        all_locations.extend(locations);
+        let file_infos = result?;
+        all_file_infos.extend(file_infos);
     }
 
     // Debug: print what we actually found
     println!(
         "Expected {} files, found {} files:",
         test_files.len(),
-        all_locations.len()
+        all_file_infos.len()
     );
-    for location in &all_locations {
-        println!("  Found:    {location}");
+    for file_info in &all_file_infos {
+        println!("  Found:    {}", file_info.location());
     }
     for path in &written_paths {
         println!("  Expected: {path}");
@@ -666,14 +666,17 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
 
     // Should have at least the minimum expected items
     assert!(
-        all_locations.len() >= min_expected_items,
+        all_file_infos.len() >= min_expected_items,
         "Should list at least {} items, found {}",
         min_expected_items,
-        all_locations.len()
+        all_file_infos.len()
     );
 
     // Verify that we can find our test files in the results
-    let location_strings: Vec<String> = all_locations.iter().map(ToString::to_string).collect();
+    let location_strings: Vec<String> = all_file_infos
+        .iter()
+        .map(|file_info| file_info.location().to_string())
+        .collect();
 
     for expected_path in &written_paths {
         assert!(
@@ -683,11 +686,12 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
     }
 
     // Make sure all that was found but not expected are directories that end with a slash
-    for location in &all_locations {
-        if !written_paths.contains(&location.to_string()) {
+    for file_info in &all_file_infos {
+        if !written_paths.contains(&file_info.location().to_string()) {
             assert!(
-                location.to_string().ends_with('/'),
-                "Unexpected location found that is not a directory: {location}",
+                file_info.location().to_string().ends_with('/'),
+                "Unexpected location found that is not a directory: {}",
+                file_info.location(),
             );
         }
     }
@@ -745,31 +749,31 @@ async fn test_list_with_page_size_impl(
         println!("Testing with page size: {page_size}");
 
         let mut list_stream = storage.list(&base_dir, Some(page_size)).await?;
-        let mut all_locations = Vec::new();
+        let mut all_file_infos = Vec::new();
         let mut page_count = 0;
 
         while let Some(result) = list_stream.next().await {
-            let locations = result?;
+            let file_infos = result?;
             page_count += 1;
 
             // Each page (except possibly the last) should have at most page_size items
             assert!(
-                locations.len() <= page_size,
+                file_infos.len() <= page_size,
                 "Page {page_count} has {} items, which exceeds page size {page_size}",
-                locations.len()
+                file_infos.len()
             );
 
             // If this is not the last page, it should have exactly page_size items
             // (we can't easily check if it's the last page without consuming the stream)
 
-            all_locations.extend(locations);
+            all_file_infos.extend(file_infos);
         }
 
         // Should have collected all our files
         assert!(
-            all_locations.len() >= num_files,
+            all_file_infos.len() >= num_files,
             "Should list at least {num_files} items with page size {page_size}, found {}",
-            all_locations.len()
+            all_file_infos.len()
         );
 
         // Verify we got multiple pages for smaller page sizes
@@ -781,7 +785,10 @@ async fn test_list_with_page_size_impl(
         }
 
         // Verify that we can find our test files in the results
-        let location_strings: Vec<String> = all_locations.iter().map(ToString::to_string).collect();
+        let location_strings: Vec<String> = all_file_infos
+            .iter()
+            .map(|file_info| file_info.location().to_string())
+            .collect();
         for expected_path in &written_paths {
             assert!(
                 location_strings.iter().any(|loc| loc == expected_path),
@@ -792,24 +799,24 @@ async fn test_list_with_page_size_impl(
 
     // Test with page size of 1 (edge case)
     let mut list_stream = storage.list(&base_dir, Some(1)).await?;
-    let mut single_page_locations = Vec::new();
+    let mut single_page_file_infos = Vec::new();
     let mut single_page_count = 0;
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
+        let file_infos = result?;
         single_page_count += 1;
 
         // Each page should have exactly 1 item (except empty pages which shouldn't happen)
-        if !locations.is_empty() {
+        if !file_infos.is_empty() {
             assert_eq!(
-                locations.len(),
+                file_infos.len(),
                 1,
                 "With page size 1, each non-empty page should have exactly 1 item, got {}",
-                locations.len()
+                file_infos.len()
             );
         }
 
-        single_page_locations.extend(locations);
+        single_page_file_infos.extend(file_infos);
     }
 
     // Should have at least as many pages as files
@@ -820,13 +827,13 @@ async fn test_list_with_page_size_impl(
 
     // Test with very large page size (should get everything in one page)
     let mut list_stream = storage.list(&base_dir, Some(1000)).await?;
-    let mut large_page_locations = Vec::new();
+    let mut large_page_file_infos = Vec::new();
     let mut large_page_count = 0;
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
+        let file_infos = result?;
         large_page_count += 1;
-        large_page_locations.extend(locations);
+        large_page_file_infos.extend(file_infos);
     }
 
     // Should get everything in one or very few pages
@@ -1055,15 +1062,18 @@ async fn test_special_characters_impl(
 
     // Test listing files with special characters
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut all_locations = Vec::new();
+    let mut all_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        all_locations.extend(locations);
+        let file_infos = result?;
+        all_file_infos.extend(file_infos);
     }
 
     // Verify all files with special characters are listed
-    let listed_locations: Vec<String> = all_locations.iter().map(ToString::to_string).collect();
+    let listed_locations: Vec<String> = all_file_infos
+        .iter()
+        .map(|file_info| file_info.location().to_string())
+        .collect();
     assert_eq!(
         listed_locations.len(),
         special_files.len(),
@@ -1195,14 +1205,17 @@ async fn test_remove_all_deletes_directory_impl(
 
     // List parent directory before removal to confirm target directory exists
     let mut pre_list_stream = storage.list(&parent_dir, None).await?;
-    let mut pre_locations = Vec::new();
+    let mut pre_file_infos = Vec::new();
     while let Some(result) = pre_list_stream.next().await {
-        let locations = result?;
-        pre_locations.extend(locations);
+        let file_infos = result?;
+        pre_file_infos.extend(file_infos);
     }
 
     // Should find both target and sibling directories
-    let pre_location_strings: Vec<String> = pre_locations.iter().map(ToString::to_string).collect();
+    let pre_location_strings: Vec<String> = pre_file_infos
+        .iter()
+        .map(|file_info| file_info.location().to_string())
+        .collect();
     let has_target_dir = pre_location_strings
         .iter()
         .any(|loc| loc.starts_with(&target_dir));
@@ -1243,14 +1256,16 @@ async fn test_remove_all_deletes_directory_impl(
 
     // List parent directory after removal to confirm target directory is gone
     let mut post_list_stream = storage.list(&parent_dir, None).await?;
-    let mut post_locations = Vec::new();
+    let mut post_file_infos = Vec::new();
     while let Some(result) = post_list_stream.next().await {
-        let locations = result?;
-        post_locations.extend(locations);
+        let file_infos = result?;
+        post_file_infos.extend(file_infos);
     }
 
-    let post_location_strings: Vec<String> =
-        post_locations.iter().map(ToString::to_string).collect();
+    let post_location_strings: Vec<String> = post_file_infos
+        .iter()
+        .map(|file_infos| file_infos.location().to_string())
+        .collect();
     let still_has_target_dir = post_location_strings
         .iter()
         .any(|loc| loc.starts_with(&target_dir));
@@ -1315,22 +1330,24 @@ async fn test_list_prefix_boundaries_impl(
     for list_dir in &[format!("{base_dir}dir"), format!("{base_dir}dir/")] {
         // List contents of the specific directory
         let mut list_stream = storage.list(&list_dir, None).await?;
-        let mut listed_locations = Vec::new();
+        let mut listed_file_infos = Vec::new();
 
         while let Some(result) = list_stream.next().await {
-            let locations = result?;
-            listed_locations.extend(locations);
+            let file_infos = result?;
+            listed_file_infos.extend(file_infos);
         }
 
         // Debug output
         // println!("Listed {} items in {}", listed_locations.len(), list_dir);
-        for loc in &listed_locations {
-            println!("  Found: {loc}");
+        for file_info in &listed_file_infos {
+            println!("  Found: {}", file_info.location());
         }
 
         // Convert locations to strings for easier comparison
-        let location_strings: Vec<String> =
-            listed_locations.iter().map(ToString::to_string).collect();
+        let location_strings: Vec<String> = listed_file_infos
+            .iter()
+            .map(|file_info| file_info.location().to_string())
+            .collect();
 
         // Verify that only the correct files are included in the results
         // Should include: base/dir/file.txt and base/dir/subdir/nested.txt
