@@ -247,7 +247,7 @@ impl LakekeeperStorage for MemoryStorage {
             }
         }
 
-        // Convert to Vec<Vec<Location>> by chunking, then create an iterator over those chunks
+        // Convert to Vec<Vec<FileInfo>> by chunking, then create an iterator over those chunks
         let chunks: Vec<Vec<FileInfo>> = all_file_infos
             .chunks(page_size)
             .map(<[FileInfo]>::to_vec)
