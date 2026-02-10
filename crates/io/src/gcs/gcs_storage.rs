@@ -4,6 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use chrono::DateTime;
 use futures::{StreamExt as _, stream};
 use google_cloud_storage::{
     client::Client,
@@ -21,8 +22,8 @@ use google_cloud_storage::{
 use tokio;
 
 use crate::{
-    DeleteBatchError, DeleteError, ErrorKind, IOError, InvalidLocationError, LakekeeperStorage,
-    Location, ReadError, WriteError, calculate_ranges, delete_not_found_is_ok,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperStorage, Location, ReadError, WriteError, calculate_ranges, delete_not_found_is_ok,
     execute_with_parallelism,
     gcs::{GcsLocation, gcs_error::parse_error},
     safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
@@ -390,7 +391,7 @@ impl LakekeeperStorage for GcsStorage {
         &self,
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
-    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>
+    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
         let path = path.as_ref();
         let location = GcsLocation::try_from_str(path)?;
@@ -429,22 +430,11 @@ impl LakekeeperStorage for GcsStorage {
                         .map_err(|e| parse_error(e, &bucket_name))?;
 
                     // Convert GCS objects to Location objects
-                    let locations: Vec<Location> = response
+                    let file_infos: Vec<FileInfo> = response
                         .items
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|object| {
-                            let gcs_path = format!("gs://{}/{}", bucket_name, object.name);
-                            Location::from_str(&gcs_path).map_err(|e| {
-                                IOError::new(
-                                    ErrorKind::Unexpected,
-                                    format!(
-                                        "Failed to parse GCS object path returned from list: {e}",
-                                    ),
-                                    gcs_path,
-                                )
-                            })
-                        })
+                        .map(try_parse_file_info(&bucket_name))
                         .collect::<Result<_, _>>()?;
 
                     // Prepare next request if there's a next page
@@ -456,11 +446,46 @@ impl LakekeeperStorage for GcsStorage {
                         (None, true) // No more pages
                     };
 
-                    Ok(Some((locations, next_state)))
+                    Ok(Some((file_infos, next_state)))
                 }
             },
         );
 
         Ok(stream.boxed())
+    }
+}
+
+fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileInfo, IOError> {
+    move |object| {
+        let gcs_path = format!("gs://{}/{}", bucket_name, object.name);
+        let location = Location::from_str(&gcs_path).map_err(|e| {
+            IOError::new(
+                ErrorKind::Unexpected,
+                format!("Failed to parse GCS object path returned from list: {e}",),
+                gcs_path,
+            )
+        })?;
+        let last_modified = object
+            .updated
+            .ok_or_else(|| {
+                IOError::new(
+                    ErrorKind::Unexpected,
+                    "GCS object is missing `updated` field.".to_string(),
+                    location.as_str().to_string(),
+                )
+            })
+            .and_then(|timestamp| {
+                DateTime::from_timestamp(timestamp.unix_timestamp(), 0).ok_or_else(|| {
+                    IOError::new(
+                        ErrorKind::Unexpected,
+                        "Failed to convert GCS object timestamp to DateTime.".to_string(),
+                        location.as_str().to_string(),
+                    )
+                })
+            })?;
+        Ok(FileInfo {
+            location,
+            last_modified,
+        })
     }
 }

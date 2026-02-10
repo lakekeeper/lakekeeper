@@ -1,11 +1,13 @@
 use std::{collections::HashMap, str::FromStr};
 
-use aws_sdk_s3::types::{ObjectIdentifier, ServerSideEncryption};
+use aws_sdk_s3::types::{Object, ObjectIdentifier, ServerSideEncryption};
 use bytes::Bytes;
+use chrono::DateTime;
 use futures::{StreamExt, stream};
 
 use crate::{
-    DeleteBatchError, DeleteError, IOError, LakekeeperStorage, Location, ReadError, WriteError,
+    DeleteBatchError, DeleteError, FileInfo, IOError, LakekeeperStorage, Location, ReadError,
+    WriteError,
     error::{ErrorKind, InvalidLocationError, RetryableError},
     execute_with_parallelism,
     s3::{
@@ -350,7 +352,7 @@ impl LakekeeperStorage for S3Storage {
         &self,
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
-    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>
+    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
         let path = format!("{}/", path.as_ref().trim_end_matches('/'));
         let s3_location = S3Location::try_from_str(&path, true)?;
@@ -406,18 +408,10 @@ impl LakekeeperStorage for S3Storage {
 
                     match result {
                         Ok(Ok(response)) => {
-                            let locations = response
+                            let file_infos = response
                                 .contents()
                                 .iter()
-                                .filter_map(|o| o.key())
-                                .map(|key| {
-                                    // Create a new location directly using the bucket and key
-                                    // to avoid duplicate path components - use the same scheme as the base location
-                                    let scheme = base_location.scheme();
-                                    let full_path = format!("{scheme}://{s3_bucket}/{key}");
-                                    Location::from_str(&full_path)
-                                        .unwrap_or_else(|_| base_location.clone())
-                                })
+                                .filter_map(try_parse_file_info(&base_location, &s3_bucket))
                                 .collect::<Vec<_>>();
 
                             let next_continuation_token = response
@@ -426,7 +420,7 @@ impl LakekeeperStorage for S3Storage {
                             let is_truncated = response.is_truncated().unwrap_or(false);
                             let next_state = (next_continuation_token, !is_truncated);
 
-                            Some((Ok(locations), next_state))
+                            Some((Ok(file_infos), next_state))
                         }
                         // First case: Retryable error occurred but retries didn't resolve it
                         // Second case: Non-retryable error occured
@@ -437,6 +431,25 @@ impl LakekeeperStorage for S3Storage {
         );
 
         Ok(stream.boxed())
+    }
+}
+
+fn try_parse_file_info(
+    base_location: &Location,
+    s3_bucket: &str,
+) -> impl FnMut(&Object) -> Option<FileInfo> {
+    move |object| {
+        let key = object.key()?;
+        let last_modified = object.last_modified()?; // Should this fail if no last_modified?
+        let last_modified =
+            DateTime::from_timestamp(last_modified.secs(), last_modified.subsec_nanos())?;
+        let scheme = base_location.scheme();
+        let full_path = format!("{scheme}://{s3_bucket}/{key}");
+        let location = Location::from_str(&full_path).unwrap_or_else(|_| base_location.clone());
+        Some(FileInfo {
+            last_modified,
+            location,
+        })
     }
 }
 

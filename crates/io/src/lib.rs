@@ -11,6 +11,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 mod error;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
@@ -151,6 +152,29 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FileInfo {
+    last_modified: DateTime<Utc>,
+    location: Location,
+}
+
+impl FileInfo {
+    pub fn new(last_modified: DateTime<Utc>, location: Location) -> Self {
+        Self {
+            last_modified,
+            location,
+        }
+    }
+
+    pub fn last_modified(&self) -> DateTime<Utc> {
+        self.last_modified
+    }
+
+    pub fn location(&self) -> &Location {
+        &self.location
+    }
+}
+
 pub trait LakekeeperStorage
 where
     Self: std::fmt::Debug + Clone + Send + Sync + 'static,
@@ -213,7 +237,7 @@ where
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
     ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
+        Output = Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>,
     > + Send;
 
     /// Removes a directory and all its contents.
@@ -231,9 +255,12 @@ where
             let mut list_failed = Ok(());
 
             // Process each batch as it arrives from the stream
-            while let Some(locations_result) = list_stream.next().await {
-                let locations = match locations_result {
-                    Ok(locations) => locations,
+            while let Some(file_info_result) = list_stream.next().await {
+                let locations = match file_info_result {
+                    Ok(file_infos) => file_infos
+                        .iter()
+                        .map(|file_info| file_info.location().clone())
+                        .collect::<Vec<_>>(),
                     Err(e) => {
                         list_failed = Err(e);
                         break;
@@ -401,7 +428,7 @@ impl LakekeeperStorage for StorageBackend {
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
     ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
+        Output = Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>,
     > + Send {
         let path = path.as_ref().to_string();
         async move {
@@ -489,7 +516,7 @@ macro_rules! impl_lakekeeper_storage_for_smart_pointer {
                     path: impl AsRef<str> + Send,
                     page_size: Option<usize>,
                 ) -> impl Future<
-                    Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
+                    Output = Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>,
                 > + Send {
                     self.as_ref().list(path, page_size)
                 }
