@@ -175,32 +175,11 @@ impl EventDispatcher {
         dispatch_event!(self, authorization_failed, event);
     }
 
-    pub(crate) async fn namespace_authorization_failed(
-        &self,
-        event: types::NamespaceAuthorizationFailedEvent,
-    ) {
-        dispatch_event!(self, namespace_authorization_failed, event);
-    }
-
     pub(crate) async fn namespace_metadata_loaded(
         &self,
         event: types::NamespaceMetadataLoadedEvent,
     ) {
         dispatch_event!(self, namespace_metadata_loaded, event);
-    }
-
-    pub(crate) async fn project_authorization_failed(
-        &self,
-        event: types::ProjectAuthorizationFailedEvent,
-    ) {
-        dispatch_event!(self, project_authorization_failed, event);
-    }
-
-    pub(crate) async fn server_authorization_failed(
-        &self,
-        event: types::ServerAuthorizationFailedEvent,
-    ) {
-        dispatch_event!(self, server_authorization_failed, event);
     }
 }
 
@@ -415,37 +394,6 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn authorization_failed(
         &self,
         _event: types::authorization::AuthorizationFailedEvent,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Invoked when a namespace authorization check fails
-    ///
-    /// This captures namespace-specific context including the warehouse ID
-    /// and the namespace identifier that was attempted to be accessed.
-    async fn namespace_authorization_failed(
-        &self,
-        _event: types::NamespaceAuthorizationFailedEvent,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Invoked when a project authorization check fails
-    ///
-    /// This captures project-specific context including the project ID if known.
-    async fn project_authorization_failed(
-        &self,
-        _event: types::ProjectAuthorizationFailedEvent,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Invoked when a server-level authorization check fails
-    ///
-    /// This captures server-level actions that don't have resource-specific context.
-    async fn server_authorization_failed(
-        &self,
-        _event: types::ServerAuthorizationFailedEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

@@ -57,54 +57,6 @@ pub struct AuthorizationFailedEvent {
 
 // ===== Resource-Specific Authorization Failed Events =====
 
-/// Event emitted when a namespace authorization check fails
-#[derive(Clone, Debug)]
-pub struct NamespaceAuthorizationFailedEvent {
-    /// Request metadata including the actor who attempted the action
-    pub request_metadata: Arc<RequestMetadata>,
-
-    /// Warehouse ID where the namespace operation was attempted
-    pub warehouse_id: WarehouseId,
-
-    /// Namespace that was being accessed (by name or ID)
-    pub namespace: NamespaceIdentOrId,
-
-    /// The action that was attempted, serialized from CatalogAction
-    pub action: String,
-
-    /// Why the authorization failed
-    pub failure_reason: AuthorizationFailureReason,
-}
-
-/// Event emitted when a project authorization check fails
-#[derive(Clone, Debug)]
-pub struct ProjectAuthorizationFailedEvent {
-    /// Request metadata including the actor who attempted the action
-    pub request_metadata: Arc<RequestMetadata>,
-
-    /// Project ID if known at the time of failure
-    pub project_id: Option<ProjectId>,
-
-    /// The action that was attempted, serialized from CatalogAction
-    pub action: String,
-
-    /// Why the authorization failed
-    pub failure_reason: AuthorizationFailureReason,
-}
-
-/// Event emitted when a server-level authorization check fails
-#[derive(Clone, Debug)]
-pub struct ServerAuthorizationFailedEvent {
-    /// Request metadata including the actor who attempted the action
-    pub request_metadata: Arc<RequestMetadata>,
-
-    /// The action that was attempted, serialized from CatalogAction
-    pub action: String,
-
-    /// Why the authorization failed
-    pub failure_reason: AuthorizationFailureReason,
-}
-
 /// Reason why an authorization check failed
 ///
 /// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both ResourceNotFound
