@@ -20,6 +20,7 @@ use crate::{
     service::{
         TabularId,
         authn::{Actor, InternalActor},
+        events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
 };
 
@@ -76,7 +77,15 @@ pub struct RequestMetadata {
     "This endpoint requires a project ID to be specified, but none was provided. Please set the x-project-id header."
 )]
 pub struct ProjectIdMissing;
+impl AuthorizationFailureSource for ProjectIdMissing {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ResourceNotFound
+    }
 
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
 impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {
     fn from(e: ProjectIdMissing) -> Self {
         ErrorModel {

@@ -6,7 +6,7 @@ use lakekeeper_io::s3::S3Location;
 
 use crate::{
     ProjectId, WarehouseId,
-    api::RequestMetadata,
+    api::{RequestMetadata, management::v1::check::CatalogActionCheckItem},
     service::{
         NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, TableIdentOrId,
         TableInfo, TabularId, ViewIdentOrId, ViewInfo,
@@ -121,7 +121,6 @@ pub struct UserProvidedTable {
 }
 
 impl UserProvidedEntity for UserProvidedTable {}
-// impl UserProvidedEntity for Arc<Vec<UserProvidedTable>> {}
 
 #[derive(Clone, Debug)]
 pub struct UserProvidedTableLocation {
@@ -168,6 +167,7 @@ impl UserProvidedEntity for WarehouseId {}
 impl UserProvidedEntity for ProjectId {}
 impl UserProvidedEntity for RoleId {}
 impl UserProvidedEntity for UserIdRef {}
+impl UserProvidedEntity for Arc<Vec<CatalogActionCheckItem>> {}
 
 // ── Action types ────────────────────────────────────────────────────────────
 
@@ -189,6 +189,13 @@ pub struct WarehouseActionSearchTabulars {}
 impl APIEventAction for WarehouseActionSearchTabulars {
     fn event_action_str(&self) -> String {
         "search_tabulars".to_string()
+    }
+}
+
+pub struct IntrospectPermissions {}
+impl APIEventAction for IntrospectPermissions {
+    fn event_action_str(&self) -> String {
+        "introspect_permissions".to_string()
     }
 }
 

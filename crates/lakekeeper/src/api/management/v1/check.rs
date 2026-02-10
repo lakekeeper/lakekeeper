@@ -17,18 +17,17 @@ use crate::{
         BasicTabularInfo, CachePolicy, CatalogGetNamespaceError, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, NamespaceId, NamespaceVersion, NamespaceWithParent,
         ResolvedWarehouse, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
-        TabularListFlags, TabularNotFound, ViewInfo, ViewOrTableInfo, WarehouseIdNotFound,
-        WarehouseStatus, WarehouseVersion,
+        TabularListFlags, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZNamespaceActionForbidden, AuthZProjectOps,
-            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, FetchWarehouseNamespaceTabularError,
-            MustUse, RequireNamespaceActionError, RequireTableActionError,
-            RequireWarehouseActionError, UserOrRole,
+            AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            FetchWarehouseNamespaceTabularError, MustUse, RequireNamespaceActionError,
+            RequireTableActionError, RequireWarehouseActionError, UserOrRole,
         },
+        events::{APIEventContext, context::IntrospectPermissions},
         namespace_cache::namespace_ident_to_cache_key,
     },
 };
@@ -684,7 +683,7 @@ async fn fetch_namespaces<C: CatalogStore>(
         HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
         HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
     ),
-    ErrorModel,
+    FetchWarehouseNamespaceTabularError,
 > {
     let min_namespace_versions = Arc::new(min_namespace_versions.clone());
 
@@ -707,7 +706,8 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &namespace_idents_refs,
                     catalog_state.clone(),
                 )
-                .await?;
+                .await
+                .map_err(RequireNamespaceActionError::from)?;
 
                 // Refetch namespaces that don't meet minimum version requirements
                 let re_fetched_namespaces = refetch_outdated_namespaces::<C>(
@@ -716,8 +716,8 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &min_namespace_versions,
                     catalog_state.clone(),
                 )
-                .await?;
-
+                .await
+                .map_err(RequireNamespaceActionError::from)?;
                 for ns_hierarchy in re_fetched_namespaces {
                     namespaces.insert(
                         ns_hierarchy.namespace.namespace_id(),
@@ -728,7 +728,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     }
                 }
 
-                Ok::<_, ErrorModel>((true, namespaces))
+                Ok::<_, FetchWarehouseNamespaceTabularError>((true, namespaces))
             });
         }
     }
@@ -751,7 +751,8 @@ async fn fetch_namespaces<C: CatalogStore>(
             tasks.spawn(async move {
                 let mut namespaces =
                     C::get_namespaces_by_id(warehouse_id, &namespace_ids, catalog_state.clone())
-                        .await?;
+                        .await
+                        .map_err(RequireNamespaceActionError::from)?;
 
                 // Refetch namespaces that don't meet minimum version requirements
                 let re_fetched_namespaces = refetch_outdated_namespaces::<C>(
@@ -760,7 +761,8 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &min_namespace_versions,
                     catalog_state.clone(),
                 )
-                .await?;
+                .await
+                .map_err(RequireNamespaceActionError::from)?;
 
                 for ns_hierarchy in re_fetched_namespaces {
                     namespaces.insert(
@@ -772,7 +774,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     }
                 }
 
-                Ok::<_, ErrorModel>((false, namespaces))
+                Ok::<_, FetchWarehouseNamespaceTabularError>((false, namespaces))
             });
         }
     }
@@ -783,10 +785,9 @@ async fn fetch_namespaces<C: CatalogStore>(
 
     while let Some(res) = tasks.join_next().await {
         let (is_by_ident, namespace_list) = res.map_err(|e| {
-            ErrorModel::internal(
-                "Failed to join fetch namespace task",
-                "FailedToJoinFetchNamespaceTask",
-                Some(Box::new(e)),
+            RequireNamespaceActionError::from(
+                AuthorizationBackendUnavailable::new(Box::new(e))
+                    .append_detail("Failed to join fetch namespace task"),
             )
         })??;
 
@@ -1323,7 +1324,7 @@ async fn collect_authz_results(
 #[allow(clippy::too_many_lines)]
 pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<A, C, S>>,
-    metadata: &RequestMetadata,
+    metadata: RequestMetadata,
     request: CatalogActionsBatchCheckRequest,
 ) -> Result<CatalogActionsBatchCheckResponse, ErrorModel> {
     const MAX_CHECKS: usize = 1000;
@@ -1348,8 +1349,34 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
         ));
     }
 
-    // let event_ctx
+    let event_ctx = APIEventContext::new(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        Arc::new(checks.clone()),
+        IntrospectPermissions {},
+    );
 
+    let authz_result = spawn_check_and_collect_results::<C, _>(
+        checks,
+        catalog_state,
+        authorizer,
+        event_ctx.request_metadata(),
+        error_on_not_found,
+    )
+    .await;
+
+    let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(CatalogActionsBatchCheckResponse { results })
+}
+
+async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
+    checks: Vec<CatalogActionCheckItem>,
+    catalog_state: C::State,
+    authorizer: A,
+    metadata: &RequestMetadata,
+    error_on_not_found: bool,
+) -> Result<Vec<CatalogActionsBatchCheckResult>, FetchWarehouseNamespaceTabularError> {
     let (grouped, mut results) = group_checks(checks, metadata)?;
     let GroupedChecks {
         server_checks,
@@ -1466,7 +1493,7 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
 
     collect_authz_results(&mut authz_tasks, &mut results).await?;
 
-    Ok(CatalogActionsBatchCheckResponse { results })
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -1564,7 +1591,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata, request)
             .await
             .unwrap();
 
@@ -1585,7 +1612,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata, request)
             .await
             .unwrap();
 
@@ -1614,7 +1641,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1643,7 +1670,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1670,7 +1697,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1695,7 +1722,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1736,7 +1763,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1777,7 +1804,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1800,7 +1827,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1864,7 +1891,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1889,7 +1916,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1917,7 +1944,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1942,7 +1969,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2010,7 +2037,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2034,7 +2061,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2063,7 +2090,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2087,7 +2114,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2183,7 +2210,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2228,7 +2255,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2251,7 +2278,7 @@ mod tests {
             error_on_not_found: true,
         };
 
-        let result = check_internal(api_context.clone(), &metadata, request).await;
+        let result = check_internal(api_context.clone(), metadata.clone(), request).await;
         assert!(result.is_err()); // Should return an error
     }
 
@@ -2294,7 +2321,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2338,7 +2365,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let result = check_internal(api_context.clone(), &metadata, request).await;
+        let result = check_internal(api_context.clone(), metadata.clone(), request).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.r#type, "TooManyChecks");

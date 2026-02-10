@@ -10,6 +10,7 @@ use lakekeeper_io::s3::S3Location;
 use crate::{
     WarehouseId,
     api::RequestMetadata,
+    request_metadata::ProjectIdMissing,
     service::{
         AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError,
         GetTabularInfoByLocationError, GetTabularInfoError, InternalParseLocationError,
@@ -515,6 +516,7 @@ pub enum FetchWarehouseNamespaceTabularError {
     RequireViewActionError(RequireViewActionError),
     AuthZCannotSeeView(AuthZCannotSeeView),
     AuthZCannotSeeTableLocation(AuthZCannotSeeTableLocation),
+    ProjectIdMissing(ProjectIdMissing),
 }
 impl From<AuthorizationCountMismatch> for FetchWarehouseNamespaceTabularError {
     fn from(err: AuthorizationCountMismatch) -> Self {
@@ -584,7 +586,8 @@ delegate_authorization_failure_source!(FetchWarehouseNamespaceTabularError => {
     AuthZCannotSeeTable,
     RequireViewActionError,
     AuthZCannotSeeView,
-    AuthZCannotSeeTableLocation
+    AuthZCannotSeeTableLocation,
+    ProjectIdMissing,
 });
 
 #[async_trait::async_trait]
