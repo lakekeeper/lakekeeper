@@ -4,9 +4,16 @@ use std::{
 };
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
-use crate::service::{Actor, InternalErrorMessage, error_chain_fmt, impl_error_stack_methods};
+use crate::service::{
+    InternalErrorMessage, error_chain_fmt,
+    events::{
+        AuthorizationFailureReason, AuthorizationFailureSource,
+        delegate_authorization_failure_source,
+    },
+    impl_error_stack_methods,
+};
 
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum BackendUnavailableOrCountMismatch {
@@ -22,21 +29,11 @@ impl From<IsAllowedActionError> for BackendUnavailableOrCountMismatch {
         }
     }
 }
-
-impl From<BackendUnavailableOrCountMismatch> for ErrorModel {
-    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
-        match err {
-            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
-impl From<BackendUnavailableOrCountMismatch> for IcebergErrorResponse {
-    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(BackendUnavailableOrCountMismatch => {
+    AuthorizationCountMismatch,
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+});
 
 #[derive(Debug, PartialEq)]
 pub struct AuthorizationCountMismatch {
@@ -59,14 +56,13 @@ impl AuthorizationCountMismatch {
         }
     }
 }
-
-impl From<AuthorizationCountMismatch> for ErrorModel {
-    fn from(err: AuthorizationCountMismatch) -> Self {
+impl AuthorizationFailureSource for AuthorizationCountMismatch {
+    fn into_error_model(self) -> ErrorModel {
         let AuthorizationCountMismatch {
             expected_authorizations,
             actual_authorizations,
             type_name,
-        } = err;
+        } = self;
 
         ErrorModel {
             r#type: "AuthorizationCountMismatch".to_string(),
@@ -78,38 +74,30 @@ impl From<AuthorizationCountMismatch> for ErrorModel {
             stack: vec![],
         }
     }
-}
-impl From<AuthorizationCountMismatch> for IcebergErrorResponse {
-    fn from(err: AuthorizationCountMismatch) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InternalAuthorizationError
     }
 }
 
 #[derive(Debug, PartialEq, thiserror::Error)]
-#[error("Actor {actor} is not allowed to inspect permissions for object {object}")]
+#[error("Not allowed to inspect permissions for object {object}")]
 pub struct CannotInspectPermissions {
-    actor: Actor,
     object: String,
 }
 impl CannotInspectPermissions {
     #[must_use]
-    pub fn new(actor: Actor, object: &impl ToString) -> Self {
+    pub fn new(object: &impl ToString) -> Self {
         Self {
-            actor,
             object: object.to_string(),
         }
     }
 }
-
-impl From<CannotInspectPermissions> for ErrorModel {
-    fn from(err: CannotInspectPermissions) -> Self {
-        ErrorModel::forbidden(err.to_string(), "CannotInspectPermissions", None)
+impl AuthorizationFailureSource for CannotInspectPermissions {
+    fn into_error_model(self) -> ErrorModel {
+        ErrorModel::forbidden(self.to_string(), "CannotInspectPermissions", None)
     }
-}
-
-impl From<CannotInspectPermissions> for IcebergErrorResponse {
-    fn from(err: CannotInspectPermissions) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -118,19 +106,10 @@ pub enum IsAllowedActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
 }
-impl From<IsAllowedActionError> for ErrorModel {
-    fn from(err: IsAllowedActionError) -> Self {
-        match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
-impl From<IsAllowedActionError> for IcebergErrorResponse {
-    fn from(err: IsAllowedActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(IsAllowedActionError => {
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+});
 
 #[derive(Debug)]
 pub struct AuthorizationBackendUnavailable {
@@ -185,21 +164,17 @@ impl Display for AuthorizationBackendUnavailable {
     }
 }
 
-impl From<AuthorizationBackendUnavailable> for ErrorModel {
-    fn from(err: AuthorizationBackendUnavailable) -> Self {
-        let AuthorizationBackendUnavailable { stack, source } = err;
-
+impl AuthorizationFailureSource for AuthorizationBackendUnavailable {
+    fn into_error_model(self) -> ErrorModel {
         ErrorModel {
             r#type: "AuthorizationBackendError".to_string(),
             code: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
             message: "Authorization service is unavailable".to_string(),
-            stack,
-            source: Some(source),
+            stack: self.stack,
+            source: Some(self.source),
         }
     }
-}
-impl From<AuthorizationBackendUnavailable> for IcebergErrorResponse {
-    fn from(err: AuthorizationBackendUnavailable) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InternalAuthorizationError
     }
 }

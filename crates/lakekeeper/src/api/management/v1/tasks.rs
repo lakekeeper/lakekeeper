@@ -17,8 +17,8 @@ use crate::{
             AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZProjectOps,
             AuthZTableOps as _, AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, RequireTableActionError,
-            RequireViewActionError,
+            CatalogViewAction, CatalogWarehouseAction, FetchWarehouseNamespaceTabularError,
+            RequireTableActionError, RequireViewActionError,
         },
         require_namespace_for_tabular,
         tasks::{
@@ -646,10 +646,6 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let authorizer = context.v1_state.authz;
         // -------------------- AUTHZ --------------------
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
         authorize_list_tasks::<A, C>(
             &authorizer,
             context.v1_state.catalog.clone(),
@@ -1015,25 +1011,26 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
-    warehouse: &ResolvedWarehouse,
+    warehouse_id: WarehouseId,
     entities: Option<&Vec<WarehouseTaskEntityFilter>>,
-) -> Result<()> {
-    let warehouse_id = warehouse.warehouse_id;
+) -> Result<(), FetchWarehouseNamespaceTabularError> {
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let [can_use, can_list_everything] = authorizer
         .are_allowed_warehouse_actions_arr(
             request_metadata,
             None,
             &[
-                (warehouse, CatalogWarehouseAction::Use),
-                (warehouse, CatalogWarehouseAction::ListEverything),
+                (&warehouse, CatalogWarehouseAction::Use),
+                (&warehouse, CatalogWarehouseAction::ListEverything),
             ],
         )
         .await?
         .into_inner();
 
     if !can_use {
-        return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
+        return Err(AuthZCannotUseWarehouseId::new_forbidden(warehouse_id).into());
     }
 
     if can_list_everything {
@@ -1087,10 +1084,10 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     if let Some(missing) = missing_tabular_ids.first() {
         match missing {
             TabularId::Table(t) => {
-                return Err(AuthZCannotSeeTable::new(warehouse_id, *t).into());
+                return Err(AuthZCannotSeeTable::not_found(warehouse_id, *t).into());
             }
             TabularId::View(v) => {
-                return Err(AuthZCannotSeeView::new(warehouse_id, *v).into());
+                return Err(AuthZCannotSeeView::not_found(warehouse_id, *v).into());
             }
         }
     }
@@ -1116,7 +1113,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .collect::<Result<Vec<_>, _>>()?;
 
     authorizer
-        .require_tabular_actions(request_metadata, warehouse, &namespaces, &actions)
+        .require_tabular_actions(request_metadata, &warehouse, &namespaces, &actions)
         .await?;
 
     Ok(())
@@ -1128,7 +1125,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
     details: &GetTaskDetailsResponse,
-) -> Result<()> {
+) -> Result<(), FetchWarehouseNamespaceTabularError> {
     let warehouse_id = warehouse.warehouse_id;
 
     if let Some(sub_entity) = &details.task.entity {
@@ -1218,7 +1215,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
     warehouse: &ResolvedWarehouse,
     tasks: &[&Arc<ResolvedTask>],
     catalog_state: C::State,
-) -> Result<()> {
+) -> Result<(), FetchWarehouseNamespaceTabularError> {
     let (required_tabular_ids, required_namespace_idents) = tasks
         .iter()
         .map(|t| match &t.entity {

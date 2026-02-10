@@ -15,8 +15,8 @@ use crate::{
         CatalogBackendError, CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken,
         NamespaceId, NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed,
         TabularIdentOwned, Transaction, ViewId, WarehouseVersion, authz::ActionOnTableOrView,
-        define_simple_error, define_transparent_error, impl_error_stack_methods,
-        impl_from_with_detail, tasks::TaskId,
+        define_simple_error, define_transparent_error, events::impl_authorization_failure_source,
+        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
     },
 };
 
@@ -939,6 +939,7 @@ impl From<SerializationError> for ErrorModel {
         }
     }
 }
+impl_authorization_failure_source!(SerializationError => InternalCatalogError);
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}: {source}")]
@@ -1115,6 +1116,7 @@ impl From<UnexpectedTabularInResponse> for ErrorModel {
         }
     }
 }
+impl_authorization_failure_source!(UnexpectedTabularInResponse => InternalCatalogError);
 
 // --------------------------- Search Tabulars ----------------
 define_transparent_error! {
@@ -1126,6 +1128,7 @@ define_transparent_error! {
         InternalParseLocationError
     ]
 }
+impl_authorization_failure_source!(InternalParseLocationError => InternalCatalogError);
 
 // --------------------------- Rename Tabulars ----------------
 define_transparent_error! {

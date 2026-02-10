@@ -149,6 +149,8 @@ pub(crate) use define_transparent_error;
 pub(crate) use impl_error_stack_methods;
 pub(crate) use impl_from_with_detail;
 
+use crate::service::events::impl_authorization_failure_source;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display)]
 pub enum CatalogBackendErrorType {
     Unexpected,
@@ -292,7 +294,6 @@ impl From<CatalogBackendError> for ErrorModel {
         }
     }
 }
-
 impl From<DatabaseIntegrityError> for ErrorModel {
     fn from(err: DatabaseIntegrityError) -> Self {
         let DatabaseIntegrityError { message, stack } = err;
@@ -306,7 +307,9 @@ impl From<DatabaseIntegrityError> for ErrorModel {
         }
     }
 }
-
+impl_authorization_failure_source!(CatalogBackendError => InternalCatalogError);
+impl_authorization_failure_source!(DatabaseIntegrityError => InternalCatalogError);
+impl_authorization_failure_source!(InvalidPaginationToken => InvalidRequestData);
 #[derive(Debug, PartialEq)]
 pub struct InvalidPaginationToken {
     pub message: String,

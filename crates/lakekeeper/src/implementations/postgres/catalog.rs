@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+};
 
 use chrono::Duration;
 use iceberg::{NamespaceIdent, spec::ViewMetadata};
@@ -776,7 +778,7 @@ impl CatalogStore for super::PostgresBackend {
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         set_task_queue_config(transaction, queue_name, project_id, warehouse_id, config).await

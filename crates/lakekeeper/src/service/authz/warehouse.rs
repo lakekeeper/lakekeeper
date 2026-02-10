@@ -1,17 +1,21 @@
 use std::sync::Arc;
 
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        Actor, CatalogBackendError, CatalogGetWarehouseByIdError, DatabaseIntegrityError,
+        CatalogBackendError, CatalogGetWarehouseByIdError, DatabaseIntegrityError,
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
             CatalogWarehouseAction, MustUse, UserOrRole,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -30,24 +34,49 @@ impl WarehouseAction for CatalogWarehouseAction {}
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZCannotUseWarehouseId {
     warehouse_id: WarehouseId,
+    resource_not_found: bool,
 }
 impl AuthZCannotUseWarehouseId {
     #[must_use]
-    pub fn new(warehouse_id: WarehouseId) -> Self {
-        Self { warehouse_id }
+    fn new(warehouse_id: WarehouseId, resource_not_found: bool) -> Self {
+        Self {
+            warehouse_id,
+            resource_not_found,
+        }
+    }
+
+    #[must_use]
+    pub fn new_not_found(warehouse_id: WarehouseId) -> Self {
+        Self {
+            warehouse_id,
+            resource_not_found: true,
+        }
+    }
+
+    #[must_use]
+    pub fn new_access_denied(warehouse_id: WarehouseId) -> Self {
+        Self {
+            warehouse_id,
+            resource_not_found: false,
+        }
     }
 }
-impl From<AuthZCannotUseWarehouseId> for ErrorModel {
-    fn from(err: AuthZCannotUseWarehouseId) -> Self {
-        let AuthZCannotUseWarehouseId { warehouse_id } = err;
+impl AuthorizationFailureSource for AuthZCannotUseWarehouseId {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZCannotUseWarehouseId {
+            warehouse_id,
+            resource_not_found: _, // Hidden in ErrorModel, present in FailureReason
+        } = self;
         WarehouseIdNotFound::new(warehouse_id)
             .append_detail("Warehouse not found or access denied")
             .into()
     }
-}
-impl From<AuthZCannotUseWarehouseId> for IcebergErrorResponse {
-    fn from(err: AuthZCannotUseWarehouseId) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::ActionForbidden
+        }
     }
 }
 
@@ -55,67 +84,30 @@ impl From<AuthZCannotUseWarehouseId> for IcebergErrorResponse {
 pub struct AuthZWarehouseActionForbidden {
     warehouse_id: WarehouseId,
     action: String,
-    actor: Actor,
 }
 impl AuthZWarehouseActionForbidden {
     #[must_use]
-    pub fn new(warehouse_id: WarehouseId, action: &impl WarehouseAction, actor: Actor) -> Self {
+    pub fn new(warehouse_id: WarehouseId, action: &impl WarehouseAction) -> Self {
         Self {
             warehouse_id,
             action: action.as_log_str(),
-            actor,
         }
     }
 }
-impl From<AuthZWarehouseActionForbidden> for ErrorModel {
-    fn from(err: AuthZWarehouseActionForbidden) -> Self {
+impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
         let AuthZWarehouseActionForbidden {
             warehouse_id,
             action,
-            actor,
-        } = err;
+        } = self;
         ErrorModel::forbidden(
-            format!(
-                "Warehouse action `{action}` forbidden for `{actor}` on warehouse `{warehouse_id}`"
-            ),
+            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`"),
             "WarehouseActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZWarehouseActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZWarehouseActionForbidden) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct AuthZCannotListNamespaces {
-    warehouse_id: WarehouseId,
-}
-impl AuthZCannotListNamespaces {
-    #[must_use]
-    pub fn new(warehouse_id: WarehouseId) -> Self {
-        Self { warehouse_id }
-    }
-}
-
-impl From<AuthZCannotListNamespaces> for ErrorModel {
-    fn from(err: AuthZCannotListNamespaces) -> Self {
-        let AuthZCannotListNamespaces { warehouse_id } = err;
-        ErrorModel::builder()
-            .r#type("ListNamespacesForbidden".to_string())
-            .code(403)
-            .message(format!(
-                "User is forbidden to list Namespaces in Warehouse with id '{warehouse_id}'"
-            ))
-            .stack(vec![])
-            .build()
-    }
-}
-impl From<AuthZCannotListNamespaces> for IcebergErrorResponse {
-    fn from(err: AuthZCannotListNamespaces) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -124,19 +116,10 @@ pub enum AuthZRequireWarehouseUseError {
     CannotUseWarehouseId(AuthZCannotUseWarehouseId),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
 }
-impl From<AuthZRequireWarehouseUseError> for ErrorModel {
-    fn from(err: AuthZRequireWarehouseUseError) -> Self {
-        match err {
-            AuthZRequireWarehouseUseError::CannotUseWarehouseId(e) => e.into(),
-            AuthZRequireWarehouseUseError::AuthorizationBackendUnavailable(e) => e.into(),
-        }
-    }
-}
-impl From<AuthZRequireWarehouseUseError> for IcebergErrorResponse {
-    fn from(err: AuthZRequireWarehouseUseError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(AuthZRequireWarehouseUseError => {
+    CannotUseWarehouseId,
+    AuthorizationBackendUnavailable,
+});
 
 #[derive(Debug, derive_more::From)]
 pub enum RequireWarehouseActionError {
@@ -150,6 +133,7 @@ pub enum RequireWarehouseActionError {
     CatalogBackendError(CatalogBackendError),
     DatabaseIntegrityError(DatabaseIntegrityError),
 }
+
 impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
@@ -159,24 +143,16 @@ impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
         }
     }
 }
-impl From<RequireWarehouseActionError> for ErrorModel {
-    fn from(err: RequireWarehouseActionError) -> Self {
-        match err {
-            RequireWarehouseActionError::AuthZWarehouseActionForbidden(e) => e.into(),
-            RequireWarehouseActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireWarehouseActionError::AuthorizationCountMismatch(e) => e.into(),
-            RequireWarehouseActionError::AuthZCannotUseWarehouseId(e) => e.into(),
-            RequireWarehouseActionError::CatalogBackendError(e) => e.into(),
-            RequireWarehouseActionError::DatabaseIntegrityError(e) => e.into(),
-            RequireWarehouseActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
-impl From<RequireWarehouseActionError> for IcebergErrorResponse {
-    fn from(err: RequireWarehouseActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireWarehouseActionError => {
+    AuthZWarehouseActionForbidden,
+    AuthorizationBackendUnavailable,
+    AuthorizationCountMismatch,
+    CannotInspectPermissions,
+    AuthZCannotUseWarehouseId,
+    CatalogBackendError,
+    DatabaseIntegrityError,
+});
+
 impl From<CatalogGetWarehouseByIdError> for RequireWarehouseActionError {
     fn from(err: CatalogGetWarehouseByIdError) -> Self {
         match err {
@@ -194,7 +170,10 @@ pub trait AuthzWarehouseOps: Authorizer {
         warehouse: Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>,
     ) -> Result<Arc<ResolvedWarehouse>, RequireWarehouseActionError> {
         let warehouse = warehouse?;
-        warehouse.ok_or_else(|| AuthZCannotUseWarehouseId::new(user_provided_warehouse).into())
+        let warehouse_not_found = warehouse.is_none();
+        warehouse.ok_or_else(|| {
+            AuthZCannotUseWarehouseId::new(user_provided_warehouse, warehouse_not_found).into()
+        })
     }
 
     async fn require_warehouse_action(
@@ -205,9 +184,9 @@ pub trait AuthzWarehouseOps: Authorizer {
         action: impl Into<Self::WarehouseAction> + Send,
     ) -> Result<Arc<ResolvedWarehouse>, RequireWarehouseActionError> {
         let action = action.into();
-        let actor = metadata.actor();
         let warehouse = warehouse?;
-        let cant_see_err = AuthZCannotUseWarehouseId::new(user_provided_warehouse).into();
+        let cant_see_err =
+            AuthZCannotUseWarehouseId::new(user_provided_warehouse, warehouse.is_none()).into();
         let Some(warehouse) = warehouse else {
             return Err(cant_see_err);
         };
@@ -231,12 +210,7 @@ pub trait AuthzWarehouseOps: Authorizer {
                 .into_inner();
             if can_see {
                 is_allowed.then_some(warehouse).ok_or_else(|| {
-                    AuthZWarehouseActionForbidden::new(
-                        user_provided_warehouse,
-                        &action,
-                        actor.clone(),
-                    )
-                    .into()
+                    AuthZWarehouseActionForbidden::new(user_provided_warehouse, &action).into()
                 })
             } else {
                 return Err(cant_see_err);

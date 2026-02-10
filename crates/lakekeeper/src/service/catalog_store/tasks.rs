@@ -265,7 +265,7 @@ where
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         Self::set_task_queue_config_impl(project_id, warehouse_id, queue_name, config, transaction)

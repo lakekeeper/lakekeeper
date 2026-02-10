@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+};
 
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
@@ -673,7 +675,7 @@ where
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

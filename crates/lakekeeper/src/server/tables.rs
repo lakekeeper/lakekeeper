@@ -23,6 +23,7 @@ use serde::Serialize;
 use uuid::Uuid;
 pub(crate) mod create_table;
 mod load_table;
+mod rename_table;
 use super::{
     CatalogServer,
     commit_tables::apply_commit,
@@ -56,14 +57,19 @@ use crate::{
         AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
         CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
         ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
-            AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
-            RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
+            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZTableActionForbidden, AuthZTableOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogTableAction, CatalogWarehouseAction, FetchWarehouseNamespaceTabularError,
+            RequireNamespaceActionError, RequireTableActionError,
+            refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
-        events::{CommitTransactionEvent, DropTableEvent, RegisterTableEvent, RenameTableEvent},
+        events::{
+            APIEventCommitContext, APIEventContext, CommitTransactionEvent,
+            context::{ResolvedNamespace, ResolvedTable},
+        },
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
@@ -105,30 +111,33 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let (warehouse, namespace) = tokio::join!(
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-            C::get_namespace(
-                warehouse_id,
-                &provided_namespace,
-                state.v1_state.catalog.clone()
-            )
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events,
+            warehouse_id,
+            provided_namespace.clone(),
+            CatalogNamespaceAction::ListTables,
         );
 
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
-        let namespace = authorizer
-            .require_namespace_action(
-                &request_metadata,
-                &warehouse,
-                provided_namespace,
-                namespace,
-                CatalogNamespaceAction::ListTables,
+        let authz_result = authorizer
+            .load_and_authorize_namespace_action::<C>(
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity().clone(),
+                event_ctx.action().clone(),
+                CachePolicy::Use,
+                state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await;
+
+        let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = Arc::new(event_ctx.resolve(ResolvedNamespace {
+            warehouse: warehouse.clone(),
+            namespace: namespace.namespace.clone(),
+        }));
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let request_metadata = Arc::new(request_metadata);
         let (table_infos, table_uuids, next_page_token) =
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
@@ -139,7 +148,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     warehouse,
                     namespace,
                     authorizer,
-                    request_metadata
+                    event_ctx
                 ),
                 &mut t,
             )
@@ -193,21 +202,33 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
+
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events,
+            warehouse_id,
+            parameters.namespace.clone(),
+            // Prelimineray action, updated after Metadata is read
+            CatalogNamespaceAction::CreateTable {
+                properties: Arc::new(BTreeMap::new()),
+            },
+        );
+
         let (warehouse, namespace) = tokio::join!(
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
             C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
         );
         let warehouse = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
                 CatalogWarehouseAction::Use,
             )
-            .await?;
+            .await
+            .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
 
         // ------------------- BUSINESS LOGIC -------------------
-
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
@@ -222,26 +243,38 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
 
-        let namespace = authorizer
+        let action = CatalogNamespaceAction::CreateTable {
+            properties: Arc::new(
+                table_metadata
+                    .properties()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+        };
+
+        let mut event_ctx = event_ctx;
+        event_ctx.action_mut().clone_from(&action);
+
+        let authz_result = authorizer
             .require_namespace_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 &warehouse,
                 provided_ns,
                 namespace,
-                CatalogNamespaceAction::CreateTable {
-                    properties: Arc::new(
-                        table_metadata
-                            .properties()
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<BTreeMap<_, _>>(),
-                    ),
-                },
+                action,
             )
-            .await?;
-        let namespace_id = namespace.namespace_id();
+            .await;
+        let (event_ctx, namespace) = event_ctx.emit_authz(authz_result)?;
 
+        let namespace_id = namespace.namespace_id();
         let table_metadata = Arc::new(table_metadata);
+
+        let event_ctx = event_ctx.resolve(ResolvedNamespace {
+            warehouse: warehouse.clone(),
+            namespace: namespace.namespace.clone(),
+        });
+        let request_metadata = event_ctx.request_metadata();
 
         // Check if we need to handle overwrite
         // Drop the existing table to overwrite it
@@ -258,24 +291,36 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await;
 
             if let Ok(Some(_)) = &previous_table_info {
-                tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' for overwrite operation",
-                    table_ident.name,
-                    table_ident.namespace,
-                    warehouse.name
+                let mut drop_tbl_event_ctx = APIEventContext::for_table(
+                    event_ctx.request_metadata_arc(),
+                    event_ctx.dispatcher().clone(),
+                    warehouse_id,
+                    table_ident.clone(),
+                    CatalogTableAction::Drop,
                 );
+                drop_tbl_event_ctx
+                    .push_stack("Dropping existing table to overwrite it during register_table");
+
+                let authz_result = authorizer
+                    .require_table_action(
+                        drop_tbl_event_ctx.request_metadata(),
+                        &warehouse,
+                        &namespace,
+                        drop_tbl_event_ctx.user_provided_entity().table.clone(),
+                        previous_table_info,
+                        drop_tbl_event_ctx.action().clone(),
+                    )
+                    .await;
+                let (drop_tbl_event_ctx, previous_table_info) =
+                    drop_tbl_event_ctx.emit_authz(authz_result)?;
+
                 // Verify authorization to drop the table first
-                previous_table_to_drop = Some(
-                    authorizer
-                        .require_table_action(
-                            &request_metadata,
-                            &warehouse,
-                            &namespace,
-                            table_ident.clone(),
-                            previous_table_info,
-                            CatalogTableAction::Drop,
-                        )
-                        .await?,
+                previous_table_to_drop = Some(previous_table_info);
+
+                tracing::debug!(
+                    "Register Table: Dropping existing table '{}' of warehouse '{}' for overwrite operation",
+                    drop_tbl_event_ctx.user_provided_entity().table.to_string(),
+                    warehouse.name
                 );
             }
         }
@@ -310,7 +355,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 storage_secret_ref,
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
-                &request_metadata,
+                request_metadata,
                 &table_info,
             )
             .await?;
@@ -356,21 +401,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }
 
         // Fire hooks
-        state
-            .v1_state
-            .events
-            .table_registered(RegisterTableEvent {
-                warehouse_id,
-                parameters,
-                request: Arc::new(request),
-                metadata: table_metadata.clone(),
-                metadata_location: Arc::new(metadata_location.clone()),
-                request_metadata: Arc::new(request_metadata),
-            })
-            .await;
+        let metadata_location_str = metadata_location.to_string();
+        event_ctx.emit_table_registered_async(
+            Arc::new(request),
+            table_metadata.clone(),
+            Arc::new(metadata_location),
+        );
 
         Ok(LoadTableResult {
-            metadata_location: Some(metadata_location.to_string()),
+            metadata_location: Some(metadata_location_str),
             metadata: table_metadata,
             config: Some(config.config.into()),
             storage_credentials: None,
@@ -408,20 +447,44 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
 
-        let (warehouse, tabular_info, storage_permissions) = authorize_load_table::<C, A>(
-            &request_metadata,
+        let event_ctx = APIEventContext::for_table(
+            Arc::new(request_metadata),
+            state.v1_state.events,
+            warehouse_id,
+            table.clone(),
+            CatalogTableAction::GetMetadata,
+        );
+
+        let authz_result = match authorize_load_table::<C, A>(
+            event_ctx.request_metadata(),
             table.clone(),
             warehouse_id,
             TabularListFlags::active_and_staged(),
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
         )
-        .await?;
-        let storage_permission = storage_permissions.ok_or(ErrorModel::forbidden(
-            format!("User has no storage permissions for table `{table}`"),
-            "NoStoragePermissions",
-            None,
-        ))?;
+        .await
+        {
+            Err(e) => Err(e),
+            Ok((_, _, None)) => Err(AuthZTableActionForbidden::new(
+                warehouse_id,
+                table.clone(),
+                &CatalogTableAction::ReadData,
+            )
+            .into()),
+            Ok((a, b, Some(c))) => Ok((a, b, c)),
+        };
+
+        let (event_ctx, (warehouse, tabular_info, storage_permissions)) =
+            event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = event_ctx.resolve(ResolvedTable {
+            warehouse,
+            table: Arc::new(tabular_info),
+            storage_permissions: Some(storage_permissions),
+        });
+        let warehouse = &event_ctx.resolved().warehouse;
+        let tabular_info = &*event_ctx.resolved().table;
 
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
@@ -435,9 +498,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     tabular_info.location.as_str(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 )?,
-                storage_permission,
-                &request_metadata,
-                &tabular_info,
+                storage_permissions,
+                event_ctx.request_metadata(),
+                tabular_info,
             )
             .await?;
 
@@ -476,7 +539,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             request_metadata,
         )
         .await?;
-        let mut it = t.into_iter();
+        let mut it = t.iter();
         let Some(item) = it.next() else {
             return Err(ErrorModel::internal(
                 "No new metadata returned by backend",
@@ -492,7 +555,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         Ok(CommitTableResponse {
             metadata_location: item.new_metadata_location.to_string(),
-            metadata: item.new_metadata,
+            metadata: item.new_metadata.clone(),
             config: None,
         })
     }
@@ -528,38 +591,31 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let (warehouse, namespace, table_info) = tokio::join!(
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-            C::get_namespace(
-                warehouse_id,
-                &table.namespace,
-                state.v1_state.catalog.clone(),
-            ),
-            C::get_table_info(
-                warehouse_id,
-                table.clone(),
-                TabularListFlags::active_and_staged(),
-                state.v1_state.catalog.clone(),
-            )
-        );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace = authorizer.require_namespace_presence(
+        let event_ctx = APIEventContext::for_table(
+            Arc::new(request_metadata),
+            state.v1_state.events,
             warehouse_id,
-            table.namespace.clone(),
-            namespace,
-        )?;
+            table.clone(),
+            CatalogTableAction::Drop,
+        );
 
-        let table_info = authorizer
-            .require_table_action(
-                &request_metadata,
-                &warehouse,
-                &namespace,
-                table.clone(),
-                table_info,
-                CatalogTableAction::Drop,
+        let authz_result = authorizer
+            .load_and_authorize_table_operation::<C>(
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                TabularListFlags::active(),
+                event_ctx.action().clone(),
+                state.v1_state.catalog.clone(),
             )
-            .await?;
-        let table_id = table_info.tabular_id;
+            .await;
+        let (event_ctx, (warehouse, _ns, table_info)) = event_ctx.emit_authz(authz_result)?;
+
+        let table_id = table_info.table_id();
+        let event_ctx = event_ctx.resolve(ResolvedTable {
+            warehouse: warehouse.clone(),
+            table: Arc::new(table_info),
+            storage_permissions: None,
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         state
@@ -650,20 +706,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             }
         }
 
-        state
-            .v1_state
-            .events
-            .table_dropped(DropTableEvent {
-                warehouse_id,
-                parameters,
-                drop_params: DropParams {
-                    purge_requested,
-                    force,
-                },
-                table_id: TableId::from(*table_id),
-                request_metadata: Arc::new(request_metadata),
-            })
-            .await;
+        event_ctx.emit_table_dropped_async(DropParams {
+            purge_requested,
+            force,
+        });
 
         Ok(())
     }
@@ -682,39 +728,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let (warehouse, namespace, table_info) = tokio::join!(
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
-            C::get_namespace(
-                warehouse_id,
-                table.namespace.clone(),
-                state.v1_state.catalog.clone(),
-            ),
-            C::get_table_info(
-                warehouse_id,
-                table.clone(),
-                crate::service::TabularListFlags::active(),
-                state.v1_state.catalog.clone(),
-            )
-        );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let namespace = authorizer.require_namespace_presence(
+        let event_ctx = APIEventContext::for_table(
+            Arc::new(request_metadata),
+            state.v1_state.events,
             warehouse_id,
-            table.namespace.clone(),
-            namespace,
-        )?;
+            table.clone(),
+            CatalogTableAction::GetMetadata,
+        );
 
-        authorizer
-            .require_table_action(
-                &request_metadata,
-                &warehouse,
-                &namespace,
-                table,
-                table_info,
-                CatalogTableAction::GetMetadata,
+        let authz_result = authorizer
+            .load_and_authorize_table_operation::<C>(
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                TabularListFlags::active(),
+                event_ctx.action().clone(),
+                state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await;
+        let _ = event_ctx.emit_authz(authz_result)?;
 
-        // ------------------- BUSINESS LOGIC -------------------
         Ok(())
     }
 
@@ -725,120 +757,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        // ------------------- VALIDATIONS -------------------
-        let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-        let RenameTableRequest {
-            source,
-            destination,
-        } = &request;
-        validate_table_or_view_ident(source)?;
-        validate_table_or_view_ident(destination)?;
-
-        // ------------------- AUTHZ -------------------
-        // Authorization is required for:
-        // 1) creating a table in the destination namespace
-        // 2) renaming the old table
-        let authorizer = state.v1_state.authz;
-
-        let (warehouse, destination_namespace, source_namespace, source_table_info) = tokio::join!(
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
-            C::get_namespace(
-                warehouse_id,
-                &destination.namespace,
-                state.v1_state.catalog.clone(),
-            ),
-            C::get_namespace(
-                warehouse_id,
-                &source.namespace,
-                state.v1_state.catalog.clone(),
-            ),
-            C::get_table_info(
-                warehouse_id,
-                source.clone(),
-                TabularListFlags::active(),
-                state.v1_state.catalog.clone(),
-            )
-        );
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-        let source_namespace = authorizer.require_namespace_presence(
-            warehouse_id,
-            source.namespace.clone(),
-            source_namespace,
-        )?;
-
-        let user_provided_namespace = &destination.namespace;
-        let (destination_namespace, source_table_info) = tokio::join!(
-            // Check 1)
-            authorizer.require_namespace_action(
-                &request_metadata,
-                &warehouse,
-                user_provided_namespace,
-                destination_namespace,
-                CatalogNamespaceAction::CreateTable {
-                    // Properties from source table are inherited
-                    properties: Arc::new(
-                        source_table_info
-                            .as_ref()
-                            .ok()
-                            .and_then(|opt| opt.as_ref())
-                            .map_or_else(BTreeMap::new, |tab| tab
-                                .properties
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect())
-                    )
-                },
-            ),
-            // Check 2)
-            authorizer.require_table_action(
-                &request_metadata,
-                &warehouse,
-                &source_namespace,
-                source.clone(),
-                source_table_info,
-                CatalogTableAction::Rename,
-            )
-        );
-
-        let _destination_namespace = destination_namespace?;
-        let source_table_info = source_table_info?;
-
-        // ------------------- BUSINESS LOGIC -------------------
-        if source == destination {
-            return Ok(());
-        }
-
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        C::rename_tabular(
-            warehouse_id,
-            source_table_info.table_id(),
-            source,
-            destination,
-            t.transaction(),
-        )
-        .await?;
-
-        state
-            .v1_state
-            .contract_verifiers
-            .check_rename(source_table_info.table_id().into(), destination)
-            .await?
-            .into_result()?;
-
-        t.commit().await?;
-
-        state
-            .v1_state
-            .events
-            .table_renamed(RenameTableEvent {
-                warehouse_id,
-                table_id: source_table_info.table_id(),
-                request: Arc::new(request),
-                request_metadata: Arc::new(request_metadata),
-            })
-            .await;
-
-        Ok(())
+        rename_table::rename_table(prefix, request, state, request_metadata).await
     }
 
     /// Commit updates to multiple tables in an atomic operation
@@ -862,11 +781,14 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     list_flags: TabularListFlags,
     authorizer: A,
     state: C::State,
-) -> Result<(
-    Arc<ResolvedWarehouse>,
-    TableInfo,
-    Option<StoragePermissions>,
-)> {
+) -> Result<
+    (
+        Arc<ResolvedWarehouse>,
+        TableInfo,
+        Option<StoragePermissions>,
+    ),
+    FetchWarehouseNamespaceTabularError,
+> {
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
@@ -879,13 +801,13 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
 
     // Refresh warehouse and namespace if required
 
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-        &authorizer,
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
         &warehouse,
-        &table_info,
         namespace,
-        state,
-        AuthZCannotSeeTable::new(warehouse_id, table.clone()),
+        &table_info,
+        AuthZCannotSeeTable::new_not_found(warehouse_id, table.clone()),
+        &authorizer,
+        state.clone(),
     )
     .await?;
 
@@ -906,7 +828,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         .into_inner();
 
     if !can_get_metadata {
-        return Err(AuthZCannotSeeTable::new(warehouse_id, table).into());
+        return Err(AuthZCannotSeeTable::new_forbidden(warehouse_id, table).into());
     }
 
     let storage_permissions = if can_write {
@@ -967,7 +889,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
             .join(", ");
         return Err(ErrorModel::bad_request(
             format!("Table identifiers must be unique; duplicates: [{dups}]"),
-            "UniqueTableIdentifiersRequiredForCommitTransaction",
+            "TableIdentifiersNotUnique",
             None,
         )
         .into());
@@ -982,56 +904,32 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
 /// # Errors
 /// Returns an error if the commit fails or if a DB error occurs.
 /// This function will retry on concurrent update errors up to a maximum number of retries.
-async fn commit_tables_inner<
-    C: CatalogStore,
-    A: Authorizer,
-    S: SecretStore,
-    H: ::std::hash::BuildHasher + 'static + Send + Sync,
->(
-    warehouse: &ResolvedWarehouse,
+async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    warehouse: Arc<ResolvedWarehouse>,
     request: CommitTransactionRequest,
-    table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
+    event_ctx: APIEventCommitContext,
     state: ApiContext<State<A, C, S>>,
-    request_metadata: RequestMetadata,
-) -> Result<Vec<CommitContext>> {
+) -> Result<Arc<Vec<CommitContext>>> {
     let include_deleted = false;
-    let warehouse_id = warehouse.warehouse_id;
+    let warehouse_id = event_ctx.user_provided_entity().warehouse_id;
 
     // Start the retry loop
     let mut attempt = 0;
     loop {
-        let result = try_commit_tables::<C, A, S, _>(
-            &request,
-            warehouse,
-            table_ident_map.clone(),
-            &state,
-            include_deleted,
-        )
-        .await;
+        let result =
+            try_commit_tables::<C, A, S>(&request, &warehouse, &event_ctx, &state, include_deleted)
+                .await;
 
         match result {
             Ok(commits) => {
-                // Fire hooks
-                let table_ident_to_id_fn = {
-                    let map = table_ident_map.clone();
-                    Arc::new(move |ident: &iceberg::TableIdent| {
-                        map.get(ident).map(|t| t.tabular_id)
-                    })
-                        as Arc<
-                            dyn Fn(&iceberg::TableIdent) -> Option<crate::service::TableId>
-                                + Send
-                                + Sync,
-                        >
-                };
                 state
                     .v1_state
                     .events
                     .transaction_committed(CommitTransactionEvent {
                         warehouse_id,
                         request: Arc::new(request),
-                        commits: Arc::new(commits.clone()),
-                        table_ident_to_id_fn,
-                        request_metadata: Arc::new(request_metadata),
+                        commits: commits.clone(),
+                        request_metadata: event_ctx.request_metadata_arc(),
                     })
                     .await;
                 return Ok(commits);
@@ -1043,7 +941,7 @@ async fn commit_tables_inner<
                 attempt += 1;
                 tracing::info!(
                     warehouse_id = %warehouse_id,
-                    n_tables = %table_ident_map.len(),
+                    n_tables = %event_ctx.user_provided_entity().tables.len(),
                     attempt = attempt,
                     max_attempts = MAX_RETRIES_ON_CONCURRENT_UPDATE,
                     "Concurrent update detected, retrying commit operation"
@@ -1060,7 +958,7 @@ async fn commit_tables_inner<
                 if attempt > 0 {
                     tracing::warn!(
                         warehouse_id = %warehouse_id,
-                        n_tables = %table_ident_map.len(),
+                        n_tables = %event_ctx.user_provided_entity().tables.len(),
                         attempt = attempt,
                         "Table commit operation failed after {} attempts. Operation was retried due to concurrent updates. {e}",
                         attempt + 1
@@ -1084,75 +982,119 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     request: CommitTransactionRequest,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-) -> Result<Vec<CommitContext>> {
+) -> Result<Arc<Vec<CommitContext>>> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     commit_tables_validate(&request)?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
-    let warehouse =
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
-    let mut warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let request_metadata = Arc::new(request_metadata);
 
-    let identifiers = request
+    let (identifiers, actions): (Vec<_>, Vec<_>) = request
         .table_changes
         .iter()
-        .filter_map(|change| change.identifier.as_ref())
-        .collect::<HashSet<_>>();
-    let identifiers_vec = identifiers.iter().copied().collect::<Vec<_>>();
-    let namespaces = identifiers_vec
-        .iter()
-        .map(|ti| &ti.namespace)
-        .collect::<Vec<_>>();
+        .filter_map(|c| {
+            c.identifier.as_ref().map(|ti| {
+                let (updated_properties, removed_properties) =
+                    parse_table_property_updates(&c.updates);
+                let action = CatalogTableAction::Commit {
+                    updated_properties: Arc::new(updated_properties),
+                    removed_properties: Arc::new(removed_properties),
+                };
+
+                (ti.clone(), action)
+            })
+        })
+        .multiunzip();
+
+    let event_ctx = APIEventContext::for_tables_by_ident(
+        request_metadata,
+        state.v1_state.events.clone(),
+        warehouse_id,
+        identifiers,
+        actions.clone(),
+    );
+
+    let authz_result = commit_tables_authz::<A, C>(
+        authorizer,
+        warehouse_id,
+        &event_ctx.user_provided_entity().tables,
+        &actions,
+        state.v1_state.catalog.clone(),
+        event_ctx.request_metadata(),
+    )
+    .await;
+    let (event_ctx, authz_result) = event_ctx.emit_authz(authz_result)?;
+    let warehouse = authz_result.warehouse;
+    let table_infos = authz_result
+        .table_infos_with_actions
+        .into_iter()
+        .map(|(ident, (info, _action))| (ident, info))
+        .collect::<HashMap<_, _>>();
+    let event_ctx = event_ctx.resolve(table_infos);
+
+    // ------------------- BUSINESS LOGIC -------------------
+    commit_tables_inner::<C, _, _>(warehouse, request, event_ctx, state).await
+}
+
+struct CommitAuthorizationResult<'a> {
+    table_infos_with_actions:
+        HashMap<TableIdent, (Arc<TabularInfo<TableId>>, &'a CatalogTableAction)>,
+    warehouse: Arc<ResolvedWarehouse>,
+}
+
+async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
+    authorizer: A,
+    warehouse_id: WarehouseId,
+    identifiers: &Vec<TableIdent>,
+    actions: &'a Vec<CatalogTableAction>,
+    catalog_state: C::State,
+    request_metadata: &RequestMetadata,
+) -> Result<CommitAuthorizationResult<'a>, FetchWarehouseNamespaceTabularError> {
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let mut warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let (idents_ref, ns_ref): (Vec<_>, Vec<_>) =
+        identifiers.iter().map(|i| (i, &i.namespace)).unzip();
 
     let (table_infos, namespaces) = tokio::join!(
         C::get_table_infos_by_ident(
             warehouse_id,
-            &identifiers_vec,
+            &idents_ref,
             TabularListFlags::active_and_staged(),
-            state.v1_state.catalog.clone(),
+            catalog_state.clone(),
         ),
-        C::get_namespaces_by_ident(warehouse_id, &namespaces, state.v1_state.catalog.clone())
+        C::get_namespaces_by_ident(warehouse_id, &ns_ref, catalog_state.clone())
     );
+
+    // Don't map anymore
     let table_infos = table_infos.map_err(RequireTableActionError::from)?;
 
-    let table_ident_to_info = table_infos
+    let mut table_ident_to_info = table_infos
         .into_iter()
-        .map(|ti| (ti.tabular_ident.clone(), ti))
+        .map(|ti| (ti.tabular_ident.clone(), Arc::new(ti)))
         .collect::<HashMap<_, _>>();
 
-    let table_info_with_actions = request
-        .table_changes
+    let table_infos_with_actions = identifiers
         .iter()
-        .filter_map(|change| {
-            change.identifier.as_ref().map(|ti| {
-                let table_info = table_ident_to_info
-                    .get(ti)
-                    .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, ti.clone()))?;
-                let (updates, removals) = parse_table_property_updates(&change.updates);
-                Ok((
-                    table_info,
-                    CatalogTableAction::Commit {
-                        updated_properties: Arc::new(updates),
-                        removed_properties: Arc::new(removals),
-                    },
-                ))
-            })
+        .zip(actions)
+        .map(|(ti, action)| {
+            let table_info = table_ident_to_info
+                .remove(ti)
+                .ok_or_else(|| AuthZCannotSeeTable::new_not_found(warehouse_id, (*ti).clone()))?;
+            Ok(((*ti).clone(), (table_info, action)))
         })
-        .collect::<Result<Vec<_>, AuthZCannotSeeTable>>()?;
+        .collect::<Result<HashMap<_, _>, AuthZCannotSeeTable>>()?;
 
-    for user_provided_ident in identifiers {
-        if !table_ident_to_info.contains_key(user_provided_ident) {
-            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_ident.clone()).into());
-        }
-    }
-    let namespaces = namespaces?;
+    drop(table_ident_to_info); // No longer needed
+
+    let namespaces = namespaces.map_err(RequireNamespaceActionError::from)?;
 
     // Refresh warehouse if required
-    if let Some(required_version) = table_ident_to_info
+    if let Some(required_version) = table_infos_with_actions
         .values()
-        .map(|ti| ti.warehouse_version)
+        .map(|ti| ti.0.warehouse_version)
         .max()
         && warehouse.version < required_version
     {
@@ -1160,7 +1102,7 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
             warehouse_id,
             WarehouseStatus::active(),
             CachePolicy::RequireMinimumVersion(*required_version),
-            state.v1_state.catalog.clone(),
+            catalog_state.clone(),
         )
         .await;
         warehouse = authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
@@ -1168,50 +1110,44 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
 
     authorizer
         .require_table_actions(
-            &request_metadata,
+            request_metadata,
             &warehouse,
             &namespaces,
-            &table_info_with_actions
-                .into_iter()
+            &table_infos_with_actions
+                .values()
                 .map(|(ti, a)| {
-                    Ok::<_, ErrorModel>((require_namespace_for_tabular(&namespaces, ti)?, ti, a))
+                    Ok::<_, AuthZCannotSeeNamespace>((
+                        require_namespace_for_tabular(&namespaces, &**ti)?,
+                        &**ti,
+                        (**a).clone(),
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .await?;
 
-    // ------------------- BUSINESS LOGIC -------------------
-    commit_tables_inner(
-        &warehouse,
-        request,
-        Arc::new(table_ident_to_info),
-        state,
-        request_metadata,
-    )
-    .await
+    Ok(CommitAuthorizationResult {
+        table_infos_with_actions,
+        warehouse,
+    })
 }
 
 // Extract the core commit logic to a separate function for retry purposes
 #[allow(clippy::too_many_lines)]
-async fn try_commit_tables<
-    C: CatalogStore,
-    A: Authorizer + Clone,
-    S: SecretStore,
-    H: ::std::hash::BuildHasher,
->(
+async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     request: &CommitTransactionRequest,
     warehouse: &ResolvedWarehouse,
-    table_ident_map: Arc<HashMap<TableIdent, TableInfo, H>>,
+    event_ctx: &APIEventCommitContext,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
-) -> Result<Vec<CommitContext>> {
+) -> Result<Arc<Vec<CommitContext>>> {
     let warehouse_id = warehouse.warehouse_id;
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // Load old metadata
     let previous_metadatas = C::load_tables(
         warehouse_id,
-        table_ident_map.values().map(TableInfo::table_id),
+        event_ctx.resolved().values().map(|ti| ti.table_id()),
         include_deleted,
         &LoadTableFilters::default(),
         transaction.transaction(),
@@ -1238,10 +1174,18 @@ async fn try_commit_tables<
                         "ChangeWithoutIdentifier",
                         None,
                     ))?;
-            let table_id = table_ident_map
+            let table_info = event_ctx
+                .resolved()
                 .get(table_ident)
-                .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, table_ident.clone()))?
-                .table_id();
+                .ok_or_else(|| {
+                    ErrorModel::internal(
+                        "Event context not found for table identifier",
+                        "EventContextNotFoundForTableIdentifier",
+                        None,
+                    )
+                })?
+                .clone();
+            let table_id = table_info.table_id();
             let previous_table_metadata =
                 previous_metadatas.remove(&table_id).ok_or_else(|| {
                     TabularNotFound::new(warehouse_id, TableIdentOrId::from(table_ident.clone()))
@@ -1294,7 +1238,7 @@ async fn try_commit_tables<
             Ok(CommitContext {
                 new_metadata: Arc::new(new_metadata),
                 new_metadata_location,
-                table_ident: table_ident.clone(),
+                table_info,
                 new_compression_codec,
                 previous_metadata_location: previous_table_metadata.metadata_location,
                 updates: Arc::new(change.updates.clone()),
@@ -1405,7 +1349,7 @@ async fn try_commit_tables<
             .ok()
     });
 
-    Ok(commits)
+    Ok(Arc::new(commits))
 }
 
 pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
@@ -1430,13 +1374,13 @@ pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Optio
 pub struct CommitContext {
     pub new_metadata: TableMetadataRef,
     pub new_metadata_location: Location,
-    pub table_ident: TableIdent,
     pub previous_metadata: TableMetadataRef,
     pub previous_metadata_location: Option<Location>,
     pub updates: Arc<Vec<TableUpdate>>,
     pub new_compression_codec: CompressionCodec,
     pub number_expired_metadata_log_entries: usize,
     pub number_added_metadata_log_entries: usize,
+    pub table_info: Arc<TableInfo>,
 }
 
 impl CommitContext {

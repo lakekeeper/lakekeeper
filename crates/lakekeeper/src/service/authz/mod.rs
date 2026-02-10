@@ -156,6 +156,8 @@ pub enum CatalogUserAction {
     Delete,
 }
 
+impl CatalogAction for CatalogUserAction {}
+
 #[derive(
     Debug,
     Clone,
@@ -185,6 +187,7 @@ pub enum CatalogServerAction {
     /// Can provision user
     ProvisionUsers,
 }
+impl CatalogAction for CatalogServerAction {}
 
 #[derive(
     Debug,

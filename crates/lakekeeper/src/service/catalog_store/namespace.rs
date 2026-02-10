@@ -15,7 +15,10 @@ use crate::{
         BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
         InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
         SerializationError, StateOrTransaction, TableIdent, TabularId, Transaction,
-        WarehouseIdNotFound, define_transparent_error, define_version_newtype,
+        WarehouseIdNotFound,
+        authz::AuthZCannotSeeNamespace,
+        define_transparent_error, define_version_newtype,
+        events::impl_authorization_failure_source,
         impl_error_stack_methods, impl_from_with_detail,
         namespace_cache::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
@@ -321,7 +324,7 @@ impl InvalidNamespaceIdentifier {
     }
 }
 impl_error_stack_methods!(InvalidNamespaceIdentifier);
-
+impl_authorization_failure_source!(InvalidNamespaceIdentifier => InternalCatalogError);
 impl From<InvalidNamespaceIdentifier> for ErrorModel {
     fn from(err: InvalidNamespaceIdentifier) -> Self {
         let message = err.to_string();
@@ -371,6 +374,7 @@ impl From<NamespaceNotFound> for ErrorModel {
         }
     }
 }
+impl_authorization_failure_source!(NamespaceNotFound => ResourceNotFound);
 
 // --------------------------- GET ERROR ---------------------------
 define_transparent_error! {
@@ -781,16 +785,11 @@ where
 pub(crate) fn require_namespace_for_tabular<'a>(
     namespaces: &'a std::collections::HashMap<NamespaceId, NamespaceWithParent>,
     tabular: &impl BasicTabularInfo,
-) -> Result<&'a NamespaceWithParent, ErrorModel> {
+) -> Result<&'a NamespaceWithParent, AuthZCannotSeeNamespace> {
     namespaces.get(&tabular.namespace_id()).ok_or_else(|| {
-        ErrorModel::internal(
-            format!(
-                "Namespace with ID '{}' not found for tabular '{}'",
-                tabular.namespace_id(),
-                tabular.tabular_ident()
-            ),
-            "NamespaceNotFoundForTabular",
-            None,
+        AuthZCannotSeeNamespace::new_not_found(
+            tabular.warehouse_id(),
+            tabular.tabular_ident().namespace.clone(),
         )
     })
 }

@@ -19,7 +19,11 @@ use crate::{
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId, TabularInfo,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
-        authz::{Authorizer, AuthzWarehouseOps},
+        authz::{Authorizer, AuthzWarehouseOps, CatalogTableAction},
+        events::{
+            APIEventContext,
+            context::{ResolvedTable, authz_to_error_no_audit},
+        },
         secrets::SecretStore,
     },
 };
@@ -63,18 +67,34 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     let authorizer = state.v1_state.authz;
     let catalog_state = state.v1_state.catalog;
 
-    let (warehouse, table_info, storage_permissions) = authorize_load_table::<C, A>(
-        &request_metadata,
-        table,
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events,
         warehouse_id,
-        TabularListFlags::active(),
-        authorizer.clone(),
-        catalog_state.clone(),
-    )
-    .await?;
+        table.clone(),
+        CatalogTableAction::GetMetadata,
+    );
+
+    let (event_ctx, (warehouse, table_info, storage_permissions)) = event_ctx.emit_authz(
+        authorize_load_table::<C, A>(
+            &request_metadata,
+            table,
+            warehouse_id,
+            TabularListFlags::active(),
+            authorizer.clone(),
+            catalog_state.clone(),
+        )
+        .await,
+    )?;
+
+    let mut event_ctx = event_ctx.resolve(ResolvedTable {
+        warehouse,
+        table: Arc::new(table_info),
+        storage_permissions,
+    });
 
     // ------------------- ETAG CHECK -------------------
-    let etag = get_etag(&table_info);
+    let etag = get_etag(&*event_ctx.resolved().table);
     if let Some(etag_value) = etag
         .as_ref()
         .map(|e| e.as_str().trim_matches('"'))
@@ -96,8 +116,8 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         warehouse_version,
     } = load_table_inner::<C>(
         warehouse_id,
-        table_info.table_id(),
-        table_info.table_ident(),
+        event_ctx.resolved().table.table_id(),
+        event_ctx.resolved().table.table_ident(),
         false,
         &filters,
         &mut t,
@@ -106,7 +126,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     t.commit().await?;
 
     // Refetch warehouse if version is stale
-    let warehouse = if warehouse.version < warehouse_version {
+    if event_ctx.resolved().warehouse.version < warehouse_version {
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active(),
@@ -114,10 +134,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             catalog_state.clone(),
         )
         .await;
-        authorizer.require_warehouse_presence(warehouse_id, warehouse)?
-    } else {
-        warehouse
+        let fresh_warehouse = authorizer
+            .require_warehouse_presence(warehouse_id, warehouse)
+            .map_err(authz_to_error_no_audit)?;
+        event_ctx.resolved_mut().warehouse = fresh_warehouse;
     };
+    let warehouse = &event_ctx.resolved().warehouse;
 
     let table_location =
         parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -135,7 +157,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
                     &table_location,
                     storage_permissions,
                     &request_metadata,
-                    &table_info,
+                    &*event_ctx.resolved().table,
                 )
                 .await?,
         )
@@ -152,9 +174,14 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         })
     });
 
+    let metadata_ref = Arc::new(table_metadata);
+    let metadata_location_ref = metadata_location.map(Arc::new);
+
+    event_ctx.emit_table_loaded_async(metadata_ref.clone(), metadata_location_ref.clone());
+
     let load_table_result = LoadTableResult {
-        metadata_location: metadata_location.as_ref().map(ToString::to_string),
-        metadata: Arc::new(table_metadata),
+        metadata_location: metadata_location_ref.as_ref().map(ToString::to_string),
+        metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
     };

@@ -834,9 +834,9 @@ pub(crate) async fn set_task_queue_config(
     queue_name: &TaskQueueName,
     project_id: ProjectId,
     warehouse_id: Option<WarehouseId>,
-    config: SetTaskQueueConfigRequest,
+    config: &SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
-    let serialized = config.queue_config.0;
+    let serialized = &config.queue_config.0;
     let max_time_since_last_heartbeat =
         if let Some(max_seconds_since_last_heartbeat) = config.max_seconds_since_last_heartbeat {
             Some(PgInterval {
@@ -2188,7 +2188,7 @@ mod test {
             &tq_name,
             project_id.clone(),
             Some(warehouse_id),
-            config,
+            &config,
         )
         .await
         .unwrap();
@@ -2228,7 +2228,7 @@ mod test {
             &warehouse_task_queue_name,
             project_id.clone(),
             Some(warehouse_id),
-            warehouse_config,
+            &warehouse_config,
         )
         .await
         .unwrap();
@@ -2245,7 +2245,7 @@ mod test {
             &project_task_queue_name,
             project_id.clone(),
             None,
-            project_config,
+            &project_config,
         )
         .await
         .unwrap();
@@ -2284,7 +2284,7 @@ mod test {
             &task_queue_name,
             project_id.clone(),
             Some(warehouse_id),
-            warehouse_config,
+            &warehouse_config,
         )
         .await
         .unwrap();
@@ -2300,7 +2300,7 @@ mod test {
             &task_queue_name,
             project_id.clone(),
             None,
-            project_config,
+            &project_config,
         )
         .await
         .unwrap();
@@ -2334,7 +2334,7 @@ mod test {
             &tq_name,
             project_id.clone(),
             Some(warehouse_id),
-            config,
+            &config,
         )
         .await
         .unwrap();
@@ -3414,7 +3414,7 @@ mod test {
             queue_name,
             project_id,
             warehouse_id,
-            SetTaskQueueConfigRequest {
+            &SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(config),
                 max_seconds_since_last_heartbeat: None,
             },

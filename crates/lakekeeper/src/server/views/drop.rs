@@ -13,7 +13,7 @@ use crate::{
         State, TabularId, TabularListFlags, Transaction,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
-        events::DropViewEvent,
+        events::{APIEventContext, context::ResolvedView},
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -40,17 +40,31 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
 
-    let (warehouse, _namespace, view_info) = authorizer
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(request_metadata),
+        state.v1_state.events,
+        warehouse_id,
+        view.clone(),
+        CatalogViewAction::Drop,
+    );
+
+    let authz_context = authorizer
         .load_and_authorize_view_operation::<C>(
-            &request_metadata,
-            warehouse_id,
-            view.clone(),
+            event_ctx.request_metadata(),
+            event_ctx.user_provided_entity(),
             TabularListFlags::active(),
-            CatalogViewAction::Drop,
+            event_ctx.action().clone(),
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await;
+
+    let (event_ctx, (warehouse, _namespace, view_info)) = event_ctx.emit_authz(authz_context)?;
+
     let view_id = view_info.view_id();
+    let event_ctx = event_ctx.resolve(ResolvedView {
+        warehouse: warehouse.clone(),
+        view: Arc::new(view_info),
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     state
@@ -86,7 +100,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                 .await?;
                 tracing::debug!(
                     "Queued purge task for dropped view '{}' in warehouse {warehouse_id}.",
-                    view_info.view_ident()
+                    event_ctx.resolved().view.view_ident()
                 );
             }
             t.commit().await?;
@@ -123,7 +137,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
             .await?;
             C::mark_tabular_as_deleted(
                 warehouse_id,
-                TabularId::View(view_info.view_id()),
+                TabularId::View(view_id),
                 force,
                 t.transaction(),
             )
@@ -131,26 +145,17 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
 
             tracing::debug!(
                 "Queued expiration task for dropped view '{}' with id '{view_id}' in warehouse {warehouse_id}.",
-                view_info.view_ident()
+                event_ctx.resolved().view.view_ident()
             );
             t.commit().await?;
         }
     }
 
-    state
-        .v1_state
-        .events
-        .view_dropped(DropViewEvent {
-            warehouse_id,
-            parameters,
-            drop_params: DropParams {
-                purge_requested,
-                force,
-            },
-            view_id,
-            request_metadata: Arc::new(request_metadata),
-        })
-        .await;
+    let drop_params = DropParams {
+        purge_requested,
+        force,
+    };
+    event_ctx.emit_view_dropped_async(drop_params);
 
     Ok(())
 }

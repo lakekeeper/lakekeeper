@@ -3,9 +3,8 @@ use std::{
     sync::Arc,
 };
 
-use futures::TryFutureExt;
-
 use super::types;
+use futures::TryFutureExt;
 
 /// Macro to dispatch events to all listeners with error logging.
 ///
@@ -100,8 +99,16 @@ impl EventDispatcher {
         dispatch_event!(self, view_renamed, event);
     }
 
+    pub(crate) async fn view_loaded(&self, event: types::LoadViewEvent) {
+        dispatch_event!(self, view_loaded, event);
+    }
+
     pub(crate) async fn tabular_undropped(&self, event: types::UndropTabularEvent) {
         dispatch_event!(self, tabular_undropped, event);
+    }
+
+    pub(crate) async fn project_created(&self, event: types::CreateProjectEvent) {
+        dispatch_event!(self, project_created, event);
     }
 
     pub(crate) async fn warehouse_created(&self, event: types::CreateWarehouseEvent) {
@@ -141,6 +148,10 @@ impl EventDispatcher {
         dispatch_event!(self, warehouse_storage_credential_updated, event);
     }
 
+    pub(crate) async fn task_queue_config_set(&self, event: types::SetTaskQueueConfigEvent) {
+        dispatch_event!(self, task_queue_config_set, event);
+    }
+
     pub(crate) async fn namespace_protection_set(&self, event: types::SetNamespaceProtectionEvent) {
         dispatch_event!(self, namespace_protection_set, event);
     }
@@ -158,6 +169,38 @@ impl EventDispatcher {
         event: types::UpdateNamespacePropertiesEvent,
     ) {
         dispatch_event!(self, namespace_properties_updated, event);
+    }
+
+    pub(crate) async fn authorization_failed(&self, event: types::AuthorizationFailedEvent) {
+        dispatch_event!(self, authorization_failed, event);
+    }
+
+    pub(crate) async fn namespace_authorization_failed(
+        &self,
+        event: types::NamespaceAuthorizationFailedEvent,
+    ) {
+        dispatch_event!(self, namespace_authorization_failed, event);
+    }
+
+    pub(crate) async fn namespace_metadata_loaded(
+        &self,
+        event: types::NamespaceMetadataLoadedEvent,
+    ) {
+        dispatch_event!(self, namespace_metadata_loaded, event);
+    }
+
+    pub(crate) async fn project_authorization_failed(
+        &self,
+        event: types::ProjectAuthorizationFailedEvent,
+    ) {
+        dispatch_event!(self, project_authorization_failed, event);
+    }
+
+    pub(crate) async fn server_authorization_failed(
+        &self,
+        event: types::ServerAuthorizationFailedEvent,
+    ) {
+        dispatch_event!(self, server_authorization_failed, event);
     }
 }
 
@@ -244,10 +287,22 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    /// Invoked after a view's metadata has been successfully loaded
+    async fn view_loaded(&self, _event: types::LoadViewEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     // ===== Tabular Events =====
 
     /// Invoked after tables or views have been successfully undeleted
     async fn tabular_undropped(&self, _event: types::UndropTabularEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Project Events =====
+
+    /// Invoked after a project has been successfully created
+    async fn project_created(&self, _event: types::CreateProjectEvent) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -300,6 +355,14 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    /// Invoked after a warehouse task queue config has been successfully set
+    async fn task_queue_config_set(
+        &self,
+        _event: types::SetTaskQueueConfigEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     // ===== Namespace Events =====
 
     /// Invoked after namespace protection status has been successfully changed
@@ -324,6 +387,65 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn namespace_properties_updated(
         &self,
         _event: types::UpdateNamespacePropertiesEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn namespace_metadata_loaded(
+        &self,
+        _event: types::NamespaceMetadataLoadedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Authorization Hooks =====
+
+    /// Invoked when an authorization check fails during request processing
+    ///
+    /// This hook enables audit trails for security monitoring and compliance,
+    /// capturing who attempted what action and why it was denied. Unlike other
+    /// hooks which fire after successful operations, this hook fires when an
+    /// operation is denied due to authorization failures.
+    ///
+    /// # Use Cases
+    /// - Security audit logs
+    /// - Compliance monitoring (SOC2, GDPR, etc.)
+    /// - Anomaly detection (repeated failed access attempts)
+    /// - User permission debugging
+    async fn authorization_failed(
+        &self,
+        _event: types::authorization::AuthorizationFailedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked when a namespace authorization check fails
+    ///
+    /// This captures namespace-specific context including the warehouse ID
+    /// and the namespace identifier that was attempted to be accessed.
+    async fn namespace_authorization_failed(
+        &self,
+        _event: types::NamespaceAuthorizationFailedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked when a project authorization check fails
+    ///
+    /// This captures project-specific context including the project ID if known.
+    async fn project_authorization_failed(
+        &self,
+        _event: types::ProjectAuthorizationFailedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked when a server-level authorization check fails
+    ///
+    /// This captures server-level actions that don't have resource-specific context.
+    async fn server_authorization_failed(
+        &self,
+        _event: types::ServerAuthorizationFailedEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

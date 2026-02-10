@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{Json, response::IntoResponse};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -11,7 +13,11 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
-        authz::{AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction},
+        authz::{
+            AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction,
+            RequireServerActionError,
+        },
+        events::{APIEventContext, context::ServerActionSearchUsers},
     },
 };
 
@@ -282,19 +288,36 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
-        let acting_user_id = request_metadata.user_id();
+        let mut event_ctx = APIEventContext::for_server(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            CatalogServerAction::ProvisionUsers,
+        );
+        let acting_user_id = event_ctx.request_metadata().user_id();
 
         let self_provision = is_self_provisioning(acting_user_id, request.id.as_ref());
-        if !self_provision {
-            authorizer
-                .require_server_action(&request_metadata, None, CatalogServerAction::ProvisionUsers)
-                .await?;
-        }
+        let event_ctx = if self_provision {
+            event_ctx.push_stack("Self Provisioning: true");
+            event_ctx
+                .emit_authz::<_, RequireServerActionError>(Ok(()))?
+                .0
+        } else {
+            event_ctx.push_stack("Self Provisioning: false");
+            let authz_result = authorizer
+                .require_server_action(
+                    event_ctx.request_metadata(),
+                    None,
+                    CatalogServerAction::ProvisionUsers,
+                )
+                .await;
+            event_ctx.emit_authz(authz_result)?.0
+        };
+        let request_metadata = event_ctx.request_metadata();
 
         // ------------------- Business Logic -------------------
         let update_if_exists = request.update_if_exists;
         let (creation_user_id, name, user_type, email) =
-            parse_create_user_request(&request_metadata, Some(request))?;
+            parse_create_user_request(request_metadata, Some(request))?;
 
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let user = C::create_or_update_user(
@@ -330,7 +353,17 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<SearchUserResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer.require_search_users(&request_metadata).await?;
+
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            ServerActionSearchUsers {},
+        );
+
+        let authz_result = authorizer
+            .require_search_users(event_ctx.request_metadata())
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let SearchUserRequest { mut search } = request;
@@ -347,9 +380,22 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<User> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_user_action(&request_metadata, &user_id, CatalogUserAction::Read)
-            .await?;
+
+        let event_ctx = APIEventContext::for_user(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            Arc::new(user_id.clone()),
+            CatalogUserAction::Read,
+        );
+
+        let authz_result = authorizer
+            .require_user_action(
+                event_ctx.request_metadata(),
+                &user_id,
+                event_ctx.action().clone(),
+            )
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let filter_user_id = Some(vec![user_id.clone()]);
@@ -381,9 +427,21 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<ListUsersResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_server_action(&request_metadata, None, CatalogServerAction::ListUsers)
-            .await?;
+
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            CatalogServerAction::ListUsers,
+        );
+
+        let authz_result = authorizer
+            .require_server_action(
+                event_ctx.request_metadata(),
+                None,
+                event_ctx.action().clone(),
+            )
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let filter_user_id = None;
@@ -410,9 +468,22 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_user_action(&request_metadata, &user_id, CatalogUserAction::Update)
-            .await?;
+
+        let event_ctx = APIEventContext::for_user(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            Arc::new(user_id.clone()),
+            CatalogUserAction::Update,
+        );
+
+        let authz_result = authorizer
+            .require_user_action(
+                event_ctx.request_metadata(),
+                &user_id,
+                event_ctx.action().clone(),
+            )
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let email = request.email.as_deref().filter(|e| !e.is_empty());
@@ -442,9 +513,22 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_user_action(&request_metadata, &user_id, CatalogUserAction::Delete)
-            .await?;
+
+        let event_ctx = APIEventContext::for_user(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            Arc::new(user_id.clone()),
+            CatalogUserAction::Delete,
+        );
+
+        let authz_result = authorizer
+            .require_user_action(
+                event_ctx.request_metadata(),
+                &user_id,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -457,7 +541,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
-        authorizer.delete_user(&request_metadata, user_id).await?;
+        authorizer
+            .delete_user(event_ctx.request_metadata(), user_id)
+            .await?;
         t.commit().await
     }
 }
