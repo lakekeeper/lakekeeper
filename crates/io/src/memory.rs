@@ -96,6 +96,16 @@ impl MemoryStorage {
         }
     }
 
+    /// Create a new memory storage instance with pre-populated data and custom timestamps.
+    /// This creates an isolated instance not connected to the global store.
+    #[must_use]
+    pub fn with_timed_data(data: HashMap<String, (Bytes, DateTime<Utc>)>) -> Self {
+        MemoryStorage {
+            data: Arc::new(RwLock::new(data)),
+            use_global_store: false,
+        }
+    }
+
     /// Get the number of objects stored in memory.
     pub async fn len(&self) -> usize {
         self.data.read().await.len()
