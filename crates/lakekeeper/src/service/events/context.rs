@@ -6,7 +6,7 @@ use lakekeeper_io::s3::S3Location;
 
 use crate::{
     ProjectId, WarehouseId,
-    api::{RequestMetadata, management::v1::check::CatalogActionCheckItem},
+    api::{RequestMetadata, management::v1::{check::CatalogActionCheckItem}},
     service::{
         NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, TableIdentOrId,
         TableInfo, TabularId, ViewIdentOrId, ViewInfo,
@@ -20,6 +20,7 @@ use crate::{
             EventDispatcher,
         },
         storage::StoragePermissions,
+        tasks::TaskId,
     },
 };
 
@@ -162,6 +163,13 @@ pub enum UserProvidedTableOrView {
 
 impl UserProvidedEntity for UserProvidedTableOrView {}
 
+#[derive(Clone, Debug)]
+pub struct UserProvidedTask {
+    pub warehouse_id: WarehouseId,
+    pub task_id: TaskId,
+}
+impl UserProvidedEntity for UserProvidedTask {}
+
 // Primitive entity impls
 impl UserProvidedEntity for WarehouseId {}
 impl UserProvidedEntity for ProjectId {}
@@ -217,15 +225,22 @@ impl APIEventAction for TabularAction {
     }
 }
 
+pub struct GetTaskDetailsAction {}
+impl APIEventAction for GetTaskDetailsAction {
+    fn event_action_str(&self) -> String {
+        "get_task_details".to_string()
+    }
+}
+
 impl APIEventAction for Vec<CatalogTableAction> {
     fn event_action_str(&self) -> String {
         let actions_str = self
-            .iter()
-            .map(|a| a.as_log_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("Batch[{}]", actions_str)
-    }
+        .iter()
+        .map(|a| a.as_log_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Batch[{}]", actions_str)
+}
 }
 
 // ── APIEventContext ─────────────────────────────────────────────────────────
@@ -476,6 +491,27 @@ impl APIEventContext<UserProvidedView, Unresolved, CatalogViewAction> {
             UserProvidedView {
                 warehouse_id,
                 view: view.into(),
+            },
+            action,
+        )
+    }
+}
+
+impl<A: APIEventAction> APIEventContext<UserProvidedTask, Unresolved, A> {
+    #[must_use]
+    pub fn for_task(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        warehouse_id: WarehouseId,
+        task_id: TaskId,
+        action: A,
+    ) -> Self {
+        Self::new(
+            request_metadata,
+            dispatcher,
+            UserProvidedTask {
+                warehouse_id,
+                task_id,
             },
             action,
         )

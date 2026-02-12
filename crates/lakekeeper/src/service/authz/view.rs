@@ -14,7 +14,7 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CannotInspectPermissions, CatalogAction, CatalogViewAction,
-            FetchWarehouseNamespaceTabularError, MustUse, UserOrRole,
+            AuthZError, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -298,7 +298,7 @@ pub trait AuthZViewOps: Authorizer {
         catalog_state: C::State,
     ) -> Result<
         (Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo),
-        FetchWarehouseNamespaceTabularError,
+        AuthZError,
     >
     where
         C: CatalogStore,
@@ -516,7 +516,7 @@ pub(crate) async fn fetch_warehouse_namespace_view_by_id<C, A>(
     catalog_state: C::State,
 ) -> Result<
     (Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 >
 where
     C: CatalogStore,

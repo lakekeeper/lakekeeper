@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
@@ -112,6 +113,62 @@ impl AuthorizationFailureSource for AuthZCannotSeeNamespace {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct AuthZCannotSeeAnonymousNamespace {
+    warehouse_id: WarehouseId,
+    /// Whether the resource was confirmed not to exist (for audit logging)
+    /// HTTP response is deliberately ambiguous, but audit log should be concrete
+    internal_resource_not_found: bool,
+    internal_error_stack: Vec<String>,
+}
+impl AuthZCannotSeeAnonymousNamespace {
+    #[must_use]
+    pub fn new(
+        warehouse_id: WarehouseId,
+        resource_not_found: bool,
+        error_stack: Vec<String>,
+    ) -> Self {
+        Self {
+            warehouse_id,
+            internal_resource_not_found: resource_not_found,
+            internal_error_stack: error_stack,
+        }
+    }
+    #[must_use]
+    pub fn new_not_found(warehouse_id: WarehouseId) -> Self {
+        Self::new(warehouse_id, true, vec![])
+    }
+
+    #[must_use]
+    pub fn new_forbidden(warehouse_id: WarehouseId) -> Self {
+        Self::new(warehouse_id, false, vec![])
+    }
+}
+impl AuthorizationFailureSource for AuthZCannotSeeAnonymousNamespace {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.internal_resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZCannotSeeAnonymousNamespace {
+            internal_resource_not_found: _,
+            internal_error_stack: internal_server_stack,
+            ..
+        } = self;
+        ErrorModel {
+            r#type: "NoSuchNamespaceException".to_string(),
+            code: StatusCode::NOT_FOUND.as_u16(),
+            message: "Namespace not found or access denied".to_string(),
+            stack: internal_server_stack,
+            source: None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct AuthZNamespaceActionForbidden {
     warehouse_id: WarehouseId,
     namespace: NamespaceIdentOrId,
@@ -160,6 +217,7 @@ pub enum RequireNamespaceActionError {
     CannotInspectPermissions(CannotInspectPermissions),
     // Hide the existence of the namespace
     AuthZCannotSeeNamespace(AuthZCannotSeeNamespace),
+    AuthZCannotSeeAnonymousNamespace(AuthZCannotSeeAnonymousNamespace),
     // Propagated directly
     CatalogBackendError(CatalogBackendError),
     InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
@@ -193,6 +251,7 @@ impl From<CatalogGetNamespaceError> for RequireNamespaceActionError {
 }
 delegate_authorization_failure_source!(RequireNamespaceActionError => {
     AuthZCannotSeeNamespace,
+    AuthZCannotSeeAnonymousNamespace,
     AuthZNamespaceActionForbidden,
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,

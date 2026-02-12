@@ -14,7 +14,7 @@ use crate::{
         TabularId, TabularListFlags, Transaction, ViewInfo,
         authz::{
             AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogViewAction, FetchWarehouseNamespaceTabularError,
+            CatalogNamespaceAction, CatalogViewAction, AuthZError,
             RequireViewActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::ContractVerification,
@@ -116,7 +116,7 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
     destination: &TableIdent,
     authorizer: &A,
     state: C::State,
-) -> Result<AuthorizeRenameViewResult, FetchWarehouseNamespaceTabularError> {
+) -> Result<AuthorizeRenameViewResult, AuthZError> {
     let (warehouse, destination_namespace, source_namespace, source_view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone(),),
         C::get_namespace(warehouse_id, &destination.namespace, state.clone(),),

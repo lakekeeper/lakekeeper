@@ -10,7 +10,7 @@ use crate::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZCannotUseWarehouseId, AuthZTableOps, AuthZWarehouseActionForbidden, Authorizer,
             AuthzWarehouseOps, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            FetchWarehouseNamespaceTabularError, RequireTableActionError,
+            AuthZError, RequireTableActionError,
             RequireWarehouseActionError,
         },
         require_namespace_for_tabular,
@@ -23,7 +23,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
-) -> Result<Arc<ResolvedWarehouse>, FetchWarehouseNamespaceTabularError> {
+) -> Result<Arc<ResolvedWarehouse>, AuthZError> {
     let warehouse = C::get_warehouse_by_id_cache_aware(
         warehouse_id,
         WarehouseStatus::active(),

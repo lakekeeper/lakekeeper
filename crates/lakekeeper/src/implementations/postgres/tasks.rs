@@ -11,13 +11,11 @@ use crate::{
     },
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        TableId, ViewId,
-        task_configs::TaskQueueConfigFilter,
-        tasks::{
+        DatabaseIntegrityError, TableId, ViewId, task_configs::TaskQueueConfigFilter, tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
             TaskQueueName, WarehouseTaskEntityId,
-        },
+        }
     },
 };
 
@@ -76,24 +74,20 @@ fn task_entity_from_db(
     warehouse_id: Option<Uuid>,
     entity_id: Option<Uuid>,
     entity_name: Option<Vec<String>>,
-) -> Result<TaskEntity, IcebergErrorResponse> {
+) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
         TaskEntityTypeDB::View | TaskEntityTypeDB::Table => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    ErrorModel::internal(
-                        "WarehouseId is missing for Warehouse task.",
-                        "InternalError",
-                        None,
+                    DatabaseIntegrityError::new(
+                        "WarehouseId is missing for table or view scoped task.",
                     )
                 })
                 .map(WarehouseId::from)?;
 
             let entity_id = entity_id.ok_or_else(|| {
-                ErrorModel::internal(
-                    "EntityId is missing for table or view scoped task.",
-                    "InternalError",
-                    None,
+                DatabaseIntegrityError::new(
+                        "EntityId is missing for table or view scoped task.",
                 )
             })?;
 
@@ -108,10 +102,8 @@ fn task_entity_from_db(
             };
 
             let entity_name = entity_name.ok_or_else(|| {
-                ErrorModel::internal(
-                    "Entity name is missing for table or view scoped task.",
-                    "InternalError",
-                    None,
+                DatabaseIntegrityError::new(
+                        "Entity name is missing for table or view scoped task.",
                 )
             })?;
 
@@ -125,10 +117,8 @@ fn task_entity_from_db(
         TaskEntityTypeDB::Warehouse => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    ErrorModel::internal(
+                    DatabaseIntegrityError::new(
                         "WarehouseId is missing for warehouse scoped task.",
-                        "InternalError",
-                        None,
                     )
                 })
                 .map(WarehouseId::from)?;
@@ -438,7 +428,7 @@ pub(crate) async fn pick_task(
             task.warehouse_id,
             task.entity_id,
             task.entity_name.clone(),
-        )?;
+        ).map_err(ErrorModel::from)?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
                 project_id,

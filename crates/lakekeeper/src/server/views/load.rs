@@ -18,7 +18,7 @@ use crate::{
         State, TabularListFlags, Transaction, ViewInfo,
         authz::{
             AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogViewAction, FetchWarehouseNamespaceTabularError,
+            CatalogViewAction, AuthZError,
             refresh_warehouse_and_namespace_if_needed,
         },
         events::{APIEventContext, context::ResolvedView},
@@ -131,7 +131,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     state: C::State,
 ) -> Result<
     (Arc<ResolvedWarehouse>, ViewInfo, Option<StoragePermissions>),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 > {
     let (warehouse, namespace, view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),

@@ -10,7 +10,7 @@ use crate::{
         ResolvedWarehouse,
         authz::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogWarehouseAction, FetchWarehouseNamespaceTabularError,
+            CatalogWarehouseAction, AuthZError,
         },
     },
 };
@@ -22,7 +22,7 @@ pub(super) async fn authorize_namespace_create<C: CatalogStore, A: Authorizer>(
     parent: Option<&NamespaceIdent>,
     catalog_state: C::State,
     properties: Arc<BTreeMap<String, String>>,
-) -> Result<(Arc<ResolvedWarehouse>, Option<NamespaceHierarchy>), FetchWarehouseNamespaceTabularError>
+) -> Result<(Arc<ResolvedWarehouse>, Option<NamespaceHierarchy>), AuthZError>
 {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;

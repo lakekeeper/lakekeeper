@@ -1,6 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
 use iceberg::{NamespaceIdent, spec::ViewMetadata};
@@ -67,16 +65,16 @@ use crate::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
         CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError,
-        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError,
-        ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError,
-        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit,
-        TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError,
-        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError,
+        ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RoleId,
+        SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
+        UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo,
+        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -687,7 +685,7 @@ impl CatalogStore for super::PostgresBackend {
         scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<Vec<ResolvedTask>> {
+    ) -> Result<Vec<ResolvedTask>, ResolveTasksError> {
         resolve_tasks(scope, task_ids, &state.read_pool()).await
     }
 
@@ -713,7 +711,7 @@ impl CatalogStore for super::PostgresBackend {
         scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<TaskDetails>> {
+    ) -> Result<Option<TaskDetails>, GetTaskDetailsError> {
         get_task_details(task_id, scope, num_attempts, &state.read_pool()).await
     }
 

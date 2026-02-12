@@ -8,7 +8,7 @@ use crate::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
-        events::SetNamespaceProtectionEvent,
+        events::APIEventContext,
     },
 };
 
@@ -30,20 +30,30 @@ where
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
         //  ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz.clone();
+        let authorizer = state.v1_state.authz;
+        let state_catalog = state.v1_state.catalog.clone();
 
-        let (_warehouse, _namespace) = authorizer
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            namespace_id,
+            CatalogNamespaceAction::SetProtection,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
-                &request_metadata,
-                warehouse_id,
-                namespace_id,
-                CatalogNamespaceAction::SetProtection,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity().clone(),
+                event_ctx.action().clone(),
                 CachePolicy::Skip,
-                state.v1_state.catalog.clone(),
+                state_catalog.clone(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, (_warehouse, _namespace)) = event_ctx.emit_authz(authz_result)?;
 
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        // ------------------- BUSINESS LOGIC -------------------
+        let mut t = C::Transaction::begin_write(state_catalog).await?;
         tracing::debug!(
             "Setting protection status for namespace: {:?} to {protected_request}",
             namespace_id
@@ -60,16 +70,6 @@ where
         let protected = status.namespace.protected;
         let updated_at = status.namespace.updated_at;
 
-        state
-            .v1_state
-            .events
-            .namespace_protection_set(SetNamespaceProtectionEvent {
-                requested_protected: protected_request,
-                updated_namespace: status,
-                request_metadata: Arc::new(request_metadata),
-            })
-            .await;
-
         let protection_response = ProtectionResponse {
             protected,
             updated_at,
@@ -83,18 +83,27 @@ where
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
-        let authorizer = state.v1_state.authz.clone();
+        // ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz;
 
-        let (_warehouse, namespace) = authorizer
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            namespace_id,
+            CatalogNamespaceAction::GetMetadata,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
-                &request_metadata,
-                warehouse_id,
-                namespace_id,
-                CatalogNamespaceAction::GetMetadata,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity().clone(),
+                event_ctx.action().clone(),
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await;
+        let (_event_ctx, (_warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
 
         Ok(ProtectionResponse {
             protected: namespace.is_protected(),

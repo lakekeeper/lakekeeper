@@ -61,7 +61,7 @@ use crate::{
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZTableActionForbidden, AuthZTableOps,
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogTableAction, CatalogWarehouseAction, FetchWarehouseNamespaceTabularError,
+            CatalogTableAction, CatalogWarehouseAction, AuthZError,
             RequireNamespaceActionError, RequireTableActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -787,7 +787,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         TableInfo,
         Option<StoragePermissions>,
     ),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 > {
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
@@ -1051,7 +1051,7 @@ async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
     actions: &'a Vec<CatalogTableAction>,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
-) -> Result<CommitAuthorizationResult<'a>, FetchWarehouseNamespaceTabularError> {
+) -> Result<CommitAuthorizationResult<'a>, AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let mut warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 

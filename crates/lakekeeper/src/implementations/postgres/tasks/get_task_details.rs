@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration};
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::{ErrorModel};
 use itertools::Itertools;
 use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
@@ -13,7 +13,7 @@ use crate::{
         tasks::{task_entity_from_db, task_status_from_db},
     },
     service::{
-        TaskDetails,
+        DatabaseIntegrityError, GetTaskDetailsError, TaskDetails,
         tasks::{
             TaskAttemptId, TaskDetailsScope, TaskId, TaskInfo, TaskIntermediateStatus,
             TaskMetadata, TaskOutcome,
@@ -50,7 +50,7 @@ struct TaskDetailsRow {
 fn parse_task_details(
     task_id: TaskId,
     mut records: Vec<TaskDetailsRow>,
-) -> Result<Option<TaskDetails>, IcebergErrorResponse> {
+) -> Result<Option<TaskDetails>, GetTaskDetailsError> {
     // Sort by attempt descending
     records.sort_by_key(|r| -r.attempt);
     if records.is_empty() {
@@ -61,23 +61,23 @@ fn parse_task_details(
     let attempts = records
         .into_iter()
         .map(|r| {
-            Result::<_, ErrorModel>::Ok(TaskAttempt {
+            Result::<_, GetTaskDetailsError>::Ok(TaskAttempt {
                 attempt: r.attempt,
-                status: task_status_from_db(r.task_status, r.task_log_status)?,
+                status: task_status_from_db(r.task_status, r.task_log_status)
+                    .map_err(|e| DatabaseIntegrityError::new(e.to_string()))?,
                 started_at: r.started_at,
                 scheduled_for: r.attempt_scheduled_for,
                 duration: r
                     .duration
                     .map(pg_interval_to_duration)
                     .transpose()
-                    .map_err(|e| e.append_detail("Failed to parse task duration"))?,
+                    .map_err(|e| {
+                        DatabaseIntegrityError::new(e.to_string())
+                            .append_detail("Failed to parse task duration")
+                    })?,
                 message: r.message,
                 created_at: r.attempt_created_at.ok_or_else(|| {
-                    ErrorModel::internal(
-                        "Task attempt is missing created_at timestamp.",
-                        "Unexpected",
-                        None,
-                    )
+                    DatabaseIntegrityError::new("Task attempt is missing created_at timestamp.")
                 })?,
                 progress: r.progress,
                 execution_details: r.execution_details,
@@ -92,7 +92,8 @@ fn parse_task_details(
         most_recent.entity_name.clone(),
     )?;
 
-    let status = task_status_from_db(most_recent.task_status, most_recent.task_log_status)?;
+    let status = task_status_from_db(most_recent.task_status, most_recent.task_log_status)
+        .map_err(|e| DatabaseIntegrityError::new(e.to_string()))?;
 
     let task = TaskInfo {
         queue_name: most_recent.queue_name.into(),
@@ -146,7 +147,7 @@ pub(crate) async fn get_task_details<'e, 'c: 'e, E>(
     scope: TaskDetailsScope,
     num_attempts: u16,
     state: E,
-) -> Result<Option<TaskDetails>, IcebergErrorResponse>
+) -> Result<Option<TaskDetails>, GetTaskDetailsError>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -254,7 +255,7 @@ where
     )
     .fetch_all(state)
     .await
-    .map_err(|e| e.into_error_model("Failed to get task details"))?;
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
     let result = parse_task_details(task_id, records)?;
 

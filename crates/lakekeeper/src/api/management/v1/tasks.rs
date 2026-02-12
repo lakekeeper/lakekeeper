@@ -8,17 +8,23 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, management::v1::ApiServer},
-    request_metadata::RequestMetadata,
+    request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId,
-        TabularId, TabularListFlags, TaskDetails, TaskList, Transaction, ViewId, ViewOrTableInfo,
+        CatalogWarehouseOps, NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse, Result,
+        SecretStore, State, TableId, TabularId, TabularListFlags, TaskDetails, TaskList,
+        TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
         authz::{
-            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZProjectOps,
-            AuthZTableOps as _, AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, FetchWarehouseNamespaceTabularError,
-            RequireTableActionError, RequireViewActionError,
+            AuthZCannotListAllTasks, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZTableOps as _,
+            AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, RequireNamespaceActionError, RequireTableActionError,
+            RequireViewActionError, RequireWarehouseActionError,
+        },
+        events::{
+            APIEventContext,
+            context::{GetTaskDetailsAction, Unresolved, UserProvidedTask},
         },
         require_namespace_for_tabular,
         tasks::{
@@ -434,9 +440,11 @@ impl TryFrom<TaskList> for ListProjectTasksResponse {
     }
 }
 
-impl IntoResponse for GetTaskDetailsResponse {
+pub struct ArcTaskDetailsResponse(pub Arc<GetTaskDetailsResponse>);
+
+impl IntoResponse for ArcTaskDetailsResponse {
     fn into_response(self) -> axum::response::Response {
-        (http::StatusCode::OK, Json(self)).into_response()
+        (http::StatusCode::OK, Json(self.0)).into_response()
     }
 }
 
@@ -646,20 +654,31 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let authorizer = context.v1_state.authz;
         // -------------------- AUTHZ --------------------
-        authorize_list_tasks::<A, C>(
+        let events = context.v1_state.events;
+        let event_ctx = APIEventContext::for_warehouse(
+            request_metadata.into(),
+            events,
+            warehouse_id,
+            CatalogWarehouseAction::GetAllTasks,
+        );
+        let authz_result = authorize_list_tasks::<A, C>(
             &authorizer,
             context.v1_state.catalog.clone(),
-            &request_metadata,
-            &warehouse,
+            event_ctx.request_metadata(),
+            warehouse_id,
             query.entities.as_ref(),
         )
-        .await?;
+        .await;
+
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = Arc::new(event_ctx.resolve(warehouse));
 
         // -------------------- Business Logic --------------------
-        let project_id = &warehouse.project_id;
+        let project_id = event_ctx.resolved().project_id.clone();
         let filter = TaskFilter::WarehouseId {
             warehouse_id,
-            project_id: project_id.clone(),
+            project_id: project_id,
         };
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
         let tasks = C::list_tasks(&filter, query, t.transaction()).await?;
@@ -674,65 +693,31 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         query: GetTaskDetailsQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<GetTaskDetailsResponse> {
+    ) -> Result<Arc<GetTaskDetailsResponse>> {
         let authorizer = context.v1_state.authz;
 
         // -------------------- AUTHZ --------------------
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
-        let [authz_can_use, authz_get_all_warehouse] = authorizer
-            .are_allowed_warehouse_actions_arr(
-                &request_metadata,
-                None,
-                &[
-                    (&warehouse, CatalogWarehouseAction::Use),
-                    (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
-                ],
-            )
-            .await?
-            .into_inner();
-
-        if !authz_can_use {
-            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
-        }
-
-        // -------------------- Business Logic --------------------
-        let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
-        let r = C::get_task_details(
+        let event_ctx = APIEventContext::for_task(
+            request_metadata.clone().into(),
+            context.v1_state.events,
+            warehouse_id,
             task_id,
-            TaskDetailsScope::Warehouse {
-                project_id: warehouse.project_id.clone(),
-                warehouse_id,
-            },
-            num_attempts,
-            context.v1_state.catalog.clone(),
+            GetTaskDetailsAction {},
+        );
+
+        let authz_result = check_get_task_details_authorization::<A, C>(
+            &authorizer,
+            &query,
+            context.v1_state.catalog,
+            &event_ctx,
+            warehouse_id,
         )
-        .await?;
+        .await;
 
-        let task_details = r.ok_or_else(|| {
-            ErrorModel::not_found(
-                format!("Task with id {task_id} not found"),
-                "TaskNotFound",
-                None,
-            )
-        })?;
+        let (event_ctx, task_details) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = Arc::new(event_ctx.resolve(task_details));
 
-        let task_details = GetTaskDetailsResponse::try_from(task_details)?;
-
-        if !authz_get_all_warehouse {
-            authorize_get_task_details::<A, C>(
-                context.v1_state.catalog,
-                &authorizer,
-                &request_metadata,
-                &warehouse,
-                &task_details,
-            )
-            .await?;
-        }
-
-        Ok(task_details)
+        Ok(event_ctx.resolved().clone())
     }
 
     /// Control a task (stop or cancel)
@@ -743,6 +728,10 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
+        if query.task_ids.is_empty() {
+            return Ok(());
+        }
+
         if query.task_ids.len() > 100 {
             return Err(ErrorModel::bad_request(
                 "Cannot control more than 100 tasks at once.",
@@ -765,78 +754,37 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
 
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let event_ctx = APIEventContext::for_warehouse(
+            request_metadata.clone().into(),
+            context.v1_state.events,
+            warehouse_id,
+            CatalogWarehouseAction::ControlAllTasks,
+        );
 
-        let [authz_can_use, authz_control_all] = authorizer
-            .are_allowed_warehouse_actions_arr(
-                &request_metadata,
-                None,
-                &[
-                    (&warehouse, CatalogWarehouseAction::Use),
-                    (&warehouse, CONTROL_TASK_WAREHOUSE_PERMISSION),
-                ],
-            )
-            .await?
-            .into_inner();
-
-        if !authz_can_use {
-            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
-        }
-        if query.task_ids.is_empty() {
-            return Ok(());
-        }
-
-        let project_id = warehouse.project_id.clone();
-
-        // If some tasks are not part of this warehouse, this will return an error.
-        let resolved_tasks = C::resolve_required_tasks(
-            TaskResolveScope::Warehouse {
-                project_id,
-                warehouse_id: Some(warehouse_id),
-            },
-            &query.task_ids,
-            context.v1_state.catalog.clone(),
+        let authz_result = check_control_tasks_authorization::<A, C>(
+            &authorizer,
+            catalog_state.clone(),
+            event_ctx.request_metadata(),
+            &query,
+            event_ctx.user_provided_entity().clone(),
         )
-        .await?;
+        .await;
 
-        let tabular_expiration_entities = resolved_tasks
-            .iter()
-            .filter_map(|(_, resolved_task)| {
-                if resolved_task.queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
-                    let resolved_task = &resolved_task.entity;
-                    match resolved_task {
-                        ResolvedTaskEntity::Table(t) => Some(TabularId::Table(t.table_id)),
-                        ResolvedTaskEntity::View(v) => Some(TabularId::View(v.view_id)),
-                        ResolvedTaskEntity::Warehouse { .. } | ResolvedTaskEntity::Project => None, // Project not returned due to scope
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect_vec();
-        if !authz_control_all {
-            authorize_control_tasks::<_, C>(
-                &authorizer,
-                &request_metadata,
-                &warehouse,
-                &resolved_tasks.values().collect::<Vec<_>>(),
-                context.v1_state.catalog.clone(),
-            )
-            .await?;
-        }
+        let (event_ctx, tabular_expiration_entities) = event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities.clone()));
 
         // -------------------- Business Logic --------------------
         let task_ids: Vec<TaskId> = query.task_ids;
-        let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_write(catalog_state).await?;
         match query.action {
             ControlTaskAction::Stop => C::stop_tasks(&task_ids, t.transaction()).await?,
             ControlTaskAction::Cancel => {
-                if !tabular_expiration_entities.is_empty() {
+                if !event_ctx.resolved().is_empty() {
                     C::clear_tabular_deleted_at(
-                        &tabular_expiration_entities,
+                        &event_ctx.resolved(),
                         warehouse_id,
                         t.transaction(),
                     )
@@ -870,16 +818,25 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
+        let event_ctx = APIEventContext::for_project(
+            request_metadata.clone().into(),
+            context.v1_state.events,
+            project_id.clone(),
+            CatalogProjectAction::GetProjectTasks,
+        );
 
-        authorizer
+        let authz_result = authorizer
             .require_project_action(
                 &request_metadata,
                 &project_id,
                 CatalogProjectAction::GetProjectTasks,
             )
-            .await?;
+            .await;
+
+        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
+        let project_id = event_ctx.user_provided_entity().clone();
         let filter = TaskFilter::ProjectId {
             project_id,
             include_sub_tasks: false, // Not yet implemented, so hardcoded here
@@ -901,15 +858,24 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
 
-        authorizer
+        let event_ctx = APIEventContext::for_project(
+            request_metadata.clone().into(),
+            context.v1_state.events,
+            project_id.clone(),
+            CatalogProjectAction::GetProjectTasks,
+        );
+
+        let authz_result = authorizer
             .require_project_action(
                 &request_metadata,
                 &project_id,
                 CatalogProjectAction::GetProjectTasks,
             )
-            .await?;
+            .await;
+        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
+        let project_id = event_ctx.user_provided_entity().clone();
         let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
         let r = C::get_task_details(
             task_id,
@@ -962,15 +928,26 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
 
+        let event_ctx = APIEventContext::for_project(
+            request_metadata.clone().into(),
+            context.v1_state.events,
+            project_id.clone(),
+            CatalogProjectAction::GetProjectTasks,
+        );
+
         let authorizer = context.v1_state.authz;
 
-        authorizer
+        let authz_result = authorizer
             .require_project_action(
                 &request_metadata,
                 &project_id,
                 CatalogProjectAction::ControlProjectTasks,
             )
-            .await?;
+            .await;
+
+        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+
+        let project_id = event_ctx.user_provided_entity().clone();
 
         // If some tasks are not part of this project, this will return an error.
         C::resolve_required_tasks(
@@ -1013,7 +990,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
     entities: Option<&Vec<WarehouseTaskEntityFilter>>,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<Arc<ResolvedWarehouse>, AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
@@ -1030,19 +1007,17 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .into_inner();
 
     if !can_use {
-        return Err(AuthZCannotUseWarehouseId::new_forbidden(warehouse_id).into());
+        return Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id).into());
     }
 
     if can_list_everything {
-        return Ok(());
+        return Ok(warehouse);
     }
 
     let Some(entities) = entities else {
-        return Err(ErrorModel::forbidden(
-            "Not authorized to see all tasks in the Warehouse. Add the `entity` filter to query tasks for specific entities.",
-            "NotAuthorized",
-            None,
-        ).into());
+        return Err(
+            RequireWarehouseActionError::from(AuthZCannotListAllTasks::new(warehouse_id)).into(),
+        );
     };
 
     let tabular_ids = entities
@@ -1050,15 +1025,9 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .map(|entity| match entity {
             WarehouseTaskEntityFilter::Table { table_id } => Ok(TabularId::from(*table_id)),
             WarehouseTaskEntityFilter::View { view_id } => Ok(TabularId::from(*view_id)),
-            WarehouseTaskEntityFilter::Warehouse => {
-                Err(
-                    ErrorModel::forbidden(
-                        "Not authorized to see warehouse-level tasks. Please specify a table or view entity to filter by.",
-            "WarehouseLevelTasksNotAuthorized",
-            None,
-        )
-                )
-            }
+            WarehouseTaskEntityFilter::Warehouse => Err(RequireWarehouseActionError::from(
+                AuthZCannotListAllTasks::new(warehouse_id),
+            )),
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -1084,10 +1053,10 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     if let Some(missing) = missing_tabular_ids.first() {
         match missing {
             TabularId::Table(t) => {
-                return Err(AuthZCannotSeeTable::not_found(warehouse_id, *t).into());
+                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, *t).into());
             }
             TabularId::View(v) => {
-                return Err(AuthZCannotSeeView::not_found(warehouse_id, *v).into());
+                return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *v).into());
             }
         }
     }
@@ -1100,12 +1069,13 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
             .collect::<Vec<_>>(),
         catalog_state,
     )
-    .await?;
+    .await
+    .map_err(RequireNamespaceActionError::from)?;
 
     let actions = tabulars
         .iter()
         .map(|t| {
-            Ok::<_, ErrorModel>((
+            Ok::<_, AuthZError>((
                 require_namespace_for_tabular(&namespaces, t)?,
                 t.as_action_request(GET_TASK_PERMISSION_VIEW, GET_TASK_PERMISSION_TABLE),
             ))
@@ -1116,7 +1086,67 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .require_tabular_actions(request_metadata, &warehouse, &namespaces, &actions)
         .await?;
 
-    Ok(())
+    Ok(warehouse)
+}
+
+async fn check_get_task_details_authorization<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    query: &GetTaskDetailsQuery,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<UserProvidedTask, Unresolved, GetTaskDetailsAction>,
+    warehouse_id: WarehouseId,
+) -> Result<Arc<GetTaskDetailsResponse>, AuthZError> {
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let [authz_can_use, authz_get_all_warehouse] = authorizer
+        .are_allowed_warehouse_actions_arr(
+            event_ctx.request_metadata(),
+            None,
+            &[
+                (&warehouse, CatalogWarehouseAction::Use),
+                (&warehouse, CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION),
+            ],
+        )
+        .await?
+        .into_inner();
+
+    if !authz_can_use {
+        return Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id).into());
+    }
+    // -------------------- Business Logic --------------------
+    let task_id = event_ctx.user_provided_entity().task_id;
+    let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
+    let r = C::get_task_details(
+        task_id,
+        TaskDetailsScope::Warehouse {
+            project_id: warehouse.project_id.clone(),
+            warehouse_id,
+        },
+        num_attempts,
+        catalog_state.clone(),
+    )
+    .await?;
+    let task_details = r.ok_or_else(|| TaskNotFoundError {
+        task_id,
+        stack: Vec::new(),
+    })?;
+
+    let task_details = GetTaskDetailsResponse::try_from(task_details)
+        .map_err(|_| NoWarehouseTaskError { stack: Vec::new() })?;
+
+    if !authz_get_all_warehouse {
+        authorize_get_task_details::<A, C>(
+            catalog_state,
+            &authorizer,
+            event_ctx.request_metadata(),
+            &warehouse,
+            &task_details,
+        )
+        .await?;
+    }
+
+    Ok(task_details.into())
 }
 
 async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
@@ -1125,7 +1155,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
     details: &GetTaskDetailsResponse,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     let warehouse_id = warehouse.warehouse_id;
 
     if let Some(sub_entity) = &details.task.entity {
@@ -1139,7 +1169,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 )
                 .await
                 .map_err(RequireTableActionError::from)?
-                .ok_or_else(|| AuthZCannotSeeTable::new(warehouse_id, *table_id))?;
+                .ok_or_else(|| AuthZCannotSeeTable::new_not_found(warehouse_id, *table_id))?;
 
                 let namespace_id = tabular_info.namespace_id;
                 let namespace = C::get_namespace_cache_aware(
@@ -1172,7 +1202,7 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                 )
                 .await
                 .map_err(RequireViewActionError::from)?
-                .ok_or_else(|| AuthZCannotSeeView::new(warehouse_id, *view_id))?;
+                .ok_or_else(|| AuthZCannotSeeView::new_not_found(warehouse_id, *view_id))?;
 
                 let namespace_id = view_info.namespace_id;
                 let namespace = C::get_namespace_cache_aware(
@@ -1202,7 +1232,6 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
         return Err(AuthZWarehouseActionForbidden::new(
             warehouse.warehouse_id,
             &CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION,
-            request_metadata.actor().clone(),
         )
         .into());
     }
@@ -1215,37 +1244,24 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
     warehouse: &ResolvedWarehouse,
     tasks: &[&Arc<ResolvedTask>],
     catalog_state: C::State,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     let (required_tabular_ids, required_namespace_idents) = tasks
         .iter()
         .map(|t| match &t.entity {
             ResolvedTaskEntity::Table(tabular) => Ok((
                 TabularId::Table(tabular.table_id),
-                &tabular.table_ident.namespace
+                &tabular.table_ident.namespace,
             )),
             ResolvedTaskEntity::View(tabular) => Ok((
                 TabularId::View(tabular.view_id),
-                &tabular.view_ident.namespace
+                &tabular.view_ident.namespace,
             )),
-            ResolvedTaskEntity::Warehouse(warehouse_id) => Err(
-                ErrorModel::forbidden(
-                format!(
-                    "Actor {} is not authorized to control warehouse-level tasks of warehouse {warehouse_id}",
-                    request_metadata.actor(),
-                ),
-                "ControlAllTasksForbidden",
-                None,
-            )
-            ),
-            ResolvedTaskEntity::Project => Err(
-                ErrorModel::internal(
-                    "Project-level task encountered in warehouse scope - this should not happen",
-                    "ProjectTaskInWarehouseScope",
-                    None,
-                )
-            ),
+            ResolvedTaskEntity::Warehouse(warehouse_id) => {
+                Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id.clone()).into())
+            }
+            ResolvedTaskEntity::Project => Err(AuthZError::ProjectIdMissing(ProjectIdMissing)),
         })
-        .collect::<Result<(Vec<_>, Vec<_>), ErrorModel>>()?;
+        .collect::<Result<(Vec<_>, Vec<_>), AuthZError>>()?;
 
     let (table_infos, namespaces) = tokio::join!(
         C::get_tabular_infos_by_id(
@@ -1261,7 +1277,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         ),
     );
     let table_infos = table_infos.map_err(RequireTableActionError::from)?;
-    let namespaces = namespaces?;
+    let namespaces = namespaces.map_err(RequireNamespaceActionError::from)?;
 
     let found_table_ids = table_infos
         .iter()
@@ -1272,10 +1288,12 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         if !found_table_ids.contains(&required_tabular_id) {
             match required_tabular_id {
                 TabularId::Table(t) => {
-                    return Err(AuthZCannotSeeTable::new(warehouse.warehouse_id, t).into());
+                    return Err(
+                        AuthZCannotSeeTable::new_not_found(warehouse.warehouse_id, t).into(),
+                    );
                 }
                 TabularId::View(v) => {
-                    return Err(AuthZCannotSeeView::new(warehouse.warehouse_id, v).into());
+                    return Err(AuthZCannotSeeView::new_not_found(warehouse.warehouse_id, v).into());
                 }
             }
         }
@@ -1284,7 +1302,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
     let tabular_actions = table_infos
         .iter()
         .map(|t| {
-            Ok::<_, ErrorModel>((
+            Ok::<_, AuthZError>((
                 require_namespace_for_tabular(&namespaces, t)?,
                 t.as_action_request(CONTROL_TASK_PERMISSION_VIEW, CONTROL_TASK_PERMISSION_TABLE),
             ))
@@ -1296,6 +1314,73 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         .await?;
 
     Ok(())
+}
+
+async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    request_metadata: &RequestMetadata,
+    query: &ControlTasksRequest,
+    warehouse_id: WarehouseId,
+) -> Result<Vec<TabularId>, AuthZError> {
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let [authz_can_use, authz_control_all] = authorizer
+        .are_allowed_warehouse_actions_arr(
+            &request_metadata,
+            None,
+            &[
+                (&warehouse, CatalogWarehouseAction::Use),
+                (&warehouse, CONTROL_TASK_WAREHOUSE_PERMISSION),
+            ],
+        )
+        .await?
+        .into_inner();
+
+    if !authz_can_use {
+        return Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id).into());
+    }
+
+    let project_id = warehouse.project_id.clone();
+
+    // If some tasks are not part of this warehouse, this will return an error.
+    let resolved_tasks = C::resolve_required_tasks(
+        TaskResolveScope::Warehouse {
+            project_id,
+            warehouse_id: Some(warehouse_id),
+        },
+        &query.task_ids,
+        catalog_state.clone(),
+    )
+    .await?;
+
+    let tabular_expiration_entities = resolved_tasks
+        .iter()
+        .filter_map(|(_, resolved_task)| {
+            if resolved_task.queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
+                let resolved_task = &resolved_task.entity;
+                match resolved_task {
+                    ResolvedTaskEntity::Table(t) => Some(TabularId::Table(t.table_id)),
+                    ResolvedTaskEntity::View(v) => Some(TabularId::View(v.view_id)),
+                    ResolvedTaskEntity::Warehouse { .. } | ResolvedTaskEntity::Project => None, // Project not returned due to scope
+                }
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+    if !authz_control_all {
+        authorize_control_tasks::<A, C>(
+            authorizer,
+            request_metadata,
+            &warehouse,
+            &resolved_tasks.values().collect::<Vec<_>>(),
+            catalog_state.clone(),
+        )
+        .await?;
+    }
+    Ok(tabular_expiration_entities)
 }
 
 #[cfg(test)]

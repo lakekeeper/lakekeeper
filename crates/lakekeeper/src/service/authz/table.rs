@@ -12,28 +12,15 @@ use crate::{
     api::RequestMetadata,
     request_metadata::ProjectIdMissing,
     service::{
-        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError,
-        GetTabularInfoByLocationError, GetTabularInfoError, InternalParseLocationError,
-        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
-        UnexpectedTabularInResponse, WarehouseStatus,
-        authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeView, AuthZCannotUseWarehouseId,
-            AuthZViewActionForbidden, AuthZViewOps, AuthZWarehouseActionForbidden,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogTableAction, MustUse,
-            RequireNamespaceActionError, RequireViewActionError, RequireWarehouseActionError,
-            UserOrRole,
-        },
-        catalog_store::{
+        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError, GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError, InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent, NoWarehouseTaskError, ResolveTasksError, ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound, TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus, authz::{
+            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeNamespace, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZViewActionForbidden, AuthZViewOps, AuthZWarehouseActionForbidden, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction, CatalogTableAction, MustUse, RequireNamespaceActionError, RequireViewActionError, RequireWarehouseActionError, UserOrRole
+        }, catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
             CatalogWarehouseOps, TabularListFlags,
-        },
-        events::{
+        }, events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedTable,
             delegate_authorization_failure_source,
-        },
+        }
     },
 };
 
@@ -49,10 +36,10 @@ pub(crate) async fn refresh_warehouse_and_namespace_if_needed<C, A, T>(
     warehouse: &ResolvedWarehouse,
     namespace: NamespaceHierarchy,
     tabular_info: &T,
-    cannot_see_error: impl Into<FetchWarehouseNamespaceTabularError>,
+    cannot_see_error: impl Into<AuthZError>,
     authorizer: &A,
     catalog_state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), FetchWarehouseNamespaceTabularError>
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), AuthZError>
 where
     C: CatalogStore,
     A: AuthzNamespaceOps + AuthzWarehouseOps,
@@ -507,8 +494,18 @@ impl From<BackendUnavailableOrCountMismatch> for RequireTabularActionsError {
     }
 }
 
+impl AuthorizationFailureSource for TaskNotFoundError {
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ResourceNotFound        
+    }
+}
+
 #[derive(Debug, derive_more::From)]
-pub enum FetchWarehouseNamespaceTabularError {
+pub enum AuthZError {
     RequireWarehouseActionError(RequireWarehouseActionError),
     RequireTableActionError(RequireTableActionError),
     RequireNamespaceActionError(RequireNamespaceActionError),
@@ -517,28 +514,48 @@ pub enum FetchWarehouseNamespaceTabularError {
     AuthZCannotSeeView(AuthZCannotSeeView),
     AuthZCannotSeeTableLocation(AuthZCannotSeeTableLocation),
     ProjectIdMissing(ProjectIdMissing),
+    TaskNotFoundError(TaskNotFoundError),
+    NoWarehouseTaskError(NoWarehouseTaskError),
 }
-impl From<AuthorizationCountMismatch> for FetchWarehouseNamespaceTabularError {
+impl From<ResolveTasksError> for AuthZError {
+    fn from(err: ResolveTasksError) -> Self {
+        match err {
+            ResolveTasksError::TaskNotFoundError(e) => e.into(),
+            ResolveTasksError::DatabaseIntegrityError(e) => RequireWarehouseActionError::from(e).into(),
+            ResolveTasksError::CatalogBackendError(e) => RequireWarehouseActionError::from(e).into(),
+        }
+    }
+}
+impl From<GetTaskDetailsError> for AuthZError {
+    fn from(value: GetTaskDetailsError) -> Self {
+        match value {
+            GetTaskDetailsError::TaskNotFoundError(e) => e.into(),
+            GetTaskDetailsError::DatabaseIntegrityError(e) => RequireWarehouseActionError::from(e).into(),
+            GetTaskDetailsError::CatalogBackendError(e) => RequireWarehouseActionError::from(e).into(),
+        }
+    }
+}
+impl From<AuthorizationCountMismatch> for AuthZError {
     fn from(err: AuthorizationCountMismatch) -> Self {
         RequireWarehouseActionError::AuthorizationCountMismatch(err).into()
     }
 }
-impl From<AuthZCannotUseWarehouseId> for FetchWarehouseNamespaceTabularError {
+impl From<AuthZCannotUseWarehouseId> for AuthZError {
     fn from(err: AuthZCannotUseWarehouseId) -> Self {
         RequireWarehouseActionError::from(err).into()
     }
 }
-impl From<AuthZWarehouseActionForbidden> for FetchWarehouseNamespaceTabularError {
+impl From<AuthZWarehouseActionForbidden> for AuthZError {
     fn from(err: AuthZWarehouseActionForbidden) -> Self {
         RequireWarehouseActionError::from(err).into()
     }
 }
-impl From<AuthZTableActionForbidden> for FetchWarehouseNamespaceTabularError {
+impl From<AuthZTableActionForbidden> for AuthZError {
     fn from(err: AuthZTableActionForbidden) -> Self {
         RequireTableActionError::AuthZTableActionForbidden(err).into()
     }
 }
-impl From<RequireTabularActionsError> for FetchWarehouseNamespaceTabularError {
+impl From<RequireTabularActionsError> for AuthZError {
     fn from(err: RequireTabularActionsError) -> Self {
         match err {
             RequireTabularActionsError::AuthorizationBackendUnavailable(e) => {
@@ -559,12 +576,17 @@ impl From<RequireTabularActionsError> for FetchWarehouseNamespaceTabularError {
         }
     }
 }
-impl From<AuthZCannotSeeNamespace> for FetchWarehouseNamespaceTabularError {
+impl From<AuthZCannotSeeNamespace> for AuthZError {
     fn from(err: AuthZCannotSeeNamespace) -> Self {
         Self::RequireNamespaceActionError(err.into())
     }
 }
-impl From<BackendUnavailableOrCountMismatch> for FetchWarehouseNamespaceTabularError {
+impl From<AuthZCannotSeeAnonymousNamespace> for AuthZError {
+    fn from(err: AuthZCannotSeeAnonymousNamespace) -> Self {
+        Self::RequireNamespaceActionError(err.into())
+    }
+}
+impl From<BackendUnavailableOrCountMismatch> for AuthZError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => {
@@ -579,7 +601,7 @@ impl From<BackendUnavailableOrCountMismatch> for FetchWarehouseNamespaceTabularE
         }
     }
 }
-delegate_authorization_failure_source!(FetchWarehouseNamespaceTabularError => {
+delegate_authorization_failure_source!(AuthZError => {
     RequireWarehouseActionError,
     RequireTableActionError,
     RequireNamespaceActionError,
@@ -588,6 +610,8 @@ delegate_authorization_failure_source!(FetchWarehouseNamespaceTabularError => {
     AuthZCannotSeeView,
     AuthZCannotSeeTableLocation,
     ProjectIdMissing,
+    TaskNotFoundError,
+    NoWarehouseTaskError,
 });
 
 #[async_trait::async_trait]
@@ -712,7 +736,7 @@ pub trait AuthZTableOps: Authorizer {
         catalog_state: C::State,
     ) -> Result<
         (Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo),
-        FetchWarehouseNamespaceTabularError,
+        AuthZError,
     > {
         let warehouse_id = user_provided_table.warehouse_id;
         let action = action.into();
@@ -1140,7 +1164,7 @@ pub(crate) async fn fetch_warehouse_namespace_table_by_id<C, A>(
     catalog_state: C::State,
 ) -> Result<
     (Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 >
 where
     C: CatalogStore,

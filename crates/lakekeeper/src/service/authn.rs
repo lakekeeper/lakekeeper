@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug};
 
 #[cfg(feature = "router")]
 use axum::{

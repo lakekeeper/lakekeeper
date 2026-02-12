@@ -24,7 +24,7 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
             CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            FetchWarehouseNamespaceTabularError, MustUse, RequireNamespaceActionError,
+            AuthZError, MustUse, RequireNamespaceActionError,
             RequireTableActionError, RequireWarehouseActionError, UserOrRole,
         },
         events::{APIEventContext, context::IntrospectPermissions},
@@ -204,7 +204,7 @@ type TabularChecksByIdentMap = HashMap<
     HashMap<TabularIdentOwned, Vec<(usize, TabularActionPair)>>,
 >;
 type AuthzTaskJoinSet = tokio::task::JoinSet<
-    Result<(Vec<usize>, MustUse<Vec<bool>>), FetchWarehouseNamespaceTabularError>,
+    Result<(Vec<usize>, MustUse<Vec<bool>>), AuthZError>,
 >;
 
 /// Grouped checks by resource type
@@ -394,7 +394,7 @@ async fn fetch_tabulars<C: CatalogStore>(
         HashMap<(WarehouseId, NamespaceId), NamespaceVersion>,
         HashMap<WarehouseId, WarehouseVersion>,
     ),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 > {
     // Early return if nothing to fetch
     if tabular_checks_by_id.is_empty() && tabular_checks_by_ident.is_empty() {
@@ -565,7 +565,7 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     authorizer: &A,
     error_on_not_found: bool,
-) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, FetchWarehouseNamespaceTabularError> {
+) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, AuthZError> {
     if seen_warehouse_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -683,7 +683,7 @@ async fn fetch_namespaces<C: CatalogStore>(
         HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
         HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
     ),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 > {
     let min_namespace_versions = Arc::new(min_namespace_versions.clone());
 
@@ -728,7 +728,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     }
                 }
 
-                Ok::<_, FetchWarehouseNamespaceTabularError>((true, namespaces))
+                Ok::<_, AuthZError>((true, namespaces))
             });
         }
     }
@@ -774,7 +774,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     }
                 }
 
-                Ok::<_, FetchWarehouseNamespaceTabularError>((false, namespaces))
+                Ok::<_, AuthZError>((false, namespaces))
             });
         }
     }
@@ -826,7 +826,7 @@ fn spawn_server_checks<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_server_actions_vec(&metadata, for_user.as_ref(), &actions)
                 .await?;
-            Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
 }
@@ -855,7 +855,7 @@ fn spawn_project_checks<A: Authorizer>(
                         &projects_with_actions,
                     )
                     .await?;
-                Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+                Ok::<_, AuthZError>((original_indices, allowed))
             });
         }
     }
@@ -886,7 +886,7 @@ fn spawn_warehouse_checks<A: Authorizer>(
                         &warehouses_with_actions,
                     )
                     .await?;
-                Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+                Ok::<_, AuthZError>((original_indices, allowed))
             });
         }
     }
@@ -901,7 +901,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
     error_on_not_found: bool,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     for ((warehouse_id, for_user), actions) in namespace_checks_by_id {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
@@ -958,7 +958,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
                     &namespace_with_actions,
                 )
                 .await?;
-            Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -979,7 +979,7 @@ struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
 /// Spawn namespace authorization check tasks (by ident)
 fn spawn_namespace_checks_by_ident<A: Authorizer>(
     params: NamespaceCheckByIdentParams<'_, A>,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     let NamespaceCheckByIdentParams {
         authz_tasks,
         namespace_checks_by_ident,
@@ -1065,7 +1065,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
                     &namespace_with_actions,
                 )
                 .await?;
-            Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -1086,7 +1086,7 @@ struct TabularCheckByIdParams<'a, A: Authorizer> {
 /// Spawn tabular authorization check tasks (by ID)
 fn spawn_tabular_checks_by_id<A: Authorizer>(
     params: TabularCheckByIdParams<'_, A>,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     let TabularCheckByIdParams {
         authz_tasks,
         tabular_checks_by_id,
@@ -1176,7 +1176,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     &tabular_with_actions,
                 )
                 .await?;
-            Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -1197,7 +1197,7 @@ struct TabularCheckByIdentParams<'a, A: Authorizer> {
 /// Spawn tabular authorization check tasks (by ident)
 fn spawn_tabular_checks_by_ident<A: Authorizer>(
     params: TabularCheckByIdentParams<'_, A>,
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     let TabularCheckByIdentParams {
         authz_tasks,
         tabular_checks_by_ident,
@@ -1287,7 +1287,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     &tabular_with_actions,
                 )
                 .await?;
-            Ok::<_, FetchWarehouseNamespaceTabularError>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -1297,7 +1297,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
 async fn collect_authz_results(
     authz_tasks: &mut AuthzTaskJoinSet,
     results: &mut [CatalogActionsBatchCheckResult],
-) -> Result<(), FetchWarehouseNamespaceTabularError> {
+) -> Result<(), AuthZError> {
     while let Some(res) = authz_tasks.join_next().await {
         let (original_indices, allowed) = res.map_err(|e| {
             RequireWarehouseActionError::from(
@@ -1376,7 +1376,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
     error_on_not_found: bool,
-) -> Result<Vec<CatalogActionsBatchCheckResult>, FetchWarehouseNamespaceTabularError> {
+) -> Result<Vec<CatalogActionsBatchCheckResult>, AuthZError> {
     let (grouped, mut results) = group_checks(checks, metadata)?;
     let GroupedChecks {
         server_checks,

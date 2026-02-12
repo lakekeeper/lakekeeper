@@ -32,6 +32,31 @@ impl WarehouseAction for CatalogWarehouseAction {}
 
 // --------------------------- Errors ---------------------------
 #[derive(Debug, PartialEq, Eq)]
+pub struct AuthZCannotListAllTasks {
+    warehouse_id: WarehouseId,
+}
+impl AuthZCannotListAllTasks {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId) -> Self {
+        Self { warehouse_id }
+    }
+}
+impl AuthorizationFailureSource for AuthZCannotListAllTasks {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZCannotListAllTasks { warehouse_id } = self;
+        ErrorModel::forbidden(
+            format!("Not authorized to see all tasks in Warehouse with id {warehouse_id}. Add the `entity` filter to query tasks for specific entities."),
+            "WarehouseListTasksForbidden",
+            None,
+        )
+    }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+}
+
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct AuthZCannotUseWarehouseId {
     warehouse_id: WarehouseId,
     resource_not_found: bool,
@@ -127,6 +152,7 @@ pub enum RequireWarehouseActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthZCannotListAllTasks(AuthZCannotListAllTasks),
     // Hide the existence of the namespace
     AuthZCannotUseWarehouseId(AuthZCannotUseWarehouseId),
     // Propagated directly
@@ -151,6 +177,7 @@ delegate_authorization_failure_source!(RequireWarehouseActionError => {
     AuthZCannotUseWarehouseId,
     CatalogBackendError,
     DatabaseIntegrityError,
+    AuthZCannotListAllTasks
 });
 
 impl From<CatalogGetWarehouseByIdError> for RequireWarehouseActionError {

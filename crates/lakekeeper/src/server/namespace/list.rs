@@ -11,7 +11,7 @@ use crate::{
         authz::{
             AuthZCannotUseWarehouseId, AuthZWarehouseActionForbidden, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            FetchWarehouseNamespaceTabularError, RequireWarehouseActionError,
+            AuthZError, RequireWarehouseActionError,
         },
     },
 };
@@ -24,7 +24,7 @@ pub(super) async fn authorize_namespace_list<C: CatalogStore, A: Authorizer>(
     catalog_state: C::State,
 ) -> Result<
     (bool, Arc<ResolvedWarehouse>, Option<NamespaceHierarchy>),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 > {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;

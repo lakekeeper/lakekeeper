@@ -23,7 +23,7 @@ use crate::{
         authz::{
             AuthZCannotSeeTableLocation, AuthZTableOps, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogTableAction, CatalogWarehouseAction,
-            FetchWarehouseNamespaceTabularError, RequireTableActionError,
+            AuthZError, RequireTableActionError,
         },
         events::{APIEventContext, context::authz_to_error_no_audit},
         secrets::SecretStore,
@@ -462,7 +462,7 @@ async fn authorize_table_action_for_sign<C: CatalogStore, A: Authorizer + Clone>
     action: CatalogTableAction,
     authorizer: &A,
     catalog_state: C::State,
-) -> Result<TableInfo, FetchWarehouseNamespaceTabularError> {
+) -> Result<TableInfo, AuthZError> {
     let warehouse_id = warehouse.warehouse_id;
     let table_info = table_info?;
 

@@ -82,9 +82,7 @@ pub mod v1 {
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
                 tasks::{
-                    ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
-                    GetTaskDetailsResponse, ListProjectTasksRequest, ListProjectTasksResponse,
-                    ListTasksRequest, ListTasksResponse, Service,
+                    ArcTaskDetailsResponse, ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery, ListProjectTasksRequest, ListProjectTasksResponse, ListTasksRequest, ListTasksResponse, Service
                 },
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::UndropTabularsRequest,
@@ -1714,11 +1712,12 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<GetTaskDetailsQuery>,
-    ) -> Result<GetTaskDetailsResponse> {
+    ) -> Result<ArcTaskDetailsResponse> {
         let warehouse_id = WarehouseId::from(warehouse_id);
         let task_id = TaskId::from(task_id);
-        ApiServer::<C, A, S>::get_task_details(warehouse_id, task_id, query, api_context, metadata)
-            .await
+        let response = ApiServer::<C, A, S>::get_task_details(warehouse_id, task_id, query, api_context, metadata)
+            .await?;
+        Ok(ArcTaskDetailsResponse(response))
     }
 
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
@@ -1898,7 +1897,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CatalogActionsBatchCheckRequest>,
     ) -> Result<Json<CatalogActionsBatchCheckResponse>> {
-        check::check_internal(api_context, &metadata, request)
+        check::check_internal(api_context, metadata, request)
             .await
             .map(Json)
             .map_err(Into::into)

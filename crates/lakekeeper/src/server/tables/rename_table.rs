@@ -11,7 +11,7 @@ use crate::{
         TabularListFlags, Transaction,
         authz::{
             AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, FetchWarehouseNamespaceTabularError,
+            CatalogNamespaceAction, CatalogTableAction, AuthZError,
             RequireTableActionError, refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::ContractVerification,
@@ -108,7 +108,7 @@ async fn authorize_rename_table<C: CatalogStore, A: Authorizer + Clone>(
     catalog_state: C::State,
 ) -> std::result::Result<
     (Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo),
-    FetchWarehouseNamespaceTabularError,
+    AuthZError,
 > {
     let (warehouse, destination_namespace, source_namespace, source_table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),

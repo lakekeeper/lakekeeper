@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
-use crate::{ProjectId, WarehouseId, api::RequestMetadata, service::NamespaceIdentOrId};
+use crate::api::RequestMetadata;
 
 /// Trait for extracting failure reason from authorization errors
 pub trait AuthorizationFailureSource: Send + Sized {
