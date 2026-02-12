@@ -83,6 +83,10 @@ impl EventDispatcher {
         dispatch_event!(self, table_renamed, event);
     }
 
+    pub(crate) async fn table_loaded(&self, event: types::LoadTableEvent) {
+        dispatch_event!(self, table_loaded, event);
+    }
+
     pub(crate) async fn view_created(&self, event: types::CreateViewEvent) {
         dispatch_event!(self, view_created, event);
     }
@@ -241,6 +245,10 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a table has been successfully renamed
     async fn table_renamed(&self, _event: types::RenameTableEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn table_loaded(&self, _event: types::LoadTableEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

@@ -62,12 +62,13 @@ pub struct RenameTableEvent {
 }
 
 /// Load Table Event - emitted when a user loads a table's metadata
+#[derive(Clone, Debug)]
 pub struct LoadTableEvent {
     pub warehouse: Arc<ResolvedWarehouse>,
     pub table: Arc<TableInfo>,
     pub storage_permissions: Option<StoragePermissions>,
     pub metadata: TableMetadataRef,
-    pub metadata_location: Arc<Location>,
+    pub metadata_location: Option<Arc<Location>>,
 }
 
 pub type APIEventCommitContext = APIEventContext<
@@ -83,10 +84,20 @@ impl APIEventContext<UserProvidedTable, Resolved<ResolvedTable>, CatalogTableAct
     /// Emit table_created event using context fields
     pub(crate) fn emit_table_loaded_async(
         self,
-        _metadata: TableMetadataRef,
-        _metadata_location: Option<Arc<lakekeeper_io::Location>>,
+        metadata: TableMetadataRef,
+        metadata_location: Option<Arc<lakekeeper_io::Location>>,
     ) {
-        todo!()
+        let event = LoadTableEvent {
+            warehouse: self.resolved_entity.data.warehouse,
+            table: self.resolved_entity.data.table,
+            storage_permissions: self.resolved_entity.data.storage_permissions,
+            metadata,
+            metadata_location,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.table_loaded(event).await;
+        });
     }
 
     /// Emit table dropped event
