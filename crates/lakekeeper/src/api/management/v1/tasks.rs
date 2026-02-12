@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ProjectId, WarehouseId,
-    api::{ApiContext, management::v1::ApiServer},
+    api::{ApiContext, management::v1::{ApiServer, impl_arc_into_response}},
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
@@ -440,13 +440,7 @@ impl TryFrom<TaskList> for ListProjectTasksResponse {
     }
 }
 
-pub struct ArcTaskDetailsResponse(pub Arc<GetTaskDetailsResponse>);
-
-impl IntoResponse for ArcTaskDetailsResponse {
-    fn into_response(self) -> axum::response::Response {
-        (http::StatusCode::OK, Json(self.0)).into_response()
-    }
-}
+impl_arc_into_response!(GetTaskDetailsResponse);
 
 // -------------------- QUERY PARAMETERS --------------------
 #[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -368,3 +368,13 @@ where
 }
 
 impl<T> CatalogRoleOps for T where T: CatalogStore {}
+
+// --------------------------- AuthorizationFailureSource implementations ---------------------------
+use crate::service::events::impl_authorization_failure_source;
+
+impl_authorization_failure_source!(CreateRoleError => InternalCatalogError);
+impl_authorization_failure_source!(ListRolesError => InternalCatalogError);
+impl_authorization_failure_source!(GetRoleAcrossProjectsError => InternalCatalogError);
+impl_authorization_failure_source!(DeleteRoleError => InternalCatalogError);
+impl_authorization_failure_source!(UpdateRoleError => InternalCatalogError);
+impl_authorization_failure_source!(SearchRolesError => InternalCatalogError);

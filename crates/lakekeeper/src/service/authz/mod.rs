@@ -29,6 +29,8 @@ pub use implementations::allow_all::AllowAllAuthorizer;
 pub use warehouse::*;
 mod namespace;
 pub use namespace::*;
+mod role;
+pub use role::*;
 mod table;
 pub use table::*;
 mod view;
@@ -39,8 +41,6 @@ mod server;
 pub use server::*;
 mod user;
 pub use user::*;
-mod role;
-pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 

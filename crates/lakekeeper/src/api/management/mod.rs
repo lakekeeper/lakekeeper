@@ -47,8 +47,8 @@ pub mod v1 {
         RenameProjectRequest, Service as _,
     };
     use role::{
-        CreateRoleRequest, ListRolesQuery, ListRolesResponse, Role, SearchRoleRequest,
-        SearchRoleResponse, Service as _, UpdateRoleRequest,
+        CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest,
+        Service as _, UpdateRoleRequest,
     };
     use serde::{Deserialize, Serialize};
     use server::{BootstrapRequest, ServerInfo, Service as _};
@@ -68,6 +68,40 @@ pub mod v1 {
         WarehouseStatisticsResponse,
     };
 
+    /// Macro to create an Arc wrapper for a response type that implements IntoResponse.
+    /// This is useful for caching responses that are expensive to compute.
+    ///
+    /// # Example
+    /// ```ignore
+    /// impl_arc_into_response!(GetTaskDetailsResponse);
+    /// ```
+    ///
+    /// This generates:
+    /// ```ignore
+    /// pub struct ArcGetTaskDetailsResponse(pub Arc<GetTaskDetailsResponse>);
+    ///
+    /// impl IntoResponse for ArcGetTaskDetailsResponse {
+    ///     fn into_response(self) -> axum::response::Response {
+    ///         (http::StatusCode::OK, Json(self.0)).into_response()
+    ///     }
+    /// }
+    /// ```
+    macro_rules! impl_arc_into_response {
+        ($type_name:ident) => {
+            pastey::paste! {
+                pub struct [<Arc $type_name>](pub Arc<$type_name>);
+
+                impl IntoResponse for [<Arc $type_name>] {
+                    fn into_response(self) -> axum::response::Response {
+                        (http::StatusCode::OK, Json(self.0)).into_response()
+                    }
+                }
+            }
+        };
+    }
+
+    pub(crate) use impl_arc_into_response;
+
     use crate::{
         ProjectId, WarehouseId,
         api::{
@@ -78,11 +112,15 @@ pub mod v1 {
                 check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::{RoleMetadata, UpdateRoleSourceSystemRequest},
+                role::{
+                    ArcListRolesResponse, ArcRoleMetadata, ArcSearchRoleResponse, UpdateRoleSourceSystemRequest
+                },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
                 tasks::{
-                    ArcTaskDetailsResponse, ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery, ListProjectTasksRequest, ListProjectTasksResponse, ListTasksRequest, ListTasksResponse, Service
+                    ArcGetTaskDetailsResponse, ControlTasksRequest, GetProjectTaskDetailsResponse,
+                    GetTaskDetailsQuery, ListProjectTasksRequest, ListProjectTasksResponse,
+                    ListTasksRequest, ListTasksResponse, Service,
                 },
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::UndropTabularsRequest,
@@ -426,8 +464,9 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchRoleRequest>,
-    ) -> Result<SearchRoleResponse> {
-        ApiServer::<C, A, S>::search_role(api_context, metadata, request).await
+    ) -> Result<ArcSearchRoleResponse> {
+        let response = ApiServer::<C, A, S>::search_role(api_context, metadata, request).await?;
+        Ok(ArcSearchRoleResponse(response))
     }
 
     /// List Roles
@@ -447,8 +486,9 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<ListRolesQuery>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<ListRolesResponse> {
-        ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await
+    ) -> Result<ArcListRolesResponse> {
+        let response = ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await?;
+        Ok(ArcListRolesResponse(response))
     }
 
     /// Delete Role
@@ -516,10 +556,10 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<RoleMetadata>)> {
-        ApiServer::<C, A, S>::get_role_metadata(api_context, metadata, role_id)
-            .await
-            .map(|role| (StatusCode::OK, Json(role)))
+    ) -> Result<ArcRoleMetadata> {
+        let response =
+            ApiServer::<C, A, S>::get_role_metadata(api_context, metadata, role_id).await?;
+        Ok(ArcRoleMetadata(response))
     }
 
     /// Update Role
@@ -1712,12 +1752,18 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<GetTaskDetailsQuery>,
-    ) -> Result<ArcTaskDetailsResponse> {
+    ) -> Result<ArcGetTaskDetailsResponse> {
         let warehouse_id = WarehouseId::from(warehouse_id);
         let task_id = TaskId::from(task_id);
-        let response = ApiServer::<C, A, S>::get_task_details(warehouse_id, task_id, query, api_context, metadata)
-            .await?;
-        Ok(ArcTaskDetailsResponse(response))
+        let response = ApiServer::<C, A, S>::get_task_details(
+            warehouse_id,
+            task_id,
+            query,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(ArcGetTaskDetailsResponse(response))
     }
 
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
