@@ -1299,7 +1299,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         t.commit().await?;
 
         Ok(ListDeletedTabularsResponse {
-            tabulars,
+            tabulars: Arc::new(tabulars),
             next_page_token,
         })
     }
@@ -1472,6 +1472,8 @@ mod test {
         assert_eq!(s3_profile.region, "dummy");
         assert_eq!(s3_profile.path_style_access, Some(true));
     }
+
+    use std::sync::Arc;
 
     use iceberg::TableIdent;
     use itertools::Itertools;
@@ -1747,7 +1749,7 @@ mod test {
             assert_eq!(next_four_items[idx], format!("view-{i}"));
         }
 
-        let mut ids = all.tabulars;
+        let mut ids = Arc::unwrap_or_clone(all.tabulars);
         ids.sort_by_key(|e| e.id);
         for t in ids.iter().take(6).skip(4) {
             authz.hide(&format!("view:{}/{}", warehouse.warehouse_id, t.id));

@@ -163,7 +163,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         Ok(ListTablesResponse {
             next_page_token,
-            identifiers,
+            identifiers: Arc::new(identifiers),
             table_uuids: return_uuids.then_some(table_uuids.into_iter().map(|u| *u).collect()),
             protection_status: query.return_protection_status.then_some(protection_status),
         })
@@ -2085,20 +2085,22 @@ pub(crate) mod test {
         table_ident: &TableIdent,
         updates: Vec<TableUpdate>,
     ) -> super::CommitContext {
-        super::commit_tables_with_authz(
-            ns_params.prefix.clone(),
-            super::CommitTransactionRequest {
-                table_changes: vec![CommitTableRequest {
-                    identifier: Some(table_ident.clone()),
-                    requirements: vec![],
-                    updates,
-                }],
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
+        Arc::unwrap_or_clone(
+            super::commit_tables_with_authz(
+                ns_params.prefix.clone(),
+                super::CommitTransactionRequest {
+                    table_changes: vec![CommitTableRequest {
+                        identifier: Some(table_ident.clone()),
+                        requirements: vec![],
+                        updates,
+                    }],
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap(),
         )
-        .await
-        .unwrap()
         .into_iter()
         .next()
         .unwrap()
@@ -2165,23 +2167,25 @@ pub(crate) mod test {
             .build()
             .unwrap();
         let updates = table_metadata.changes;
-        let _ = super::commit_tables_with_authz(
-            ns_params.prefix.clone(),
-            super::CommitTransactionRequest {
-                table_changes: vec![CommitTableRequest {
-                    identifier: Some(TableIdent {
-                        namespace: ns.namespace.clone(),
-                        name: "tab-1".to_string(),
-                    }),
-                    requirements: vec![],
-                    updates,
-                }],
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
+        let _ = Arc::unwrap_or_clone(
+            super::commit_tables_with_authz(
+                ns_params.prefix.clone(),
+                super::CommitTransactionRequest {
+                    table_changes: vec![CommitTableRequest {
+                        identifier: Some(TableIdent {
+                            namespace: ns.namespace.clone(),
+                            name: "tab-1".to_string(),
+                        }),
+                        requirements: vec![],
+                        updates,
+                    }],
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap(),
         )
-        .await
-        .unwrap()
         .into_iter()
         .next()
         .unwrap()
@@ -2395,23 +2399,25 @@ pub(crate) mod test {
             .unwrap();
         let updates = table_metadata.changes;
 
-        let _ = super::commit_tables_with_authz(
-            ns_params.prefix.clone(),
-            super::CommitTransactionRequest {
-                table_changes: vec![CommitTableRequest {
-                    identifier: Some(TableIdent {
-                        namespace: ns.namespace.clone(),
-                        name: "tab-1".to_string(),
-                    }),
-                    requirements: vec![],
-                    updates,
-                }],
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
+        let _ = Arc::unwrap_or_clone(
+            super::commit_tables_with_authz(
+                ns_params.prefix.clone(),
+                super::CommitTransactionRequest {
+                    table_changes: vec![CommitTableRequest {
+                        identifier: Some(TableIdent {
+                            namespace: ns.namespace.clone(),
+                            name: "tab-1".to_string(),
+                        }),
+                        requirements: vec![],
+                        updates,
+                    }],
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap(),
         )
-        .await
-        .unwrap()
         .into_iter()
         .next()
         .unwrap()
@@ -2593,20 +2599,22 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let committed = super::commit_tables_with_authz(
-            ns_params.prefix.clone(),
-            super::CommitTransactionRequest {
-                table_changes: vec![CommitTableRequest {
-                    identifier: Some(table_ident.clone()),
-                    requirements: vec![],
-                    updates: builder.changes,
-                }],
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
+        let committed = Arc::unwrap_or_clone(
+            super::commit_tables_with_authz(
+                ns_params.prefix.clone(),
+                super::CommitTransactionRequest {
+                    table_changes: vec![CommitTableRequest {
+                        identifier: Some(table_ident.clone()),
+                        requirements: vec![],
+                        updates: builder.changes,
+                    }],
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap(),
         )
-        .await
-        .unwrap()
         .into_iter()
         .next()
         .unwrap();
@@ -2642,20 +2650,22 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let _ = super::commit_tables_with_authz(
-            ns_params.prefix.clone(),
-            super::CommitTransactionRequest {
-                table_changes: vec![CommitTableRequest {
-                    identifier: Some(table_ident.clone()),
-                    requirements: vec![],
-                    updates: builder.changes,
-                }],
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
+        let _ = Arc::unwrap_or_clone(
+            super::commit_tables_with_authz(
+                ns_params.prefix.clone(),
+                super::CommitTransactionRequest {
+                    table_changes: vec![CommitTableRequest {
+                        identifier: Some(table_ident.clone()),
+                        requirements: vec![],
+                        updates: builder.changes,
+                    }],
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap(),
         )
-        .await
-        .unwrap()
         .into_iter()
         .next()
         .unwrap();

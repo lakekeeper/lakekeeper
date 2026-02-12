@@ -272,6 +272,7 @@ where
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
+    use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use sqlx::{PgPool, postgres::types::PgInterval};
     use uuid::Uuid;
 

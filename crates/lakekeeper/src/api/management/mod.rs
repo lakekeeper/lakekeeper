@@ -1952,12 +1952,12 @@ pub mod v1 {
     #[serde(rename_all = "kebab-case")]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
-        pub tabulars: Vec<DeletedTabularResponse>,
+        pub tabulars: Arc<Vec<DeletedTabularResponse>>,
         /// Token to fetch the next page
         pub next_page_token: Option<String>,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
     pub struct DeletedTabularResponse {

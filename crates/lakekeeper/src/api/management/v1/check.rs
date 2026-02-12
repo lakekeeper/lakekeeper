@@ -20,12 +20,12 @@ use crate::{
         TabularListFlags, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
             CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            AuthZError, MustUse, RequireNamespaceActionError,
-            RequireTableActionError, RequireWarehouseActionError, UserOrRole,
+            MustUse, RequireNamespaceActionError, RequireTableActionError,
+            RequireWarehouseActionError, UserOrRole,
         },
         events::{APIEventContext, context::IntrospectPermissions},
         namespace_cache::namespace_ident_to_cache_key,
@@ -203,9 +203,7 @@ type TabularChecksByIdentMap = HashMap<
     (WarehouseId, Option<UserOrRole>),
     HashMap<TabularIdentOwned, Vec<(usize, TabularActionPair)>>,
 >;
-type AuthzTaskJoinSet = tokio::task::JoinSet<
-    Result<(Vec<usize>, MustUse<Vec<bool>>), AuthZError>,
->;
+type AuthzTaskJoinSet = tokio::task::JoinSet<Result<(Vec<usize>, MustUse<Vec<bool>>), AuthZError>>;
 
 /// Grouped checks by resource type
 struct GroupedChecks {
@@ -1591,7 +1589,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1612,7 +1610,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 

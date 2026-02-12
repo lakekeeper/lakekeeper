@@ -1264,7 +1264,7 @@ mod tests {
         assert_eq!(first_six.namespaces.len(), 6);
         let first_six_items: HashSet<String, RandomState> = first_six
             .namespaces
-            .into_iter()
+            .iter()
             .map(|ns| ns.to_url_string())
             .collect();
         for i in 0..6 {
@@ -1287,7 +1287,7 @@ mod tests {
         .unwrap();
         let next_four_items: HashSet<String, RandomState> = next_four
             .namespaces
-            .into_iter()
+            .iter()
             .map(|ns| ns.to_url_string())
             .collect();
         for i in 6..10 {
@@ -1320,7 +1320,7 @@ mod tests {
 
         let page_items: HashSet<String, RandomState> = page
             .namespaces
-            .into_iter()
+            .iter()
             .map(|ns| ns.to_url_string())
             .collect();
 
@@ -1346,7 +1346,7 @@ mod tests {
 
         let next_page_items: HashSet<String, RandomState> = next_page
             .namespaces
-            .into_iter()
+            .iter()
             .map(|ns| ns.to_url_string())
             .collect();
 

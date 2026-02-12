@@ -165,6 +165,7 @@ where
 mod tests {
 
     use chrono::{Duration, Utc};
+    use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use sqlx::PgPool;
     use uuid::Uuid;
 

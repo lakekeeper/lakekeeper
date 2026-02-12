@@ -15,8 +15,8 @@ use crate::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         NamespaceHierarchy, ResolvedWarehouse, SecretStore, State, Transaction,
         authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogViewAction, AuthZError,
+            AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogViewAction,
         },
         events::{
             APIEventContext,
@@ -89,7 +89,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
 
     Ok(ListTablesResponse {
         next_page_token,
-        identifiers,
+        identifiers: Arc::new(identifiers),
         table_uuids: return_uuids.then_some(view_uuids.into_iter().map(|id| *id).collect()),
         protection_status: query.return_protection_status.then_some(protection_status),
     })

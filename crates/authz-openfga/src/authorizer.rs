@@ -311,9 +311,7 @@ impl Authorizer for OpenFGAAuthorizer {
             let can_delete = batch_results[2];
 
             if for_user.is_some() && !is_allowed_to_know {
-                return Err(
-                    CannotInspectPermissions::new(metadata.actor().clone(), &server_id).into(),
-                );
+                return Err(CannotInspectPermissions::new(&server_id).into());
             }
 
             for (idx, action) in batch_indices {
@@ -1014,7 +1012,7 @@ impl OpenFGAAuthorizer {
     /// has the right to inspect another user's permissions. If empty, no permission checks are performed.
     async fn check_actions_with_permission_guard(
         &self,
-        actor: &Actor,
+        _actor: &Actor,
         mut items: Vec<CheckRequestTupleKey>,
         guard_tuples: Vec<CheckRequestTupleKey>,
     ) -> Result<Vec<bool>, IsAllowedActionError> {
@@ -1036,9 +1034,7 @@ impl OpenFGAAuthorizer {
                 .enumerate()
                 .find(|&(_, allowed)| !allowed)
             {
-                return Err(
-                    CannotInspectPermissions::new(actor.clone(), &guard_objects[idx]).into(),
-                );
+                return Err(CannotInspectPermissions::new(&guard_objects[idx]).into());
             }
         }
 
