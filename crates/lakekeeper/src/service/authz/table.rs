@@ -10,24 +10,23 @@ use lakekeeper_io::s3::S3Location;
 use crate::{
     WarehouseId,
     api::RequestMetadata,
-    request_metadata::ProjectIdMissing,
     service::{
-        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError, CreateRoleError, DeleteRoleError, GetRoleAcrossProjectsError, GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError, InternalParseLocationError, InvalidNamespaceIdentifier, ListRolesError, NamespaceHierarchy, NamespaceId, NamespaceWithParent, NoWarehouseTaskError, ResolveTasksError, ResolvedWarehouse, SearchRolesError, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound, TaskNotFoundError, UnexpectedTabularInResponse, UpdateRoleError, WarehouseStatus,
+        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError,
+        GetTabularInfoByLocationError, GetTabularInfoError, InternalParseLocationError,
+        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
+        TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
-            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeNamespace, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZViewActionForbidden, AuthZViewOps,
-            AuthZWarehouseActionForbidden, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogTableAction, MustUse, RequireNamespaceActionError, RequireProjectActionError,
-            RequireViewActionError, RequireWarehouseActionError, UserOrRole,
-        }, catalog_store::{
+            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction, CatalogTableAction, MustUse, UserOrRole
+        },
+        catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
             CatalogWarehouseOps, TabularListFlags,
-        }, events::{
+        },
+        events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedTable,
             delegate_authorization_failure_source,
-        }
+        },
     },
 };
 
@@ -510,140 +509,6 @@ impl AuthorizationFailureSource for TaskNotFoundError {
         AuthorizationFailureReason::ResourceNotFound
     }
 }
-
-#[derive(Debug, derive_more::From)]
-pub enum AuthZError {
-    RequireWarehouseActionError(RequireWarehouseActionError),
-    RequireTableActionError(RequireTableActionError),
-    RequireNamespaceActionError(RequireNamespaceActionError),
-    AuthZCannotSeeTable(AuthZCannotSeeTable),
-    RequireViewActionError(RequireViewActionError),
-    AuthZCannotSeeView(AuthZCannotSeeView),
-    AuthZCannotSeeTableLocation(AuthZCannotSeeTableLocation),
-    ProjectIdMissing(ProjectIdMissing),
-    TaskNotFoundError(TaskNotFoundError),
-    NoWarehouseTaskError(NoWarehouseTaskError),
-    RequireProjectActionError(RequireProjectActionError),
-    RequireRoleActionError(super::role::RequireRoleActionError),
-    CreateRoleError(CreateRoleError),
-    ListRolesError(ListRolesError),
-    GetRoleAcrossProjectsError(GetRoleAcrossProjectsError),
-    DeleteRoleError(DeleteRoleError),
-    UpdateRoleError(UpdateRoleError),
-    SearchRolesError(SearchRolesError),
-}
-impl From<ResolveTasksError> for AuthZError {
-    fn from(err: ResolveTasksError) -> Self {
-        match err {
-            ResolveTasksError::TaskNotFoundError(e) => e.into(),
-            ResolveTasksError::DatabaseIntegrityError(e) => {
-                RequireWarehouseActionError::from(e).into()
-            }
-            ResolveTasksError::CatalogBackendError(e) => {
-                RequireWarehouseActionError::from(e).into()
-            }
-        }
-    }
-}
-impl From<GetTaskDetailsError> for AuthZError {
-    fn from(value: GetTaskDetailsError) -> Self {
-        match value {
-            GetTaskDetailsError::TaskNotFoundError(e) => e.into(),
-            GetTaskDetailsError::DatabaseIntegrityError(e) => {
-                RequireWarehouseActionError::from(e).into()
-            }
-            GetTaskDetailsError::CatalogBackendError(e) => {
-                RequireWarehouseActionError::from(e).into()
-            }
-        }
-    }
-}
-impl From<AuthorizationCountMismatch> for AuthZError {
-    fn from(err: AuthorizationCountMismatch) -> Self {
-        RequireWarehouseActionError::AuthorizationCountMismatch(err).into()
-    }
-}
-impl From<AuthZCannotUseWarehouseId> for AuthZError {
-    fn from(err: AuthZCannotUseWarehouseId) -> Self {
-        RequireWarehouseActionError::from(err).into()
-    }
-}
-impl From<AuthZWarehouseActionForbidden> for AuthZError {
-    fn from(err: AuthZWarehouseActionForbidden) -> Self {
-        RequireWarehouseActionError::from(err).into()
-    }
-}
-impl From<AuthZTableActionForbidden> for AuthZError {
-    fn from(err: AuthZTableActionForbidden) -> Self {
-        RequireTableActionError::AuthZTableActionForbidden(err).into()
-    }
-}
-impl From<RequireTabularActionsError> for AuthZError {
-    fn from(err: RequireTabularActionsError) -> Self {
-        match err {
-            RequireTabularActionsError::AuthorizationBackendUnavailable(e) => {
-                RequireWarehouseActionError::AuthorizationBackendUnavailable(e).into()
-            }
-            RequireTabularActionsError::AuthZViewActionForbidden(e) => {
-                RequireViewActionError::from(e).into()
-            }
-            RequireTabularActionsError::AuthZTableActionForbidden(e) => {
-                RequireTableActionError::from(e).into()
-            }
-            RequireTabularActionsError::AuthorizationCountMismatch(e) => {
-                RequireWarehouseActionError::AuthorizationCountMismatch(e).into()
-            }
-            RequireTabularActionsError::CannotInspectPermissions(e) => {
-                RequireWarehouseActionError::CannotInspectPermissions(e).into()
-            }
-        }
-    }
-}
-impl From<AuthZCannotSeeNamespace> for AuthZError {
-    fn from(err: AuthZCannotSeeNamespace) -> Self {
-        Self::RequireNamespaceActionError(err.into())
-    }
-}
-impl From<AuthZCannotSeeAnonymousNamespace> for AuthZError {
-    fn from(err: AuthZCannotSeeAnonymousNamespace) -> Self {
-        Self::RequireNamespaceActionError(err.into())
-    }
-}
-impl From<BackendUnavailableOrCountMismatch> for AuthZError {
-    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
-        match err {
-            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => {
-                RequireWarehouseActionError::AuthorizationBackendUnavailable(e).into()
-            }
-            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => {
-                RequireWarehouseActionError::AuthorizationCountMismatch(e).into()
-            }
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => {
-                RequireWarehouseActionError::CannotInspectPermissions(e).into()
-            }
-        }
-    }
-}
-delegate_authorization_failure_source!(AuthZError => {
-    RequireWarehouseActionError,
-    RequireTableActionError,
-    RequireNamespaceActionError,
-    AuthZCannotSeeTable,
-    RequireViewActionError,
-    AuthZCannotSeeView,
-    AuthZCannotSeeTableLocation,
-    ProjectIdMissing,
-    TaskNotFoundError,
-    NoWarehouseTaskError,
-    RequireProjectActionError,
-    RequireRoleActionError,
-    CreateRoleError,
-    ListRolesError,
-    GetRoleAcrossProjectsError,
-    DeleteRoleError,
-    UpdateRoleError,
-    SearchRolesError,
-});
 
 #[async_trait::async_trait]
 pub trait AuthZTableOps: Authorizer {

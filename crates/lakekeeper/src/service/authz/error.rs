@@ -6,13 +6,22 @@ use std::{
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 
-use crate::service::{
-    InternalErrorMessage, error_chain_fmt,
-    events::{
-        AuthorizationFailureReason, AuthorizationFailureSource,
-        delegate_authorization_failure_source,
+use crate::{
+    request_metadata::ProjectIdMissing,
+    service::{
+        CreateRoleError, DeleteRoleError, GetRoleAcrossProjectsError, GetTaskDetailsError,
+        InternalErrorMessage, ListRolesError, NoWarehouseTaskError, ResolveTasksError,
+        SearchRolesError, TaskNotFoundError, UpdateRoleError,
+        authz::{
+            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeTableLocation, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableActionForbidden, AuthZUserActionForbidden, AuthZWarehouseActionForbidden, RequireNamespaceActionError, RequireProjectActionError, RequireRoleActionError, RequireTableActionError, RequireTabularActionsError, RequireViewActionError, RequireWarehouseActionError
+        },
+        error_chain_fmt,
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource,
+            delegate_authorization_failure_source,
+        },
+        impl_error_stack_methods,
     },
-    impl_error_stack_methods,
 };
 
 #[derive(Debug, PartialEq, derive_more::From)]
@@ -178,3 +187,139 @@ impl AuthorizationFailureSource for AuthorizationBackendUnavailable {
         AuthorizationFailureReason::InternalAuthorizationError
     }
 }
+
+#[derive(Debug, derive_more::From)]
+pub enum AuthZError {
+    RequireWarehouseActionError(RequireWarehouseActionError),
+    RequireTableActionError(RequireTableActionError),
+    RequireNamespaceActionError(RequireNamespaceActionError),
+    AuthZCannotSeeTable(AuthZCannotSeeTable),
+    RequireViewActionError(RequireViewActionError),
+    AuthZCannotSeeView(AuthZCannotSeeView),
+    AuthZCannotSeeTableLocation(AuthZCannotSeeTableLocation),
+    ProjectIdMissing(ProjectIdMissing),
+    TaskNotFoundError(TaskNotFoundError),
+    NoWarehouseTaskError(NoWarehouseTaskError),
+    RequireProjectActionError(RequireProjectActionError),
+    RequireRoleActionError(RequireRoleActionError),
+    CreateRoleError(CreateRoleError),
+    ListRolesError(ListRolesError),
+    GetRoleAcrossProjectsError(GetRoleAcrossProjectsError),
+    DeleteRoleError(DeleteRoleError),
+    UpdateRoleError(UpdateRoleError),
+    SearchRolesError(SearchRolesError),
+    AuthZUserActionForbidden(AuthZUserActionForbidden),
+}
+impl From<ResolveTasksError> for AuthZError {
+    fn from(err: ResolveTasksError) -> Self {
+        match err {
+            ResolveTasksError::TaskNotFoundError(e) => e.into(),
+            ResolveTasksError::DatabaseIntegrityError(e) => {
+                RequireWarehouseActionError::from(e).into()
+            }
+            ResolveTasksError::CatalogBackendError(e) => {
+                RequireWarehouseActionError::from(e).into()
+            }
+        }
+    }
+}
+impl From<GetTaskDetailsError> for AuthZError {
+    fn from(value: GetTaskDetailsError) -> Self {
+        match value {
+            GetTaskDetailsError::TaskNotFoundError(e) => e.into(),
+            GetTaskDetailsError::DatabaseIntegrityError(e) => {
+                RequireWarehouseActionError::from(e).into()
+            }
+            GetTaskDetailsError::CatalogBackendError(e) => {
+                RequireWarehouseActionError::from(e).into()
+            }
+        }
+    }
+}
+impl From<AuthorizationCountMismatch> for AuthZError {
+    fn from(err: AuthorizationCountMismatch) -> Self {
+        RequireWarehouseActionError::AuthorizationCountMismatch(err).into()
+    }
+}
+impl From<AuthZCannotUseWarehouseId> for AuthZError {
+    fn from(err: AuthZCannotUseWarehouseId) -> Self {
+        RequireWarehouseActionError::from(err).into()
+    }
+}
+impl From<AuthZWarehouseActionForbidden> for AuthZError {
+    fn from(err: AuthZWarehouseActionForbidden) -> Self {
+        RequireWarehouseActionError::from(err).into()
+    }
+}
+impl From<AuthZTableActionForbidden> for AuthZError {
+    fn from(err: AuthZTableActionForbidden) -> Self {
+        RequireTableActionError::AuthZTableActionForbidden(err).into()
+    }
+}
+impl From<RequireTabularActionsError> for AuthZError {
+    fn from(err: RequireTabularActionsError) -> Self {
+        match err {
+            RequireTabularActionsError::AuthorizationBackendUnavailable(e) => {
+                RequireWarehouseActionError::AuthorizationBackendUnavailable(e).into()
+            }
+            RequireTabularActionsError::AuthZViewActionForbidden(e) => {
+                RequireViewActionError::from(e).into()
+            }
+            RequireTabularActionsError::AuthZTableActionForbidden(e) => {
+                RequireTableActionError::from(e).into()
+            }
+            RequireTabularActionsError::AuthorizationCountMismatch(e) => {
+                RequireWarehouseActionError::AuthorizationCountMismatch(e).into()
+            }
+            RequireTabularActionsError::CannotInspectPermissions(e) => {
+                RequireWarehouseActionError::CannotInspectPermissions(e).into()
+            }
+        }
+    }
+}
+impl From<AuthZCannotSeeNamespace> for AuthZError {
+    fn from(err: AuthZCannotSeeNamespace) -> Self {
+        Self::RequireNamespaceActionError(err.into())
+    }
+}
+impl From<AuthZCannotSeeAnonymousNamespace> for AuthZError {
+    fn from(err: AuthZCannotSeeAnonymousNamespace) -> Self {
+        Self::RequireNamespaceActionError(err.into())
+    }
+}
+impl From<BackendUnavailableOrCountMismatch> for AuthZError {
+    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
+        match err {
+            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => {
+                RequireWarehouseActionError::AuthorizationBackendUnavailable(e).into()
+            }
+            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => {
+                RequireWarehouseActionError::AuthorizationCountMismatch(e).into()
+            }
+            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => {
+                RequireWarehouseActionError::CannotInspectPermissions(e).into()
+            }
+        }
+    }
+}
+delegate_authorization_failure_source!(AuthZError => {
+    RequireWarehouseActionError,
+    RequireTableActionError,
+    RequireNamespaceActionError,
+    AuthZCannotSeeTable,
+    RequireViewActionError,
+    AuthZCannotSeeView,
+    AuthZCannotSeeTableLocation,
+    ProjectIdMissing,
+    TaskNotFoundError,
+    NoWarehouseTaskError,
+    RequireProjectActionError,
+    RequireRoleActionError,
+    CreateRoleError,
+    ListRolesError,
+    GetRoleAcrossProjectsError,
+    DeleteRoleError,
+    UpdateRoleError,
+    SearchRolesError,
+    AuthZUserActionForbidden,
+});

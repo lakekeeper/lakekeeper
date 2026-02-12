@@ -47,8 +47,7 @@ pub mod v1 {
         RenameProjectRequest, Service as _,
     };
     use role::{
-        CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest,
-        Service as _, UpdateRoleRequest,
+        CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest, Service as _, UpdateRoleRequest,
     };
     use serde::{Deserialize, Serialize};
     use server::{BootstrapRequest, ServerInfo, Service as _};
@@ -89,9 +88,10 @@ pub mod v1 {
     macro_rules! impl_arc_into_response {
         ($type_name:ident) => {
             pastey::paste! {
-                pub struct [<Arc $type_name>](pub Arc<$type_name>);
+                #[derive(Clone, Debug)]
+                pub struct [<$type_name Ref>](pub Arc<$type_name>);
 
-                impl IntoResponse for [<Arc $type_name>] {
+                impl IntoResponse for [<$type_name Ref>] {
                     fn into_response(self) -> axum::response::Response {
                         (http::StatusCode::OK, Json(self.0)).into_response()
                     }
@@ -113,13 +113,14 @@ pub mod v1 {
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 role::{
-                    ArcListRolesResponse, ArcRoleMetadata, ArcSearchRoleResponse, UpdateRoleSourceSystemRequest
+                    ListRolesResponseRef, RoleMetadataRef, SearchRoleResponseRef,
+                    UpdateRoleSourceSystemRequest,
                 },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
                 tasks::{
-                    ArcGetTaskDetailsResponse, ControlTasksRequest, GetProjectTaskDetailsResponse,
-                    GetTaskDetailsQuery, ListProjectTasksRequest, ListProjectTasksResponse,
+                    ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
+                    GetTaskDetailsResponseRef, ListProjectTasksRequest, ListProjectTasksResponse,
                     ListTasksRequest, ListTasksResponse, Service,
                 },
                 user::{ListUsersQuery, ListUsersResponse},
@@ -184,8 +185,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperServerActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_server_actions(authorizer, &metadata, query).await?;
+        let relations = get_allowed_server_actions(api_context, metadata, query).await?;
 
         Ok((
             StatusCode::OK,
@@ -303,13 +303,12 @@ pub mod v1 {
         )
     ))]
     async fn get_user_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
-        Path(user_id): Path<UserId>,
+        Path(user_id): Path<Arc<UserId>>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperUserActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_user_actions(authorizer, &metadata, query, user_id).await?;
+        let relations = get_allowed_user_actions(api_context, metadata, query, user_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -464,9 +463,9 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchRoleRequest>,
-    ) -> Result<ArcSearchRoleResponse> {
+    ) -> Result<SearchRoleResponseRef> {
         let response = ApiServer::<C, A, S>::search_role(api_context, metadata, request).await?;
-        Ok(ArcSearchRoleResponse(response))
+        Ok(SearchRoleResponseRef(response))
     }
 
     /// List Roles
@@ -486,9 +485,9 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<ListRolesQuery>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<ArcListRolesResponse> {
+    ) -> Result<ListRolesResponseRef> {
         let response = ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await?;
-        Ok(ArcListRolesResponse(response))
+        Ok(ListRolesResponseRef(response))
     }
 
     /// Delete Role
@@ -556,10 +555,10 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<ArcRoleMetadata> {
+    ) -> Result<RoleMetadataRef> {
         let response =
             ApiServer::<C, A, S>::get_role_metadata(api_context, metadata, role_id).await?;
-        Ok(ArcRoleMetadata(response))
+        Ok(RoleMetadataRef(response))
     }
 
     /// Update Role
@@ -625,7 +624,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperRoleActionsResponse>)> {
-        let relations = get_allowed_role_actions(api_context, &metadata, query, role_id).await?;
+        let relations = get_allowed_role_actions(api_context, metadata, query, role_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -849,11 +848,10 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperProjectActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
         let project_id = metadata.require_project_id(None)?;
 
         let actions =
-            get_allowed_project_actions(authorizer, &metadata, query, &project_id).await?;
+            get_allowed_project_actions(api_context, metadata, query, &project_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -1060,7 +1058,7 @@ pub mod v1 {
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperWarehouseActionsResponse>)> {
         let relations =
-            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, query, warehouse_id)
+            get_allowed_warehouse_actions::<A, C, S>(api_context, metadata, query, warehouse_id)
                 .await?;
 
         Ok((
@@ -1433,7 +1431,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<GetLakekeeperTableActionsResponse>)> {
         let relations = get_allowed_table_actions::<A, C, S>(
             api_context,
-            &metadata,
+            metadata,
             query,
             warehouse_id,
             table_id,
@@ -1523,7 +1521,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<GetLakekeeperViewActionsResponse>)> {
         let relations = get_allowed_view_actions::<A, C, S>(
             api_context,
-            &metadata,
+            metadata,
             query,
             warehouse_id,
             view_id,
@@ -1613,7 +1611,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<GetLakekeeperNamespaceActionsResponse>)> {
         let relations = get_allowed_namespace_actions::<A, C, S>(
             api_context,
-            &metadata,
+            metadata,
             query,
             warehouse_id,
             namespace_id,
@@ -1752,7 +1750,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<GetTaskDetailsQuery>,
-    ) -> Result<ArcGetTaskDetailsResponse> {
+    ) -> Result<GetTaskDetailsResponseRef> {
         let warehouse_id = WarehouseId::from(warehouse_id);
         let task_id = TaskId::from(task_id);
         let response = ApiServer::<C, A, S>::get_task_details(
@@ -1763,7 +1761,7 @@ pub mod v1 {
             metadata,
         )
         .await?;
-        Ok(ArcGetTaskDetailsResponse(response))
+        Ok(GetTaskDetailsResponseRef(response))
     }
 
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)

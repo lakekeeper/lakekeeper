@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -6,15 +6,12 @@ use lakekeeper_io::s3::S3Location;
 
 use crate::{
     ProjectId, WarehouseId,
-    api::{RequestMetadata, management::v1::{check::CatalogActionCheckItem}},
+    api::{RequestMetadata, management::v1::check::CatalogActionCheckItem},
     service::{
         NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, TableIdentOrId,
         TableInfo, TabularId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
-        authz::{
-            CatalogAction, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction,
-        },
+        authz::{CatalogAction, CatalogTableAction, CatalogViewAction},
         events::{
             AuthorizationError, AuthorizationFailedEvent, AuthorizationFailureSource,
             EventDispatcher,
@@ -178,7 +175,7 @@ impl UserProvidedEntity for UserIdRef {}
 impl UserProvidedEntity for Arc<Vec<CatalogActionCheckItem>> {}
 
 // ── Action types ────────────────────────────────────────────────────────────
-
+#[derive(Clone, Debug)]
 pub struct ServerActionSearchUsers {}
 impl APIEventAction for ServerActionSearchUsers {
     fn event_action_str(&self) -> String {
@@ -186,6 +183,7 @@ impl APIEventAction for ServerActionSearchUsers {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct ServerActionListProjects {}
 impl APIEventAction for ServerActionListProjects {
     fn event_action_str(&self) -> String {
@@ -193,6 +191,7 @@ impl APIEventAction for ServerActionListProjects {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct WarehouseActionSearchTabulars {}
 impl APIEventAction for WarehouseActionSearchTabulars {
     fn event_action_str(&self) -> String {
@@ -200,10 +199,19 @@ impl APIEventAction for WarehouseActionSearchTabulars {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct IntrospectPermissions {}
 impl APIEventAction for IntrospectPermissions {
     fn event_action_str(&self) -> String {
         "introspect_permissions".to_string()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GetTaskDetailsAction {}
+impl APIEventAction for GetTaskDetailsAction {
+    fn event_action_str(&self) -> String {
+        "get_task_details".to_string()
     }
 }
 
@@ -225,22 +233,15 @@ impl APIEventAction for TabularAction {
     }
 }
 
-pub struct GetTaskDetailsAction {}
-impl APIEventAction for GetTaskDetailsAction {
-    fn event_action_str(&self) -> String {
-        "get_task_details".to_string()
-    }
-}
-
 impl APIEventAction for Vec<CatalogTableAction> {
     fn event_action_str(&self) -> String {
         let actions_str = self
-        .iter()
-        .map(|a| a.as_log_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("Batch[{}]", actions_str)
-}
+            .iter()
+            .map(|a| a.as_log_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("Batch[{}]", actions_str)
+    }
 }
 
 // ── APIEventContext ─────────────────────────────────────────────────────────
@@ -259,7 +260,7 @@ where
     pub(super) action: A,
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
-    pub(super) stack: Vec<String>,
+    pub(super) extra_context: HashMap<String, String>,
 }
 
 // ── Core impl (Unresolved) ──────────────────────────────────────────────────
@@ -280,7 +281,7 @@ impl<P: UserProvidedEntity, A: APIEventAction> APIEventContext<P, Unresolved, A,
             resolved_entity: Unresolved,
             action,
             _authz: std::marker::PhantomData,
-            stack: Vec::new(),
+            extra_context: HashMap::new(),
         }
     }
 }
@@ -300,7 +301,7 @@ impl<P: UserProvidedEntity, A: APIEventAction, Z: AuthzState> APIEventContext<P,
             },
             action: self.action,
             _authz: std::marker::PhantomData,
-            stack: self.stack,
+            extra_context: self.extra_context,
         }
     }
 }
@@ -323,13 +324,13 @@ impl<A: APIEventAction> APIEventContext<UserProvidedEntityServer, Unresolved, A>
     }
 }
 
-impl APIEventContext<ProjectId, Unresolved, CatalogProjectAction> {
+impl<A: APIEventAction> APIEventContext<ProjectId, Unresolved, A> {
     #[must_use]
     pub fn for_project(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
         project_id: ProjectId,
-        action: CatalogProjectAction,
+        action: A,
     ) -> Self {
         Self::new(request_metadata, dispatcher, project_id, action)
     }
@@ -371,14 +372,14 @@ impl<A: APIEventAction> APIEventContext<WarehouseId, Unresolved, A> {
     }
 }
 
-impl APIEventContext<UserProvidedNamespace, Unresolved, CatalogNamespaceAction> {
+impl<A: APIEventAction> APIEventContext<UserProvidedNamespace, Unresolved, A> {
     #[must_use]
     pub fn for_namespace(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId>,
-        action: CatalogNamespaceAction,
+        action: A,
     ) -> Self {
         Self::new(
             request_metadata,
@@ -392,14 +393,14 @@ impl APIEventContext<UserProvidedNamespace, Unresolved, CatalogNamespaceAction> 
     }
 }
 
-impl APIEventContext<UserProvidedTable, Unresolved, CatalogTableAction> {
+impl<A: APIEventAction> APIEventContext<UserProvidedTable, Unresolved, A> {
     #[must_use]
     pub fn for_table(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         table: impl Into<TableIdentOrId>,
-        action: CatalogTableAction,
+        action: A,
     ) -> Self {
         Self::new(
             request_metadata,
@@ -476,14 +477,14 @@ impl<A: APIEventAction> APIEventContext<UserProvidedTabularsById, Unresolved, A>
     }
 }
 
-impl APIEventContext<UserProvidedView, Unresolved, CatalogViewAction> {
+impl<A: APIEventAction> APIEventContext<UserProvidedView, Unresolved, A> {
     #[must_use]
     pub fn for_view(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         view: impl Into<ViewIdentOrId>,
-        action: CatalogViewAction,
+        action: A,
     ) -> Self {
         Self::new(
             request_metadata,
@@ -552,13 +553,13 @@ where
         self.request_metadata.clone()
     }
 
-    pub fn push_stack(&mut self, entry: impl Into<String>) {
-        self.stack.push(entry.into());
+    pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.extra_context.insert(key.into(), value.into());
     }
 
     #[must_use]
-    pub fn stack(&self) -> &[String] {
-        &self.stack
+    pub fn extra_context(&self) -> &HashMap<String, String> {
+        &self.extra_context
     }
 }
 

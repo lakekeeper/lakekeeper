@@ -59,9 +59,9 @@ use crate::{
         ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
         TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZTableActionForbidden, AuthZTableOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogTableAction, CatalogWarehouseAction, AuthZError,
+            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
+            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
             RequireNamespaceActionError, RequireTableActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -298,8 +298,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     table_ident.clone(),
                     CatalogTableAction::Drop,
                 );
-                drop_tbl_event_ctx
-                    .push_stack("Dropping existing table to overwrite it during register_table");
+                drop_tbl_event_ctx.push_extra_context("invoked-by", "register_table_overwrite");
 
                 let authz_result = authorizer
                     .require_table_action(

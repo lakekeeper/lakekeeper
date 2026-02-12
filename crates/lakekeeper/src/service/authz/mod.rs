@@ -121,6 +121,15 @@ pub enum UserOrRole {
     Role(RoleAssignee),
 }
 
+impl std::fmt::Display for UserOrRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserOrRole::User(user_id) => write!(f, "user:{}", user_id),
+            UserOrRole::Role(role_assignee) => write!(f, "role:{}", role_assignee.role()),
+        }
+    }
+}
+
 pub trait CatalogAction
 where
     Self: std::fmt::Debug + Send + Sync,

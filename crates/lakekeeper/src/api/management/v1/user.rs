@@ -297,12 +297,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let self_provision = is_self_provisioning(acting_user_id, request.id.as_ref());
         let event_ctx = if self_provision {
-            event_ctx.push_stack("Self Provisioning: true");
+            event_ctx.push_extra_context("self-provisioning", "true");
             event_ctx
                 .emit_authz::<_, RequireServerActionError>(Ok(()))?
                 .0
         } else {
-            event_ctx.push_stack("Self Provisioning: false");
+            event_ctx.push_extra_context("self-provisioning", "false");
+
             let authz_result = authorizer
                 .require_server_action(
                     event_ctx.request_metadata(),

@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ProjectId, WarehouseId,
-    api::{ApiContext, management::v1::{ApiServer, impl_arc_into_response}},
+    api::{
+        ApiContext,
+        management::v1::{ApiServer, impl_arc_into_response},
+    },
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
