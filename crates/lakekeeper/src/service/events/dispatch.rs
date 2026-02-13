@@ -156,9 +156,9 @@ impl EventDispatcher {
         dispatch_event!(self, task_queue_config_set, event);
     }
 
-    pub(crate) async fn namespace_protection_set(&self, event: types::SetNamespaceProtectionEvent) {
-        dispatch_event!(self, namespace_protection_set, event);
-    }
+    // pub(crate) async fn namespace_protection_set(&self, event: types::SetNamespaceProtectionEvent) {
+    //     dispatch_event!(self, namespace_protection_set, event);
+    // }
 
     pub(crate) async fn namespace_created(&self, event: types::CreateNamespaceEvent) {
         dispatch_event!(self, namespace_created, event);

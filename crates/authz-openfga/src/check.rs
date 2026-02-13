@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use http::StatusCode;
 use lakekeeper::{
     ProjectId, WarehouseId,
@@ -12,9 +14,10 @@ use lakekeeper::{
         CatalogWarehouseOps, NamespaceIdentOrId, Result, SecretStore, State, TableId,
         TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
         authz::{
-            AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
+            AuthZError, AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
             RequireTableActionError, RequireViewActionError, UserOrRole,
         },
+        events::{APIEventContext, EventDispatcher, context::authz_to_error_no_audit},
     },
     tokio,
 };
@@ -49,16 +52,18 @@ pub(super) async fn check<C: CatalogStore, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<CheckRequest>,
 ) -> Result<(StatusCode, Json<CheckResponse>)> {
-    let allowed = check_internal(api_context, &metadata, request).await?;
+    let allowed = check_internal(api_context, Arc::new(metadata), request).await?;
     Ok((StatusCode::OK, Json(CheckResponse { allowed })))
 }
 
 async fn check_internal<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     request: CheckRequest,
 ) -> Result<bool> {
     let authorizer = api_context.v1_state.authz.clone();
+    let event_dispatcher = api_context.v1_state.events.clone();
+
     let CheckRequest {
         // If for_principal is specified, the user needs to have the
         // CanReadAssignments permission
@@ -71,17 +76,26 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
         for_principal = for_principal.filter(|p| p != user_or_role);
     }
 
+    let metadata_clone = metadata.clone();
     let (action, object) = match &action_request {
         CheckOperation::Server { action } => {
-            check_server(metadata, &authorizer, &mut for_principal, action).await?
+            check_server(
+                metadata_clone,
+                &authorizer,
+                &mut for_principal,
+                action,
+                event_dispatcher,
+            )
+            .await?
         }
         CheckOperation::Project { action, project_id } => {
             check_project(
-                metadata,
+                metadata_clone,
                 &authorizer,
                 for_principal.as_ref(),
                 action,
-                project_id.as_ref(),
+                project_id.clone(),
+                event_dispatcher,
             )
             .await?
         }
@@ -90,11 +104,12 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
             warehouse_id,
         } => {
             check_warehouse(
-                metadata,
+                metadata_clone,
                 &authorizer,
                 for_principal.as_ref(),
                 action,
                 *warehouse_id,
+                event_dispatcher,
             )
             .await?
         }
@@ -102,17 +117,23 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
             action.to_openfga().to_string(),
             check_namespace(
                 api_context.clone(),
-                metadata,
+                metadata_clone,
                 namespace,
                 for_principal.as_ref(),
             )
             .await?,
         ),
         CheckOperation::Table { action, table } => (action.to_openfga().to_string(), {
-            check_table(api_context.clone(), metadata, table, for_principal.as_ref()).await?
+            check_table(
+                api_context.clone(),
+                metadata_clone,
+                table,
+                for_principal.as_ref(),
+            )
+            .await?
         }),
         CheckOperation::View { action, view } => (action.to_openfga().to_string(), {
-            check_view(api_context, metadata, view, for_principal.as_ref()).await?
+            check_view(api_context, metadata_clone, view, for_principal.as_ref()).await?
         }),
     };
 
@@ -128,29 +149,38 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
             relation: action,
             object,
         })
-        .await?;
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(allowed)
 }
 
 async fn check_warehouse(
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIWarehouseAction,
     warehouse_id: WarehouseId,
+    event_dispatcher: EventDispatcher,
 ) -> Result<(String, String)> {
-    authorizer
+    let required_action = for_principal
+        .as_ref()
+        .map_or(AllWarehouseRelation::CanGetMetadata, |_| {
+            AllWarehouseRelation::CanReadAssignments
+        });
+    let event_ctx =
+        APIEventContext::for_warehouse(metadata, event_dispatcher, warehouse_id, required_action);
+
+    let authz_result = authorizer
         .require_action(
-            metadata,
-            for_principal
-                .as_ref()
-                .map_or(AllWarehouseRelation::CanGetMetadata, |_| {
-                    AllWarehouseRelation::CanReadAssignments
-                }),
+            event_ctx.request_metadata(),
+            event_ctx.action().clone(),
             &warehouse_id.to_openfga(),
         )
-        .await?;
+        .await;
+
+    let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+
     Ok((
         action.to_openfga().to_string(),
         warehouse_id.to_openfga().clone(),
@@ -158,56 +188,78 @@ async fn check_warehouse(
 }
 
 async fn check_project(
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIProjectAction,
-    project_id: Option<&ProjectId>,
+    project_id: Option<ProjectId>,
+    event_dispatcher: EventDispatcher,
 ) -> Result<(String, String)> {
     let project_id = project_id
-        .or(metadata.preferred_project_id().as_ref())
-        .ok_or(OpenFGAError::NoProjectId)?
-        .to_openfga();
-    authorizer
+        .or(metadata.preferred_project_id())
+        .ok_or(OpenFGAError::NoProjectId)
+        .map_err(authz_to_error_no_audit)?;
+    let project_id_openfga = project_id.to_openfga();
+
+    let action_to_check = for_principal
+        .as_ref()
+        .map_or(AllProjectRelations::CanGetMetadata, |_| {
+            AllProjectRelations::CanReadAssignments
+        });
+
+    let event_ctx = APIEventContext::for_project(
+        metadata,
+        event_dispatcher,
+        project_id.clone(),
+        action_to_check,
+    );
+
+    let authz_result = authorizer
         .require_action(
-            metadata,
-            for_principal
-                .as_ref()
-                .map_or(AllProjectRelations::CanGetMetadata, |_| {
-                    AllProjectRelations::CanReadAssignments
-                }),
-            &project_id,
+            event_ctx.request_metadata(),
+            action_to_check,
+            &project_id_openfga,
         )
-        .await?;
-    Ok((action.to_openfga().to_string(), project_id))
+        .await;
+    let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+    Ok((action.to_openfga().to_string(), project_id_openfga))
 }
 
 async fn check_server(
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     authorizer: &OpenFGAAuthorizer,
     for_principal: &mut Option<UserOrRole>,
     action: &APIServerAction,
+    event_dispatcher: EventDispatcher,
 ) -> Result<(String, String)> {
     let openfga_server = authorizer.openfga_server().clone();
+
+    let event_ctx = APIEventContext::for_server(
+        metadata,
+        event_dispatcher,
+        AllServerAction::CanReadAssignments,
+    );
+
     if for_principal.is_some() {
-        authorizer
+        let authz_result = authorizer
             .require_action(
-                metadata,
-                AllServerAction::CanReadAssignments,
+                event_ctx.request_metadata(),
+                event_ctx.action().clone(),
                 &openfga_server,
             )
-            .await?;
+            .await;
+        let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
     }
+
     Ok((action.to_openfga().to_string(), openfga_server))
 }
 
 async fn check_namespace<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     namespace: &NamespaceIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let authorizer = api_context.v1_state.authz;
     let action = for_principal.map_or(AllNamespaceRelations::CanGetMetadata, |_| {
         AllNamespaceRelations::CanReadAssignments
     });
@@ -222,12 +274,42 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
             warehouse_id,
         } => (*warehouse_id, NamespaceIdentOrId::from(namespace.clone())),
     };
+
+    let event_ctx = APIEventContext::for_namespace(
+        metadata,
+        api_context.v1_state.events.clone(),
+        warehouse_id,
+        user_provided_ns.clone(),
+        action,
+    );
+
+    let authz_result = authorize_check_namespace::<C, S>(
+        &api_context,
+        event_ctx.request_metadata(),
+        warehouse_id,
+        user_provided_ns,
+        action,
+    )
+    .await;
+    let (_, ns_openfga) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(ns_openfga)
+}
+
+async fn authorize_check_namespace<C: CatalogStore, S: SecretStore>(
+    api_context: &ApiContext<State<OpenFGAAuthorizer, C, S>>,
+    metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    user_provided_ns: NamespaceIdentOrId,
+    action: AllNamespaceRelations,
+) -> Result<String, AuthZError> {
+    let authorizer = api_context.v1_state.authz.clone();
     let (warehouse, namespace) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone(),),
         C::get_namespace(
             warehouse_id,
             user_provided_ns.clone(),
-            api_context.v1_state.catalog,
+            api_context.v1_state.catalog.clone(),
         )
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
@@ -240,11 +322,10 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
 
 async fn check_table<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     table: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let authorizer = api_context.v1_state.authz;
     let action = for_principal.map_or(AllTableRelations::CanGetMetadata, |_| {
         AllTableRelations::CanReadAssignments
     });
@@ -267,6 +348,34 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
         ),
     };
 
+    let event_ctx = APIEventContext::for_warehouse(
+        metadata,
+        api_context.v1_state.events.clone(),
+        warehouse_id,
+        action,
+    );
+
+    let authz_result = authorize_check_table::<C, S>(
+        &api_context,
+        event_ctx.request_metadata(),
+        warehouse_id,
+        table,
+        action,
+    )
+    .await;
+    let (_, table_openfga) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(table_openfga)
+}
+
+async fn authorize_check_table<C: CatalogStore, S: SecretStore>(
+    api_context: &ApiContext<State<OpenFGAAuthorizer, C, S>>,
+    metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    table: TableIdentOrId,
+    action: AllTableRelations,
+) -> Result<String, AuthZError> {
+    let authorizer = api_context.v1_state.authz.clone();
     let (warehouse, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone()),
         C::get_table_info(
@@ -281,7 +390,7 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
     let namespace = C::get_namespace(
         warehouse_id,
         table_info.namespace_id(),
-        api_context.v1_state.catalog,
+        api_context.v1_state.catalog.clone(),
     )
     .await;
     let namespace = authorizer.require_namespace_presence(
@@ -305,11 +414,10 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
 
 async fn check_view<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: &RequestMetadata,
+    metadata: Arc<RequestMetadata>,
     view: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let authorizer = api_context.v1_state.authz;
     let action = for_principal.map_or(AllViewRelations::CanGetMetadata, |_| {
         AllViewRelations::CanReadAssignments
     });
@@ -332,6 +440,34 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
         ),
     };
 
+    let event_ctx = APIEventContext::for_warehouse(
+        metadata,
+        api_context.v1_state.events.clone(),
+        warehouse_id,
+        action,
+    );
+
+    let authz_result = authorize_check_view::<C, S>(
+        &api_context,
+        event_ctx.request_metadata(),
+        warehouse_id,
+        view,
+        action,
+    )
+    .await;
+    let (_, view_openfga) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(view_openfga)
+}
+
+async fn authorize_check_view<C: CatalogStore, S: SecretStore>(
+    api_context: &ApiContext<State<OpenFGAAuthorizer, C, S>>,
+    metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    view: ViewIdentOrId,
+    action: AllViewRelations,
+) -> Result<String, AuthZError> {
+    let authorizer = api_context.v1_state.authz.clone();
     let (warehouse, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone()),
         C::get_view_info(
@@ -346,7 +482,7 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
     let namespace = C::get_namespace(
         warehouse_id,
         view_info.namespace_id(),
-        api_context.v1_state.catalog,
+        api_context.v1_state.catalog.clone(),
     )
     .await;
     let namespace =
@@ -636,15 +772,15 @@ mod tests {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, _warehouse, _namespace) = setup(operator_id.clone(), pool).await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let user_metadata = RequestMetadata::test_user(user_id.clone());
-            let operator_metadata = RequestMetadata::test_user(operator_id.clone());
+            let user_metadata = Arc::new(RequestMetadata::test_user(user_id.clone()));
+            let operator_metadata = Arc::new(RequestMetadata::test_user(operator_id.clone()));
 
             let role_id = ApiServer::create_role(
                 CreateRoleRequest::builder()
                     .name("test_role".to_string())
                     .build(),
                 ctx.clone(),
-                operator_metadata.clone(),
+                (*operator_metadata).clone(),
             )
             .await
             .unwrap()
@@ -658,7 +794,7 @@ mod tests {
                     action: ServerAction::ProvisionUsers,
                 },
             };
-            check_internal(ctx.clone(), &user_metadata, request.clone())
+            check_internal(ctx.clone(), user_metadata, request.clone())
                 .await
                 .unwrap_err();
             // Admin can check access for role
@@ -668,7 +804,7 @@ mod tests {
                     action: ServerAction::ProvisionUsers,
                 },
             };
-            let allowed = check_internal(ctx.clone(), &operator_metadata, request)
+            let allowed = check_internal(ctx.clone(), operator_metadata, request)
                 .await
                 .unwrap();
             assert!(!allowed);
@@ -688,9 +824,9 @@ mod tests {
             .unwrap();
 
             let nobody_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let nobody_metadata = RequestMetadata::test_user(nobody_id.clone());
+            let nobody_metadata = Arc::new(RequestMetadata::test_user(nobody_id.clone()));
             let user_1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let user_1_metadata = RequestMetadata::test_user(user_1_id.clone());
+            let user_1_metadata = Arc::new(RequestMetadata::test_user(user_1_id.clone()));
 
             ctx.v1_state
                 .authz
@@ -748,21 +884,22 @@ mod tests {
 
                 // Nobody & anonymous can check own access on server level
                 if let CheckOperation::Server { .. } = &action {
-                    let allowed = check_internal(ctx.clone(), &nobody_metadata, request.clone())
-                        .await
-                        .unwrap();
+                    let allowed =
+                        check_internal(ctx.clone(), nobody_metadata.clone(), request.clone())
+                            .await
+                            .unwrap();
                     assert!(!allowed);
                     // Anonymous can check his own access
                     let allowed = check_internal(
                         ctx.clone(),
-                        &RequestMetadata::new_unauthenticated(),
+                        Arc::new(RequestMetadata::new_unauthenticated()),
                         request,
                     )
                     .await
                     .unwrap();
                     assert!(!allowed);
                 } else {
-                    check_internal(ctx.clone(), &nobody_metadata, request.clone())
+                    check_internal(ctx.clone(), nobody_metadata.clone(), request.clone())
                         .await
                         .unwrap_err();
                 }
@@ -772,7 +909,7 @@ mod tests {
                     identity: None,
                     operation: action.clone(),
                 };
-                check_internal(ctx.clone(), &user_1_metadata, request.clone())
+                check_internal(ctx.clone(), user_1_metadata.clone(), request.clone())
                     .await
                     .unwrap();
                 // User 1 can check own access with principal
@@ -780,7 +917,7 @@ mod tests {
                     identity: Some(UserOrRole::User(user_1_id.clone())),
                     operation: action.clone(),
                 };
-                check_internal(ctx.clone(), &user_1_metadata, request.clone())
+                check_internal(ctx.clone(), user_1_metadata.clone(), request.clone())
                     .await
                     .unwrap();
                 // User 1 cannot check operator access
@@ -788,7 +925,7 @@ mod tests {
                     identity: Some(UserOrRole::User(operator_id.clone())),
                     operation: action.clone(),
                 };
-                check_internal(ctx.clone(), &user_1_metadata, request.clone())
+                check_internal(ctx.clone(), user_1_metadata.clone(), request.clone())
                     .await
                     .unwrap_err();
                 // Anonymous cannot check operator access
@@ -798,7 +935,7 @@ mod tests {
                 };
                 check_internal(
                     ctx.clone(),
-                    &RequestMetadata::new_unauthenticated(),
+                    Arc::new(RequestMetadata::new_unauthenticated()),
                     request.clone(),
                 )
                 .await
@@ -810,7 +947,7 @@ mod tests {
                 };
                 let allowed = check_internal(
                     ctx.clone(),
-                    &RequestMetadata::test_user(operator_id.clone()),
+                    Arc::new(RequestMetadata::test_user(operator_id.clone())),
                     request,
                 )
                 .await
@@ -823,7 +960,7 @@ mod tests {
                 };
                 check_internal(
                     ctx.clone(),
-                    &RequestMetadata::test_user(operator_id.clone()),
+                    Arc::new(RequestMetadata::test_user(operator_id.clone())),
                     request,
                 )
                 .await

@@ -41,6 +41,15 @@ where
     }
 }
 
+impl<T> APIEventAction for Arc<T>
+where
+    T: APIEventAction,
+{
+    fn event_action_str(&self) -> String {
+        (**self).event_action_str()
+    }
+}
+
 // Marker trait to indicate authorization state
 pub trait AuthzState: Clone + Send + Sync {}
 
