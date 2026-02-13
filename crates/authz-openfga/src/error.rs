@@ -1,6 +1,9 @@
 use lakekeeper::{
-    api::{ErrorModel, IcebergErrorResponse},
-    service::authz::{AuthorizationBackendUnavailable, IsAllowedActionError},
+    api::ErrorModel,
+    service::{
+        authz::{AuthorizationBackendUnavailable, IsAllowedActionError},
+        events::{AuthorizationFailureReason, AuthorizationFailureSource},
+    },
 };
 use openfga_client::{
     client::{CheckError, check_error::Code},
@@ -64,16 +67,12 @@ impl From<OpenFGABackendUnavailable> for AuthorizationBackendUnavailable {
         }
     }
 }
-
-impl From<OpenFGABackendUnavailable> for ErrorModel {
-    fn from(value: OpenFGABackendUnavailable) -> Self {
-        AuthorizationBackendUnavailable::from(value).into()
+impl AuthorizationFailureSource for OpenFGABackendUnavailable {
+    fn into_error_model(self) -> ErrorModel {
+        AuthorizationBackendUnavailable::from(self).into_error_model()
     }
-}
-
-impl From<OpenFGABackendUnavailable> for IcebergErrorResponse {
-    fn from(err: OpenFGABackendUnavailable) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InternalAuthorizationError
     }
 }
 
@@ -111,12 +110,8 @@ pub enum OpenFGAError {
     NoProjectId,
     #[error("Authentication required")]
     AuthenticationRequired,
-    #[error("Unauthorized for action `{relation}` on `{object}` for `{user}`")]
-    Unauthorized {
-        user: String,
-        relation: String,
-        object: String,
-    },
+    #[error("Unauthorized for action `{relation}` on `{object}`")]
+    Unauthorized { relation: String, object: String },
     #[error("Cannot assign {0} to itself")]
     SelfAssignment(String),
     #[error("Invalid OpenFGA query: {0}")]
@@ -155,10 +150,10 @@ impl From<OpenFGAClientError> for OpenFGAError {
     }
 }
 
-impl From<OpenFGAError> for ErrorModel {
-    fn from(err: OpenFGAError) -> Self {
-        let err_msg = err.to_string();
-        match err {
+impl AuthorizationFailureSource for OpenFGAError {
+    fn into_error_model(self) -> ErrorModel {
+        let err_msg = self.to_string();
+        match self {
             e @ OpenFGAError::NoProjectId => {
                 ErrorModel::bad_request(err_msg, "NoProjectId", Some(Box::new(e)))
             }
@@ -178,26 +173,54 @@ impl From<OpenFGAError> for ErrorModel {
                 ErrorModel::not_found(err_msg, "TupleNotFoundError", Some(Box::new(e)))
             }
             OpenFGAError::InternalClientError(client_error) => {
-                OpenFGABackendUnavailable::from(client_error).into()
+                OpenFGABackendUnavailable::from(client_error).into_error_model()
             }
             e @ OpenFGAError::UnexpectedEntity { .. } => {
                 ErrorModel::internal(err_msg, "UnexpectedEntity", Some(Box::new(e)))
             }
-            OpenFGAError::UnexpectedCorrelationId(e) => OpenFGABackendUnavailable::from(e).into(),
-            OpenFGAError::BatchCheckError(e) => OpenFGABackendUnavailable::from(e).into(),
-            OpenFGAError::MissingItemInBatchCheck(e) => OpenFGABackendUnavailable::from(e).into(),
+            OpenFGAError::UnexpectedCorrelationId(e) => {
+                OpenFGABackendUnavailable::from(e).into_error_model()
+            }
+            OpenFGAError::BatchCheckError(e) => {
+                OpenFGABackendUnavailable::from(e).into_error_model()
+            }
+            OpenFGAError::MissingItemInBatchCheck(e) => {
+                OpenFGABackendUnavailable::from(e).into_error_model()
+            }
             OpenFGAError::UnknownType(_) => {
                 ErrorModel::bad_request(err_msg, "UnknownOpenFGAType", None)
             }
-            _ => ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(err))),
+            _ => ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(self))),
         }
     }
-}
-
-impl From<OpenFGAError> for IcebergErrorResponse {
-    fn from(err: OpenFGAError) -> Self {
-        let err_model = ErrorModel::from(err);
-        err_model.into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        match self {
+            OpenFGAError::NoProjectId => AuthorizationFailureReason::InvalidRequestData,
+            OpenFGAError::AuthenticationRequired => AuthorizationFailureReason::InvalidRequestData,
+            OpenFGAError::Unauthorized { .. } => AuthorizationFailureReason::ActionForbidden,
+            OpenFGAError::SelfAssignment { .. } => AuthorizationFailureReason::InvalidRequestData,
+            OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
+                AuthorizationFailureReason::InvalidRequestData
+            }
+            OpenFGAError::CannotDeleteTupleNotFound(_) => {
+                AuthorizationFailureReason::ResourceNotFound
+            }
+            OpenFGAError::UnexpectedEntity { .. } => AuthorizationFailureReason::InvalidRequestData,
+            OpenFGAError::UnknownType(_) => AuthorizationFailureReason::InvalidRequestData,
+            OpenFGAError::InternalClientError(_)
+            | OpenFGAError::UnexpectedCorrelationId(_)
+            | OpenFGAError::BatchCheckError(_)
+            | OpenFGAError::MissingItemInBatchCheck(_)
+            | OpenFGAError::ActiveAuthModelNotFound(_)
+            | OpenFGAError::StoreNotFound(_) => {
+                AuthorizationFailureReason::InternalAuthorizationError
+            }
+            OpenFGAError::InvalidEntity(_)
+            | OpenFGAError::InvalidQuery(_)
+            | OpenFGAError::GrantRoleWithAssumedRole => {
+                AuthorizationFailureReason::InvalidRequestData
+            }
+        }
     }
 }
 
@@ -292,7 +315,7 @@ mod tests {
     // Name is important for test profile
     mod openfga_integration_tests {
         use http::StatusCode;
-        use lakekeeper::{ProjectId, api::ErrorModel, tokio};
+        use lakekeeper::{ProjectId, tokio};
         use openfga_client::client::{TupleKey, TupleKeyWithoutCondition};
 
         use super::super::*;
@@ -318,7 +341,7 @@ mod tests {
                 .unwrap_err();
 
             assert!(matches!(err, OpenFGAError::CannotDeleteTupleNotFound(_)));
-            let err_model = ErrorModel::from(err);
+            let err_model = err.into_error_model();
             assert_eq!(err_model.code, StatusCode::NOT_FOUND.as_u16());
             assert_eq!(err_model.r#type, "TupleNotFoundError");
         }
@@ -347,7 +370,7 @@ mod tests {
                 err,
                 OpenFGAError::CannotWriteTupleAlreadyExists(_)
             ));
-            let err_model = ErrorModel::from(err);
+            let err_model = err.into_error_model();
             assert_eq!(err_model.code, StatusCode::CONFLICT.as_u16());
             assert_eq!(err_model.r#type, "TupleAlreadyExistsError");
         }

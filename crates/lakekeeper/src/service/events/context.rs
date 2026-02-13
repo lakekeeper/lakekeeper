@@ -8,8 +8,8 @@ use crate::{
     ProjectId, WarehouseId,
     api::{RequestMetadata, management::v1::check::CatalogActionCheckItem},
     service::{
-        NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, TableIdentOrId,
-        TableInfo, TabularId, ViewIdentOrId, ViewInfo,
+        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId,
+        TableIdentOrId, TableInfo, TabularId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{CatalogAction, CatalogTableAction, CatalogViewAction},
         events::{
@@ -173,6 +173,7 @@ impl UserProvidedEntity for ProjectId {}
 impl UserProvidedEntity for RoleId {}
 impl UserProvidedEntity for UserIdRef {}
 impl UserProvidedEntity for Arc<Vec<CatalogActionCheckItem>> {}
+impl UserProvidedEntity for NamespaceId {}
 
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]
@@ -390,6 +391,18 @@ impl<A: APIEventAction> APIEventContext<UserProvidedNamespace, Unresolved, A> {
             },
             action,
         )
+    }
+}
+
+impl<A: APIEventAction> APIEventContext<NamespaceId, Unresolved, A> {
+    #[must_use]
+    pub fn for_namespace_only_id(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        namespace: NamespaceId,
+        action: A,
+    ) -> Self {
+        Self::new(request_metadata, dispatcher, namespace, action)
     }
 }
 

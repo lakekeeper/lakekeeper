@@ -110,7 +110,7 @@ mod test {
             setup.warehouse.project_id.clone(),
             Some(setup.warehouse.warehouse_id),
             &QUEUE_NAME,
-            SetTaskQueueConfigRequest {
+            &SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(
                     serde_json::to_value(Config {
                         some_val: "test_value".to_string(),

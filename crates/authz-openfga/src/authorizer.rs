@@ -18,6 +18,7 @@ use lakekeeper::{
             CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
             NamespaceParent, UserOrRole,
         },
+        events::context::authz_to_error_no_audit,
         health::Health,
     },
     tokio::sync::RwLock,
@@ -165,7 +166,8 @@ impl Authorizer for OpenFGAAuthorizer {
             }]),
             None,
         )
-        .await?;
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
         Ok(())
     }
@@ -613,6 +615,7 @@ impl Authorizer for OpenFGAAuthorizer {
             None,
         )
         .await
+        .map_err(authz_to_error_no_audit)
         .map_err(Into::into)
     }
 
@@ -658,6 +661,7 @@ impl Authorizer for OpenFGAAuthorizer {
             None,
         )
         .await
+        .map_err(authz_to_error_no_audit)
         .map_err(Into::into)
     }
 
@@ -704,6 +708,7 @@ impl Authorizer for OpenFGAAuthorizer {
             None,
         )
         .await
+        .map_err(authz_to_error_no_audit)
         .map_err(Into::into)
     }
 
@@ -761,6 +766,7 @@ impl Authorizer for OpenFGAAuthorizer {
             None,
         )
         .await
+        .map_err(authz_to_error_no_audit)
         .map_err(Into::into)
     }
 
@@ -811,6 +817,7 @@ impl Authorizer for OpenFGAAuthorizer {
             None,
         )
         .await
+        .map_err(authz_to_error_no_audit)
         .map_err(Into::into)
     }
 
@@ -859,6 +866,7 @@ impl Authorizer for OpenFGAAuthorizer {
             None,
         )
         .await
+        .map_err(authz_to_error_no_audit)
         .map_err(Into::into)
     }
 
@@ -1098,7 +1106,7 @@ impl OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         action: impl OpenFgaRelation,
         object: &str,
-    ) -> AuthorizerResult<()> {
+    ) -> Result<(), OpenFGAError> {
         let allowed = self
             .check(CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
@@ -1108,12 +1116,10 @@ impl OpenFGAAuthorizer {
             .await?;
 
         if !allowed {
-            return Err(ErrorModel::forbidden(
-                format!("Action {action} not allowed for object {object}"),
-                "ActionForbidden",
-                None,
-            )
-            .into());
+            return Err(OpenFGAError::Unauthorized {
+                relation: action.to_string(),
+                object: object.to_string(),
+            });
         }
         Ok(())
     }
@@ -1133,7 +1139,8 @@ impl OpenFGAAuthorizer {
             .map_err(|e| {
                 tracing::error!("Failed to check if relations to {fga_object} exists: {e}");
                 OpenFGAError::from(e)
-            })?;
+            })
+            .map_err(authz_to_error_no_audit)?;
 
         if relations_exist {
             return Err(ErrorModel::conflict(
@@ -1163,7 +1170,8 @@ impl OpenFGAAuthorizer {
                             },
                             None,
                         )
-                        .await?;
+                        .await
+                        .map_err(authz_to_error_no_audit)?;
 
                     if !tuples.tuples.is_empty() {
                         return Err(IcebergErrorResponse::from(
@@ -1194,7 +1202,7 @@ impl OpenFGAAuthorizer {
             self.delete_own_relations(object),
             self.delete_user_relations(object)
         );
-        own_relations?;
+        own_relations.map_err(authz_to_error_no_audit)?;
         user_relations.inspect_err(|e| {
             tracing::error!("Failed to delete user relations for {object_openfga}: {e:?}");
         })
@@ -1226,7 +1234,8 @@ impl OpenFGAAuthorizer {
                                 },
                                 continuation_token.clone(),
                             )
-                            .await?;
+                            .await
+                            .map_err(authz_to_error_no_audit)?;
                         continuation_token = Some(response.continuation_token);
                         let keys = response
                             .tuples
@@ -1245,7 +1254,8 @@ impl OpenFGAAuthorizer {
                                     .collect(),
                             ),
                         )
-                        .await?;
+                        .await
+                        .map_err(authz_to_error_no_audit)?;
                     }
                 }
 
@@ -1296,7 +1306,10 @@ pub(crate) mod tests {
     // Name is important for test profile
     pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
-        use lakekeeper::{service::authz::AuthZProjectOps, tokio};
+        use lakekeeper::{
+            service::{authz::AuthZProjectOps, events::AuthorizationFailureSource},
+            tokio,
+        };
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
@@ -1563,7 +1576,7 @@ pub(crate) mod tests {
                 .unwrap_err();
 
             assert_eq!(
-                ErrorModel::from(result).code,
+                result.into_error_model().code,
                 StatusCode::NOT_FOUND.as_u16()
             );
         }
@@ -1597,7 +1610,10 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(ErrorModel::from(result).code, StatusCode::CONFLICT.as_u16());
+            assert_eq!(
+                result.into_error_model().code,
+                StatusCode::CONFLICT.as_u16()
+            );
         }
 
         #[tokio::test]

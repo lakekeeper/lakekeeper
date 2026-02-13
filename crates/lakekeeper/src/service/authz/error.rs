@@ -13,7 +13,12 @@ use crate::{
         InternalErrorMessage, ListRolesError, NoWarehouseTaskError, ResolveTasksError,
         SearchRolesError, TaskNotFoundError, UpdateRoleError,
         authz::{
-            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeTableLocation, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableActionForbidden, AuthZUserActionForbidden, AuthZWarehouseActionForbidden, RequireNamespaceActionError, RequireProjectActionError, RequireRoleActionError, RequireTableActionError, RequireTabularActionsError, RequireViewActionError, RequireWarehouseActionError
+            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeTableLocation, AuthZCannotSeeView, AuthZCannotUseWarehouseId,
+            AuthZTableActionForbidden, AuthZUserActionForbidden, AuthZWarehouseActionForbidden,
+            RequireNamespaceActionError, RequireProjectActionError, RequireRoleActionError,
+            RequireTableActionError, RequireTabularActionsError, RequireViewActionError,
+            RequireWarehouseActionError,
         },
         error_chain_fmt,
         events::{
