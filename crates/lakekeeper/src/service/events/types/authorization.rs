@@ -12,7 +12,7 @@ pub trait AuthorizationFailureSource: Send + Sized {
     fn into_error_model(self) -> ErrorModel;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct AuthorizationError {
     pub r#type: String,
     pub message: String,
@@ -86,7 +86,7 @@ pub struct AuthorizationSucceededEvent {
 ///
 /// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both `ResourceNotFound`
 /// and `CannotSeeResource`), but audit logs are concrete for debugging and compliance.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Valuable)]
 pub enum AuthorizationFailureReason {
     /// Action is not allowed for the user
     ActionForbidden,
