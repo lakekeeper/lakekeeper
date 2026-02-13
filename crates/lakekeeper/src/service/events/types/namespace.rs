@@ -148,13 +148,6 @@ pub(crate) type ResolvedNamespaceOrWarehouseContext = NamespaceOrWarehouseAPICon
 >;
 
 impl ResolvedNamespaceOrWarehouseContext {
-    pub(crate) fn warehouse(&self) -> &ResolvedWarehouse {
-        match self {
-            NamespaceOrWarehouseAPIContext::Warehouse(ctx) => ctx.resolved(),
-            NamespaceOrWarehouseAPIContext::Namespace(ctx) => &ctx.resolved().warehouse,
-        }
-    }
-
     pub(crate) fn emit_namespace_created_async(self, created_namespace: NamespaceWithParent) {
         match self {
             NamespaceOrWarehouseAPIContext::Warehouse(ctx) => {

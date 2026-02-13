@@ -77,9 +77,9 @@ pub mod v1 {
     ///
     /// This generates:
     /// ```ignore
-    /// pub struct ArcGetTaskDetailsResponse(pub Arc<GetTaskDetailsResponse>);
+    /// pub struct GetTaskDetailsResponseRef(pub Arc<GetTaskDetailsResponse>);
     ///
-    /// impl IntoResponse for ArcGetTaskDetailsResponse {
+    /// impl IntoResponse for GetTaskDetailsResponseRef {
     ///     fn into_response(self) -> axum::response::Response {
     ///         (http::StatusCode::OK, Json(self.0)).into_response()
     ///     }
@@ -102,6 +102,11 @@ pub mod v1 {
 
     pub(crate) use impl_arc_into_response;
 
+    #[cfg(feature = "open-api")]
+    use crate::api::management::v1::{
+        role::{ListRolesResponse, RoleMetadata, SearchRoleResponse},
+        tasks::GetTaskDetailsResponse,
+    };
     use crate::{
         ProjectId, WarehouseId,
         api::{
@@ -303,12 +308,13 @@ pub mod v1 {
         )
     ))]
     async fn get_user_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
-        Path(user_id): Path<Arc<UserId>>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperUserActionsResponse>)> {
-        let relations = get_allowed_user_actions(api_context, metadata, query, user_id).await?;
+        let relations =
+            get_allowed_user_actions(api_context, metadata, query, Arc::new(user_id)).await?;
 
         Ok((
             StatusCode::OK,

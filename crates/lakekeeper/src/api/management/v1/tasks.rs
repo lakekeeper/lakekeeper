@@ -675,7 +675,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = event_ctx.resolved().project_id.clone();
         let filter = TaskFilter::WarehouseId {
             warehouse_id,
-            project_id: project_id,
+            project_id,
         };
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
         let tasks = C::list_tasks(&filter, query, t.transaction()).await?;

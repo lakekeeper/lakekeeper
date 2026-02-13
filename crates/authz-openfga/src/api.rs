@@ -964,7 +964,7 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
 
     set_managed_access(authorizer, &namespace_id, request.managed_access)
         .await
-        .map_err(authz_to_error_no_audit);
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::OK)
 }
