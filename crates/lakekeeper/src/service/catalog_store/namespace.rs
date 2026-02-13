@@ -7,6 +7,7 @@ use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::Location;
+use valuable::Valuable;
 
 use crate::{
     WarehouseId,
@@ -340,7 +341,7 @@ impl From<InvalidNamespaceIdentifier> for ErrorModel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::From, Valuable)]
 pub enum NamespaceIdentOrId {
     Id(NamespaceId),
     Name(NamespaceIdent),

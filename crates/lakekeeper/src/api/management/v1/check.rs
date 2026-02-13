@@ -8,6 +8,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use unicase::UniCase;
+use valuable::Valuable;
 
 use crate::{
     ProjectId, WarehouseId,
@@ -32,7 +33,7 @@ use crate::{
     },
 };
 
-#[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
 /// Identifier for a namespace, either a UUID or its name and warehouse ID
@@ -99,7 +100,70 @@ impl TabularIdentOrUuid {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+static TABULAR_IDENT_OR_UUID_ID_IN_WAREHOUSE_FIELDS: &[valuable::NamedField<'static>] = &[
+    valuable::NamedField::new("warehouse_id"),
+    valuable::NamedField::new("table_id"),
+];
+
+static TABULAR_IDENT_OR_UUID_NAME_FIELDS: &[valuable::NamedField<'static>] = &[
+    valuable::NamedField::new("namespace"),
+    valuable::NamedField::new("table"),
+    valuable::NamedField::new("warehouse_id"),
+];
+
+impl valuable::Valuable for TabularIdentOrUuid {
+    fn as_value(&self) -> valuable::Value<'_> {
+        valuable::Value::Structable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn valuable::Visit) {
+        match self {
+            TabularIdentOrUuid::IdInWarehouse {
+                warehouse_id,
+                table_id,
+            } => {
+                visit.visit_named_fields(&valuable::NamedValues::new(
+                    TABULAR_IDENT_OR_UUID_ID_IN_WAREHOUSE_FIELDS,
+                    &[
+                        warehouse_id.as_value(),
+                        valuable::Value::U128(table_id.as_u128()),
+                    ],
+                ));
+            }
+            TabularIdentOrUuid::Name {
+                namespace,
+                table,
+                warehouse_id,
+            } => {
+                visit.visit_named_fields(&valuable::NamedValues::new(
+                    TABULAR_IDENT_OR_UUID_NAME_FIELDS,
+                    &[
+                        namespace.as_value(),
+                        table.as_value(),
+                        warehouse_id.as_value(),
+                    ],
+                ));
+            }
+        }
+    }
+}
+
+impl valuable::Structable for TabularIdentOrUuid {
+    fn definition(&self) -> valuable::StructDef<'_> {
+        match self {
+            TabularIdentOrUuid::IdInWarehouse { .. } => valuable::StructDef::new_static(
+                "TabularIdent",
+                valuable::Fields::Named(TABULAR_IDENT_OR_UUID_ID_IN_WAREHOUSE_FIELDS),
+            ),
+            TabularIdentOrUuid::Name { .. } => valuable::StructDef::new_static(
+                "TabularIdent",
+                valuable::Fields::Named(TABULAR_IDENT_OR_UUID_NAME_FIELDS),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Represents an action on an object
@@ -136,7 +200,7 @@ pub(super) enum CatalogActionCheckOperation {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// A single check item with optional identity override

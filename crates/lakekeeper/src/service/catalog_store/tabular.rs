@@ -701,7 +701,7 @@ pub struct CatalogSearchTabularResponse {
 
 macro_rules! define_ident_or_id {
     ($enum_name:ident, $id_type:ty, $tabular_variant:ident) => {
-        #[derive(Hash, Debug, Clone, PartialEq, Eq, derive_more::From)]
+        #[derive(Hash, Debug, Clone, PartialEq, Eq, derive_more::From, valuable::Valuable)]
         pub enum $enum_name {
             Ident(TableIdent),
             Id($id_type),

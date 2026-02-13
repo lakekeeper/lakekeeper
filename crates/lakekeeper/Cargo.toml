@@ -72,7 +72,7 @@ iso8601 = { workspace = true }
 itertools = { workspace = true }
 jsonwebtoken = { workspace = true }
 jwks_client_rs = { workspace = true }
-valuable = { workspace = true }
+valuable = { workspace = true, features = ["derive"] }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
     "storage-adls",

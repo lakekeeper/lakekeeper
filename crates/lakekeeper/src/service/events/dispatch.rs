@@ -156,6 +156,7 @@ impl EventDispatcher {
         dispatch_event!(self, task_queue_config_set, event);
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn namespace_protection_set(&self, event: types::SetNamespaceProtectionEvent) {
         dispatch_event!(self, namespace_protection_set, event);
     }
@@ -177,6 +178,10 @@ impl EventDispatcher {
 
     pub(crate) async fn authorization_failed(&self, event: types::AuthorizationFailedEvent) {
         dispatch_event!(self, authorization_failed, event);
+    }
+
+    pub(crate) async fn authorization_succeeded(&self, event: types::AuthorizationSucceededEvent) {
+        dispatch_event!(self, authorization_succeeded, event);
     }
 
     pub(crate) async fn namespace_metadata_loaded(
@@ -402,6 +407,23 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn authorization_failed(
         &self,
         _event: types::authorization::AuthorizationFailedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked when an authorization check succeeds during request processing
+    ///
+    /// This hook enables audit trails for security monitoring and compliance,
+    /// capturing who accessed what action.
+    ///
+    /// # Use Cases
+    /// - Security audit logs
+    /// - Compliance monitoring (SOC2, GDPR, etc.)
+    /// - Anomaly detection (repeated failed access attempts)
+    /// - User permission debugging
+    async fn authorization_succeeded(
+        &self,
+        _event: types::authorization::AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

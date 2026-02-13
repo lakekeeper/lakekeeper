@@ -6,11 +6,22 @@ use std::{
 use iceberg::TableIdent;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use valuable::Valuable;
 
 use super::generic::{TableId, ViewId};
 
 #[derive(
-    Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize, derive_more::From,
+    Hash,
+    PartialOrd,
+    PartialEq,
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    Deserialize,
+    Serialize,
+    derive_more::From,
+    Valuable,
 )]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]

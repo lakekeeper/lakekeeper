@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::s3::S3Location;
+use valuable::Valuable;
 
 use crate::{
     ProjectId, WarehouseId,
@@ -14,7 +15,7 @@ use crate::{
         authz::{CatalogAction, CatalogTableAction, CatalogViewAction},
         events::{
             AuthorizationError, AuthorizationFailedEvent, AuthorizationFailureSource,
-            EventDispatcher,
+            AuthorizationSucceededEvent, EventDispatcher, ThreadSafeAuthorizationEvent,
         },
         storage::StoragePermissions,
         tasks::TaskId,
@@ -26,7 +27,7 @@ use crate::{
 // Marker trait to indicate resolution state
 pub trait ResolutionState: Clone + Send + Sync {}
 
-pub trait UserProvidedEntity: Clone + std::fmt::Debug {}
+pub trait UserProvidedEntity: Clone + ThreadSafeAuthorizationEvent + 'static {}
 
 pub trait APIEventAction {
     fn event_action_str(&self) -> String;
@@ -91,11 +92,21 @@ pub struct ResolvedView {
 
 // ── User-provided entity types ──────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
-pub struct UserProvidedEntityServer {}
-impl UserProvidedEntity for UserProvidedEntityServer {}
+/// Macro to implement UserProvidedEntity trait with automatic conversion to enum
+macro_rules! impl_user_provided_entity {
+    ($ty:ty => $variant:ident) => {
+        impl UserProvidedEntity for $ty {}
 
-#[derive(Clone, Debug)]
+        impl ThreadSafeAuthorizationEvent for $ty {}
+    };
+}
+
+#[derive(Clone, Debug, Valuable)]
+pub struct UserProvidedEntityServer {}
+
+impl_user_provided_entity!(UserProvidedEntityServer => Server);
+
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedNamespace {
     pub warehouse_id: WarehouseId,
     pub namespace: NamespaceIdentOrId,
@@ -110,70 +121,71 @@ impl UserProvidedNamespace {
     }
 }
 
-impl UserProvidedEntity for UserProvidedNamespace {}
+impl_user_provided_entity!(UserProvidedNamespace => Namespace);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedTable {
     pub warehouse_id: WarehouseId,
     pub table: TableIdentOrId,
 }
 
-impl UserProvidedEntity for UserProvidedTable {}
+impl_user_provided_entity!(UserProvidedTable => Table);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedTableLocation {
     pub warehouse_id: WarehouseId,
     pub table_location: Arc<S3Location>,
 }
 
-impl UserProvidedEntity for UserProvidedTableLocation {}
+impl_user_provided_entity!(UserProvidedTableLocation => TableLocation);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedTabularsById {
     pub warehouse_id: WarehouseId,
     pub tabulars: Vec<TabularId>,
 }
 
-impl UserProvidedEntity for UserProvidedTabularsById {}
+impl_user_provided_entity!(UserProvidedTabularsById => TabularsById);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedTablesByIdent {
     pub warehouse_id: WarehouseId,
     pub tables: Vec<TableIdent>,
 }
 
-impl UserProvidedEntity for UserProvidedTablesByIdent {}
+impl_user_provided_entity!(UserProvidedTablesByIdent => TablesByIdent);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedView {
     pub warehouse_id: WarehouseId,
     pub view: ViewIdentOrId,
 }
 
-impl UserProvidedEntity for UserProvidedView {}
+impl_user_provided_entity!(UserProvidedView => View);
 
-#[derive(Clone, Debug, derive_more::From)]
+#[derive(Clone, Debug, derive_more::From, Valuable)]
 pub enum UserProvidedTableOrView {
     Table(UserProvidedTable),
     View(UserProvidedView),
 }
 
-impl UserProvidedEntity for UserProvidedTableOrView {}
+impl_user_provided_entity!(UserProvidedTableOrView => TableOrView);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Valuable)]
 pub struct UserProvidedTask {
     pub warehouse_id: WarehouseId,
     pub task_id: TaskId,
 }
-impl UserProvidedEntity for UserProvidedTask {}
+impl_user_provided_entity!(UserProvidedTask => Task);
 
 // Primitive entity impls
-impl UserProvidedEntity for WarehouseId {}
-impl UserProvidedEntity for ProjectId {}
-impl UserProvidedEntity for RoleId {}
-impl UserProvidedEntity for UserIdRef {}
-impl UserProvidedEntity for Arc<Vec<CatalogActionCheckItem>> {}
-impl UserProvidedEntity for NamespaceId {}
+impl_user_provided_entity!(WarehouseId => WarehouseId);
+impl_user_provided_entity!(ProjectId => ProjectId);
+impl_user_provided_entity!(RoleId => RoleId);
+impl_user_provided_entity!(UserIdRef => UserId);
+impl_user_provided_entity!(Arc<Vec<CatalogActionCheckItem>> => CatalogCheckItems);
+impl_user_provided_entity!(NamespaceId => NamespaceId);
+
 
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]
@@ -618,20 +630,29 @@ impl<R: ResolutionState, A: APIEventAction, P: UserProvidedEntity>
         E: AuthorizationFailureSource,
     {
         match result {
-            Ok(_value) => {
-                // TODO: emit authorization success event
-                todo!("Emit authorization success event");
-                // Ok((checked, value))
+            Ok(value) => {
+                let event = AuthorizationSucceededEvent {
+                    request_metadata: self.request_metadata.clone(),
+                    entity: Arc::new(self.user_provided_entity.clone()),
+                    action: self.action.event_action_str(),
+                    extra_context: Arc::new(self.extra_context.clone()),
+                };
+                let dispatcher = self.dispatcher.clone();
+                tokio::spawn(async move {
+                    let () = dispatcher.authorization_succeeded(event).await;
+                });
+                Ok((self.into(), value))
             }
             Err(e) => {
                 let failure_reason = e.to_failure_reason();
                 let error = e.into_error_model();
                 let event = AuthorizationFailedEvent {
                     request_metadata: self.request_metadata.clone(),
-                    entity: format!("{:?}", self.user_provided_entity),
+                    entity: Arc::new(self.user_provided_entity.clone()),
                     action: self.action.event_action_str(),
                     failure_reason,
                     error: Arc::new(AuthorizationError::clone_from_error_model(&error)),
+                    extra_context: Arc::new(self.extra_context),
                 };
                 let dispatcher = self.dispatcher.clone();
                 tokio::spawn(async move {
@@ -673,5 +694,25 @@ impl<T: ResolutionState, A: APIEventAction, P: UserProvidedEntity, Z: AuthzState
 
     pub fn emit_early_authz_failure(&self, _error: impl AuthorizationFailureSource) -> ErrorModel {
         todo!("Implement")
+    }
+}
+
+impl<P, R, A> From<APIEventContext<P, R, A, AuthzUnchecked>>
+    for APIEventContext<P, R, A, AuthzChecked>
+where
+    P: UserProvidedEntity,
+    R: ResolutionState,
+    A: APIEventAction,
+{
+    fn from(context: APIEventContext<P, R, A, AuthzUnchecked>) -> Self {
+        APIEventContext {
+            request_metadata: context.request_metadata,
+            dispatcher: context.dispatcher,
+            user_provided_entity: context.user_provided_entity,
+            action: context.action,
+            resolved_entity: context.resolved_entity,
+            _authz: std::marker::PhantomData,
+            extra_context: context.extra_context,
+        }
     }
 }

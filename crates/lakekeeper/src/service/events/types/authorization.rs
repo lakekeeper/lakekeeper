@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg_ext::catalog::rest::ErrorModel;
+use valuable::Valuable;
 
 use crate::api::RequestMetadata;
 
@@ -30,9 +31,9 @@ impl AuthorizationError {
     }
 }
 
-// ===== Generic Authorization Failed Event =====
-// This is kept for backward compatibility and generic authorization failures
-// where the resource type is not known or doesn't fit other categories
+// ===== Authorization Events =====
+
+pub trait ThreadSafeAuthorizationEvent : Valuable + Send + Sync + std::fmt::Debug {}
 
 /// Event emitted when an authorization check fails during request processing.
 ///
@@ -43,7 +44,8 @@ pub struct AuthorizationFailedEvent {
     /// Request metadata including the actor who attempted the action
     pub request_metadata: Arc<RequestMetadata>,
 
-    pub entity: String,
+    /// The user-provided entity that was being accessed
+    pub entity: Arc<dyn ThreadSafeAuthorizationEvent>,
 
     /// The action that was attempted, serialized from CatalogAction
     pub action: String,
@@ -53,6 +55,28 @@ pub struct AuthorizationFailedEvent {
 
     /// Authorization Error
     pub error: Arc<AuthorizationError>,
+
+    /// Any additional context that may be useful for debugging or auditing
+    pub extra_context: Arc<HashMap<String, String>>,
+}
+
+/// Event emitted when an authorization check succeeds during request processing.
+///
+/// This event can be used for audit trails, security monitoring, and compliance,
+/// capturing who performed what action successfully.
+#[derive(Clone, Debug)]
+pub struct AuthorizationSucceededEvent {
+    /// Request metadata including the actor who attempted the action
+    pub request_metadata: Arc<RequestMetadata>,
+
+    /// The user-provided entity that was being accessed
+    pub entity: Arc<dyn ThreadSafeAuthorizationEvent>,
+
+    /// The action that was attempted, serialized from CatalogAction
+    pub action: String,
+
+    /// Any additional context that may be useful for debugging or auditing
+    pub extra_context: Arc<HashMap<String, String>>,
 }
 
 // ===== Resource-Specific Authorization Failed Events =====

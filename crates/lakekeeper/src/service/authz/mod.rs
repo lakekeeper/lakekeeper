@@ -7,6 +7,7 @@ use axum::Router;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::EnumString;
+use valuable::Valuable;
 
 use super::{
     CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId, WarehouseId,
@@ -68,8 +69,9 @@ where
     Ok(Arc::new(string_map))
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Valuable)]
 #[serde(transparent)]
+#[valuable(transparent)]
 /// Assignees to a role
 pub struct RoleAssignee(RoleId);
 
@@ -106,7 +108,7 @@ impl Actor {
     }
 }
 
-#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
+#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Identifies a user or a role
@@ -179,6 +181,7 @@ impl CatalogAction for CatalogUserAction {}
     Serialize,
     Deserialize,
     VariantArray,
+    Valuable,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -210,6 +213,7 @@ impl CatalogAction for CatalogServerAction {}
     Serialize,
     Deserialize,
     VariantArray,
+    Valuable,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
@@ -260,7 +264,7 @@ pub enum CatalogRoleAction {
 }
 impl CatalogAction for CatalogRoleAction {}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
@@ -326,7 +330,7 @@ impl CatalogWarehouseAction {
 }
 impl CatalogAction for CatalogWarehouseAction {}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
@@ -395,7 +399,7 @@ impl CatalogNamespaceAction {
 }
 impl CatalogAction for CatalogNamespaceAction {}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
@@ -444,7 +448,7 @@ impl CatalogTableAction {
 }
 impl CatalogAction for CatalogTableAction {}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount, Valuable)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
 #[serde(rename_all = "snake_case", tag = "action")]

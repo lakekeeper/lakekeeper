@@ -87,7 +87,7 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "acda05d67eb0bb304ba2f86e135c9ecb6caf793e", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "c440a001488a4a5606bef349f46c5e5b7cc41bd9", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",
@@ -100,7 +100,7 @@ jwks_client_rs = { version = "0.5.1", default-features = false, features = [
 ] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { version = "0.3.1", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "ee506ed", features = ["kubernetes", "axum", "rustls-tls", "valuable"] }
 maplit = "1.0.2"
 md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }

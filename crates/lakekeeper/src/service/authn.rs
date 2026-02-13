@@ -16,6 +16,7 @@ use http::{HeaderMap, StatusCode};
 use iceberg_ext::catalog::rest::ErrorModel;
 use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
 use serde::{Deserialize, Serialize};
+use valuable::Valuable;
 
 use super::RoleId;
 use crate::{CONFIG, api};
@@ -67,7 +68,7 @@ pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authori
     pub events: EventDispatcher,
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Valuable)]
 pub struct UserId(Subject);
 
 pub type UserIdRef = std::sync::Arc<UserId>;

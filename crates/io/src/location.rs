@@ -1,6 +1,8 @@
 use std::str::{FromStr, RMatchIndices};
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+use valuable::Valuable;
+
+#[derive(Debug, Eq, PartialEq, Clone, Valuable)]
 #[allow(clippy::struct_field_names)]
 pub struct Location {
     full_location: String,

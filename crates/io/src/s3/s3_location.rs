@@ -1,5 +1,7 @@
 use std::str::FromStr;
 
+use valuable::Valuable;
+
 use crate::{Location, error::InvalidLocationError, s3::S3_CUSTOM_SCHEMES};
 
 #[derive(Debug, thiserror::Error)]
@@ -9,7 +11,8 @@ pub struct InvalidBucketName {
     pub bucket: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Valuable)]
+#[valuable(transparent)]
 pub struct S3Location {
     location: Location,
 }

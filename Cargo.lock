@@ -3218,7 +3218,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=acda05d67eb0bb304ba2f86e135c9ecb6caf793e#acda05d67eb0bb304ba2f86e135c9ecb6caf793e"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=c440a001488a4a5606bef349f46c5e5b7cc41bd9#c440a001488a4a5606bef349f46c5e5b7cc41bd9"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3267,6 +3267,7 @@ dependencies = [
  "typed-builder 0.20.1",
  "url",
  "uuid",
+ "valuable",
  "zstd",
 ]
 
@@ -3936,6 +3937,7 @@ dependencies = [
  "typed-builder 0.23.2",
  "url",
  "uuid",
+ "valuable",
  "veil",
 ]
 
@@ -4096,8 +4098,7 @@ dependencies = [
 [[package]]
 name = "limes"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c491517894ddfd5c53c41d9b66d64b5b0b071bdee0aefc3d5dcb63e9f14b8c"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=ee506ed#ee506ed5462f6377c3297a4e066d5392487766e0"
 dependencies = [
  "axum",
  "axum-extra",
@@ -4114,6 +4115,7 @@ dependencies = [
  "trait-variant",
  "typed-builder 0.23.2",
  "url",
+ "valuable",
 ]
 
 [[package]]
@@ -7755,6 +7757,20 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+dependencies = [
+ "valuable-derive",
+]
+
+[[package]]
+name = "valuable-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e3a32a9bcc0f6c6ccfd5b27bcf298c58e753bcc9eeff268157a303393183a6d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.112",
+]
 
 [[package]]
 name = "vaultrs"
