@@ -657,6 +657,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
 
+        // Update cache synchronously to ensure subsequent requests see the updated protection status
+        crate::service::warehouse_cache_insert(resolved_warehouse.clone()).await;
+
         event_ctx.emit_warehouse_protection_set(protection, resolved_warehouse.clone());
 
         Ok(ProtectionResponse {
@@ -708,6 +711,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
+        // Update cache synchronously to ensure subsequent requests see the renamed warehouse
+        crate::service::warehouse_cache_insert(updated_warehouse.clone()).await;
+
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
         Ok((*updated_warehouse).clone().into())
@@ -751,6 +757,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+
+        // Update cache synchronously to ensure subsequent requests see the updated delete profile
+        crate::service::warehouse_cache_insert(updated_warehouse.clone()).await;
 
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
@@ -929,6 +938,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+
+        // Update cache synchronously to ensure subsequent requests see the updated storage
+        crate::service::warehouse_cache_insert(updated_warehouse.clone()).await;
 
         event_ctx.emit_warehouse_storage_updated(request_for_event, updated_warehouse.clone());
 

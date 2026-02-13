@@ -679,6 +679,9 @@ async fn test_cache_invalidation_on_api_set_protection(pool: PgPool) {
     .await
     .unwrap();
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     // Get from cache - should have updated protection
     let namespace_after = PostgresBackend::get_namespace(
         warehouse_resp.warehouse_id,
@@ -701,6 +704,9 @@ async fn test_cache_invalidation_on_api_set_protection(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let namespace_final = PostgresBackend::get_namespace(
         warehouse_resp.warehouse_id,

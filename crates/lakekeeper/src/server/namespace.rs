@@ -557,6 +557,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .await?;
         t.commit().await?;
 
+        // Update cache synchronously to ensure subsequent requests see the updated properties
+        crate::service::namespace_cache_insert(updated_namespace.clone()).await;
+
         event_ctx.emit_namespace_properties_updated_async(updated_namespace, Arc::new(r.clone()));
 
         Ok(r)
@@ -617,6 +620,9 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         // commit before starting the purge tasks so that we cannot end in the situation where
         // data is deleted but the transaction is not committed, meaning dangling pointers.
         t.commit().await?;
+
+        // Invalidate cache synchronously to ensure subsequent requests see the deletion
+        crate::service::invalidate_namespace_cache(namespace_id).await;
 
         // namespace is gone from catalog, we should not return an error to the client if we fail to
         // delete it from the authorizer.
