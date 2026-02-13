@@ -22,7 +22,7 @@ use crate::{
         },
         events::{
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
-            CloudEventsPublisherBackgroundTask, EventDispatcher,
+            CloudEventsPublisherBackgroundTask, EventDispatcher, audit::AuditEventListener,
         },
         health::ServiceHealthProvider,
         tasks::TaskQueueRegistry,
@@ -383,6 +383,12 @@ async fn serve_inner<
         ));
     } else {
         tracing::info!("Namespace cache is disabled");
+    }
+    if CONFIG.audit.tracing.enabled {
+        tracing::info!("Audit tracing is enabled, registering audit event listener");
+        dispatcher.append(Arc::new(AuditEventListener));
+    } else {
+        tracing::info!("Audit tracing is disabled");
     }
 
     // Task queues

@@ -27,7 +27,14 @@ pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum_macros::Display, Valuable
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum_macros::Display,
+    Valuable,
 )]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum Actor {

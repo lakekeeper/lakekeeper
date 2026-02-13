@@ -265,6 +265,9 @@ pub struct DynAppConfig {
     #[serde(default)]
     pub(crate) cache: Cache,
 
+    // ------------- Audit logging -------------
+    pub(crate) audit: AuditConfig,
+
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
 
@@ -446,6 +449,16 @@ pub struct KV2Config {
     pub secret_mount: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct AuditConfig {
+    pub tracing: AuditTracingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct AuditTracingConfig {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -605,6 +618,9 @@ impl Default for DynAppConfig {
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
             max_request_time: Duration::from_secs(30),
+            audit: AuditConfig {
+                tracing: AuditTracingConfig { enabled: false },
+            },
         }
     }
 }
