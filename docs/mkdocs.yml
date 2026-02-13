@@ -15,6 +15,7 @@ nav:
       - storage.md
       - authentication.md
       - authorization.md
+      - audit-logging.md
       - opa.md
       - table-maintenance.md
       - production.md
