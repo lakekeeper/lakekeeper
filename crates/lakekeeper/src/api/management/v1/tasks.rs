@@ -765,7 +765,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             catalog_state.clone(),
             event_ctx.request_metadata(),
             &query,
-            event_ctx.user_provided_entity().clone(),
+            *event_ctx.user_provided_entity(),
         )
         .await;
 
@@ -781,7 +781,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ControlTaskAction::Cancel => {
                 if !event_ctx.resolved().is_empty() {
                     C::clear_tabular_deleted_at(
-                        &event_ctx.resolved(),
+                        event_ctx.resolved(),
                         warehouse_id,
                         t.transaction(),
                     )
@@ -830,7 +830,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
 
-        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
         let project_id = event_ctx.user_provided_entity().clone();
@@ -869,7 +869,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogProjectAction::GetProjectTasks,
             )
             .await;
-        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
         let project_id = event_ctx.user_provided_entity().clone();
@@ -942,7 +942,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
 
-        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         let project_id = event_ctx.user_provided_entity().clone();
 
@@ -1135,7 +1135,7 @@ async fn check_get_task_details_authorization<A: Authorizer, C: CatalogStore>(
     if !authz_get_all_warehouse {
         authorize_get_task_details::<A, C>(
             catalog_state,
-            &authorizer,
+            authorizer,
             event_ctx.request_metadata(),
             &warehouse,
             &task_details,
@@ -1254,7 +1254,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 &tabular.view_ident.namespace,
             )),
             ResolvedTaskEntity::Warehouse(warehouse_id) => {
-                Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id.clone()).into())
+                Err(AuthZCannotUseWarehouseId::new_access_denied(*warehouse_id).into())
             }
             ResolvedTaskEntity::Project => Err(AuthZError::ProjectIdMissing(ProjectIdMissing)),
         })
@@ -1325,7 +1325,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
 
     let [authz_can_use, authz_control_all] = authorizer
         .are_allowed_warehouse_actions_arr(
-            &request_metadata,
+            request_metadata,
             None,
             &[
                 (&warehouse, CatalogWarehouseAction::Use),

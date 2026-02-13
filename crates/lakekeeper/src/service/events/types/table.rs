@@ -81,7 +81,7 @@ pub type TableEventContext =
     APIEventContext<UserProvidedTable, Resolved<ResolvedTable>, CatalogTableAction>;
 
 impl APIEventContext<UserProvidedTable, Resolved<ResolvedTable>, CatalogTableAction, AuthzChecked> {
-    /// Emit table_created event using context fields
+    /// Emit `table_created` event using context fields
     pub(crate) fn emit_table_loaded_async(
         self,
         metadata: TableMetadataRef,

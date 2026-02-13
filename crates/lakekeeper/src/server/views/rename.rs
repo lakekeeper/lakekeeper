@@ -13,9 +13,9 @@ use crate::{
         CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result, SecretStore, State,
         TabularId, TabularListFlags, Transaction, ViewInfo,
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogViewAction, AuthZError,
-            RequireViewActionError, refresh_warehouse_and_namespace_if_needed,
+            AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
+            refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedView},

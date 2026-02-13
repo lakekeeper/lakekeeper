@@ -51,7 +51,8 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         row.warehouse_id,
         row.entity_id,
         row.entity_name.clone(),
-    ).map_err(ErrorModel::from)?;
+    )
+    .map_err(ErrorModel::from)?;
 
     let status = task_status_from_db(row.task_status, row.task_log_status)?;
 

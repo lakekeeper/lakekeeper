@@ -863,7 +863,7 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &warehouse_id.to_openfga(),
         )
         .await;
@@ -910,7 +910,7 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &warehouse_id.to_openfga(),
         )
         .await;
@@ -955,7 +955,7 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &namespace_id.to_openfga(),
         )
         .await;
@@ -998,7 +998,7 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &namespace_id.to_openfga(),
         )
         .await;
@@ -1377,7 +1377,7 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &role_id.to_openfga(),
         )
         .await;
@@ -1421,7 +1421,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &server_id,
         )
         .await;
@@ -1470,12 +1470,12 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &project_id_openfga,
         )
         .await;
 
-    let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+    let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
     let assignments = get_relations(authorizer, query.relations, &project_id_openfga)
         .await
@@ -1528,12 +1528,12 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &project_id_openfga,
         )
         .await;
 
-    let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+    let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
     let assignments = get_relations(authorizer, query.relations, &project_id_openfga)
         .await
@@ -1578,11 +1578,7 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     );
 
     let authz_result = authorizer
-        .require_action(
-            event_ctx.request_metadata(),
-            event_ctx.action().clone(),
-            &object,
-        )
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -1627,11 +1623,7 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     );
 
     let authz_result = authorizer
-        .require_action(
-            event_ctx.request_metadata(),
-            event_ctx.action().clone(),
-            &object,
-        )
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -1678,11 +1670,7 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     );
 
     let authz_result = authorizer
-        .require_action(
-            event_ctx.request_metadata(),
-            event_ctx.action().clone(),
-            &object,
-        )
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -1729,11 +1717,7 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     );
 
     let authz_result = authorizer
-        .require_action(
-            event_ctx.request_metadata(),
-            event_ctx.action().clone(),
-            &object,
-        )
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;

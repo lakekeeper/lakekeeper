@@ -195,18 +195,10 @@ impl AuthorizationFailureSource for OpenFGAError {
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         match self {
-            OpenFGAError::NoProjectId => AuthorizationFailureReason::InvalidRequestData,
-            OpenFGAError::AuthenticationRequired => AuthorizationFailureReason::InvalidRequestData,
             OpenFGAError::Unauthorized { .. } => AuthorizationFailureReason::ActionForbidden,
-            OpenFGAError::SelfAssignment { .. } => AuthorizationFailureReason::InvalidRequestData,
-            OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
-                AuthorizationFailureReason::InvalidRequestData
-            }
             OpenFGAError::CannotDeleteTupleNotFound(_) => {
                 AuthorizationFailureReason::ResourceNotFound
             }
-            OpenFGAError::UnexpectedEntity { .. } => AuthorizationFailureReason::InvalidRequestData,
-            OpenFGAError::UnknownType(_) => AuthorizationFailureReason::InvalidRequestData,
             OpenFGAError::InternalClientError(_)
             | OpenFGAError::UnexpectedCorrelationId(_)
             | OpenFGAError::BatchCheckError(_)
@@ -215,9 +207,15 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::StoreNotFound(_) => {
                 AuthorizationFailureReason::InternalAuthorizationError
             }
-            OpenFGAError::InvalidEntity(_)
+            OpenFGAError::NoProjectId
+            | OpenFGAError::AuthenticationRequired
+            | OpenFGAError::SelfAssignment { .. }
+            | OpenFGAError::UnexpectedEntity { .. }
+            | OpenFGAError::UnknownType(_)
+            | OpenFGAError::InvalidEntity(_)
             | OpenFGAError::InvalidQuery(_)
-            | OpenFGAError::GrantRoleWithAssumedRole => {
+            | OpenFGAError::GrantRoleWithAssumedRole
+            | OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
                 AuthorizationFailureReason::InvalidRequestData
             }
         }

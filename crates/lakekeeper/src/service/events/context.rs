@@ -101,7 +101,7 @@ pub struct ResolvedView {
 
 // ── User-provided entity types ──────────────────────────────────────────────
 
-/// Macro to implement UserProvidedEntity trait with automatic conversion to enum
+/// Macro to implement `UserProvidedEntity` trait with automatic conversion to enum
 macro_rules! impl_user_provided_entity {
     ($ty:ty => $variant:ident) => {
         impl UserProvidedEntity for $ty {}
@@ -195,7 +195,6 @@ impl_user_provided_entity!(UserIdRef => UserId);
 impl_user_provided_entity!(Arc<Vec<CatalogActionCheckItem>> => CatalogCheckItems);
 impl_user_provided_entity!(NamespaceId => NamespaceId);
 
-
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]
 pub struct ServerActionSearchUsers {}
@@ -250,7 +249,7 @@ impl APIEventAction for TabularAction {
         if tbl_str == view_str {
             tbl_str
         } else {
-            format!("{}, {}", tbl_str, view_str)
+            format!("{tbl_str}, {view_str}")
         }
     }
 }
@@ -259,10 +258,10 @@ impl APIEventAction for Vec<CatalogTableAction> {
     fn event_action_str(&self) -> String {
         let actions_str = self
             .iter()
-            .map(|a| a.as_log_str())
+            .map(super::super::authz::CatalogAction::as_log_str)
             .collect::<Vec<_>>()
             .join(", ");
-        format!("Batch[{}]", actions_str)
+        format!("Batch[{actions_str}]")
     }
 }
 
@@ -624,6 +623,8 @@ where
 
 // ── Event emission ──────────────────────────────────────────────────────────
 
+pub type CheckedAPIEventContext<P, R, A, T> = (APIEventContext<P, R, A, AuthzChecked>, T);
+
 impl<R: ResolutionState, A: APIEventAction, P: UserProvidedEntity>
     APIEventContext<P, R, A, AuthzUnchecked>
 {
@@ -634,7 +635,7 @@ impl<R: ResolutionState, A: APIEventAction, P: UserProvidedEntity>
     pub fn emit_authz<T, E>(
         self,
         result: Result<T, E>,
-    ) -> Result<(APIEventContext<P, R, A, AuthzChecked>, T), ErrorModel>
+    ) -> Result<CheckedAPIEventContext<P, R, A, T>, ErrorModel>
     where
         E: AuthorizationFailureSource,
     {

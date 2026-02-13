@@ -11,11 +11,13 @@ use crate::{
     },
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        DatabaseIntegrityError, TableId, ViewId, task_configs::TaskQueueConfigFilter, tasks::{
+        DatabaseIntegrityError, TableId, ViewId,
+        task_configs::TaskQueueConfigFilter,
+        tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
             TaskQueueName, WarehouseTaskEntityId,
-        }
+        },
     },
 };
 
@@ -86,9 +88,7 @@ fn task_entity_from_db(
                 .map(WarehouseId::from)?;
 
             let entity_id = entity_id.ok_or_else(|| {
-                DatabaseIntegrityError::new(
-                        "EntityId is missing for table or view scoped task.",
-                )
+                DatabaseIntegrityError::new("EntityId is missing for table or view scoped task.")
             })?;
 
             let entity_id = match entity_type {
@@ -102,9 +102,7 @@ fn task_entity_from_db(
             };
 
             let entity_name = entity_name.ok_or_else(|| {
-                DatabaseIntegrityError::new(
-                        "Entity name is missing for table or view scoped task.",
-                )
+                DatabaseIntegrityError::new("Entity name is missing for table or view scoped task.")
             })?;
 
             Ok(TaskEntity::EntityInWarehouse {
@@ -117,9 +115,7 @@ fn task_entity_from_db(
         TaskEntityTypeDB::Warehouse => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    DatabaseIntegrityError::new(
-                        "WarehouseId is missing for warehouse scoped task.",
-                    )
+                    DatabaseIntegrityError::new("WarehouseId is missing for warehouse scoped task.")
                 })
                 .map(WarehouseId::from)?;
             Ok(TaskEntity::Warehouse { warehouse_id })
@@ -428,7 +424,8 @@ pub(crate) async fn pick_task(
             task.warehouse_id,
             task.entity_id,
             task.entity_name.clone(),
-        ).map_err(ErrorModel::from)?;
+        )
+        .map_err(ErrorModel::from)?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
                 project_id,

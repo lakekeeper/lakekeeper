@@ -174,12 +174,12 @@ async fn check_warehouse(
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            event_ctx.action().clone(),
+            *event_ctx.action(),
             &warehouse_id.to_openfga(),
         )
         .await;
 
-    let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+    let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
     Ok((
         action.to_openfga().to_string(),
@@ -221,7 +221,7 @@ async fn check_project(
             &project_id_openfga,
         )
         .await;
-    let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+    let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
     Ok((action.to_openfga().to_string(), project_id_openfga))
 }
 
@@ -244,11 +244,11 @@ async fn check_server(
         let authz_result = authorizer
             .require_action(
                 event_ctx.request_metadata(),
-                event_ctx.action().clone(),
+                *event_ctx.action(),
                 &openfga_server,
             )
             .await;
-        let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
     }
 
     Ok((action.to_openfga().to_string(), openfga_server))

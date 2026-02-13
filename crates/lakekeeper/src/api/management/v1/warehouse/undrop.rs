@@ -8,10 +8,9 @@ use crate::{
         ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo, WarehouseStatus,
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZTableOps, AuthZWarehouseActionForbidden, Authorizer,
-            AuthzWarehouseOps, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            AuthZError, RequireTableActionError,
-            RequireWarehouseActionError,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZTableOps, AuthZWarehouseActionForbidden,
+            Authorizer, AuthzWarehouseOps, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, RequireTableActionError, RequireWarehouseActionError,
         },
         require_namespace_for_tabular,
     },
@@ -43,7 +42,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
     let warehouse_id = warehouse.warehouse_id;
     let tabulars = C::get_tabular_infos_by_id(
         warehouse_id,
-        &request,
+        request,
         TabularListFlags {
             include_active: true,
             include_deleted: true,

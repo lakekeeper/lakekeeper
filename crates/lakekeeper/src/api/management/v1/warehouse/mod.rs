@@ -351,11 +351,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity(),
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
 
-        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
         let request_metadata = event_ctx.request_metadata();
         let project_id = event_ctx.user_provided_entity();
 
@@ -411,7 +411,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let resolved_warehouse = C::create_warehouse(
             warehouse_name,
-            &project_id,
+            project_id,
             storage_profile,
             delete_profile,
             secret_id,
@@ -420,9 +420,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         authorizer
             .create_warehouse(
-                &request_metadata,
+                request_metadata,
                 resolved_warehouse.warehouse_id,
-                &project_id,
+                project_id,
             )
             .await?;
 
@@ -455,10 +455,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity(),
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
-        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let warehouses = C::list_warehouses(

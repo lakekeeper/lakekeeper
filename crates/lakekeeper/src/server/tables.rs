@@ -366,13 +366,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 auth_needs_delete = true;
                 // Only create authorization for the new table if it's different
                 authorizer
-                    .create_table(&request_metadata, warehouse_id, tabular_id, namespace_id)
+                    .create_table(request_metadata, warehouse_id, tabular_id, namespace_id)
                     .await?;
             }
         } else {
             // No previous table, need to create authorization
             authorizer
-                .create_table(&request_metadata, warehouse_id, tabular_id, namespace_id)
+                .create_table(request_metadata, warehouse_id, tabular_id, namespace_id)
                 .await?;
         }
 
@@ -1046,7 +1046,7 @@ struct CommitAuthorizationResult<'a> {
 async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
     authorizer: A,
     warehouse_id: WarehouseId,
-    identifiers: &Vec<TableIdent>,
+    identifiers: &[TableIdent],
     actions: &'a Vec<CatalogTableAction>,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,

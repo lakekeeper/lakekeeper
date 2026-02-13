@@ -11,10 +11,9 @@ use crate::{
         ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogViewAction,
-            AuthZError, MustUse, UserOrRole,
+            CannotInspectPermissions, CatalogAction, CatalogViewAction, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -296,10 +295,7 @@ pub trait AuthZViewOps: Authorizer {
         view_flags: TabularListFlags,
         action: impl Into<Self::ViewAction> + Send,
         catalog_state: C::State,
-    ) -> Result<
-        (Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo),
-        AuthZError,
-    >
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError>
     where
         C: CatalogStore,
     {
@@ -514,10 +510,7 @@ pub(crate) async fn fetch_warehouse_namespace_view_by_id<C, A>(
     user_provided_view: ViewId,
     table_flags: TabularListFlags,
     catalog_state: C::State,
-) -> Result<
-    (Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo),
-    AuthZError,
->
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError>
 where
     C: CatalogStore,
     A: AuthzWarehouseOps + AuthzNamespaceOps,

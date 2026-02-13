@@ -67,7 +67,7 @@ pub mod v1 {
         WarehouseStatisticsResponse,
     };
 
-    /// Macro to create an Arc wrapper for a response type that implements IntoResponse.
+    /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
     /// This is useful for caching responses that are expensive to compute.
     ///
     /// # Example

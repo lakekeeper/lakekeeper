@@ -94,7 +94,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     });
 
     // ------------------- ETAG CHECK -------------------
-    let etag = get_etag(&*event_ctx.resolved().table);
+    let etag = get_etag(&event_ctx.resolved().table);
     if let Some(etag_value) = etag
         .as_ref()
         .map(|e| e.as_str().trim_matches('"'))
@@ -138,7 +138,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             .require_warehouse_presence(warehouse_id, warehouse)
             .map_err(authz_to_error_no_audit)?;
         event_ctx.resolved_mut().warehouse = fresh_warehouse;
-    };
+    }
     let warehouse = &event_ctx.resolved().warehouse;
 
     let table_location =

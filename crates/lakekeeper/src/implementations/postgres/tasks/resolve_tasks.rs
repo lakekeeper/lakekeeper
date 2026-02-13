@@ -3,9 +3,11 @@ use crate::{
     ProjectId,
     implementations::postgres::{dbutils::DBErrorHandler, tasks::task_entity_from_db},
     service::{
-        DatabaseIntegrityError, ResolveTasksError, ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec, tasks::{
+        DatabaseIntegrityError, ResolveTasksError, ResolvedTask, TableNamed, ViewNamed,
+        build_tabular_ident_from_vec,
+        tasks::{
             ResolvedTaskEntity, TaskId, TaskQueueName, TaskResolveScope, WarehouseTaskEntityId,
-        }
+        },
     },
 };
 
@@ -128,7 +130,7 @@ where
                     entity_id,
                     entity_name,
                 } => {
-                    let ident = build_tabular_ident_from_vec(&entity_name).map_err(|e| 
+                    let ident = build_tabular_ident_from_vec(&entity_name).map_err(|e|
                         DatabaseIntegrityError::new("Found invalid tabular identifier for some of the requested tasks in DB").append_detail(e.to_string())
                     )?;
                     match entity_id {

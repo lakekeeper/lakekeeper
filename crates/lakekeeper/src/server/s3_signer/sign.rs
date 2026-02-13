@@ -21,9 +21,8 @@ use crate::{
         GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
         TabularListFlags,
         authz::{
-            AuthZCannotSeeTableLocation, AuthZTableOps, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogTableAction, CatalogWarehouseAction,
-            AuthZError, RequireTableActionError,
+            AuthZCannotSeeTableLocation, AuthZError, AuthZTableOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogTableAction, CatalogWarehouseAction, RequireTableActionError,
         },
         events::{APIEventContext, context::authz_to_error_no_audit},
         secrets::SecretStore,

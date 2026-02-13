@@ -17,7 +17,10 @@ use crate::{
         ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
         TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
-            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction, CatalogTableAction, MustUse, UserOrRole
+            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogTableAction, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,

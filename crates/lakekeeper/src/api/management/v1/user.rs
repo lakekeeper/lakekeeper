@@ -390,11 +390,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_user_action(
-                event_ctx.request_metadata(),
-                &user_id,
-                event_ctx.action().clone(),
-            )
+            .require_user_action(event_ctx.request_metadata(), &user_id, *event_ctx.action())
             .await;
         event_ctx.emit_authz(authz_result)?;
 
@@ -436,11 +432,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_server_action(
-                event_ctx.request_metadata(),
-                None,
-                event_ctx.action().clone(),
-            )
+            .require_server_action(event_ctx.request_metadata(), None, *event_ctx.action())
             .await;
         event_ctx.emit_authz(authz_result)?;
 
@@ -478,11 +470,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_user_action(
-                event_ctx.request_metadata(),
-                &user_id,
-                event_ctx.action().clone(),
-            )
+            .require_user_action(event_ctx.request_metadata(), &user_id, *event_ctx.action())
             .await;
         event_ctx.emit_authz(authz_result)?;
 
@@ -523,13 +511,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_user_action(
-                event_ctx.request_metadata(),
-                &user_id,
-                event_ctx.action().clone(),
-            )
+            .require_user_action(event_ctx.request_metadata(), &user_id, *event_ctx.action())
             .await;
-        let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;

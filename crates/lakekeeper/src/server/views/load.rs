@@ -17,9 +17,8 @@ use crate::{
         CatalogWarehouseOps, InternalParseLocationError, ResolvedWarehouse, Result, SecretStore,
         State, TabularListFlags, Transaction, ViewInfo,
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogViewAction, AuthZError,
-            refresh_warehouse_and_namespace_if_needed,
+            AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogViewAction, refresh_warehouse_and_namespace_if_needed,
         },
         events::{APIEventContext, context::ResolvedView},
         storage::StoragePermissions,
@@ -129,10 +128,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     view: &TableIdent,
     authorizer: &A,
     state: C::State,
-) -> Result<
-    (Arc<ResolvedWarehouse>, ViewInfo, Option<StoragePermissions>),
-    AuthZError,
-> {
+) -> Result<(Arc<ResolvedWarehouse>, ViewInfo, Option<StoragePermissions>), AuthZError> {
     let (warehouse, namespace, view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, view.namespace.clone(), state.clone()),
@@ -160,7 +156,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
 
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
-            &request_metadata,
+            request_metadata,
             None,
             &warehouse,
             &namespace,

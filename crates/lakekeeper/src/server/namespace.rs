@@ -90,7 +90,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let authz_result = list::authorize_namespace_list::<C, A>(
             authorizer.clone(),
-            &event_ctx.request_metadata(),
+            event_ctx.request_metadata(),
             warehouse_id,
             parent.as_ref(),
             state.v1_state.catalog.clone(),
@@ -138,7 +138,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     } else {
                         authorizer
                             .are_allowed_namespace_actions_vec(
-                                &request_metadata,
+                                request_metadata,
                                 None,
                                 &warehouse,
                                 &parent_namespaces,
@@ -233,7 +233,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Arc::new(properties.clone().unwrap_or_default().into_iter().collect());
 
         let event_ctx = create_namespace_or_warehouse_event_context(
-            namespace.parent().as_ref().cloned(),
+            namespace.parent().clone(),
             request_metadata,
             state.v1_state.events,
             warehouse_id,
@@ -1265,7 +1265,7 @@ mod tests {
         let first_six_items: HashSet<String, RandomState> = first_six
             .namespaces
             .iter()
-            .map(|ns| ns.to_url_string())
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
         for i in 0..6 {
             assert!(first_six_items.contains(&format!("ns-{i}")));
@@ -1288,7 +1288,7 @@ mod tests {
         let next_four_items: HashSet<String, RandomState> = next_four
             .namespaces
             .iter()
-            .map(|ns| ns.to_url_string())
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
         for i in 6..10 {
             assert!(next_four_items.contains(&format!("ns-{i}")));
@@ -1321,7 +1321,7 @@ mod tests {
         let page_items: HashSet<String, RandomState> = page
             .namespaces
             .iter()
-            .map(|ns| ns.to_url_string())
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
 
         for i in 0..5 {
@@ -1347,7 +1347,7 @@ mod tests {
         let next_page_items: HashSet<String, RandomState> = next_page
             .namespaces
             .iter()
-            .map(|ns| ns.to_url_string())
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
 
         for i in 7..10 {

@@ -1094,8 +1094,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
             else {
                 // Namespace not found by ID (shouldn't happen if lookup succeeded)
                 return Err(
-                    RequireNamespaceActionError::from(AuthorizationBackendUnavailable::new(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    RequireNamespaceActionError::from(AuthorizationBackendUnavailable::new(Box::new(std::io::Error::other(
                         format!(
                             "Could not find namespace by ID {namespace_id} after successful lookup by ident '{namespace_ident}'"
                         ),

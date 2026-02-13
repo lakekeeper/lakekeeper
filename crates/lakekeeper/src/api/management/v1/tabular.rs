@@ -158,7 +158,7 @@ async fn authorize_search_tabular<C: CatalogStore, A: Authorizer>(
 
     let [authz_can_use, authz_list_all] = authorizer
         .are_allowed_warehouse_actions_arr(
-            &request_metadata,
+            request_metadata,
             None,
             &[
                 (&warehouse, CatalogWarehouseAction::Use),

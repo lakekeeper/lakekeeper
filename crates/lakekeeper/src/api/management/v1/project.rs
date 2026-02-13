@@ -124,10 +124,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        let action = event_ctx.action().clone();
+        let action = *event_ctx.action();
 
         let authz_result = authorizer
-            .require_server_action(event_ctx.request_metadata(), None, action.clone())
+            .require_server_action(event_ctx.request_metadata(), None, action)
             .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
@@ -165,7 +165,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         t.commit().await?;
 
         // Emit success event
-        let _ = event_ctx.emit_project_created(project_id.clone(), project_name.clone());
+        let () = event_ctx.emit_project_created(project_id.clone(), project_name.clone());
 
         Ok(CreateProjectResponse { project_id })
     }
@@ -190,7 +190,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 &project_id,
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -223,7 +223,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 &project_id,
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -265,7 +265,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 &project_id,
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -393,7 +393,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_project_action(
                         event_ctx.request_metadata(),
                         &project_id,
-                        event_ctx.action().clone(),
+                        *event_ctx.action(),
                     )
                     .await;
                 let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -437,7 +437,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity(),
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -467,7 +467,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity(),
-                event_ctx.action().clone(),
+                *event_ctx.action(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;

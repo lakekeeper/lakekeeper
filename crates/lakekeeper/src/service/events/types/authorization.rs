@@ -21,6 +21,7 @@ pub struct AuthorizationError {
 }
 
 impl AuthorizationError {
+    #[must_use]
     pub fn clone_from_error_model(error_model: &ErrorModel) -> Self {
         Self {
             r#type: error_model.r#type.clone(),
@@ -33,7 +34,7 @@ impl AuthorizationError {
 
 // ===== Authorization Events =====
 
-pub trait ThreadSafeAuthorizationEvent : Valuable + Send + Sync + std::fmt::Debug {}
+pub trait ThreadSafeAuthorizationEvent: Valuable + Send + Sync + std::fmt::Debug {}
 
 /// Event emitted when an authorization check fails during request processing.
 ///
@@ -47,7 +48,7 @@ pub struct AuthorizationFailedEvent {
     /// The user-provided entity that was being accessed
     pub entity: Arc<dyn ThreadSafeAuthorizationEvent>,
 
-    /// The action that was attempted, serialized from CatalogAction
+    /// The action that was attempted, serialized from `CatalogAction`
     pub action: String,
 
     /// Why the authorization failed
@@ -72,7 +73,7 @@ pub struct AuthorizationSucceededEvent {
     /// The user-provided entity that was being accessed
     pub entity: Arc<dyn ThreadSafeAuthorizationEvent>,
 
-    /// The action that was attempted, serialized from CatalogAction
+    /// The action that was attempted, serialized from `CatalogAction`
     pub action: String,
 
     /// Any additional context that may be useful for debugging or auditing
@@ -83,8 +84,8 @@ pub struct AuthorizationSucceededEvent {
 
 /// Reason why an authorization check failed
 ///
-/// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both ResourceNotFound
-/// and CannotSeeResource), but audit logs are concrete for debugging and compliance.
+/// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both `ResourceNotFound`
+/// and `CannotSeeResource`), but audit logs are concrete for debugging and compliance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthorizationFailureReason {
     /// Action is not allowed for the user

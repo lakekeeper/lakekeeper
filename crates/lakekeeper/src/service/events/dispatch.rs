@@ -3,8 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use super::types;
 use futures::TryFutureExt;
+
+use super::types;
 
 /// Macro to dispatch events to all listeners with error logging.
 ///

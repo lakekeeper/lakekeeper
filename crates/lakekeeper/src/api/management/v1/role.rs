@@ -293,7 +293,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await;
 
         let authz_result = authorizer
-            .require_role_action(&event_ctx.request_metadata(), role, CatalogRoleAction::Read)
+            .require_role_action(event_ctx.request_metadata(), role, CatalogRoleAction::Read)
             .await;
 
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;

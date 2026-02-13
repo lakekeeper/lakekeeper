@@ -71,7 +71,7 @@ pub type ViewEventContext =
     APIEventContext<UserProvidedView, Resolved<ResolvedView>, CatalogViewAction>;
 
 impl APIEventContext<UserProvidedView, Resolved<ResolvedView>, CatalogViewAction, AuthzChecked> {
-    /// Emit view_loaded event using context fields
+    /// Emit `view_loaded` event using context fields
     pub(crate) fn emit_view_loaded_async(
         self,
         metadata: ViewMetadataRef,

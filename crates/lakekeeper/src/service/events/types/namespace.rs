@@ -226,7 +226,7 @@ impl
         });
     }
 
-    /// Emit table_created event
+    /// Emit `table_created` event
     pub(crate) fn emit_table_created_async(
         self,
         metadata: TableMetadataRef,

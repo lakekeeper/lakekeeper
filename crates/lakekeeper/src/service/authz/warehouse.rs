@@ -45,7 +45,9 @@ impl AuthorizationFailureSource for AuthZCannotListAllTasks {
     fn into_error_model(self) -> ErrorModel {
         let AuthZCannotListAllTasks { warehouse_id } = self;
         ErrorModel::forbidden(
-            format!("Not authorized to see all tasks in Warehouse with id {warehouse_id}. Add the `entity` filter to query tasks for specific entities."),
+            format!(
+                "Not authorized to see all tasks in Warehouse with id {warehouse_id}. Add the `entity` filter to query tasks for specific entities."
+            ),
             "WarehouseListTasksForbidden",
             None,
         )
@@ -54,7 +56,6 @@ impl AuthorizationFailureSource for AuthZCannotListAllTasks {
         AuthorizationFailureReason::ActionForbidden
     }
 }
-
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZCannotUseWarehouseId {

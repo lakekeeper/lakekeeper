@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration};
-use iceberg_ext::catalog::rest::{ErrorModel};
+use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;

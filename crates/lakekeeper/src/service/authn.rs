@@ -1,4 +1,4 @@
-use std::{fmt::Debug};
+use std::fmt::Debug;
 
 #[cfg(feature = "router")]
 use axum::{
@@ -274,7 +274,7 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
             let event_ctx = APIEventContext::for_role(
                 std::sync::Arc::new(request_metadata.clone()),
                 state.events.clone(),
-                role_id.clone(),
+                role_id,
                 AssumeRoleAction,
             );
 

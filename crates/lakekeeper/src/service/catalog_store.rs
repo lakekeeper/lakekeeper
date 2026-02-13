@@ -1,6 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
