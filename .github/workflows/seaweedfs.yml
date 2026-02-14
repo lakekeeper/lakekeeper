@@ -86,15 +86,18 @@ jobs:
         shell: bash
         run: |
           for i in {1..60}; do
-            if curl -f -s http://127.0.0.1:8333 > /dev/null; then
-              echo "SeaweedFS S3 is healthy"
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8333)
+            if [ "$CODE" == "200" ] || [ "$CODE" == "403" ]; then
+              echo "SeaweedFS S3 is healthy (Code: $CODE)"
               exit 0
             else
-              echo "Waiting for SeaweedFS S3 to be healthy..."
+              echo "Waiting for SeaweedFS S3 to be healthy (Code: $CODE)..."
               sleep 1
             fi
           done
           echo "SeaweedFS S3 did not become healthy in time"
+          echo "=== Last Curl Output ==="
+          curl -v http://127.0.0.1:8333
           echo "=== Weed Logs ==="
           cat weed.log
           echo "=== Process List ==="
