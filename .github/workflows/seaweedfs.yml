@@ -85,8 +85,8 @@ jobs:
       - name: Wait for SeaweedFS S3 to be healthy
         shell: bash
         run: |
-          for i in {1..30}; do
-            if curl -I http://localhost:8333; then
+          for i in {1..60}; do
+            if curl -f -s http://localhost:8333 > /dev/null; then
               echo "SeaweedFS S3 is healthy"
               exit 0
             else
