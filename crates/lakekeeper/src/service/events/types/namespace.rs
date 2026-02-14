@@ -226,6 +226,22 @@ impl
         });
     }
 
+    pub(crate) fn emit_namespace_protection_set(
+        self,
+        requested_protected: bool,
+        updated_namespace: NamespaceWithParent,
+    ) {
+        let event = SetNamespaceProtectionEvent {
+            requested_protected,
+            updated_namespace,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.namespace_protection_set(event).await;
+        });
+    }
+
     /// Emit `table_created` event
     pub(crate) fn emit_table_created_async(
         self,

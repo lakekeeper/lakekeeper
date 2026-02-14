@@ -585,6 +585,9 @@ async fn test_set_warehouse_deletion_profile(pool: PgPool) {
         TabularDeleteProfile::Soft { .. }
     ));
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Verify the profile persisted
     let warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -672,7 +675,10 @@ async fn test_set_warehouse_protection(pool: PgPool) {
     .unwrap();
     assert!(updated_warehouse.protected);
 
-    // Protect warehouse
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Unprotect warehouse
     let updated_warehouse = ApiServer::set_warehouse_protection(
         warehouse_resp.warehouse_id,
         false,
@@ -682,6 +688,9 @@ async fn test_set_warehouse_protection(pool: PgPool) {
     .await
     .unwrap();
     assert!(!updated_warehouse.protected);
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
@@ -1159,6 +1168,9 @@ async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
     .await
     .unwrap();
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Get from cache - should have updated name
     let warehouse_after = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -1211,6 +1223,9 @@ async fn test_cache_invalidation_on_api_update_storage(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Get from cache - should have fresh data with updated_at timestamp changed
     let warehouse_after = PostgresBackend::get_warehouse_by_id(
@@ -1269,6 +1284,9 @@ async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Get from cache - should have updated profile
     let warehouse_after = PostgresBackend::get_warehouse_by_id(

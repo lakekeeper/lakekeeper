@@ -8,7 +8,7 @@ use crate::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, NamespaceId, SecretStore, State,
         Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
-        events::APIEventContext,
+        events::{APIEventContext, context::ResolvedNamespace},
     },
 };
 
@@ -50,7 +50,11 @@ where
                 state_catalog.clone(),
             )
             .await;
-        let (_event_ctx, (_warehouse, _namespace)) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(ResolvedNamespace {
+            warehouse,
+            namespace: namespace.namespace,
+        });
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state_catalog).await?;
@@ -66,6 +70,8 @@ where
         )
         .await?;
         t.commit().await?;
+
+        event_ctx.emit_namespace_protection_set(protected_request, status.clone());
 
         let protected = status.namespace.protected;
         let updated_at = status.namespace.updated_at;
