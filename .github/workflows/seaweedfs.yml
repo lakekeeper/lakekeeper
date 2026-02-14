@@ -79,7 +79,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: some_secret_key1
         run: |
           mkdir -p /tmp/weed-data
-          ./weed mini -dir=/tmp/weed-data -s3 &
+          ./weed mini -dir=/tmp/weed-data -s3 > weed.log 2>&1 &
           sleep 5
 
       - name: Wait for SeaweedFS S3 to be healthy
@@ -95,6 +95,12 @@ jobs:
             fi
           done
           echo "SeaweedFS S3 did not become healthy in time"
+          echo "=== Weed Logs ==="
+          cat weed.log
+          echo "=== Process List ==="
+          ps aux
+          echo "=== Open Ports ==="
+          netstat -tlnp
           exit 1
 
       - name: Create SeaweedFS Bucket
