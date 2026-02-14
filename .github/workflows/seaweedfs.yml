@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "manual-release-*"
+      - seaweedfs-workflow
   pull_request:
   workflow_dispatch:
 
