@@ -79,7 +79,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: some_secret_key1
         run: |
           mkdir -p /tmp/weed-data
-          ./weed mini -dir=/tmp/weed-data -s3 -ip 127.0.0.1 > weed.log 2>&1 &
+          ./weed mini -dir=/tmp/weed-data -s3 -ip 127.0.0.1 -v=3 > weed.log 2>&1 &
           sleep 5
 
       - name: Wait for SeaweedFS S3 to be healthy
