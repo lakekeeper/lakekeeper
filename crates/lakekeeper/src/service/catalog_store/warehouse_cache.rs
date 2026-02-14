@@ -94,7 +94,7 @@ async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
     }
 }
 
-pub async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
+pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
     if CONFIG.cache.warehouse.enabled {
         let warehouse_id = warehouse.warehouse_id;
         let project_id = warehouse.project_id.clone();

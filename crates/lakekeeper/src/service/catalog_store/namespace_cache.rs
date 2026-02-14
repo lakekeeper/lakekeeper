@@ -87,32 +87,16 @@ pub(crate) static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, Namespace
     });
 
 #[allow(dead_code)] // Not required for all features
-pub async fn invalidate_namespace_cache(namespace_id: NamespaceId) {
+async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     if CONFIG.cache.namespace.enabled {
         tracing::debug!("Invalidating namespace id {namespace_id} from cache");
-
-        // Get the namespace from cache before invalidating to also clear the ident-to-id mapping
-        if let Some(namespace) = NAMESPACE_CACHE.get(&namespace_id).await {
-            let cache_key = (
-                namespace.namespace.warehouse_id,
-                namespace_ident_to_cache_key(&namespace.namespace.namespace_ident),
-            );
-            tracing::debug!(
-                "Also invalidating ident-to-id cache for namespace {}",
-                namespace.namespace.namespace_ident
-            );
-            IDENT_TO_ID_CACHE.invalidate(&cache_key).await;
-        } else {
-            tracing::debug!("Namespace id {namespace_id} not found in cache during invalidation");
-        }
-
         NAMESPACE_CACHE.invalidate(&namespace_id).await;
         update_cache_size_metric();
     }
 }
 
 #[allow(dead_code)] // Only required for listeners which are behind a feature flag
-pub async fn namespace_cache_insert(namespace: NamespaceWithParent) {
+pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
     if CONFIG.cache.namespace.enabled {
         let namespace_id = namespace.namespace.namespace_id;
         let warehouse_id = namespace.namespace.warehouse_id;
@@ -217,7 +201,7 @@ async fn build_hierarchy_from_cache(namespace: &NamespaceWithParent) -> Option<N
                 current_namespace.namespace_ident(),
                 parent_cached.namespace.version
             );
-            invalidate_namespace_cache(namespace.namespace_id()).await;
+            namespace_cache_invalidate(namespace.namespace_id()).await;
             return None;
         }
 
@@ -231,7 +215,7 @@ async fn build_hierarchy_from_cache(namespace: &NamespaceWithParent) -> Option<N
                 current_namespace.namespace_ident(),
                 parent_cached.namespace_ident()
             );
-            invalidate_namespace_cache(namespace.namespace_id()).await;
+            namespace_cache_invalidate(namespace.namespace_id()).await;
             return None;
         }
 
@@ -307,7 +291,7 @@ impl EventListener for NamespaceCacheEventListener {
         } = event;
         // This is sufficient also for recursive drops, as the cache only supports loading the full
         // hierarchy, which breaks if any of the entries in the path are missing.
-        invalidate_namespace_cache(namespace.namespace_id()).await;
+        namespace_cache_invalidate(namespace.namespace_id()).await;
         Ok(())
     }
 
@@ -636,7 +620,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invalidate_namespace_cache() {
+    async fn test_namespace_cache_invalidate() {
         let namespace_id = NamespaceId::new_random();
         let warehouse_id = WarehouseId::new_random();
         let namespace_ident = NamespaceIdent::from_vec(vec!["invalidate_ns".to_string()]).unwrap();
@@ -658,7 +642,7 @@ mod tests {
         assert!(cached.is_some());
 
         // Invalidate
-        invalidate_namespace_cache(namespace_id).await;
+        namespace_cache_invalidate(namespace_id).await;
 
         // Verify it's no longer cached
         let cached = namespace_cache_get_by_id(namespace_id).await;
