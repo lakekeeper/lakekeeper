@@ -79,7 +79,21 @@ jobs:
           AWS_SECRET_ACCESS_KEY: some_secret_key1
         run: |
           mkdir -p /tmp/weed-data
-          ./weed -v=3 mini -dir=/tmp/weed-data -s3 -ip 127.0.0.1 > weed.log 2>&1 &
+          cat <<EOF > /tmp/weed-data/iam_config.json
+          {
+            "sts": {
+              "tokenDuration": "1h",
+              "maxSessionLength": "12h",
+              "issuer": "seaweedfs-sts",
+              "signingKey": "YmFzZTY0ZW5jb2RlZHNpZ25pbmdrZXl0aGF0aXNsb25nZW5vdXdo"
+            },
+            "policy": {
+              "storeType": "memory",
+              "defaultEffect": "Allow"
+            }
+          }
+          EOF
+          ./weed -v=3 mini -dir=/tmp/weed-data -s3 -s3.iam.config=/tmp/weed-data/iam_config.json -ip 127.0.0.1 > weed.log 2>&1 &
           sleep 5
 
       - name: Wait for SeaweedFS S3 to be healthy
