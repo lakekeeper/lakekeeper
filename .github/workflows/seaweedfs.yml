@@ -61,6 +61,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: seaweedfs/seaweedfs
+          ref: allow-no-role-arn
           path: seaweedfs
 
       - name: Setup Go
