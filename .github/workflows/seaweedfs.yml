@@ -193,7 +193,7 @@ jobs:
           LAKEKEEPER_TEST__S3_REGION: local
           LAKEKEEPER_TEST__S3_ACCESS_KEY: some_access_key1
           LAKEKEEPER_TEST__S3_SECRET_KEY: some_secret_key1
-          LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:8333
+          LAKEKEEPER_TEST__S3_ENDPOINT: http://127.0.0.1:8333
 
           LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
           LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
@@ -227,6 +227,17 @@ jobs:
           LAKEKEEPER_TEST__GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+
+      - name: Dump SeaweedFS Logs
+        if: always()
+        run: |
+          echo "=== Weed Logs ==="
+          cat weed.log || echo "weed.log not found"
+          echo "=== Process List ==="
+          ps aux || echo "ps failed"
+          echo "=== Open Ports ==="
+          netstat -tlnp || echo "netstat failed"
+
       - name: Upload junit
         uses: actions/upload-artifact@v5
         with:
