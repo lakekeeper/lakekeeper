@@ -1,0 +1,228 @@
+name: SeaweedFS Tests
+
+on:
+  push:
+    branches:
+      - main
+      - "manual-release-*"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.88
+  RUSTFLAGS: --cfg tracing_unstable -D warnings
+
+permissions:
+  contents: read # Needed to checkout code
+  checks: write # Needed for test reporting
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      vault:
+        image: hashicorp/vault:latest
+        ports:
+          - 8200:8200
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: myroot
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        options: >-
+          --health-cmd "vault status -address http://localhost:8200"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Checkout SeaweedFS
+        uses: actions/checkout@v6
+        with:
+          repository: seaweedfs/seaweedfs
+          path: seaweedfs
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build SeaweedFS
+        run: |
+          cd seaweedfs/weed
+          go build -o ../../weed
+
+      - name: Start SeaweedFS
+        env:
+          AWS_ACCESS_KEY_ID: some_access_key1
+          AWS_SECRET_ACCESS_KEY: some_secret_key1
+        run: |
+          mkdir -p /tmp/weed-data
+          ./weed mini -dir=/tmp/weed-data -s3 &
+          sleep 5
+
+      - name: Wait for SeaweedFS S3 to be healthy
+        shell: bash
+        run: |
+          for i in {1..30}; do
+            if curl -I http://localhost:8333; then
+              echo "SeaweedFS S3 is healthy"
+              exit 0
+            else
+              echo "Waiting for SeaweedFS S3 to be healthy..."
+              sleep 1
+            fi
+          done
+          echo "SeaweedFS S3 did not become healthy in time"
+          exit 1
+
+      - name: Create SeaweedFS Bucket
+        env:
+          AWS_ACCESS_KEY_ID: some_access_key1
+          AWS_SECRET_ACCESS_KEY: some_secret_key1
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          aws s3api create-bucket --bucket tests --endpoint-url http://localhost:8333
+
+      - uses: azure/login@v2
+        if: ${{ env.AZURE_CLIENT_ID != '' }}
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+          allow-no-subscriptions: true
+
+      - name: Write gcp credential to file
+        if: ${{ env.GCS_CREDENTIAL != '' }}
+        run: echo '${{ secrets.GCS_CREDENTIAL }}' > /tmp/gcs.json
+        shell: bash
+
+      - name: Setup Rust toolchain and cache
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        env:
+          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+
+      - name: Setup cargo nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Determine nextest profile
+        run: |
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+            # PR is made off this repo, so workflows have access to secrets and the entire suite
+            # can be run.
+            echo "NEXTEST_PROFILE=ci" >> $GITHUB_ENV
+          else
+            # PR is made off a fork, so secrets are not available in ci workflows.
+            echo "NEXTEST_PROFILE=ci_no_secrets" >> $GITHUB_ENV
+          fi
+
+      - name: Migrate database
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
+          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
+          cd crates/lakekeeper
+          sqlx database create
+          sqlx migrate run
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+      - name: Setup vault
+        run: |
+          export VAULT_ADDR=http://localhost:8200
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update && sudo apt install gpg wget
+          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update && sudo apt install vault
+
+          vault login -address "${VAULT_ADDR}" myroot
+          vault auth  enable -address "${VAULT_ADDR}"  userpass
+          echo "path \"secret/*\" { capabilities = [\"create\", \"read\", \"update\", \"delete\", \"list\"] }" > /tmp/app.hcl
+          vault policy write -address "${VAULT_ADDR}" app /tmp/app.hcl
+          vault write -address "${VAULT_ADDR}" auth/userpass/users/test password=test policies=app
+
+      - name: Setup openfga
+        run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
+
+      - name: Test
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        with:
+          max_attempts: 2
+          timeout_minutes: 25
+          command: cargo nextest run --profile ${{ env.NEXTEST_PROFILE }} --all-targets --all-features --workspace
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+          LAKEKEEPER_TEST__KV2__URL: http://localhost:8200
+          LAKEKEEPER_TEST__KV2__USER: test
+          LAKEKEEPER_TEST__KV2__PASSWORD: test
+          LAKEKEEPER_TEST__KV2__SECRET_MOUNT: secret
+          # seaweedfs test envs
+          LAKEKEEPER_TEST__S3_BUCKET: tests
+          LAKEKEEPER_TEST__S3_REGION: local
+          LAKEKEEPER_TEST__S3_ACCESS_KEY: some_access_key1
+          LAKEKEEPER_TEST__S3_SECRET_KEY: some_secret_key1
+          LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:8333
+
+          LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
+          LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
+
+          LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcs.json
+
+          LAKEKEEPER_TEST__AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          LAKEKEEPER_TEST__AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          LAKEKEEPER_TEST__AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
+          LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
+          LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY: ${{ secrets.AZURE_STORAGE_SHARED_KEY }}
+
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_S3_REGION: ${{ secrets.AWS_S3_REGION }}
+          AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+          AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+          AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
+          AWS_KMS_S3_BUCKET: ${{ secrets.AWS_KMS_S3_BUCKET }}
+          AWS_S3_KMS_ARN: ${{ secrets.AWS_S3_KMS_ARN }}
+
+          TEST_R2: ${{ secrets.TEST_R2 }}
+          LAKEKEEPER_TEST__R2_BUCKET: ${{ secrets.LAKEKEEPER_TEST__R2_BUCKET }}
+          LAKEKEEPER_TEST__R2_TOKEN: ${{ secrets.LAKEKEEPER_TEST__R2_TOKEN }}
+          LAKEKEEPER_TEST__R2_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__R2_SECRET_ACCESS_KEY }}
+          LAKEKEEPER_TEST__R2_ACCESS_KEY_ID: ${{ secrets.LAKEKEEPER_TEST__R2_ACCESS_KEY_ID }}
+          LAKEKEEPER_TEST__R2_ACCOUNT_ID: ${{ secrets.LAKEKEEPER_TEST__R2_ACCOUNT_ID }}
+          LAKEKEEPER_TEST__R2_ENDPOINT: ${{ secrets.LAKEKEEPER_TEST__R2_ENDPOINT }}
+
+          LAKEKEEPER_TEST__GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
+          LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+      - name: Upload junit
+        uses: actions/upload-artifact@v5
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
+      - name: Doc Test
+        run: cargo test --no-fail-fast --doc --all-features --workspace
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
