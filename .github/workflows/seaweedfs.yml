@@ -79,14 +79,14 @@ jobs:
           AWS_SECRET_ACCESS_KEY: some_secret_key1
         run: |
           mkdir -p /tmp/weed-data
-          ./weed mini -dir=/tmp/weed-data -s3 > weed.log 2>&1 &
+          ./weed mini -dir=/tmp/weed-data -s3 -ip 127.0.0.1 > weed.log 2>&1 &
           sleep 5
 
       - name: Wait for SeaweedFS S3 to be healthy
         shell: bash
         run: |
           for i in {1..60}; do
-            if curl -f -s http://localhost:8333 > /dev/null; then
+            if curl -f -s http://127.0.0.1:8333 > /dev/null; then
               echo "SeaweedFS S3 is healthy"
               exit 0
             else
@@ -107,9 +107,9 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: some_access_key1
           AWS_SECRET_ACCESS_KEY: some_secret_key1
-          AWS_DEFAULT_REGION: us-east-1
+          AWS_EC2_METADATA_DISABLED: true
         run: |
-          aws s3api create-bucket --bucket tests --endpoint-url http://localhost:8333
+          aws s3api create-bucket --bucket tests --endpoint-url http://127.0.0.1:8333
 
       - uses: azure/login@v2
         if: ${{ env.AZURE_CLIENT_ID != '' }}
