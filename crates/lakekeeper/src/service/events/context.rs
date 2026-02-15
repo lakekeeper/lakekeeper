@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -21,7 +21,7 @@ use crate::{
         NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId,
         TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
-        authz::{CatalogAction, CatalogTableAction, CatalogViewAction},
+        authz::{ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction},
         events::{
             AuthorizationError, AuthorizationFailedEvent, AuthorizationFailureSource,
             AuthorizationSucceededEvent, EventDispatcher,
@@ -127,24 +127,9 @@ pub trait UserProvidedEntity: 'static + Send + Sync + std::fmt::Debug {
     fn event_entities(&self) -> EventEntities;
 }
 
-// #[derive(Clone, Debug)]
-// pub struct APIEventAction {
-//     pub action: &'static str,
-//     pub context: Vec<(&'static str, String)>,
-// }
-
 pub trait APIEventActions: 'static + Send + Sync + std::fmt::Debug {
     /// A list of string representations of the actions being performed, for use in log messages.
-    fn event_actions(&self) -> Vec<Cow<'static, str>>;
-}
-
-impl<T> APIEventActions for T
-where
-    T: CatalogAction + 'static,
-{
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Owned(self.as_log_str())]
-    }
+    fn event_actions(&self) -> Vec<ActionDescriptor>;
 }
 
 // Marker trait to indicate authorization state
@@ -315,21 +300,6 @@ impl UserProvidedEntity for UserProvidedView {
     }
 }
 
-// #[derive(Clone, Debug, derive_more::From)]
-// pub enum UserProvidedTableOrView {
-//     Table(UserProvidedTable),
-//     View(UserProvidedView),
-// }
-
-// impl UserProvidedEntity for UserProvidedTableOrView {
-//     fn event_entities(&self) -> EventEntities {
-//         match self {
-//             UserProvidedTableOrView::Table(table) => table.event_entities(),
-//             UserProvidedTableOrView::View(view) => view.event_entities(),
-//         }
-//     }
-// }
-
 #[derive(Clone, Debug)]
 pub struct UserProvidedTask {
     pub warehouse_id: WarehouseId,
@@ -440,52 +410,80 @@ impl_user_provided_entity!(UserId, ENTITY_TYPE_USER, FIELD_NAME_USER_ID);
 #[derive(Clone, Debug)]
 pub struct ServerActionSearchUsers {}
 impl APIEventActions for ServerActionSearchUsers {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("search_users")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("search_users")
+                .build(),
+        ]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ServerActionListProjects {}
 impl APIEventActions for ServerActionListProjects {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("list_projects")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("list_projects")
+                .build(),
+        ]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct WarehouseActionSearchTabulars {}
 impl APIEventActions for WarehouseActionSearchTabulars {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("search_tabulars")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("search_tabulars")
+                .build(),
+        ]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct IntrospectPermissions {}
 impl APIEventActions for IntrospectPermissions {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("introspect_permissions")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("introspect_permissions")
+                .build(),
+        ]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct GetTaskDetailsAction {}
 impl APIEventActions for GetTaskDetailsAction {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("get_task_details")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("get_task_details")
+                .build(),
+        ]
     }
 }
 
 impl APIEventActions for ListTasksRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("list_tasks")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("list_tasks")
+                .build(),
+        ]
     }
 }
 
 impl APIEventActions for ControlTasksRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("control_tasks")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("control_tasks")
+                .build(),
+        ]
     }
 }
 
@@ -496,22 +494,24 @@ pub struct TabularAction {
 }
 
 impl APIEventActions for TabularAction {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        let tbl_str = self.table_action.as_log_str();
-        let view_str = self.view_action.as_log_str();
-        if tbl_str == view_str {
-            vec![Cow::Owned(tbl_str)]
-        } else {
-            vec![Cow::Owned(tbl_str), Cow::Owned(view_str)]
-        }
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        let mut actions = self.table_action.event_actions();
+        actions.extend(self.view_action.event_actions());
+        actions
     }
 }
 
 impl APIEventActions for Vec<CatalogTableAction> {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
         self.iter()
-            .map(|action| Cow::Owned(action.as_log_str()))
+            .flat_map(APIEventActions::event_actions)
             .collect()
+    }
+}
+
+impl<T: CatalogAction> APIEventActions for T {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![self.action_descriptor()]
     }
 }
 

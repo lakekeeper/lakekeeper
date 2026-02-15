@@ -52,7 +52,7 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
 | Field                  | Type            | Description                       |
 |------------------------|-----------------|-----------------------------------|
 | `event_source`         | String          | Always `"audit"`                  |
-| `action` or `actions`  | String or Array | Operation(s) attempted (e.g., `"read_data"`, `"drop"`, `"CreateNamespace"`) |
+| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `properties`, `updated-properties`, `removed-properties`). See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
 | `decision`             | String          | `"allowed"` or `"denied"`         |
@@ -78,6 +78,23 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
 {"actor_type": "lakekeeper-internal"}
 ```
 
+**Action Format:**
+
+Each action is a structured object containing the operation name and optional context about the operation:
+
+```json
+// Simple action (no context)
+{"action_name": "read_data"}
+
+// Action with properties context (e.g., create_namespace)
+{"action_name": "create_namespace", "properties": {"location": "s3://bucket/ns", "owner": "alice"}}
+
+// Action with update context (e.g., commit with property changes)
+{"action_name": "commit", "updated-properties": {"retention-days": "30"}, "removed-properties": ["staging"]}
+```
+
+When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
+
 **Examples:**
 
 <details>
@@ -88,7 +105,9 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
   "timestamp": "2026-02-15T14:20:50.758690Z",
   "level": "INFO",
   "event_source": "audit",
-  "action": "introspect_permissions",
+  "action": {
+    "action_name": "introspect_permissions"
+  },
   "entity": {
     "entity_type": "warehouse",
     "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0"
@@ -112,7 +131,9 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
   "timestamp": "2026-02-15T14:21:10.123456Z",
   "level": "INFO",
   "event_source": "audit",
-  "action": "drop",
+  "action": {
+    "action_name": "drop"
+  },
   "entity": {
     "entity_type": "table",
     "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0",

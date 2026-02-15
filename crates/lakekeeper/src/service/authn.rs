@@ -260,13 +260,18 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
         request_metadata.set_authentication(actor.clone(), authentication);
 
         let check_result = if let Some(role_id) = role_id {
-            use crate::service::{authz::CatalogAction, events::APIEventContext};
+            use crate::service::{
+                authz::{ActionDescriptor, CatalogAction},
+                events::APIEventContext,
+            };
 
             #[derive(Debug)]
             struct AssumeRoleAction;
             impl CatalogAction for AssumeRoleAction {
-                fn as_log_str(&self) -> String {
-                    "assume_role".to_string()
+                fn action_descriptor(&self) -> ActionDescriptor {
+                    ActionDescriptor::builder()
+                        .action_name("assume_role")
+                        .build()
                 }
             }
 

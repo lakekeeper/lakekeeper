@@ -1,8 +1,11 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
-use crate::{api::RequestMetadata, service::events::context::EventEntities};
+use crate::{
+    api::RequestMetadata,
+    service::{authz::ActionDescriptor, events::context::EventEntities},
+};
 
 /// Trait for extracting failure reason from authorization errors
 pub trait AuthorizationFailureSource: Send + Sized {
@@ -83,7 +86,7 @@ pub struct AuthorizationFailedEvent {
     pub entities: Arc<EventEntities>,
 
     /// The action that was attempted, serialized from `CatalogAction`
-    pub actions: Arc<Vec<Cow<'static, str>>>,
+    pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Why the authorization failed
     pub failure_reason: AuthorizationFailureReason,
@@ -108,7 +111,7 @@ pub struct AuthorizationSucceededEvent {
     pub entities: Arc<EventEntities>,
 
     /// The action that was attempted, serialized from `CatalogAction`
-    pub actions: Arc<Vec<Cow<'static, str>>>,
+    pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Any additional context that may be useful for debugging or auditing
     pub extra_context: Arc<HashMap<String, String>>,

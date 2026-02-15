@@ -4,6 +4,7 @@ use valuable::{Mappable, Valuable, Value, Visit};
 
 use crate::service::{
     authn::{Actor, InternalActor},
+    authz::{ActionDescriptor, ContextValue},
     events::{
         AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
         context::EntityDescriptor,
@@ -19,38 +20,32 @@ macro_rules! audit_log {
         match (__actions.len() == 1, __entities.entities.len() == 1) {
             (true, true) => tracing::info!(
                 event_source = "audit",
-                action = __actions[0].as_ref(),
+                action = tracing::field::valuable(&__actions[0].as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
                 $msg
             ),
             (true, false) => tracing::info!(
                 event_source = "audit",
-                action = __actions[0].as_ref(),
+                action = tracing::field::valuable(&__actions[0].as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
                 $msg
             ),
-            (false, true) => {
-                let __action_strs: Vec<&str> = __actions.iter().map(|a| a.as_ref()).collect();
-                tracing::info!(
-                    event_source = "audit",
-                    actions = tracing::field::valuable(&__action_strs.as_value()),
-                    entity = tracing::field::valuable(&__entities.entities[0].as_value()),
-                    $($common)*
-                    $msg
-                );
-            },
-            (false, false) => {
-                let __action_strs: Vec<&str> = __actions.iter().map(|a| a.as_ref()).collect();
-                tracing::info!(
-                    event_source = "audit",
-                    actions = tracing::field::valuable(&__action_strs.as_value()),
-                    entities = tracing::field::valuable(&__entities.as_value()),
-                    $($common)*
-                    $msg
-                );
-            },
+            (false, true) => tracing::info!(
+                event_source = "audit",
+                actions = tracing::field::valuable(&__actions.as_value()),
+                entity = tracing::field::valuable(&__entities.entities[0].as_value()),
+                $($common)*
+                $msg
+            ),
+            (false, false) => tracing::info!(
+                event_source = "audit",
+                actions = tracing::field::valuable(&__actions.as_value()),
+                entities = tracing::field::valuable(&__entities.as_value()),
+                $($common)*
+                $msg
+            ),
         }
     }};
 }
@@ -146,6 +141,45 @@ impl Mappable for EntityDescriptor {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = self.fields.len() + 1;
         (len, Some(len))
+    }
+}
+
+impl Valuable for ActionDescriptor {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        visit.visit_entry(
+            Value::String("action_name"),
+            Value::String(self.action_name),
+        );
+        for (key, value) in &self.context {
+            visit.visit_entry(Value::String(key), value.as_value());
+        }
+    }
+}
+
+impl Mappable for ActionDescriptor {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = 1 + self.context.len();
+        (len, Some(len))
+    }
+}
+
+impl Valuable for ContextValue {
+    fn as_value(&self) -> Value<'_> {
+        match self {
+            Self::Map(map) => map.as_value(),
+            Self::List(list) => list.as_value(),
+        }
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        match self {
+            Self::Map(map) => map.visit(visit),
+            Self::List(list) => list.visit(visit),
+        }
     }
 }
 

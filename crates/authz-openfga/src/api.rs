@@ -1,7 +1,7 @@
 #![allow(clippy::needless_for_each)]
 #![allow(deprecated)]
 
-use std::{borrow::Cow, collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use http::StatusCode;
 #[cfg(feature = "open-api")]
@@ -19,7 +19,7 @@ use lakekeeper::{
     },
     service::{
         Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
-        authz::UserOrRole,
+        authz::{ActionDescriptor, UserOrRole},
         events::{
             APIEventContext,
             context::{APIEventActions, IntrospectPermissions, authz_to_error_no_audit},
@@ -265,8 +265,12 @@ struct UpdateServerAssignmentsRequest {
     deletes: Vec<ServerAssignment>,
 }
 impl APIEventActions for UpdateServerAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_server_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_server_assignments")
+                .build(),
+        ]
     }
 }
 
@@ -280,8 +284,12 @@ struct UpdateProjectAssignmentsRequest {
     deletes: Vec<ProjectAssignment>,
 }
 impl APIEventActions for UpdateProjectAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_project_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_project_assignments")
+                .build(),
+        ]
     }
 }
 
@@ -295,8 +303,12 @@ struct UpdateWarehouseAssignmentsRequest {
     deletes: Vec<WarehouseAssignment>,
 }
 impl APIEventActions for UpdateWarehouseAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_warehouse_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_warehouse_assignments")
+                .build(),
+        ]
     }
 }
 
@@ -310,8 +322,12 @@ struct UpdateNamespaceAssignmentsRequest {
     deletes: Vec<NamespaceAssignment>,
 }
 impl APIEventActions for UpdateNamespaceAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_namespace_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_namespace_assignments")
+                .build(),
+        ]
     }
 }
 
@@ -325,8 +341,12 @@ struct UpdateTableAssignmentsRequest {
     deletes: Vec<TableAssignment>,
 }
 impl APIEventActions for UpdateTableAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_table_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_table_assignments")
+                .build(),
+        ]
     }
 }
 
@@ -340,8 +360,12 @@ struct UpdateViewAssignmentsRequest {
     deletes: Vec<ViewAssignment>,
 }
 impl APIEventActions for UpdateViewAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_view_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_view_assignments")
+                .build(),
+        ]
     }
 }
 
@@ -355,8 +379,12 @@ struct UpdateRoleAssignmentsRequest {
     deletes: Vec<RoleAssignment>,
 }
 impl APIEventActions for UpdateRoleAssignmentsRequest {
-    fn event_actions(&self) -> Vec<Cow<'static, str>> {
-        vec![Cow::Borrowed("update_role_assignments")]
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_role_assignments")
+                .build(),
+        ]
     }
 }
 
