@@ -495,9 +495,17 @@ pub struct TabularAction {
 
 impl APIEventActions for TabularAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
-        let mut actions = self.table_action.event_actions();
-        actions.extend(self.view_action.event_actions());
-        actions
+        let table_actions = self.table_action.event_actions();
+        let view_actions = self.view_action.event_actions();
+        if table_actions.iter().map(ActionDescriptor::log_string).eq(
+            view_actions.iter().map(ActionDescriptor::log_string),
+        ) {
+            table_actions
+        } else {
+            let mut actions = table_actions;
+            actions.extend(view_actions);
+            actions
+        }
     }
 }
 
