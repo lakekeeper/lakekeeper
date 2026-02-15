@@ -267,7 +267,7 @@ where
     /// List tasks
     async fn list_tasks(
         filter: &TaskFilter,
-        query: ListTasksRequest,
+        query: &ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<TaskList> {
         Self::list_tasks_impl(filter, query, transaction).await

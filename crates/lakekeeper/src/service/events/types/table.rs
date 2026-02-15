@@ -69,6 +69,7 @@ pub struct LoadTableEvent {
     pub storage_permissions: Option<StoragePermissions>,
     pub metadata: TableMetadataRef,
     pub metadata_location: Option<Arc<Location>>,
+    pub request_metadata: Arc<RequestMetadata>,
 }
 
 pub type APIEventCommitContext = APIEventContext<
@@ -93,6 +94,7 @@ impl APIEventContext<UserProvidedTable, Resolved<ResolvedTable>, CatalogTableAct
             storage_permissions: self.resolved_entity.data.storage_permissions,
             metadata,
             metadata_location,
+            request_metadata: self.request_metadata,
         };
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {

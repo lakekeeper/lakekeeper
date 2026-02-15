@@ -98,7 +98,7 @@ fn categorize_task_statuses(
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn list_tasks(
     filter: &TaskFilter,
-    query: ListTasksRequest,
+    query: &ListTasksRequest,
     transaction: &mut PgConnection,
 ) -> Result<TaskList, IcebergErrorResponse> {
     let ListTasksRequest {
@@ -109,7 +109,7 @@ pub(crate) async fn list_tasks(
         created_before,
         page_token,
         page_size,
-    } = query;
+    } = (*query).clone();
 
     let (warehouse_id, project_id, include_sub_tasks) = match filter {
         TaskFilter::WarehouseId {
@@ -149,7 +149,7 @@ pub(crate) async fn list_tasks(
         .collect_vec();
 
     let status_filter_is_none = status.is_none();
-    let status_filter = status.unwrap_or_default();
+    let status_filter = status.clone().unwrap_or_default();
     let (task_status_filter, task_log_status_filter) = categorize_task_statuses(&status_filter);
 
     let entities_filter_is_none = entities.is_none();
@@ -450,7 +450,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -490,7 +490,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -558,7 +558,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -622,7 +622,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -683,7 +683,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -702,7 +702,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -758,7 +758,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -813,7 +813,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -831,7 +831,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -849,7 +849,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -866,7 +866,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -910,7 +910,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -936,7 +936,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -962,7 +962,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -988,7 +988,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1014,7 +1014,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1108,7 +1108,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1221,7 +1221,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1357,7 +1357,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1492,7 +1492,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1570,7 +1570,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1654,7 +1654,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1729,7 +1729,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1771,7 +1771,7 @@ mod tests {
                 warehouse_id: wrong_warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1840,7 +1840,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1911,7 +1911,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1994,7 +1994,7 @@ mod tests {
                 project_id,
                 include_sub_tasks: false,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -2084,7 +2084,7 @@ mod tests {
                 project_id: project_id.clone(),
                 include_sub_tasks: true,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await

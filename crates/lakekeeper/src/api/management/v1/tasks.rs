@@ -467,7 +467,7 @@ pub enum WarehouseTaskEntityFilter {
     Warehouse,
 }
 
-#[derive(Debug, Deserialize, Default, typed_builder::TypedBuilder)]
+#[derive(Clone, Debug, Deserialize, Default, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListTasksRequest {
@@ -652,18 +652,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         // -------------------- AUTHZ --------------------
         let events = context.v1_state.events;
-        let event_ctx = APIEventContext::for_warehouse(
-            request_metadata.into(),
-            events,
-            warehouse_id,
-            CatalogWarehouseAction::GetAllTasks,
-        );
+        let event_ctx =
+            APIEventContext::for_warehouse(request_metadata.into(), events, warehouse_id, query);
         let authz_result = authorize_list_tasks::<A, C>(
             &authorizer,
             context.v1_state.catalog.clone(),
             event_ctx.request_metadata(),
             warehouse_id,
-            query.entities.as_ref(),
+            event_ctx.action().entities.as_ref(),
         )
         .await;
 
@@ -678,7 +674,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             project_id,
         };
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let tasks = C::list_tasks(&filter, query, t.transaction()).await?;
+        let tasks = C::list_tasks(&filter, event_ctx.action(), t.transaction()).await?;
         t.commit().await?;
         Ok(ListTasksResponse::try_from(tasks)?)
     }
@@ -757,14 +753,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.clone().into(),
             context.v1_state.events,
             warehouse_id,
-            CatalogWarehouseAction::ControlAllTasks,
+            query,
         );
 
         let authz_result = check_control_tasks_authorization::<A, C>(
             &authorizer,
             catalog_state.clone(),
             event_ctx.request_metadata(),
-            &query,
+            event_ctx.action(),
             *event_ctx.user_provided_entity(),
         )
         .await;
@@ -774,32 +770,32 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities.clone()));
 
         // -------------------- Business Logic --------------------
-        let task_ids: Vec<TaskId> = query.task_ids;
+        let task_ids = &event_ctx.action().task_ids;
         let mut t = C::Transaction::begin_write(catalog_state).await?;
-        match query.action {
-            ControlTaskAction::Stop => C::stop_tasks(&task_ids, t.transaction()).await?,
+        match event_ctx.action().action {
+            ControlTaskAction::Stop => C::stop_tasks(task_ids, t.transaction()).await?,
             ControlTaskAction::Cancel => {
                 if !event_ctx.resolved().is_empty() {
                     C::clear_tabular_deleted_at(
                         event_ctx.resolved(),
-                        warehouse_id,
+                        warehouse_id,   
                         t.transaction(),
                     )
                     .await.map_err(|e| e.append_detail("Some of the specified tasks are tabular expiration / soft-deletion tasks that require Table undrop."))?;
                 }
                 C::cancel_scheduled_tasks(
                     None,
-                    CancelTasksFilter::TaskIds(task_ids),
+                    CancelTasksFilter::TaskIds(task_ids.clone()),
                     true,
                     t.transaction(),
                 )
                 .await?;
             }
             ControlTaskAction::RunNow => {
-                C::run_tasks_at(&task_ids, None, t.transaction()).await?;
+                C::run_tasks_at(task_ids, None, t.transaction()).await?;
             }
             ControlTaskAction::RunAt { scheduled_for } => {
-                C::run_tasks_at(&task_ids, Some(scheduled_for), t.transaction()).await?;
+                C::run_tasks_at(task_ids, Some(scheduled_for), t.transaction()).await?;
             }
         }
         t.commit().await?;
@@ -813,6 +809,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<ListProjectTasksResponse> {
         let authorizer = context.v1_state.authz;
+
+        let query = ListTasksRequest::from(query);
+
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
         let event_ctx = APIEventContext::for_project(
@@ -826,7 +825,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                CatalogProjectAction::GetProjectTasks,
+                *event_ctx.action(),
             )
             .await;
 
@@ -839,7 +838,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             include_sub_tasks: false, // Not yet implemented, so hardcoded here
         };
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let tasks = C::list_tasks(&filter, query.into(), t.transaction()).await?;
+        let tasks = C::list_tasks(&filter, &query, t.transaction()).await?;
         t.commit().await?;
         Ok(ListProjectTasksResponse::try_from(tasks)?)
     }
@@ -863,11 +862,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::GetProjectTasks,
-            )
+            .require_project_action(&request_metadata, &project_id, *event_ctx.action())
             .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
@@ -929,17 +924,13 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.clone().into(),
             context.v1_state.events,
             project_id.clone(),
-            CatalogProjectAction::GetProjectTasks,
+            CatalogProjectAction::ControlProjectTasks,
         );
 
         let authorizer = context.v1_state.authz;
 
         let authz_result = authorizer
-            .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::ControlProjectTasks,
-            )
+            .require_project_action(&request_metadata, &project_id, *event_ctx.action())
             .await;
 
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;

@@ -9,9 +9,12 @@ use crate::{
     CONFIG, ProjectId, WarehouseId,
     api::{
         RequestMetadata,
-        management::v1::check::{
-            CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
-            TabularIdentOrUuid,
+        management::v1::{
+            check::{
+                CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
+                TabularIdentOrUuid,
+            },
+            tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
     service::{
@@ -471,6 +474,18 @@ pub struct GetTaskDetailsAction {}
 impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<Cow<'static, str>> {
         vec![Cow::Borrowed("get_task_details")]
+    }
+}
+
+impl APIEventActions for ListTasksRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("list_tasks")]
+    }
+}
+
+impl APIEventActions for ControlTasksRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("control_tasks")]
     }
 }
 

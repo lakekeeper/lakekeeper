@@ -62,6 +62,7 @@ pub struct UpdateNamespacePropertiesEvent {
 pub struct NamespaceMetadataLoadedEvent {
     pub namespace: NamespaceWithParent,
     pub properties: Arc<HashMap<String, String>>,
+    pub request_metadata: Arc<RequestMetadata>,
 }
 
 /// Event emitted when a table is created (within a namespace)
@@ -219,6 +220,7 @@ impl
         let event = NamespaceMetadataLoadedEvent {
             namespace: self.resolved().namespace.clone(),
             properties,
+            request_metadata: self.request_metadata,
         };
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {

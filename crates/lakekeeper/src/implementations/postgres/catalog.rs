@@ -718,7 +718,7 @@ impl CatalogStore for super::PostgresBackend {
     /// List tasks
     async fn list_tasks_impl(
         filter: &TaskFilter,
-        query: ListTasksRequest,
+        query: &ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<TaskList> {
         list_tasks(filter, query, &mut *transaction).await
