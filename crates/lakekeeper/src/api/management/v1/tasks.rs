@@ -778,7 +778,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 if !event_ctx.resolved().is_empty() {
                     C::clear_tabular_deleted_at(
                         event_ctx.resolved(),
-                        warehouse_id,   
+                        warehouse_id,
                         t.transaction(),
                     )
                     .await.map_err(|e| e.append_detail("Some of the specified tasks are tabular expiration / soft-deletion tasks that require Table undrop."))?;
@@ -1240,15 +1240,11 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::View(tabular.view_id),
                 &tabular.view_ident.namespace,
             )),
-            ResolvedTaskEntity::Warehouse(warehouse_id) => {
-                Err(
-                    AuthZWarehouseActionForbidden::new(
-                        *warehouse_id,
-                        &CONTROL_TASK_WAREHOUSE_PERMISSION,
-                    )
-                    .into(),
-                )
-            }
+            ResolvedTaskEntity::Warehouse(warehouse_id) => Err(AuthZWarehouseActionForbidden::new(
+                *warehouse_id,
+                &CONTROL_TASK_WAREHOUSE_PERMISSION,
+            )
+            .into()),
             ResolvedTaskEntity::Project => Err(AuthZError::ProjectIdMissing(ProjectIdMissing)),
         })
         .collect::<Result<(Vec<_>, Vec<_>), AuthZError>>()?;
