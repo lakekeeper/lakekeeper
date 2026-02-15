@@ -54,7 +54,7 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
 | `event_source`         | String          | Always `"audit"`                  |
 | `action` or `actions`  | String or Array | Operation(s) attempted (e.g., `"read_data"`, `"drop"`, `"CreateNamespace"`) |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
-| `actor`                | Object          | Who performed the action (see [Actor Types](#actor-types)) |
+| `actor`                | Object          | Who performed the action (see format below) |
 | `decision`             | String          | `"allowed"` or `"denied"`         |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
 | `failure_reason`       | String          | Only on failed events. One of: `ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`, `InternalAuthorizationError`, `InternalCatalogError`, `InvalidRequestData` |
@@ -129,8 +129,7 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
     "type": "Forbidden",
     "message": "Insufficient permissions",
     "code": 403,
-    "error_id": "01234567-89ab-cdef-0123-456789abcdef",
-    "stack": []
+    "error_id": "01234567-89ab-cdef-0123-456789abcdef"
   },
   "message": "Authorization failed event",
   "target": "lakekeeper::service::events::backends::audit"
