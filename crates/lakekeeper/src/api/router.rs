@@ -115,6 +115,7 @@ pub async fn new_full_router<
             AuthMiddlewareState {
                 authenticator,
                 authorizer: state.v1_state.authz.clone(),
+                events: state.v1_state.events.clone(),
             },
             auth_middleware_fn,
         )))

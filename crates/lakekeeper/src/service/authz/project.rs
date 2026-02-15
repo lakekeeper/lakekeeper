@@ -1,16 +1,19 @@
 use std::collections::HashSet;
 
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     ProjectId,
     api::RequestMetadata,
     service::{
-        Actor,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogProjectAction,
             MustUse, UserOrRole,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -37,35 +40,27 @@ pub enum ListProjectsResponse {
 pub struct AuthZProjectActionForbidden {
     project_id: ProjectId,
     action: String,
-    actor: Actor,
 }
 impl AuthZProjectActionForbidden {
     #[must_use]
-    pub fn new(project_id: ProjectId, action: impl ProjectAction, actor: Actor) -> Self {
+    pub fn new(project_id: ProjectId, action: impl ProjectAction) -> Self {
         Self {
             project_id,
             action: action.to_string(),
-            actor,
         }
     }
 }
-impl From<AuthZProjectActionForbidden> for ErrorModel {
-    fn from(err: AuthZProjectActionForbidden) -> Self {
-        let AuthZProjectActionForbidden {
-            project_id,
-            action,
-            actor,
-        } = err;
+impl AuthorizationFailureSource for AuthZProjectActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZProjectActionForbidden { project_id, action } = self;
         ErrorModel::forbidden(
-            format!("Project action `{action}` forbidden for {actor} on project `{project_id}`",),
+            format!("Project action `{action}` forbidden on project `{project_id}`",),
             "ProjectActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZProjectActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZProjectActionForbidden) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -86,21 +81,12 @@ impl From<BackendUnavailableOrCountMismatch> for RequireProjectActionError {
         }
     }
 }
-impl From<RequireProjectActionError> for ErrorModel {
-    fn from(err: RequireProjectActionError) -> Self {
-        match err {
-            RequireProjectActionError::AuthZProjectActionForbidden(e) => e.into(),
-            RequireProjectActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireProjectActionError::CannotInspectPermissions(e) => e.into(),
-            RequireProjectActionError::AuthorizationCountMismatch(e) => e.into(),
-        }
-    }
-}
-impl From<RequireProjectActionError> for IcebergErrorResponse {
-    fn from(err: RequireProjectActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireProjectActionError => {
+    AuthZProjectActionForbidden,
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+    AuthorizationCountMismatch,
+});
 
 #[async_trait::async_trait]
 pub trait AuthZProjectOps: Authorizer {
@@ -198,12 +184,7 @@ pub trait AuthZProjectOps: Authorizer {
         {
             Ok(())
         } else {
-            Err(AuthZProjectActionForbidden::new(
-                project_id.clone(),
-                action,
-                metadata.actor().clone(),
-            )
-            .into())
+            Err(AuthZProjectActionForbidden::new(project_id.clone(), action).into())
         }
     }
 }

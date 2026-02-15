@@ -1,7 +1,9 @@
+pub mod context;
 pub mod dispatch;
 pub mod publisher;
 pub mod types;
 
+pub use context::APIEventContext;
 pub use dispatch::{EventDispatcher, EventListener};
 pub use publisher::{
     CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
@@ -9,3 +11,7 @@ pub use publisher::{
 };
 pub use types::*;
 pub mod backends;
+pub use types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource};
+pub(crate) use types::authorization::{
+    delegate_authorization_failure_source, impl_authorization_failure_source,
+};

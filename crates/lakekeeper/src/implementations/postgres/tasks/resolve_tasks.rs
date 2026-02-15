@@ -1,12 +1,10 @@
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
-
 use super::TaskEntityTypeDB;
 use crate::{
     ProjectId,
-    api::ErrorModel,
     implementations::postgres::{dbutils::DBErrorHandler, tasks::task_entity_from_db},
     service::{
-        ResolvedTask, TableNamed, ViewNamed, build_tabular_ident_from_vec,
+        DatabaseIntegrityError, ResolveTasksError, ResolvedTask, TableNamed, ViewNamed,
+        build_tabular_ident_from_vec,
         tasks::{
             ResolvedTaskEntity, TaskId, TaskQueueName, TaskResolveScope, WarehouseTaskEntityId,
         },
@@ -21,7 +19,7 @@ pub(crate) async fn resolve_tasks<'e, 'c: 'e, E>(
     scope: TaskResolveScope,
     task_ids: &[TaskId],
     state: E,
-) -> Result<Vec<ResolvedTask>, IcebergErrorResponse>
+) -> Result<Vec<ResolvedTask>, ResolveTasksError>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -107,7 +105,7 @@ where
     )
     .fetch_all(state)
     .await
-    .map_err(|e| e.into_error_model("Failed to resolve tasks"))?;
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
     let result = tasks
         .into_iter()
@@ -132,7 +130,9 @@ where
                     entity_id,
                     entity_name,
                 } => {
-                    let ident = build_tabular_ident_from_vec(&entity_name)?;
+                    let ident = build_tabular_ident_from_vec(&entity_name).map_err(|e|
+                        DatabaseIntegrityError::new("Found invalid tabular identifier for some of the requested tasks in DB").append_detail(e.to_string())
+                    )?;
                     match entity_id {
                         WarehouseTaskEntityId::Table { table_id } => TableNamed {
                             warehouse_id,
@@ -158,7 +158,7 @@ where
                 queue_name,
             })
         })
-        .collect::<Result<_, ErrorModel>>()?;
+        .collect::<Result<_, ResolveTasksError>>()?;
 
     Ok(result)
 }
@@ -167,6 +167,7 @@ where
 mod tests {
 
     use chrono::{Duration, Utc};
+    use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use sqlx::PgPool;
     use uuid::Uuid;
 

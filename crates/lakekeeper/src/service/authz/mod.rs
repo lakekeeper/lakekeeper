@@ -7,6 +7,7 @@ use axum::Router;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::EnumString;
+use valuable::Valuable;
 
 use super::{
     CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId, WarehouseId,
@@ -29,6 +30,8 @@ pub use implementations::allow_all::AllowAllAuthorizer;
 pub use warehouse::*;
 mod namespace;
 pub use namespace::*;
+mod role;
+pub use role::*;
 mod table;
 pub use table::*;
 mod view;
@@ -39,8 +42,6 @@ mod server;
 pub use server::*;
 mod user;
 pub use user::*;
-mod role;
-pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
@@ -121,6 +122,15 @@ pub enum UserOrRole {
     Role(RoleAssignee),
 }
 
+impl std::fmt::Display for UserOrRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserOrRole::User(user_id) => write!(f, "user:{user_id}"),
+            UserOrRole::Role(role_assignee) => write!(f, "role:{}", role_assignee.role()),
+        }
+    }
+}
+
 pub trait CatalogAction
 where
     Self: std::fmt::Debug + Send + Sync,
@@ -156,6 +166,8 @@ pub enum CatalogUserAction {
     Delete,
 }
 
+impl CatalogAction for CatalogUserAction {}
+
 #[derive(
     Debug,
     Clone,
@@ -168,6 +180,7 @@ pub enum CatalogUserAction {
     Serialize,
     Deserialize,
     VariantArray,
+    Valuable,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -185,6 +198,7 @@ pub enum CatalogServerAction {
     /// Can provision user
     ProvisionUsers,
 }
+impl CatalogAction for CatalogServerAction {}
 
 #[derive(
     Debug,
@@ -198,6 +212,7 @@ pub enum CatalogServerAction {
     Serialize,
     Deserialize,
     VariantArray,
+    Valuable,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]

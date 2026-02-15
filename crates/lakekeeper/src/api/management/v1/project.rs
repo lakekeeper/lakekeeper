@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,10 @@ use crate::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
+        },
+        events::{
+            APIEventContext,
+            context::{ServerActionListProjects, authz_to_error_no_audit},
         },
         secrets::SecretStore,
         task_configs::TaskQueueConfigFilter,
@@ -109,11 +115,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CreateProjectResponse> {
+        // Create event context for tracking authorization and operation events
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(request_metadata),
+            context.v1_state.events,
+            CatalogServerAction::CreateProject,
+            context.v1_state.authz.server_id(),
+        );
+
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_server_action(&request_metadata, None, CatalogServerAction::CreateProject)
-            .await?;
+        let action = *event_ctx.action();
+
+        let authz_result = authorizer
+            .require_server_action(event_ctx.request_metadata(), None, action)
+            .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let CreateProjectRequest {
@@ -123,9 +140,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_project_name(&project_name)?;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let project_id = project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7()));
-        C::create_project(&project_id, project_name, t.transaction()).await?;
+        C::create_project(&project_id, project_name.clone(), t.transaction()).await?;
         authorizer
-            .create_project(&request_metadata, &project_id)
+            .create_project(event_ctx.request_metadata(), &project_id)
             .await?;
 
         TaskLogCleanupTask::schedule_task::<C>(
@@ -148,6 +165,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         t.commit().await?;
 
+        // Emit success event
+        let () = event_ctx.emit_project_created(project_id.clone(), project_name.clone());
+
         Ok(CreateProjectResponse { project_id })
     }
 
@@ -159,10 +179,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata.clone()),
+            context.v1_state.events.clone(),
+            project_id.clone(),
+            CatalogProjectAction::Rename,
+        );
+
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_project_action(&request_metadata, &project_id, CatalogProjectAction::Rename)
-            .await?;
+        let authz_result = authorizer
+            .require_project_action(
+                event_ctx.request_metadata(),
+                &project_id,
+                *event_ctx.action(),
+            )
+            .await;
+        let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         validate_project_name(&request.new_name)?;
@@ -180,14 +212,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetProjectResponse> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata.clone()),
+            context.v1_state.events.clone(),
+            project_id.clone(),
+            CatalogProjectAction::GetMetadata,
+        );
+
         let authorizer = context.v1_state.authz;
-        authorizer
+        let authz_result = authorizer
             .require_project_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 &project_id,
-                CatalogProjectAction::GetMetadata,
+                *event_ctx.action(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
@@ -214,10 +254,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata.clone()),
+            context.v1_state.events.clone(),
+            project_id.clone(),
+            CatalogProjectAction::Delete,
+        );
+
         let authorizer = context.v1_state.authz;
-        authorizer
-            .require_project_action(&request_metadata, &project_id, CatalogProjectAction::Delete)
-            .await?;
+        let authz_result = authorizer
+            .require_project_action(
+                event_ctx.request_metadata(),
+                &project_id,
+                *event_ctx.action(),
+            )
+            .await;
+        let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -237,7 +289,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<ListProjectsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        let authz_projects_response = authorizer.list_projects(&request_metadata).await?;
+
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(request_metadata.clone()),
+            context.v1_state.events.clone(),
+            ServerActionListProjects {},
+            authorizer.server_id(),
+        );
+
+        let authz_result = authorizer.list_projects(event_ctx.request_metadata()).await;
+        let (_event_ctx, authz_projects_response) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let authz_list_unsupported =
@@ -263,7 +324,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         .map(|p| (&p.project_id, CatalogProjectAction::GetMetadata))
                         .collect::<Vec<_>>(),
                 )
-                .await?;
+                .await
+                .map_err(authz_to_error_no_audit)?;
             projects
                 .into_iter()
                 .zip(decisions.into_inner())
@@ -298,29 +360,45 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         match request.warehouse {
             WarehouseFilter::WarehouseId { id } => {
+                let event_ctx = APIEventContext::for_warehouse(
+                    Arc::new(request_metadata),
+                    context.v1_state.events,
+                    id.into(),
+                    CatalogWarehouseAction::GetEndpointStatistics,
+                );
+
                 let warehouse = C::get_active_warehouse_by_id(
                     WarehouseId::from(id),
                     context.v1_state.catalog.clone(),
                 )
                 .await;
 
-                authorizer
+                let authz_result = authorizer
                     .require_warehouse_action(
-                        &request_metadata,
-                        id.into(),
+                        event_ctx.request_metadata(),
+                        *event_ctx.user_provided_entity(),
                         warehouse,
-                        CatalogWarehouseAction::GetEndpointStatistics,
+                        event_ctx.action().clone(),
                     )
-                    .await?;
+                    .await;
+                let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
             }
             WarehouseFilter::All | WarehouseFilter::Unmapped => {
-                authorizer
+                let event_ctx = APIEventContext::for_project(
+                    Arc::new(request_metadata),
+                    context.v1_state.events,
+                    project_id.clone(),
+                    CatalogProjectAction::GetEndpointStatistics,
+                );
+
+                let authz_result = authorizer
                     .require_project_action(
-                        &request_metadata,
+                        event_ctx.request_metadata(),
                         &project_id,
-                        CatalogProjectAction::GetEndpointStatistics,
+                        *event_ctx.action(),
                     )
-                    .await?;
+                    .await;
+                let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
             }
         }
 
@@ -350,16 +428,24 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
 
-        authorizer
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            project_id.clone(),
+            CatalogProjectAction::ModifyTaskQueueConfig,
+        );
+
+        let authz_result = authorizer
             .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::ModifyTaskQueueConfig,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                *event_ctx.action(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        set_task_queue_config_in_store(project_id, None, queue_name, request, context).await
+        set_task_queue_config_in_store(project_id, None, queue_name, &request, context).await
     }
 
     async fn get_project_task_queue_config(
@@ -367,17 +453,26 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetTaskQueueConfigResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
 
-        let project_id = request_metadata.require_project_id(None)?;
-        authorizer
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            project_id.clone(),
+            CatalogProjectAction::GetTaskQueueConfig,
+        );
+
+        let authz_result = authorizer
             .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::GetTaskQueueConfig,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                *event_ctx.action(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let filter = TaskQueueConfigFilter::ProjectId { project_id };

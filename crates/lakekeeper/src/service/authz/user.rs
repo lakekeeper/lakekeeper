@@ -1,13 +1,17 @@
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     api::RequestMetadata,
     service::{
-        Actor, UserId,
+        UserId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogUserAction,
             MustUse, UserOrRole,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -24,37 +28,28 @@ impl UserAction for CatalogUserAction {}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZUserActionForbidden {
-    user_id: UserId,
     action: String,
-    actor: Actor,
 }
 impl AuthZUserActionForbidden {
     #[must_use]
-    pub fn new(user_id: UserId, action: impl UserAction, actor: Actor) -> Self {
+    pub fn new(action: impl UserAction) -> Self {
         Self {
-            user_id,
             action: action.to_string(),
-            actor,
         }
     }
 }
-impl From<AuthZUserActionForbidden> for ErrorModel {
-    fn from(err: AuthZUserActionForbidden) -> Self {
-        let AuthZUserActionForbidden {
-            user_id,
-            action,
-            actor,
-        } = err;
+impl AuthorizationFailureSource for AuthZUserActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZUserActionForbidden { action } = self;
         ErrorModel::forbidden(
-            format!("User action `{action}` forbidden for {actor} on user `{user_id}`",),
+            format!("Action `{action}` forbidden",),
             "UserActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZUserActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZUserActionForbidden) -> Self {
-        ErrorModel::from(err).into()
+
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -75,21 +70,12 @@ impl From<BackendUnavailableOrCountMismatch> for RequireUserActionError {
         }
     }
 }
-impl From<RequireUserActionError> for ErrorModel {
-    fn from(err: RequireUserActionError) -> Self {
-        match err {
-            RequireUserActionError::AuthZUserActionForbidden(e) => e.into(),
-            RequireUserActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireUserActionError::CannotInspectPermissions(e) => e.into(),
-            RequireUserActionError::AuthorizationCountMismatch(e) => e.into(),
-        }
-    }
-}
-impl From<RequireUserActionError> for IcebergErrorResponse {
-    fn from(err: RequireUserActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireUserActionError => {
+    AuthZUserActionForbidden,
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+    AuthorizationCountMismatch,
+});
 
 #[async_trait::async_trait]
 pub trait AuthZUserOps: Authorizer {
@@ -172,10 +158,7 @@ pub trait AuthZUserOps: Authorizer {
         {
             Ok(())
         } else {
-            Err(
-                AuthZUserActionForbidden::new(user_id.clone(), action, metadata.actor().clone())
-                    .into(),
-            )
+            Err(AuthZUserActionForbidden::new(action).into())
         }
     }
 }

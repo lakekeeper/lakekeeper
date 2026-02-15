@@ -102,6 +102,7 @@ impl From<CatalogRoleAction> for RoleRelation {
 }
 
 impl OpenFgaRelation for RoleRelation {}
+impl CatalogAction for RoleRelation {}
 
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -257,7 +258,7 @@ pub enum ServerRelation {
     CanGrantOperator,
 }
 impl ServerAction for ServerRelation {}
-
+impl CatalogAction for ServerRelation {}
 impl OpenFgaRelation for ServerRelation {}
 
 impl From<CatalogServerAction> for ServerRelation {
@@ -443,7 +444,7 @@ pub enum ProjectRelation {
     CanGetProjectTasks,
     CanControlProjectTasks,
 }
-
+impl CatalogAction for ProjectRelation {}
 impl ProjectAction for ProjectRelation {}
 impl OpenFgaRelation for ProjectRelation {}
 

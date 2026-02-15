@@ -39,13 +39,12 @@ impl_error_stack_methods!(RoleIdNotFoundInProject);
 
 impl From<RoleIdNotFoundInProject> for ErrorModel {
     fn from(err: RoleIdNotFoundInProject) -> Self {
-        ErrorModel {
-            r#type: "RoleNotFoundInProject".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("RoleNotFoundInProject")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -68,13 +67,12 @@ impl_error_stack_methods!(RoleIdNotFound);
 
 impl From<RoleIdNotFound> for ErrorModel {
     fn from(err: RoleIdNotFound) -> Self {
-        ErrorModel {
-            r#type: "RoleIdNotFound".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("RoleIdNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -105,13 +103,12 @@ impl RoleNameAlreadyExists {
 impl_error_stack_methods!(RoleNameAlreadyExists);
 impl From<RoleNameAlreadyExists> for ErrorModel {
     fn from(err: RoleNameAlreadyExists) -> Self {
-        ErrorModel {
-            r#type: "RoleNameAlreadyExists".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("RoleNameAlreadyExists")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -129,13 +126,12 @@ impl RoleSourceIdConflict {
 impl_error_stack_methods!(RoleSourceIdConflict);
 impl From<RoleSourceIdConflict> for ErrorModel {
     fn from(err: RoleSourceIdConflict) -> Self {
-        ErrorModel {
-            r#type: "RoleSourceIdConflict".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("RoleSourceIdConflict")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -368,3 +364,13 @@ where
 }
 
 impl<T> CatalogRoleOps for T where T: CatalogStore {}
+
+// --------------------------- AuthorizationFailureSource implementations ---------------------------
+use crate::service::events::impl_authorization_failure_source;
+
+impl_authorization_failure_source!(CreateRoleError => InternalCatalogError);
+impl_authorization_failure_source!(ListRolesError => InternalCatalogError);
+impl_authorization_failure_source!(GetRoleAcrossProjectsError => InternalCatalogError);
+impl_authorization_failure_source!(DeleteRoleError => InternalCatalogError);
+impl_authorization_failure_source!(UpdateRoleError => InternalCatalogError);
+impl_authorization_failure_source!(SearchRolesError => InternalCatalogError);

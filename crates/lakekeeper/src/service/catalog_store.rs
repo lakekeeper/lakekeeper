@@ -589,7 +589,7 @@ where
         scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<Vec<ResolvedTask>>;
+    ) -> Result<Vec<ResolvedTask>, ResolveTasksError>;
 
     async fn record_task_success_impl(
         id: TaskAttemptId,
@@ -611,7 +611,7 @@ where
         scope: TaskDetailsScope,
         num_attempts: u16, // Number of attempts to retrieve in the task details
         state: Self::State,
-    ) -> Result<Option<TaskDetails>>;
+    ) -> Result<Option<TaskDetails>, GetTaskDetailsError>;
 
     /// List tasks
     async fn list_tasks_impl(
@@ -673,7 +673,7 @@ where
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

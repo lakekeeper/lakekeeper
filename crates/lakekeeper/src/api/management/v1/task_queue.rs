@@ -52,7 +52,7 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
     project_id: ProjectId,
     warehouse_id: Option<WarehouseId>,
     queue_name: &TaskQueueName,
-    request: SetTaskQueueConfigRequest,
+    request: &SetTaskQueueConfigRequest,
     context: ApiContext<State<A, C, S>>,
 ) -> Result<()> {
     let task_queues = context.v1_state.registered_task_queues;

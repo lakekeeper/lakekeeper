@@ -51,13 +51,12 @@ define_simple_tabular_err!(
 
 impl From<RequiredViewComponentMissing> for ErrorModel {
     fn from(err: RequiredViewComponentMissing) -> Self {
-        ErrorModel {
-            message: err.to_string(),
-            r#type: "RequiredViewComponentMissing".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            source: None,
-            stack: err.stack,
-        }
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("RequiredViewComponentMissing")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -68,13 +67,12 @@ define_simple_tabular_err!(
 
 impl From<InvalidViewRepresentationsInternal> for ErrorModel {
     fn from(err: InvalidViewRepresentationsInternal) -> Self {
-        ErrorModel {
-            message: err.to_string(),
-            r#type: "InvalidViewRepresentations".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            source: None,
-            stack: err.stack,
-        }
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("InvalidViewRepresentations")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -85,13 +83,12 @@ define_simple_tabular_err!(
 
 impl From<ViewMetadataValidationFailedInternal> for ErrorModel {
     fn from(err: ViewMetadataValidationFailedInternal) -> Self {
-        ErrorModel {
-            message: err.to_string(),
-            r#type: "ViewMetadataValidationFailed".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            source: None,
-            stack: err.stack,
-        }
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("ViewMetadataValidationFailed")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
     }
 }
 

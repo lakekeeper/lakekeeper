@@ -1,21 +1,24 @@
 use std::sync::Arc;
 
+use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::RenameTableRequest;
 
 use crate::{
+    WarehouseId,
     api::{ApiContext, iceberg::types::Prefix},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
+        CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result, SecretStore, State,
+        TabularId, TabularListFlags, Transaction, ViewInfo,
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
+            AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
         contract_verification::ContractVerification,
-        events::RenameViewEvent,
+        events::{APIEventContext, context::ResolvedView},
     },
 };
 
@@ -40,79 +43,47 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // 2) renaming the old view
     let authorizer = state.v1_state.authz;
 
-    let (warehouse, destination_namespace, source_namespace, source_view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone(),),
-        C::get_namespace(
-            warehouse_id,
-            &destination.namespace,
-            state.v1_state.catalog.clone(),
-        ),
-        C::get_namespace(
-            warehouse_id,
-            &source.namespace,
-            state.v1_state.catalog.clone(),
-        ),
-        C::get_view_info(
-            warehouse_id,
-            source.clone(),
-            TabularListFlags::active(),
-            state.v1_state.catalog.clone(),
-        )
-    );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let source_namespace = authorizer.require_namespace_presence(
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(request_metadata),
+        state.v1_state.events,
         warehouse_id,
-        source.namespace.clone(),
-        source_namespace,
-    )?;
-    let source_view_info =
-        authorizer.require_view_presence(warehouse_id, source.clone(), source_view_info)?;
-
-    let (warehouse, source_namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-        &authorizer,
-        &warehouse,
-        &source_view_info,
-        source_namespace,
-        state.v1_state.catalog.clone(),
-        AuthZCannotSeeView::new(warehouse_id, source.clone()),
-    )
-    .await?;
-
-    let (destination_namespace, source_view_info) = tokio::join!(
-        // Check 1)
-        authorizer.require_namespace_action(
-            &request_metadata,
-            &warehouse,
-            &destination.namespace,
-            destination_namespace,
-            CatalogNamespaceAction::CreateView {
-                properties: Arc::new(source_view_info.properties().clone().into_iter().collect()),
-            },
-        ),
-        // Check 2)
-        authorizer.require_view_action(
-            &request_metadata,
-            &warehouse,
-            &source_namespace,
-            source.clone(),
-            Ok::<_, RequireViewActionError>(Some(source_view_info)),
-            CatalogViewAction::Rename,
-        )
+        source.clone(),
+        CatalogViewAction::Rename,
     );
-    let source_view_info = source_view_info?;
-    let _destination_namespace = destination_namespace?;
+
+    let authz_result = authorize_rename_view::<C, _>(
+        event_ctx.request_metadata(),
+        warehouse_id,
+        source,
+        destination,
+        &authorizer,
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+    let (
+        event_ctx,
+        AuthorizeRenameViewResult {
+            warehouse,
+            source_view_info,
+            destination_namespace,
+        },
+    ) = event_ctx.emit_authz(authz_result)?;
+
+    let source_id = source_view_info.view_id();
+    let event_ctx = event_ctx.resolve(ResolvedView {
+        warehouse: warehouse.clone(),
+        view: Arc::new(source_view_info),
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     if source == destination {
         return Ok(());
     }
 
-    let source_id = source_view_info.view_id();
-
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     C::rename_tabular(
         warehouse_id,
-        source_view_info.view_id(),
+        source_id,
         source,
         destination,
         t.transaction(),
@@ -127,18 +98,84 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     t.commit().await?;
 
-    state
-        .v1_state
-        .events
-        .view_renamed(RenameViewEvent {
-            warehouse_id,
-            view_id: source_id,
-            request: Arc::new(request),
-            request_metadata: Arc::new(request_metadata),
-        })
-        .await;
+    event_ctx.emit_view_renamed_async(destination_namespace.namespace, Arc::new(request));
 
     Ok(())
+}
+
+struct AuthorizeRenameViewResult {
+    warehouse: Arc<ResolvedWarehouse>,
+    source_view_info: ViewInfo,
+    destination_namespace: NamespaceHierarchy,
+}
+
+async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    source: &TableIdent,
+    destination: &TableIdent,
+    authorizer: &A,
+    state: C::State,
+) -> Result<AuthorizeRenameViewResult, AuthZError> {
+    let (warehouse, destination_namespace, source_namespace, source_view_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, state.clone(),),
+        C::get_namespace(warehouse_id, &destination.namespace, state.clone(),),
+        C::get_namespace(warehouse_id, &source.namespace, state.clone(),),
+        C::get_view_info(
+            warehouse_id,
+            source.clone(),
+            TabularListFlags::active(),
+            state.clone(),
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let source_namespace = authorizer.require_namespace_presence(
+        warehouse_id,
+        source.namespace.clone(),
+        source_namespace,
+    )?;
+    let source_view_info =
+        authorizer.require_view_presence(warehouse_id, source.clone(), source_view_info)?;
+
+    let (warehouse, source_namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
+        &warehouse,
+        source_namespace,
+        &source_view_info,
+        AuthZCannotSeeView::new_not_found(warehouse_id, source.clone()),
+        authorizer,
+        state.clone(),
+    )
+    .await?;
+
+    let (destination_namespace, source_view_info) = tokio::join!(
+        // Check 1)
+        authorizer.require_namespace_action(
+            request_metadata,
+            &warehouse,
+            &destination.namespace,
+            destination_namespace,
+            CatalogNamespaceAction::CreateView {
+                properties: Arc::new(source_view_info.properties().clone().into_iter().collect()),
+            },
+        ),
+        // Check 2)
+        authorizer.require_view_action(
+            request_metadata,
+            &warehouse,
+            &source_namespace,
+            source.clone(),
+            Ok::<_, RequireViewActionError>(Some(source_view_info)),
+            CatalogViewAction::Rename,
+        )
+    );
+    let source_view_info = source_view_info?;
+    let destination_namespace = destination_namespace?;
+
+    Ok(AuthorizeRenameViewResult {
+        warehouse,
+        source_view_info,
+        destination_namespace,
+    })
 }
 
 #[cfg(test)]

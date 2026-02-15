@@ -1,19 +1,25 @@
 use std::{collections::HashMap, sync::Arc};
 
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use http::StatusCode;
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        Actor, AuthZNamespaceInfo, CachePolicy, CatalogBackendError, CatalogGetNamespaceError,
+        AuthZNamespaceInfo, CachePolicy, CatalogBackendError, CatalogGetNamespaceError,
         CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier,
         NamespaceHierarchy, NamespaceId, NamespaceIdentOrId, NamespaceNotFound,
         NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogNamespaceAction, IsAllowedActionError, MustUse, UserOrRole,
+            CatalogAction, CatalogNamespaceAction, IsAllowedActionError, MustUse,
+            RequireWarehouseActionError, UserOrRole,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedNamespace,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -32,40 +38,132 @@ impl NamespaceAction for CatalogNamespaceAction {}
 pub struct AuthZCannotSeeNamespace {
     warehouse_id: WarehouseId,
     namespace: NamespaceIdentOrId,
+    /// Whether the resource was confirmed not to exist (for audit logging)
+    /// HTTP response is deliberately ambiguous, but audit log should be concrete
+    internal_resource_not_found: bool,
+    internal_error_stack: Vec<String>,
 }
 impl AuthZCannotSeeNamespace {
     #[must_use]
-    pub fn new(warehouse_id: WarehouseId, namespace: impl Into<NamespaceIdentOrId>) -> Self {
+    pub fn new(
+        warehouse_id: WarehouseId,
+        namespace: impl Into<NamespaceIdentOrId>,
+        resource_not_found: bool,
+        error_stack: Vec<String>,
+    ) -> Self {
         Self {
             warehouse_id,
             namespace: namespace.into(),
+            internal_resource_not_found: resource_not_found,
+            internal_error_stack: error_stack,
         }
+    }
+    #[must_use]
+    pub fn new_not_found(
+        warehouse_id: WarehouseId,
+        namespace: impl Into<NamespaceIdentOrId>,
+    ) -> Self {
+        Self::new(warehouse_id, namespace, true, vec![])
+    }
+
+    #[must_use]
+    pub fn new_forbidden(
+        warehouse_id: WarehouseId,
+        namespace: impl Into<NamespaceIdentOrId>,
+    ) -> Self {
+        Self::new(warehouse_id, namespace, false, vec![])
     }
 }
 impl From<NamespaceNotFound> for AuthZCannotSeeNamespace {
     fn from(err: NamespaceNotFound) -> Self {
-        // Deliberately discard the stack trace to avoid leaking
-        // information about the existence of the namespace.
+        let NamespaceNotFound {
+            warehouse_id,
+            namespace,
+            stack,
+        } = err;
         AuthZCannotSeeNamespace {
-            warehouse_id: err.warehouse_id,
-            namespace: err.namespace,
+            warehouse_id,
+            namespace,
+            internal_resource_not_found: true, // Resource confirmed not to exist
+            internal_error_stack: stack,
         }
     }
 }
-impl From<AuthZCannotSeeNamespace> for ErrorModel {
-    fn from(err: AuthZCannotSeeNamespace) -> Self {
+impl AuthorizationFailureSource for AuthZCannotSeeNamespace {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.internal_resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
+    }
+
+    fn into_error_model(self) -> ErrorModel {
         let AuthZCannotSeeNamespace {
             warehouse_id,
             namespace,
-        } = err;
+            internal_resource_not_found: _,
+            internal_error_stack: internal_server_stack,
+        } = self;
         NamespaceNotFound::new(warehouse_id, namespace)
             .append_detail("Namespace not found or access denied")
+            .append_details(internal_server_stack)
             .into()
     }
 }
-impl From<AuthZCannotSeeNamespace> for IcebergErrorResponse {
-    fn from(err: AuthZCannotSeeNamespace) -> Self {
-        ErrorModel::from(err).into()
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct AuthZCannotSeeAnonymousNamespace {
+    warehouse_id: WarehouseId,
+    /// Whether the resource was confirmed not to exist (for audit logging)
+    /// HTTP response is deliberately ambiguous, but audit log should be concrete
+    internal_resource_not_found: bool,
+    internal_error_stack: Vec<String>,
+}
+impl AuthZCannotSeeAnonymousNamespace {
+    #[must_use]
+    pub fn new(
+        warehouse_id: WarehouseId,
+        resource_not_found: bool,
+        error_stack: Vec<String>,
+    ) -> Self {
+        Self {
+            warehouse_id,
+            internal_resource_not_found: resource_not_found,
+            internal_error_stack: error_stack,
+        }
+    }
+    #[must_use]
+    pub fn new_not_found(warehouse_id: WarehouseId) -> Self {
+        Self::new(warehouse_id, true, vec![])
+    }
+
+    #[must_use]
+    pub fn new_forbidden(warehouse_id: WarehouseId) -> Self {
+        Self::new(warehouse_id, false, vec![])
+    }
+}
+impl AuthorizationFailureSource for AuthZCannotSeeAnonymousNamespace {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.internal_resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZCannotSeeAnonymousNamespace {
+            internal_resource_not_found: _,
+            internal_error_stack: internal_server_stack,
+            ..
+        } = self;
+        ErrorModel::builder()
+            .r#type("NoSuchNamespaceException")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message("Namespace not found or access denied")
+            .stack(internal_server_stack)
+            .build()
     }
 }
 
@@ -74,7 +172,6 @@ pub struct AuthZNamespaceActionForbidden {
     warehouse_id: WarehouseId,
     namespace: NamespaceIdentOrId,
     action: String,
-    actor: Box<Actor>,
 }
 impl AuthZNamespaceActionForbidden {
     #[must_use]
@@ -82,36 +179,32 @@ impl AuthZNamespaceActionForbidden {
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId>,
         action: &impl NamespaceAction,
-        actor: Actor,
     ) -> Self {
         Self {
             warehouse_id,
             namespace: namespace.into(),
             action: action.as_log_str(),
-            actor: Box::new(actor),
         }
     }
 }
-impl From<AuthZNamespaceActionForbidden> for ErrorModel {
-    fn from(err: AuthZNamespaceActionForbidden) -> Self {
+
+impl AuthorizationFailureSource for AuthZNamespaceActionForbidden {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+    fn into_error_model(self) -> ErrorModel {
         let AuthZNamespaceActionForbidden {
             warehouse_id,
             namespace,
             action,
-            actor,
-        } = err;
+        } = self;
         ErrorModel::forbidden(
             format!(
-                "Namespace action `{action}` forbidden for {actor} on namespace with `{namespace}` in warehouse `{warehouse_id}`"
+                "Namespace action `{action}` forbidden on namespace with {namespace} in warehouse `{warehouse_id}`"
             ),
             "NamespaceActionForbidden",
             None,
         )
-    }
-}
-impl From<AuthZNamespaceActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZNamespaceActionForbidden) -> Self {
-        ErrorModel::from(err).into()
     }
 }
 
@@ -123,6 +216,7 @@ pub enum RequireNamespaceActionError {
     CannotInspectPermissions(CannotInspectPermissions),
     // Hide the existence of the namespace
     AuthZCannotSeeNamespace(AuthZCannotSeeNamespace),
+    AuthZCannotSeeAnonymousNamespace(AuthZCannotSeeAnonymousNamespace),
     // Propagated directly
     CatalogBackendError(CatalogBackendError),
     InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
@@ -154,25 +248,27 @@ impl From<CatalogGetNamespaceError> for RequireNamespaceActionError {
         }
     }
 }
-impl From<RequireNamespaceActionError> for ErrorModel {
-    fn from(err: RequireNamespaceActionError) -> Self {
-        match err {
-            RequireNamespaceActionError::AuthZCannotSeeNamespace(e) => e.into(),
-            RequireNamespaceActionError::CatalogBackendError(e) => e.into(),
-            RequireNamespaceActionError::InvalidNamespaceIdentifier(e) => e.into(),
-            RequireNamespaceActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireNamespaceActionError::AuthZNamespaceActionForbidden(e) => e.into(),
-            RequireNamespaceActionError::AuthorizationCountMismatch(e) => e.into(),
-            RequireNamespaceActionError::SerializationError(e) => e.into(),
-            RequireNamespaceActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
+delegate_authorization_failure_source!(RequireNamespaceActionError => {
+    AuthZCannotSeeNamespace,
+    AuthZCannotSeeAnonymousNamespace,
+    AuthZNamespaceActionForbidden,
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+    AuthorizationCountMismatch,
+    CatalogBackendError,
+    InvalidNamespaceIdentifier,
+    SerializationError,
+});
+
+#[derive(Debug, derive_more::From)]
+pub enum LoadAndAuthorizeNamespaceError {
+    RequireWarehouseActionError(RequireWarehouseActionError),
+    RequireNamespaceActionError(RequireNamespaceActionError),
 }
-impl From<RequireNamespaceActionError> for IcebergErrorResponse {
-    fn from(err: RequireNamespaceActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(LoadAndAuthorizeNamespaceError => {
+    RequireWarehouseActionError,
+    RequireNamespaceActionError,
+});
 
 #[async_trait::async_trait]
 pub trait AuthzNamespaceOps: Authorizer {
@@ -185,7 +281,7 @@ pub trait AuthzNamespaceOps: Authorizer {
         let namespace = namespace?;
         let user_provided_namespace = user_provided_namespace.into();
         let cant_see_err =
-            AuthZCannotSeeNamespace::new(warehouse_id, user_provided_namespace).into();
+            AuthZCannotSeeNamespace::new_not_found(warehouse_id, user_provided_namespace).into();
         let Some(namespace) = namespace else {
             return Err(cant_see_err);
         };
@@ -195,18 +291,20 @@ pub trait AuthzNamespaceOps: Authorizer {
     async fn load_and_authorize_namespace_action<C: CatalogStore>(
         &self,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        namespace: impl Into<NamespaceIdentOrId> + Send,
+        namespace: UserProvidedNamespace,
         action: impl Into<Self::NamespaceAction> + Send,
         cache_policy: CachePolicy,
         catalog_state: C::State,
-    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), ErrorModel> {
-        let provided_namespace = namespace.into();
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), LoadAndAuthorizeNamespaceError> {
+        let warehouse_id = namespace.warehouse_id;
+        let namespace_ident_or_id = namespace.namespace.clone();
+        let action = action.into();
+
         let (warehouse, namespace) = tokio::join!(
             C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
             C::get_namespace_cache_aware(
                 warehouse_id,
-                provided_namespace.clone(),
+                namespace_ident_or_id.clone(),
                 cache_policy,
                 catalog_state.clone()
             )
@@ -217,9 +315,9 @@ pub trait AuthzNamespaceOps: Authorizer {
             .require_namespace_action(
                 request_metadata,
                 &warehouse,
-                provided_namespace,
+                namespace_ident_or_id,
                 namespace,
-                action.into(),
+                action,
             )
             .await?;
 
@@ -234,7 +332,6 @@ pub trait AuthzNamespaceOps: Authorizer {
         namespace: Result<Option<NamespaceHierarchy>, CatalogGetNamespaceError>,
         action: impl Into<Self::NamespaceAction> + Send,
     ) -> Result<NamespaceHierarchy, RequireNamespaceActionError> {
-        let actor = metadata.actor();
         // OK to return because this goes via the Into method
         // of RequireNamespaceActionError
         let user_provided_namespace = user_provided_namespace.into();
@@ -243,9 +340,11 @@ pub trait AuthzNamespaceOps: Authorizer {
             user_provided_namespace.clone(),
             namespace,
         )?;
-        let cant_see_err =
-            AuthZCannotSeeNamespace::new(warehouse.warehouse_id, user_provided_namespace.clone())
-                .into();
+        let cant_see_err = AuthZCannotSeeNamespace::new_forbidden(
+            warehouse.warehouse_id,
+            user_provided_namespace.clone(),
+        )
+        .into();
 
         let namespace_name = namespace.namespace_ident().clone();
 
@@ -310,7 +409,6 @@ pub trait AuthzNamespaceOps: Authorizer {
                         warehouse.warehouse_id,
                         namespace_name.clone(),
                         &action,
-                        actor.clone(),
                     )
                     .into()
                 })

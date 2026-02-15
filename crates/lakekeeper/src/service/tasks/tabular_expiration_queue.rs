@@ -448,7 +448,7 @@ mod test {
             if gone || std::time::Instant::now() >= deadline {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())

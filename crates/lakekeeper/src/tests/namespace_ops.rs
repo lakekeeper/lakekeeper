@@ -614,6 +614,9 @@ async fn test_cache_invalidation_on_api_update_properties(pool: PgPool) {
     .unwrap();
     assert_eq!(update_response.updated, vec!["key1".to_string()]);
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Get from cache - should have updated properties
     let namespace_after = PostgresBackend::get_namespace(
         warehouse_resp.warehouse_id,
@@ -679,6 +682,9 @@ async fn test_cache_invalidation_on_api_set_protection(pool: PgPool) {
     .await
     .unwrap();
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Get from cache - should have updated protection
     let namespace_after = PostgresBackend::get_namespace(
         warehouse_resp.warehouse_id,
@@ -701,6 +707,9 @@ async fn test_cache_invalidation_on_api_set_protection(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let namespace_final = PostgresBackend::get_namespace(
         warehouse_resp.warehouse_id,

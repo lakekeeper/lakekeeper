@@ -11,7 +11,7 @@ use crate::{
     },
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        TableId, ViewId,
+        DatabaseIntegrityError, TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
@@ -76,25 +76,19 @@ fn task_entity_from_db(
     warehouse_id: Option<Uuid>,
     entity_id: Option<Uuid>,
     entity_name: Option<Vec<String>>,
-) -> Result<TaskEntity, IcebergErrorResponse> {
+) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
         TaskEntityTypeDB::View | TaskEntityTypeDB::Table => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    ErrorModel::internal(
-                        "WarehouseId is missing for Warehouse task.",
-                        "InternalError",
-                        None,
+                    DatabaseIntegrityError::new(
+                        "WarehouseId is missing for table or view scoped task.",
                     )
                 })
                 .map(WarehouseId::from)?;
 
             let entity_id = entity_id.ok_or_else(|| {
-                ErrorModel::internal(
-                    "EntityId is missing for table or view scoped task.",
-                    "InternalError",
-                    None,
-                )
+                DatabaseIntegrityError::new("EntityId is missing for table or view scoped task.")
             })?;
 
             let entity_id = match entity_type {
@@ -108,11 +102,7 @@ fn task_entity_from_db(
             };
 
             let entity_name = entity_name.ok_or_else(|| {
-                ErrorModel::internal(
-                    "Entity name is missing for table or view scoped task.",
-                    "InternalError",
-                    None,
-                )
+                DatabaseIntegrityError::new("Entity name is missing for table or view scoped task.")
             })?;
 
             Ok(TaskEntity::EntityInWarehouse {
@@ -125,11 +115,7 @@ fn task_entity_from_db(
         TaskEntityTypeDB::Warehouse => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    ErrorModel::internal(
-                        "WarehouseId is missing for warehouse scoped task.",
-                        "InternalError",
-                        None,
-                    )
+                    DatabaseIntegrityError::new("WarehouseId is missing for warehouse scoped task.")
                 })
                 .map(WarehouseId::from)?;
             Ok(TaskEntity::Warehouse { warehouse_id })
@@ -438,7 +424,8 @@ pub(crate) async fn pick_task(
             task.warehouse_id,
             task.entity_id,
             task.entity_name.clone(),
-        )?;
+        )
+        .map_err(ErrorModel::from)?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
                 project_id,
@@ -834,9 +821,9 @@ pub(crate) async fn set_task_queue_config(
     queue_name: &TaskQueueName,
     project_id: ProjectId,
     warehouse_id: Option<WarehouseId>,
-    config: SetTaskQueueConfigRequest,
+    config: &SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
-    let serialized = config.queue_config.0;
+    let serialized = &config.queue_config.0;
     let max_time_since_last_heartbeat =
         if let Some(max_seconds_since_last_heartbeat) = config.max_seconds_since_last_heartbeat {
             Some(PgInterval {
@@ -2188,7 +2175,7 @@ mod test {
             &tq_name,
             project_id.clone(),
             Some(warehouse_id),
-            config,
+            &config,
         )
         .await
         .unwrap();
@@ -2228,7 +2215,7 @@ mod test {
             &warehouse_task_queue_name,
             project_id.clone(),
             Some(warehouse_id),
-            warehouse_config,
+            &warehouse_config,
         )
         .await
         .unwrap();
@@ -2245,7 +2232,7 @@ mod test {
             &project_task_queue_name,
             project_id.clone(),
             None,
-            project_config,
+            &project_config,
         )
         .await
         .unwrap();
@@ -2284,7 +2271,7 @@ mod test {
             &task_queue_name,
             project_id.clone(),
             Some(warehouse_id),
-            warehouse_config,
+            &warehouse_config,
         )
         .await
         .unwrap();
@@ -2300,7 +2287,7 @@ mod test {
             &task_queue_name,
             project_id.clone(),
             None,
-            project_config,
+            &project_config,
         )
         .await
         .unwrap();
@@ -2334,7 +2321,7 @@ mod test {
             &tq_name,
             project_id.clone(),
             Some(warehouse_id),
-            config,
+            &config,
         )
         .await
         .unwrap();
@@ -3414,7 +3401,7 @@ mod test {
             queue_name,
             project_id,
             warehouse_id,
-            SetTaskQueueConfigRequest {
+            &SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(config),
                 max_seconds_since_last_heartbeat: None,
             },

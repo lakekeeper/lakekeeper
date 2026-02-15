@@ -15,7 +15,10 @@ use crate::{
         BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
         InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
         SerializationError, StateOrTransaction, TableIdent, TabularId, Transaction,
-        WarehouseIdNotFound, define_transparent_error, define_version_newtype,
+        WarehouseIdNotFound,
+        authz::AuthZCannotSeeNamespace,
+        define_transparent_error, define_version_newtype,
+        events::impl_authorization_failure_source,
         impl_error_stack_methods, impl_from_with_detail,
         namespace_cache::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
@@ -285,13 +288,13 @@ impl From<NamespacePropertiesSerializationError> for ErrorModel {
         let message = err.to_string();
         let NamespacePropertiesSerializationError { stack, source, .. } = err;
 
-        ErrorModel {
-            r#type: "NamespacePropertiesSerializationError".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            message,
-            stack,
-            source: Some(Box::new(source)),
-        }
+        ErrorModel::builder()
+            .r#type("NamespacePropertiesSerializationError")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .message(message)
+            .stack(stack)
+            .source(Some(Box::new(source)))
+            .build()
     }
 }
 
@@ -321,19 +324,18 @@ impl InvalidNamespaceIdentifier {
     }
 }
 impl_error_stack_methods!(InvalidNamespaceIdentifier);
-
+impl_authorization_failure_source!(InvalidNamespaceIdentifier => InternalCatalogError);
 impl From<InvalidNamespaceIdentifier> for ErrorModel {
     fn from(err: InvalidNamespaceIdentifier) -> Self {
         let message = err.to_string();
         let InvalidNamespaceIdentifier { stack, .. } = err;
 
-        ErrorModel {
-            r#type: "InvalidNamespaceIdentifier".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            message,
-            stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("InvalidNamespaceIdentifier")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .message(message)
+            .stack(stack)
+            .build()
     }
 }
 
@@ -362,15 +364,15 @@ define_simple_namespace_err!(
 );
 impl From<NamespaceNotFound> for ErrorModel {
     fn from(err: NamespaceNotFound) -> Self {
-        ErrorModel {
-            r#type: "NoSuchNamespaceException".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("NoSuchNamespaceException")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
+impl_authorization_failure_source!(NamespaceNotFound => ResourceNotFound);
 
 // --------------------------- GET ERROR ---------------------------
 define_transparent_error! {
@@ -429,13 +431,12 @@ impl_error_stack_methods!(NamespaceAlreadyExists);
 
 impl From<NamespaceAlreadyExists> for ErrorModel {
     fn from(err: NamespaceAlreadyExists) -> Self {
-        ErrorModel {
-            r#type: "AlreadyExistsException".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("AlreadyExistsException")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -463,13 +464,12 @@ define_simple_namespace_err!(
 
 impl From<NamespaceProtected> for ErrorModel {
     fn from(err: NamespaceProtected) -> Self {
-        ErrorModel {
-            r#type: "NamespaceProtected".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("NamespaceProtected")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -480,13 +480,12 @@ define_simple_namespace_err!(
 
 impl From<ChildNamespaceProtected> for ErrorModel {
     fn from(err: ChildNamespaceProtected) -> Self {
-        ErrorModel {
-            r#type: "ChildNamespaceProtected".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("ChildNamespaceProtected")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -497,13 +496,12 @@ define_simple_namespace_err!(
 
 impl From<ChildTabularProtected> for ErrorModel {
     fn from(err: ChildTabularProtected) -> Self {
-        ErrorModel {
-            r#type: "ChildTabularProtected".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("ChildTabularProtected")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -514,13 +512,12 @@ define_simple_namespace_err!(
 
 impl From<NamespaceNotEmpty> for ErrorModel {
     fn from(err: NamespaceNotEmpty) -> Self {
-        ErrorModel {
-            r#type: "NamespaceNotEmptyException".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("NamespaceNotEmptyException")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -531,13 +528,12 @@ define_simple_namespace_err!(
 
 impl From<NamespaceHasRunningTabularExpirations> for ErrorModel {
     fn from(err: NamespaceHasRunningTabularExpirations) -> Self {
-        ErrorModel {
-            r#type: "NamespaceHasRunningTabularExpirations".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("NamespaceHasRunningTabularExpirations")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -781,16 +777,11 @@ where
 pub(crate) fn require_namespace_for_tabular<'a>(
     namespaces: &'a std::collections::HashMap<NamespaceId, NamespaceWithParent>,
     tabular: &impl BasicTabularInfo,
-) -> Result<&'a NamespaceWithParent, ErrorModel> {
+) -> Result<&'a NamespaceWithParent, AuthZCannotSeeNamespace> {
     namespaces.get(&tabular.namespace_id()).ok_or_else(|| {
-        ErrorModel::internal(
-            format!(
-                "Namespace with ID '{}' not found for tabular '{}'",
-                tabular.namespace_id(),
-                tabular.tabular_ident()
-            ),
-            "NamespaceNotFoundForTabular",
-            None,
+        AuthZCannotSeeNamespace::new_not_found(
+            tabular.warehouse_id(),
+            tabular.tabular_ident().namespace.clone(),
         )
     })
 }

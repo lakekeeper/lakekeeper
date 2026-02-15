@@ -3,20 +3,21 @@ use std::{
     sync::Arc,
 };
 
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools as _;
+use lakekeeper_io::s3::S3Location;
 
 use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        Actor, AuthZTableInfo, AuthZViewInfo, CatalogBackendError, GetTabularInfoByLocationError,
-        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
-        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
-        SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
-        UnexpectedTabularInResponse, WarehouseStatus,
+        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError,
+        GetTabularInfoByLocationError, GetTabularInfoError, InternalParseLocationError,
+        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
+        TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
-            AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
+            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
             CatalogTableAction, MustUse, UserOrRole,
@@ -24,6 +25,10 @@ use crate::{
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
             CatalogWarehouseOps, TabularListFlags,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedTable,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -36,19 +41,18 @@ const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::GetMetadata;
 /// It checks warehouse and namespace ID and version consistency, refetching if necessary.
 /// Warehouse and namespace refetches are performed in parallel when both are required.
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn refresh_warehouse_and_namespace_if_needed<C, A, T, E>(
-    authorizer: &A,
+pub(crate) async fn refresh_warehouse_and_namespace_if_needed<C, A, T>(
     warehouse: &ResolvedWarehouse,
-    tabular_info: &T,
     namespace: NamespaceHierarchy,
+    tabular_info: &T,
+    cannot_see_error: impl Into<AuthZError>,
+    authorizer: &A,
     catalog_state: C::State,
-    cannot_see_error: E,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), ErrorModel>
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), AuthZError>
 where
     C: CatalogStore,
     A: AuthzNamespaceOps + AuthzWarehouseOps,
     T: BasicTabularInfo,
-    E: Into<ErrorModel>,
 {
     let warehouse_id = warehouse.warehouse_id;
     let required_warehouse_version = tabular_info.warehouse_version();
@@ -175,7 +179,7 @@ where
             tabular_id = %tabular_info.tabular_id(),
             tabular_namespace_id = %tabular_info.namespace_id(),
             refetched_namespace_id = %refetched_namespace.namespace.namespace_id(),
-            "Namespace ID mismatch persists after refetch - TOCTOU race condition or data corruption"
+            "Namespace ID mismatch persists after refetch - High Replication Lag, TOCTOU race condition or data corruption"
         );
 
         return Err(cannot_see_error.into());
@@ -265,30 +269,104 @@ impl TableAction for CatalogTableAction {}
 pub struct AuthZCannotSeeTable {
     warehouse_id: WarehouseId,
     table: TableIdentOrId,
+    internal_resource_not_found: bool,
 }
 impl AuthZCannotSeeTable {
     #[must_use]
-    pub fn new(warehouse_id: WarehouseId, table: impl Into<TableIdentOrId>) -> Self {
+    fn new(
+        warehouse_id: WarehouseId,
+        table: impl Into<TableIdentOrId>,
+        resource_not_found: bool,
+    ) -> Self {
         Self {
             warehouse_id,
             table: table.into(),
+            internal_resource_not_found: resource_not_found,
         }
     }
+
+    #[must_use]
+    pub fn new_not_found(warehouse_id: WarehouseId, table: impl Into<TableIdentOrId>) -> Self {
+        Self::new(warehouse_id, table, true)
+    }
+
+    #[must_use]
+    pub fn new_forbidden(warehouse_id: WarehouseId, table: impl Into<TableIdentOrId>) -> Self {
+        Self::new(warehouse_id, table, false)
+    }
 }
-impl From<AuthZCannotSeeTable> for ErrorModel {
-    fn from(err: AuthZCannotSeeTable) -> Self {
+
+impl AuthorizationFailureSource for AuthZCannotSeeTable {
+    fn into_error_model(self) -> ErrorModel {
         let AuthZCannotSeeTable {
             warehouse_id,
             table,
-        } = err;
+            internal_resource_not_found: _,
+        } = self;
         TabularNotFound::new(warehouse_id, table)
             .append_detail("Table not found or access denied")
             .into()
     }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.internal_resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
+    }
 }
-impl From<AuthZCannotSeeTable> for IcebergErrorResponse {
-    fn from(err: AuthZCannotSeeTable) -> Self {
-        ErrorModel::from(err).into()
+
+#[derive(Debug, Clone)]
+pub struct AuthZCannotSeeTableLocation {
+    warehouse_id: WarehouseId,
+    table_location: Arc<S3Location>,
+    is_not_found: bool,
+}
+impl AuthZCannotSeeTableLocation {
+    #[must_use]
+    pub fn new(
+        warehouse_id: WarehouseId,
+        table_location: Arc<S3Location>,
+        is_not_found: bool,
+    ) -> Self {
+        Self {
+            warehouse_id,
+            table_location,
+            is_not_found,
+        }
+    }
+
+    #[must_use]
+    pub fn new_not_found(warehouse_id: WarehouseId, table_location: Arc<S3Location>) -> Self {
+        Self::new(warehouse_id, table_location, true)
+    }
+
+    #[must_use]
+    pub fn new_forbidden(warehouse_id: WarehouseId, table_location: Arc<S3Location>) -> Self {
+        Self::new(warehouse_id, table_location, false)
+    }
+}
+impl AuthorizationFailureSource for AuthZCannotSeeTableLocation {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZCannotSeeTableLocation {
+            warehouse_id,
+            table_location,
+            is_not_found: _,
+        } = self;
+        ErrorModel::bad_request(
+            format!(
+                "Table does not exist or user does not have permission to view it at location `{table_location}` in warehouse `{warehouse_id}`",
+            ),
+            "NoSuchTableLocationException",
+            None,
+        )
+    }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.is_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
     }
 }
 // ------------------ Action Forbidden Error ------------------
@@ -297,7 +375,6 @@ pub struct AuthZTableActionForbidden {
     warehouse_id: WarehouseId,
     table: TableIdentOrId,
     action: String,
-    actor: Box<Actor>,
 }
 impl AuthZTableActionForbidden {
     #[must_use]
@@ -305,36 +382,31 @@ impl AuthZTableActionForbidden {
         warehouse_id: WarehouseId,
         table: impl Into<TableIdentOrId>,
         action: &impl TableAction,
-        actor: Actor,
     ) -> Self {
         Self {
             warehouse_id,
             table: table.into(),
             action: action.as_log_str(),
-            actor: Box::new(actor),
         }
     }
 }
-impl From<AuthZTableActionForbidden> for ErrorModel {
-    fn from(err: AuthZTableActionForbidden) -> Self {
+impl AuthorizationFailureSource for AuthZTableActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
         let AuthZTableActionForbidden {
             warehouse_id,
             table,
             action,
-            actor,
-        } = err;
+        } = self;
         ErrorModel::forbidden(
             format!(
-                "Table action `{action}` forbidden for `{actor}` on table {table} in warehouse `{warehouse_id}`"
+                "Table action `{action}` forbidden on table {table} in warehouse `{warehouse_id}`"
             ),
             "TableActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZTableActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZTableActionForbidden) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -352,6 +424,15 @@ pub enum RequireTableActionError {
     SerializationError(SerializationError),
     UnexpectedTabularInResponse(UnexpectedTabularInResponse),
     InternalParseLocationError(InternalParseLocationError),
+}
+impl From<CatalogGetNamespaceError> for RequireTableActionError {
+    fn from(err: CatalogGetNamespaceError) -> Self {
+        match err {
+            CatalogGetNamespaceError::CatalogBackendError(e) => e.into(),
+            CatalogGetNamespaceError::InvalidNamespaceIdentifier(e) => e.into(),
+            CatalogGetNamespaceError::SerializationError(e) => e.into(),
+        }
+    }
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireTableActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
@@ -384,27 +465,18 @@ impl From<GetTabularInfoByLocationError> for RequireTableActionError {
         }
     }
 }
-impl From<RequireTableActionError> for ErrorModel {
-    fn from(err: RequireTableActionError) -> Self {
-        match err {
-            RequireTableActionError::AuthZTableActionForbidden(e) => e.into(),
-            RequireTableActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireTableActionError::AuthorizationCountMismatch(e) => e.into(),
-            RequireTableActionError::AuthZCannotSeeTable(e) => e.into(),
-            RequireTableActionError::CatalogBackendError(e) => e.into(),
-            RequireTableActionError::InvalidNamespaceIdentifier(e) => e.into(),
-            RequireTableActionError::SerializationError(e) => e.into(),
-            RequireTableActionError::UnexpectedTabularInResponse(e) => e.into(),
-            RequireTableActionError::InternalParseLocationError(e) => e.into(),
-            RequireTableActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
-impl From<RequireTableActionError> for IcebergErrorResponse {
-    fn from(err: RequireTableActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireTableActionError => {
+    AuthZTableActionForbidden,
+    AuthorizationBackendUnavailable,
+    AuthorizationCountMismatch,
+    CannotInspectPermissions,
+    AuthZCannotSeeTable,
+    CatalogBackendError,
+    InvalidNamespaceIdentifier,
+    SerializationError,
+    UnexpectedTabularInResponse,
+    InternalParseLocationError,
+});
 
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum RequireTabularActionsError {
@@ -414,22 +486,13 @@ pub enum RequireTabularActionsError {
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
 }
-impl From<RequireTabularActionsError> for ErrorModel {
-    fn from(err: RequireTabularActionsError) -> Self {
-        match err {
-            RequireTabularActionsError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireTabularActionsError::AuthZViewActionForbidden(e) => e.into(),
-            RequireTabularActionsError::AuthZTableActionForbidden(e) => e.into(),
-            RequireTabularActionsError::AuthorizationCountMismatch(e) => e.into(),
-            RequireTabularActionsError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
-impl From<RequireTabularActionsError> for IcebergErrorResponse {
-    fn from(err: RequireTabularActionsError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireTabularActionsError => {
+    AuthorizationBackendUnavailable,
+    AuthZViewActionForbidden,
+    AuthZTableActionForbidden,
+    AuthorizationCountMismatch,
+    CannotInspectPermissions,
+});
 impl From<BackendUnavailableOrCountMismatch> for RequireTabularActionsError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
@@ -437,6 +500,16 @@ impl From<BackendUnavailableOrCountMismatch> for RequireTabularActionsError {
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
             BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
         }
+    }
+}
+
+impl AuthorizationFailureSource for TaskNotFoundError {
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ResourceNotFound
     }
 }
 
@@ -450,7 +523,9 @@ pub trait AuthZTableOps: Authorizer {
     ) -> Result<T, RequireTableActionError> {
         let table = table.map_err(Into::into)?;
         let Some(table) = table else {
-            return Err(AuthZCannotSeeTable::new(warehouse_id, user_provided_table).into());
+            return Err(
+                AuthZCannotSeeTable::new_not_found(warehouse_id, user_provided_table).into(),
+            );
         };
         Ok(table)
     }
@@ -464,7 +539,6 @@ pub trait AuthZTableOps: Authorizer {
         table: Result<Option<T>, impl Into<RequireTableActionError> + Send>,
         action: impl Into<Self::TableAction> + Send,
     ) -> Result<T, RequireTableActionError> {
-        let actor = metadata.actor();
         let warehouse_id = warehouse.warehouse_id;
         // OK to return because this goes via the Into method
         // of RequireTableActionError
@@ -473,7 +547,7 @@ pub trait AuthZTableOps: Authorizer {
             self.require_table_presence(warehouse_id, user_provided_table.clone(), table)?;
         let table_ident = table.table_ident().clone();
         let cant_see_err =
-            AuthZCannotSeeTable::new(warehouse_id, user_provided_table.clone()).into();
+            AuthZCannotSeeTable::new_forbidden(warehouse_id, user_provided_table.clone()).into();
         let action = action.into();
 
         #[cfg(debug_assertions)]
@@ -518,13 +592,8 @@ pub trait AuthZTableOps: Authorizer {
                 .into_inner();
             if can_see_table {
                 is_allowed.then_some(table).ok_or_else(|| {
-                    AuthZTableActionForbidden::new(
-                        warehouse_id,
-                        table_ident.clone(),
-                        &action,
-                        actor.clone(),
-                    )
-                    .into()
+                    AuthZTableActionForbidden::new(warehouse_id, table_ident.clone(), &action)
+                        .into()
                 })
             } else {
                 return Err(cant_see_err);
@@ -557,22 +626,19 @@ pub trait AuthZTableOps: Authorizer {
     /// - Namespace ID mismatch
     /// - User not authorized for the action
     /// - Database or authorization backend errors
-    async fn load_and_authorize_table_operation<C>(
+    async fn load_and_authorize_table_operation<C: CatalogStore>(
         &self,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        user_provided_table: impl Into<TableIdentOrId> + Send,
+        user_provided_table: &UserProvidedTable,
         table_flags: TabularListFlags,
         action: impl Into<Self::TableAction> + Send,
         catalog_state: C::State,
-    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), ErrorModel>
-    where
-        C: CatalogStore,
-    {
-        let user_provided_table = user_provided_table.into();
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), AuthZError> {
+        let warehouse_id = user_provided_table.warehouse_id;
+        let action = action.into();
 
         // Determine the fetch strategy based on whether we have a TableId or TableIdent
-        let (warehouse, namespace, table_info) = match &user_provided_table {
+        let (warehouse, namespace, table_info) = match &user_provided_table.table {
             TableIdentOrId::Id(table_id) => {
                 fetch_warehouse_namespace_table_by_id::<C, _>(
                     self,
@@ -615,13 +681,13 @@ pub trait AuthZTableOps: Authorizer {
         };
 
         // Validate warehouse and namespace ID and version consistency (with TOCTOU protection)
-        let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-            self,
+        let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
             &warehouse,
-            &table_info,
             namespace,
+            &table_info,
+            AuthZCannotSeeTable::new_not_found(warehouse_id, user_provided_table.table.clone()),
+            self,
             catalog_state,
-            AuthZCannotSeeTable::new(warehouse_id, user_provided_table.clone()),
         )
         .await?;
 
@@ -631,7 +697,7 @@ pub trait AuthZTableOps: Authorizer {
                 request_metadata,
                 &warehouse,
                 &namespace,
-                user_provided_table,
+                user_provided_table.table.clone(),
                 Ok::<_, RequireTableActionError>(Some(table_info)),
                 action,
             )
@@ -652,8 +718,6 @@ pub trait AuthZTableOps: Authorizer {
         )],
         // OK Output is a sideproduct that caller may use
     ) -> Result<(), RequireTableActionError> {
-        let actor = metadata.actor();
-
         let tables_with_actions: HashMap<
             (WarehouseId, TableId),
             (&NamespaceWithParent, &T, HashSet<Self::TableAction>),
@@ -694,15 +758,16 @@ pub trait AuthZTableOps: Authorizer {
         for ((_ns, table, action), &is_allowed) in batch_requests.iter().zip(decisions.iter()) {
             if !is_allowed {
                 if *action == CAN_SEE_PERMISSION.into() {
-                    return Err(
-                        AuthZCannotSeeTable::new(table.warehouse_id(), table.table_id()).into(),
-                    );
+                    return Err(AuthZCannotSeeTable::new_forbidden(
+                        table.warehouse_id(),
+                        table.table_id(),
+                    )
+                    .into());
                 }
                 return Err(AuthZTableActionForbidden::new(
                     table.warehouse_id(),
                     table.table_ident().clone(),
                     action,
-                    actor.clone(),
                 )
                 .into());
             }
@@ -966,7 +1031,6 @@ pub trait AuthZTableOps: Authorizer {
                             info.warehouse_id(),
                             info.view_id(),
                             &action.clone().into(),
-                            metadata.actor().clone(),
                         )
                         .into());
                     }
@@ -975,7 +1039,6 @@ pub trait AuthZTableOps: Authorizer {
                             info.warehouse_id(),
                             info.table_id(),
                             &action.clone().into(),
-                            metadata.actor().clone(),
                         )
                         .into());
                     }
@@ -995,7 +1058,7 @@ pub(crate) async fn fetch_warehouse_namespace_table_by_id<C, A>(
     user_provided_table: TableId,
     table_flags: TabularListFlags,
     catalog_state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), ErrorModel>
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), AuthZError>
 where
     C: CatalogStore,
     A: AuthzWarehouseOps + AuthzNamespaceOps,

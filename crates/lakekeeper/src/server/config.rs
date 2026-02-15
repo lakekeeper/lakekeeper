@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use super::CatalogServer;
 use crate::{
@@ -18,6 +18,7 @@ use crate::{
             AuthZProjectOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogWarehouseAction,
         },
+        events::APIEventContext,
     },
 };
 
@@ -38,13 +39,19 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         let warehouse = if let Some(query_warehouse) = query.warehouse {
             let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
             let project_id = request_metadata.require_project_id(project_from_arg)?;
-            authorizer
-                .require_project_action(
-                    &request_metadata,
-                    &project_id,
-                    CatalogProjectAction::ListWarehouses,
-                )
-                .await?;
+
+            let action = CatalogProjectAction::ListWarehouses;
+            let event_ctx = APIEventContext::for_project(
+                Arc::new(request_metadata.clone()),
+                api_context.v1_state.events.clone(),
+                project_id.clone(),
+                action,
+            );
+
+            let authz_result = authorizer
+                .require_project_action(&request_metadata, &project_id, action)
+                .await;
+            let _ = event_ctx.emit_authz(authz_result);
             C::get_warehouse_by_name(
                 &warehouse_from_arg,
                 &project_id,
@@ -57,14 +64,23 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
             return Err(ErrorModel::bad_request("No warehouse specified. Please specify the 'warehouse' parameter in the GET /config request.".to_string(), "GetConfigNoWarehouseProvided", None).into());
         };
 
-        let warehouse = authorizer
+        let action = CatalogWarehouseAction::GetConfig;
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata.clone()),
+            api_context.v1_state.events,
+            warehouse.warehouse_id,
+            action.clone(),
+        );
+
+        let authz_result = authorizer
             .require_warehouse_action(
                 &request_metadata,
                 warehouse.warehouse_id,
                 Ok(Some(warehouse)),
-                CatalogWarehouseAction::GetConfig,
+                action,
             )
-            .await?;
+            .await;
+        let (_event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
 
         let mut config = warehouse.storage_profile.generate_catalog_config(
             warehouse.warehouse_id,
