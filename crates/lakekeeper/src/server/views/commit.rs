@@ -28,6 +28,7 @@ use crate::{
         ViewInfo,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
+        events::{APIEventContext, ViewEventTransition, context::ResolvedView},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
     },
@@ -61,23 +62,40 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let authorizer = state.v1_state.authz.clone();
 
     let (property_updates, property_removals) = parse_view_property_updates(updates);
-    let (warehouse, _namespace, view_info) = authorizer
+    let action = CatalogViewAction::Commit {
+        updated_properties: Arc::new(property_updates.clone()),
+        removed_properties: Arc::new(property_removals.clone()),
+    };
+
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(request_metadata),
+        state.v1_state.events.clone(),
+        warehouse_id,
+        parameters.view,
+        action.clone(),
+    );
+
+    let authz_result = authorizer
         .load_and_authorize_view_operation::<C>(
-            &request_metadata,
-            warehouse_id,
-            view_ident,
+            event_ctx.request_metadata(),
+            event_ctx.user_provided_entity(),
             TabularListFlags::active(),
-            CatalogViewAction::Commit {
-                updated_properties: Arc::new(property_updates),
-                removed_properties: Arc::new(property_removals),
-            },
+            event_ctx.action().clone(),
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await;
+
+    let (event_ctx, (warehouse, _namespace, view_info)) = event_ctx.emit_authz(authz_result)?;
+
+    let view_id = view_info.view_id();
+    let event_ctx = event_ctx.resolve(ResolvedView {
+        warehouse: warehouse.clone(),
+        view: Arc::new(view_info),
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     // Verify assertions
-    check_requirements(requirements.as_ref(), view_info.view_id())?;
+    check_requirements(requirements.as_ref(), view_id)?;
 
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
@@ -88,31 +106,20 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     loop {
         let result = try_commit_view::<C, A, S>(
             CommitViewContext {
-                view_info: &view_info,
+                view_info: &event_ctx.resolved().view,
                 storage_profile,
                 storage_secret_id,
                 request: request.as_ref(),
                 data_access,
             },
             &state,
-            &request_metadata,
+            event_ctx.request_metadata(),
         )
         .await;
 
         match result {
             Ok((result, commit)) => {
-                state
-                    .v1_state
-                    .hooks
-                    .commit_view(
-                        warehouse_id,
-                        parameters,
-                        request.clone(),
-                        Arc::new(commit),
-                        data_access,
-                        Arc::new(request_metadata),
-                    )
-                    .await;
+                event_ctx.emit_view_committed_async(Arc::new(commit), data_access, request);
 
                 return Ok(result);
             }
@@ -152,7 +159,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
-) -> Result<(LoadViewResult, crate::service::endpoint_hooks::ViewCommit)> {
+) -> Result<(LoadViewResult, ViewEventTransition)> {
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
@@ -282,7 +289,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata: new_metadata.clone(),
             config: Some(config.config.into()),
         },
-        crate::service::endpoint_hooks::ViewCommit {
+        ViewEventTransition {
             old_metadata: previous_view.metadata,
             new_metadata,
             old_metadata_location: previous_metadata_location,

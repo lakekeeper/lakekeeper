@@ -362,6 +362,14 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms |
 
+### Audit Logging
+
+Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Audit Logging Guide](./audit-logging.md).
+
+| Variable                                                 | Example | Description |
+|----------------------------------------------------------|---------|-------------|
+| <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr>       | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
+
 ### Debug
 
 Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.

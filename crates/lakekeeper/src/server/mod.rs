@@ -508,30 +508,31 @@ pub(crate) mod test {
                     async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
                         let (ctx, ns_params) = $setup_fn(pool, 200, &[(95, 150),(195,200)]).await;
 
-                        let mut first_page = $server_typ::[<list_$typ s>](
-                            ns_params.clone(),
-                             serde_json::from_value::<$query_typ>(serde_json::json!(
-                           {
-                            "pageSize": 105,
-                            "returnUuids": true,
-                            }
-                            )).unwrap(),
-                            ctx.clone(),
-                            RequestMetadata::new_unauthenticated(),
-                        )
-                        .await
-                        .unwrap();
+                        let first_page = $server_typ::[<list_$typ s>](
+                                ns_params.clone(),
+                                serde_json::from_value::<$query_typ>(serde_json::json!(
+                            {
+                                "pageSize": 105,
+                                "returnUuids": true,
+                                }
+                                )).unwrap(),
+                                ctx.clone(),
+                                RequestMetadata::new_unauthenticated(),
+                            )
+                            .await
+                            .unwrap();
+                        let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
 
-                        assert_eq!(first_page.$entity_ident.len(), 105);
+                        assert_eq!(idents.len(), 105);
 
                         for i in (0..95).chain(150..160).rev() {
                             assert_eq!(
-                                first_page.$entity_ident.pop().map($map_block),
+                                idents.pop().map($map_block),
                                 Some(format!("{i}"))
                             );
                         }
 
-                        let mut next_page = $server_typ::[<list_$typ s>](
+                        let next_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                              serde_json::from_value::<$query_typ>(serde_json::json!({
                                 "pageToken": first_page.next_page_token.unwrap(),
@@ -543,11 +544,12 @@ pub(crate) mod test {
                         )
                         .await
                         .unwrap();
+                        let mut idents = std::sync::Arc::unwrap_or_clone(next_page.$entity_ident);
 
-                        assert_eq!(next_page.$entity_ident.len(), 35);
+                        assert_eq!(idents.len(), 35);
                         for i in (160..195).rev() {
                             assert_eq!(
-                                next_page.$entity_ident.pop().map($map_block),
+                                idents.pop().map($map_block),
                                 Some(format!("{i}"))
                             );
                         }
@@ -558,7 +560,7 @@ pub(crate) mod test {
                     async fn test_pagination_first_page_is_hidden(pool: PgPool) {
                              let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
 
-                        let mut first_page = $server_typ::[<list_$typ s>](
+                        let first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                              serde_json::from_value::<$query_typ>(serde_json::json!(
                            {
@@ -571,12 +573,13 @@ pub(crate) mod test {
                         )
                         .await
                         .unwrap();
+                        let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
 
-                        assert_eq!(first_page.$entity_ident.len(), 10);
+                        assert_eq!(idents.len(), 10);
                         assert!(first_page.next_page_token.is_some());
                         for i in (10..20).rev() {
                             assert_eq!(
-                                first_page.$entity_ident.pop().map($map_block),
+                                idents.pop().map($map_block),
                                 Some(format!("{i}"))
                             );
                         }
@@ -586,7 +589,7 @@ pub(crate) mod test {
                     async fn test_pagination_middle_page_is_hidden(pool: PgPool) {
                         let (ctx, ns_params) = $setup_fn(pool, 20, &[(5, 15)]).await;
 
-                        let mut first_page = $server_typ::[<list_$typ s>](
+                        let first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                             serde_json::from_value::<$query_typ>(serde_json::json!(
                            {
@@ -599,17 +602,18 @@ pub(crate) mod test {
                         )
                         .await
                         .unwrap();
+                        let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
 
-                        assert_eq!(first_page.$entity_ident.len(), 5);
+                        assert_eq!(idents.len(), 5);
 
                         for i in (0..5).rev() {
                             assert_eq!(
-                                first_page.$entity_ident.pop().map($map_block),
+                                idents.pop().map($map_block),
                                 Some(format!("{i}"))
                             );
                         }
 
-                        let mut next_page = $server_typ::[<list_$typ s>](
+                        let next_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                             serde_json::from_value::<$query_typ>(serde_json::json!(
                            {
@@ -623,11 +627,12 @@ pub(crate) mod test {
                         )
                         .await
                         .unwrap();
+                        let mut idents = std::sync::Arc::unwrap_or_clone(next_page.$entity_ident);
 
-                        assert_eq!(next_page.$entity_ident.len(), 5);
+                        assert_eq!(idents.len(), 5);
                         for i in (15..20).rev() {
                             assert_eq!(
-                                next_page.$entity_ident.pop().map($map_block),
+                                idents.pop().map($map_block),
                                 Some(format!("{i}"))
                             );
                         }
@@ -638,7 +643,7 @@ pub(crate) mod test {
                     async fn test_pagination_last_page_is_hidden(pool: PgPool) {
                         let (ctx, ns_params) = $setup_fn(pool, 20, &[(10, 20)]).await;
 
-                        let mut first_page = $server_typ::[<list_$typ s>](
+                        let first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                             serde_json::from_value::<$query_typ>(serde_json::json!(
                            {
@@ -651,12 +656,13 @@ pub(crate) mod test {
                         )
                         .await
                         .unwrap();
+                        let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
 
-                        assert_eq!(first_page.$entity_ident.len(), 10);
+                        assert_eq!(idents.len(), 10);
 
                         for i in (0..10).rev() {
                             assert_eq!(
-                                first_page.$entity_ident.pop().map($map_block),
+                                idents.pop().map($map_block),
                                 Some(format!("{i}"))
                             );
                         }

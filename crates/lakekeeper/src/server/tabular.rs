@@ -45,19 +45,18 @@ pub(super) fn determine_tabular_location(
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
+    ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $event_ctx:ident) => {
         |ps, page_token, trx: &mut _| {
             use ::pastey::paste;
-            use iceberg_ext::catalog::rest::ErrorModel;
 
             use crate::{
                 server::UnfilteredPage,
-                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular},
+                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular, events::context::authz_to_error_no_audit},
             };
 
             // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
-            let request_metadata = $request_metadata.clone();
+            let request_metadata = $event_ctx.request_metadata().clone();
             let warehouse_id = $namespace_response.warehouse_id();
             let namespace_id = $namespace_response.namespace_id();
             let namespace_response = $namespace_response.clone();
@@ -85,7 +84,8 @@ macro_rules! list_entities {
                         &namespace_response.namespace,
                         CatalogNamespaceAction::ListEverything,
                     )
-                    .await?
+                    .await
+                    .map_err(authz_to_error_no_audit)?
                     .into_inner();
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
@@ -113,13 +113,16 @@ macro_rules! list_entities {
                             None,
                             &resolved_warehouse,
                             &namespaces,
-                            &idents.iter().map(|t| Ok::<_, ErrorModel>((
+                            &idents.iter().map(|t| Ok::<_, crate::service::authz::AuthZCannotSeeNamespace>((
                                 require_namespace_for_tabular(&namespaces, &t.tabular)?,
                                 t,
                                 [<Catalog $entity Action>]::IncludeInList)
                             )
-                            ).collect::<Result<Vec<_>, _>>()?,
-                        ).await?.into_inner()
+                            ).collect::<Result<Vec<_>, _>>()
+                            .map_err(authz_to_error_no_audit)?,
+                        ).await
+                        .map_err(authz_to_error_no_audit)?
+                        .into_inner()
                     }
                 };
 

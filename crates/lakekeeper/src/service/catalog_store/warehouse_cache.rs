@@ -7,19 +7,9 @@ use axum_prometheus::metrics;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
-use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
 #[cfg(feature = "router")]
-use crate::{
-    SecretId,
-    api::{
-        RequestMetadata,
-        management::v1::warehouse::{
-            RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
-            UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
-        },
-    },
-    service::endpoint_hooks::EndpointHook,
-};
+use crate::service::events::{self, EventListener};
+use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
 
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
 const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
@@ -185,89 +175,97 @@ pub(super) async fn warehouse_cache_get_by_name(
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct WarehouseCacheEndpointHook;
+pub(crate) struct WarehouseCacheEventListener;
 
 #[cfg(feature = "router")]
-impl std::fmt::Display for WarehouseCacheEndpointHook {
+impl std::fmt::Display for WarehouseCacheEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WarehouseCacheEndpointHook")
+        write!(f, "WarehouseCacheEventListener")
     }
 }
 
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
-impl EndpointHook for WarehouseCacheEndpointHook {
-    async fn create_warehouse(
-        &self,
-        warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+impl EventListener for WarehouseCacheEventListener {
+    async fn warehouse_created(&self, event: events::CreateWarehouseEvent) -> anyhow::Result<()> {
+        let events::CreateWarehouseEvent {
+            warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(warehouse).await;
         Ok(())
     }
 
-    async fn delete_warehouse(
-        &self,
-        warehouse_id: WarehouseId,
-        _request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn warehouse_deleted(&self, event: events::DeleteWarehouseEvent) -> anyhow::Result<()> {
+        let events::DeleteWarehouseEvent {
+            warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         // When we invalidate by warehouse_id, the eviction listener will handle
         // removing the entry from NAME_TO_ID_CACHE
-        warehouse_cache_invalidate(warehouse_id).await;
+        warehouse_cache_invalidate(warehouse.warehouse_id).await;
         Ok(())
     }
 
-    async fn set_warehouse_protection(
+    async fn warehouse_protection_set(
         &self,
-        _requested_protected: bool,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::SetWarehouseProtectionEvent,
     ) -> anyhow::Result<()> {
+        let events::SetWarehouseProtectionEvent {
+            requested_protected: _requested_protected,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn rename_warehouse(
-        &self,
-        _request: Arc<RenameWarehouseRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn warehouse_renamed(&self, event: events::RenameWarehouseEvent) -> anyhow::Result<()> {
+        let events::RenameWarehouseEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn update_warehouse_delete_profile(
+    async fn warehouse_delete_profile_updated(
         &self,
-        _request: Arc<UpdateWarehouseDeleteProfileRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::UpdateWarehouseDeleteProfileEvent,
     ) -> anyhow::Result<()> {
-        println!(
-            "Updating delete profile in cache hook for warehouse id {}",
-            updated_warehouse.warehouse_id
-        );
+        let events::UpdateWarehouseDeleteProfileEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn update_warehouse_storage(
+    async fn warehouse_storage_updated(
         &self,
-        _request: Arc<UpdateWarehouseStorageRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::UpdateWarehouseStorageEvent,
     ) -> anyhow::Result<()> {
+        let events::UpdateWarehouseStorageEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn update_warehouse_storage_credential(
+    async fn warehouse_storage_credential_updated(
         &self,
-        _request: Arc<UpdateWarehouseCredentialRequest>,
-        _old_secret_id: Option<SecretId>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::UpdateWarehouseStorageCredentialEvent,
     ) -> anyhow::Result<()> {
+        let events::UpdateWarehouseStorageCredentialEvent {
+            request: _request,
+            old_secret_id: _old_secret_id,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }

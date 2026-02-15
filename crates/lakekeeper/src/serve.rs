@@ -17,13 +17,13 @@ use crate::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
-        endpoint_hooks::EndpointHookCollection,
         endpoint_statistics::{
             EndpointStatisticsMessage, EndpointStatisticsSink, EndpointStatisticsTracker, FlushMode,
         },
-        event_publisher::{
+        events::{
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
-            CloudEventsPublisherBackgroundTask,
+            CloudEventsPublisherBackgroundTask, EventDispatcher,
+            backends::audit::AuditEventListener,
         },
         health::ServiceHealthProvider,
         tasks::TaskQueueRegistry,
@@ -144,10 +144,10 @@ pub struct ServeConfiguration<
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_task_queues_fn.len())]
     pub register_additional_task_queues_fn: Vec<RegisterTaskQueueFn<A, C, S>>,
-    /// Additional endpoint hooks to register.
+    /// Additional event listeners to register.
     /// Emitting cloud events is always registered.
     #[builder(default)]
-    pub additional_endpoint_hooks: Option<EndpointHookCollection>,
+    pub additional_event_dispatcher: Option<EventDispatcher>,
     /// Additional background services / futures to await.
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
@@ -315,7 +315,7 @@ async fn serve_inner<
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
-        additional_endpoint_hooks,
+        additional_event_dispatcher,
         register_additional_background_services_fn: additional_background_services,
         license_status,
     } = config;
@@ -366,24 +366,30 @@ async fn serve_inner<
         FlushMode::Automatic,
     );
 
-    // Endpoint Hooks
-    let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
-    hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
+    // Event system setup
+    let mut dispatcher = additional_event_dispatcher.unwrap_or(EventDispatcher::new(vec![]));
+    dispatcher.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
     if CONFIG.cache.warehouse.enabled {
-        tracing::info!("Warehouse cache is enabled, registering warehouse cache endpoint hook");
-        hooks.append(Arc::new(
-            crate::service::warehouse_cache::WarehouseCacheEndpointHook {},
+        tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
+        dispatcher.append(Arc::new(
+            crate::service::warehouse_cache::WarehouseCacheEventListener {},
         ));
     } else {
         tracing::info!("Warehouse cache is disabled");
     }
     if CONFIG.cache.namespace.enabled {
-        tracing::info!("Namespace cache is enabled, registering namespace cache endpoint hook");
-        hooks.append(Arc::new(
-            crate::service::namespace_cache::NamespaceCacheEndpointHook {},
+        tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
+        dispatcher.append(Arc::new(
+            crate::service::namespace_cache::NamespaceCacheEventListener {},
         ));
     } else {
         tracing::info!("Namespace cache is disabled");
+    }
+    if CONFIG.audit.tracing.enabled {
+        tracing::info!("Audit tracing is enabled, registering audit event listener");
+        dispatcher.append(Arc::new(AuditEventListener));
+    } else {
+        tracing::info!("Audit tracing is disabled");
     }
 
     // Task queues
@@ -410,7 +416,7 @@ async fn serve_inner<
             secrets: secrets_state,
             contract_verifiers: contract_verification,
             registered_task_queues,
-            hooks,
+            events: dispatcher,
             license_status,
         },
     };

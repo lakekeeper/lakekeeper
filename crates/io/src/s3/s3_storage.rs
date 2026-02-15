@@ -429,7 +429,7 @@ impl LakekeeperStorage for S3Storage {
                             Some((Ok(locations), next_state))
                         }
                         // First case: Retryable error occurred but retries didn't resolve it
-                        // Second case: Non-retryable error occured
+                        // Second case: Non-retryable error occurred
                         Ok(Err(error)) | Err(error) => Some((Err(error), (None, true))),
                     }
                 }

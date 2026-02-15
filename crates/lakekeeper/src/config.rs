@@ -176,7 +176,7 @@ pub struct DynAppConfig {
     // ------------- KAFKA CLOUDEVENTS -------------
     pub kafka_topic: Option<String>,
     #[cfg(feature = "kafka")]
-    pub kafka_config: Option<crate::service::event_publisher::kafka::KafkaConfig>,
+    pub kafka_config: Option<crate::service::events::backends::kafka::KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -264,6 +264,9 @@ pub struct DynAppConfig {
     // ------------- Caching -------------
     #[serde(default)]
     pub(crate) cache: Cache,
+
+    // ------------- Audit logging -------------
+    pub(crate) audit: AuditConfig,
 
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
@@ -446,6 +449,16 @@ pub struct KV2Config {
     pub secret_mount: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct AuditConfig {
+    pub tracing: AuditTracingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct AuditTracingConfig {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -605,6 +618,9 @@ impl Default for DynAppConfig {
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
             max_request_time: Duration::from_secs(30),
+            audit: AuditConfig {
+                tracing: AuditTracingConfig { enabled: true },
+            },
         }
     }
 }
@@ -739,7 +755,7 @@ mod test {
     #[allow(unused_imports)]
     use super::*;
     #[cfg(feature = "kafka")]
-    use crate::service::event_publisher::kafka::KafkaConfig;
+    use crate::service::events::backends::kafka::KafkaConfig;
 
     #[test]
     fn test_authz_backend_default() {
@@ -1232,6 +1248,32 @@ mod test {
             let config = get_config();
             assert!(config.cache.namespace.enabled);
             assert_eq!(config.cache.namespace.capacity, 2000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_audit_tracing_enabled() {
+        // Test default value is true
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+
+        // Test can be disabled
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.audit.tracing.enabled);
+            Ok(())
+        });
+
+        // Test can be explicitly enabled
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "true");
+            let config = get_config();
+            assert!(config.audit.tracing.enabled);
             Ok(())
         });
     }

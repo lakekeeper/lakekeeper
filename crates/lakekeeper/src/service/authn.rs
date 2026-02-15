@@ -18,9 +18,9 @@ use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
 use serde::{Deserialize, Serialize};
 
 use super::RoleId;
-#[cfg(feature = "router")]
-use crate::request_metadata::RequestMetadata;
 use crate::{CONFIG, api};
+#[cfg(feature = "router")]
+use crate::{request_metadata::RequestMetadata, service::events::EventDispatcher};
 
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
@@ -64,10 +64,13 @@ pub(crate) enum InternalActor {
 pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authorizer> {
     pub authenticator: T,
     pub authorizer: A,
+    pub events: EventDispatcher,
 }
 
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct UserId(Subject);
+
+pub type UserIdRef = std::sync::Arc<UserId>;
 
 const OIDC_IDP_ID: &str = "oidc";
 const K8S_IDP_ID: &str = "kubernetes";
@@ -232,8 +235,7 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
         Ok(user_id) => user_id,
         Err(e) => {
             tracing::error!(
-                "Unexpected subject id in token - failed to create UserID from Subject: {}",
-                e
+                "Unexpected subject id in token - failed to create UserID from Subject: {e}",
             );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -257,8 +259,41 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
         request_metadata.set_authentication(actor.clone(), authentication);
 
+        let check_result = if let Some(role_id) = role_id {
+            use crate::service::{
+                authz::{ActionDescriptor, CatalogAction},
+                events::APIEventContext,
+            };
+
+            #[derive(Debug)]
+            struct AssumeRoleAction;
+            impl CatalogAction for AssumeRoleAction {
+                fn action_descriptor(&self) -> ActionDescriptor {
+                    ActionDescriptor::builder()
+                        .action_name("assume_role")
+                        .build()
+                }
+            }
+
+            let event_ctx = APIEventContext::for_role(
+                std::sync::Arc::new(request_metadata.clone()),
+                state.events.clone(),
+                role_id,
+                AssumeRoleAction,
+            );
+
+            event_ctx
+                .emit_authz(authorizer.check_actor(&actor, request_metadata).await)
+                .map(|_| ())
+        } else {
+            authorizer
+                .check_actor(&actor, request_metadata)
+                .await
+                .map_err(crate::service::events::context::authz_to_error_no_audit)
+        };
+
         // Ensure assume role, if present, is allowed
-        if let Err(err) = authorizer.check_actor(&actor, request_metadata).await {
+        if let Err(err) = check_result {
             return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
         }
     }
