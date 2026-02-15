@@ -1139,14 +1139,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             CatalogWarehouseAction::ListDeletedTabulars,
         );
 
-        let autz_result = undrop::authorize_list_soft_deleted_tabulars::<C, A>(
+        let authz_result = undrop::authorize_list_soft_deleted_tabulars::<C, A>(
             event_ctx.request_metadata(),
             warehouse_id,
             &authorizer,
             catalog.clone(),
         )
         .await;
-        let (event_ctx, authz_response) = event_ctx.emit_authz(autz_result)?;
+        let (event_ctx, authz_response) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = event_ctx.resolve(());
         let warehouse = authz_response.warehouse;
         let can_list_everything = authz_response.can_list_everything;

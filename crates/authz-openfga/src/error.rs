@@ -190,7 +190,15 @@ impl AuthorizationFailureSource for OpenFGAError {
             OpenFGAError::UnknownType(_) => {
                 ErrorModel::bad_request(err_msg, "UnknownOpenFGAType", None)
             }
-            _ => ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(self))),
+            OpenFGAError::GrantRoleWithAssumedRole => {
+                ErrorModel::bad_request(err_msg, "GrantRoleWithAssumedRole", None)
+            }
+            e @ (OpenFGAError::ActiveAuthModelNotFound(_)
+            | OpenFGAError::StoreNotFound(_)
+            | OpenFGAError::InvalidEntity(_)
+            | OpenFGAError::InvalidQuery(_)) => {
+                ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(e)))
+            }
         }
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {

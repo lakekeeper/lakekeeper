@@ -208,7 +208,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.events,
             warehouse_id,
             parameters.namespace.clone(),
-            // Prelimineray action, updated after Metadata is read
+            // Preliminary action, updated after Metadata is read
             CatalogNamespaceAction::CreateTable {
                 properties: Arc::new(BTreeMap::new()),
             },
@@ -451,7 +451,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.events,
             warehouse_id,
             table.clone(),
-            CatalogTableAction::GetMetadata,
+            CatalogTableAction::ReadData,
         );
 
         let authz_result = match authorize_load_table::<C, A>(

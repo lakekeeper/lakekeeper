@@ -79,7 +79,7 @@ pub struct RequestMetadata {
 pub struct ProjectIdMissing;
 impl AuthorizationFailureSource for ProjectIdMissing {
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ResourceNotFound
+        AuthorizationFailureReason::InvalidRequestData
     }
 
     fn into_error_model(self) -> ErrorModel {

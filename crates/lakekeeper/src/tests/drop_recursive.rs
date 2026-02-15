@@ -80,7 +80,7 @@ mod test {
         .unwrap();
 
         // Give the async event handler time to run
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let e = CatalogServer::list_tables(
             ns1_params.clone(),

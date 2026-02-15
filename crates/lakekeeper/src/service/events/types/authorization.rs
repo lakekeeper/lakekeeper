@@ -134,7 +134,7 @@ pub enum AuthorizationFailureReason {
     /// Authorization backend service is unavailable
     InternalAuthorizationError,
 
-    /// An internal Catalog error occured before authorization check could be completed
+    /// An internal Catalog error occurred before authorization check could be completed
     InternalCatalogError,
 
     /// Invalid data provided by the client that caused authorization to fail (e.g. malformed resource identifier)

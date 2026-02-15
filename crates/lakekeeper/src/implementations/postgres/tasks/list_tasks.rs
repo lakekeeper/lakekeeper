@@ -279,7 +279,7 @@ pub(crate) async fn list_tasks(
         warehouse_id.map(|id| **id), // 1
         page_size as i64, // 2
         pagination_ts, // 3
-        pagination_task_id.map(|id| *id), // 4
+        pagination_task_id.copied(), // 4
         &queue_names, // 5
         queue_names_is_none, // 6
         task_status_filter.iter().collect_vec() as Vec<_>, // 7

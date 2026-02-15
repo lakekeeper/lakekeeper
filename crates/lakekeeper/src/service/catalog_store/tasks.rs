@@ -89,7 +89,6 @@ impl From<TaskNotFoundError> for ErrorModel {
     }
 }
 
-// define_simple_error!(TooManyUpdatesInCommit, "Too many updates in single commit");
 define_transparent_error! {
     pub enum ResolveTasksError,
     stack_message: "Error resolving tasks in catalog",

@@ -35,21 +35,23 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
 
         maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone()).await?;
 
+        let request_metadata_arc = Arc::new(request_metadata);
+
         // Arg takes precedence over auth
         let warehouse = if let Some(query_warehouse) = query.warehouse {
             let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
-            let project_id = request_metadata.require_project_id(project_from_arg)?;
+            let project_id = request_metadata_arc.require_project_id(project_from_arg)?;
 
             let action = CatalogProjectAction::ListWarehouses;
             let event_ctx = APIEventContext::for_project(
-                Arc::new(request_metadata.clone()),
+                request_metadata_arc.clone(),
                 api_context.v1_state.events.clone(),
                 project_id.clone(),
                 action,
             );
 
             let authz_result = authorizer
-                .require_project_action(&request_metadata, &project_id, action)
+                .require_project_action(&request_metadata_arc, &project_id, action)
                 .await;
             let _ = event_ctx.emit_authz(authz_result);
             C::get_warehouse_by_name(
@@ -66,7 +68,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
 
         let action = CatalogWarehouseAction::GetConfig;
         let event_ctx = APIEventContext::for_warehouse(
-            Arc::new(request_metadata.clone()),
+            request_metadata_arc.clone(),
             api_context.v1_state.events,
             warehouse.warehouse_id,
             action.clone(),
@@ -74,7 +76,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
 
         let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                &request_metadata_arc,
                 warehouse.warehouse_id,
                 Ok(Some(warehouse)),
                 action,
@@ -84,7 +86,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
 
         let mut config = warehouse.storage_profile.generate_catalog_config(
             warehouse.warehouse_id,
-            &request_metadata,
+            &request_metadata_arc,
             warehouse.tabular_delete_profile,
         );
 
@@ -99,7 +101,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
 
         config
             .overrides
-            .insert("uri".to_string(), request_metadata.base_uri_catalog());
+            .insert("uri".to_string(), request_metadata_arc.base_uri_catalog());
 
         Ok(config)
     }

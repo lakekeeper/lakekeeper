@@ -111,7 +111,7 @@ pub(super) async fn authorize_list_soft_deleted_tabulars<C: CatalogStore, A: Aut
     authorizer: &A,
     catalog: C::State,
 ) -> Result<AuthorizeListSoftDeletedTabularsResponse, RequireWarehouseActionError> {
-    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog.clone()).await;
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer

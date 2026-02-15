@@ -1251,4 +1251,30 @@ mod test {
             Ok(())
         });
     }
+
+    #[test]
+    fn test_audit_tracing_enabled() {
+        // Test default value is true
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+
+        // Test can be disabled
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.audit.tracing.enabled);
+            Ok(())
+        });
+
+        // Test can be explicitly enabled
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "true");
+            let config = get_config();
+            assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+    }
 }
