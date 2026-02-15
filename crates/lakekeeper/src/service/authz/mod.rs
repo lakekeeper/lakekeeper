@@ -170,10 +170,12 @@ impl std::fmt::Display for ContextValue {
 
 #[derive(Clone, Debug, typed_builder::TypedBuilder)]
 #[builder(mutators(
-    fn context_map(&mut self, key: &'static str, map: impl Into<BTreeMap<String, String>>) {
+    #[allow(unreachable_pub)]
+    pub fn context_map(&mut self, key: &'static str, map: impl Into<BTreeMap<String, String>>) {
         self.context.push((key, ContextValue::Map(map.into())));
     }
-    fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
+    #[allow(unreachable_pub)]
+    pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
         self.context.push((key, ContextValue::List(list.into())));
     }
 ))]
