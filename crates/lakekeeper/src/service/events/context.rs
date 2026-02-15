@@ -315,20 +315,20 @@ impl UserProvidedEntity for UserProvidedView {
     }
 }
 
-#[derive(Clone, Debug, derive_more::From)]
-pub enum UserProvidedTableOrView {
-    Table(UserProvidedTable),
-    View(UserProvidedView),
-}
+// #[derive(Clone, Debug, derive_more::From)]
+// pub enum UserProvidedTableOrView {
+//     Table(UserProvidedTable),
+//     View(UserProvidedView),
+// }
 
-impl UserProvidedEntity for UserProvidedTableOrView {
-    fn event_entities(&self) -> EventEntities {
-        match self {
-            UserProvidedTableOrView::Table(table) => table.event_entities(),
-            UserProvidedTableOrView::View(view) => view.event_entities(),
-        }
-    }
-}
+// impl UserProvidedEntity for UserProvidedTableOrView {
+//     fn event_entities(&self) -> EventEntities {
+//         match self {
+//             UserProvidedTableOrView::Table(table) => table.event_entities(),
+//             UserProvidedTableOrView::View(view) => view.event_entities(),
+//         }
+//     }
+// }
 
 #[derive(Clone, Debug)]
 pub struct UserProvidedTask {

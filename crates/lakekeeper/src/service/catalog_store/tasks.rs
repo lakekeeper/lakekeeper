@@ -120,7 +120,7 @@ impl_error_stack_methods!(NoWarehouseTaskError);
 impl From<NoWarehouseTaskError> for ErrorModel {
     fn from(value: NoWarehouseTaskError) -> Self {
         ErrorModel::builder()
-            .code(StatusCode::NOT_FOUND.as_u16())
+            .code(StatusCode::UNPROCESSABLE_ENTITY.as_u16())
             .message(value.to_string())
             .r#type("NoWarehouseTaskError")
             .stack(value.stack)

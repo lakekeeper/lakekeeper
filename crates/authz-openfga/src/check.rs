@@ -349,10 +349,11 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
         ),
     };
 
-    let event_ctx = APIEventContext::for_warehouse(
+    let event_ctx = APIEventContext::for_table(
         metadata,
         api_context.v1_state.events.clone(),
         warehouse_id,
+        table.clone(),
         action,
     );
 
@@ -441,10 +442,11 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
         ),
     };
 
-    let event_ctx = APIEventContext::for_warehouse(
+    let event_ctx = APIEventContext::for_view(
         metadata,
         api_context.v1_state.events.clone(),
         warehouse_id,
+        view.clone(),
         action,
     );
 

@@ -822,11 +822,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_project_action(
-                &request_metadata,
-                &project_id,
-                *event_ctx.action(),
-            )
+            .require_project_action(&request_metadata, &project_id, *event_ctx.action())
             .await;
 
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -1245,7 +1241,13 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 &tabular.view_ident.namespace,
             )),
             ResolvedTaskEntity::Warehouse(warehouse_id) => {
-                Err(AuthZCannotUseWarehouseId::new_access_denied(*warehouse_id).into())
+                Err(
+                    AuthZWarehouseActionForbidden::new(
+                        *warehouse_id,
+                        &CONTROL_TASK_WAREHOUSE_PERMISSION,
+                    )
+                    .into(),
+                )
             }
             ResolvedTaskEntity::Project => Err(AuthZError::ProjectIdMissing(ProjectIdMissing)),
         })
