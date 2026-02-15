@@ -3937,7 +3937,6 @@ dependencies = [
  "typed-builder 0.23.2",
  "url",
  "uuid",
- "valuable",
  "veil",
 ]
 
@@ -4098,7 +4097,8 @@ dependencies = [
 [[package]]
 name = "limes"
 version = "0.3.1"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=ee506ed#ee506ed5462f6377c3297a4e066d5392487766e0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c491517894ddfd5c53c41d9b66d64b5b0b071bdee0aefc3d5dcb63e9f14b8c"
 dependencies = [
  "axum",
  "axum-extra",
@@ -4115,7 +4115,6 @@ dependencies = [
  "trait-variant",
  "typed-builder 0.23.2",
  "url",
- "valuable",
 ]
 
 [[package]]
@@ -7433,6 +7432,8 @@ checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
 dependencies = [
  "serde",
  "tracing-core",
+ "valuable",
+ "valuable-serde",
 ]
 
 [[package]]
@@ -7454,6 +7455,8 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+ "valuable",
+ "valuable-serde",
 ]
 
 [[package]]
@@ -7770,6 +7773,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.112",
+]
+
+[[package]]
+name = "valuable-serde"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee0548edecd1b907be7e67789923b7d02275b9ba4a33ebc33300e2c947a8cb1"
+dependencies = [
+ "serde",
+ "valuable",
 ]
 
 [[package]]

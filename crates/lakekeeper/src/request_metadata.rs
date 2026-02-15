@@ -88,13 +88,11 @@ impl AuthorizationFailureSource for ProjectIdMissing {
 }
 impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::ErrorModel {
     fn from(e: ProjectIdMissing) -> Self {
-        ErrorModel {
-            message: e.to_string(),
-            r#type: "ProjectIdMissing".to_string(),
-            code: StatusCode::BAD_REQUEST.as_u16(),
-            source: None,
-            stack: Vec::new(),
-        }
+        ErrorModel::builder()
+            .message(e.to_string())
+            .r#type("ProjectIdMissing")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .build()
     }
 }
 
@@ -266,6 +264,11 @@ impl RequestMetadata {
             InternalActor::External(actor) => actor,
             InternalActor::LakekeeperInternal => ANONYMOUS_ACTOR,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn internal_actor(&self) -> &InternalActor {
+        &self.actor
     }
 
     #[must_use]

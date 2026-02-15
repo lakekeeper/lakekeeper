@@ -1,13 +1,11 @@
 use std::{ops::Deref, str::FromStr};
 
 use iceberg_ext::catalog::rest::ErrorModel;
-use valuable::Valuable;
 
-#[derive(Debug, serde::Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Valuable)]
+#[derive(Debug, serde::Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
-#[valuable(transparent)]
 pub struct ProjectId(String);
 
 impl<'de> serde::Deserialize<'de> for ProjectId {

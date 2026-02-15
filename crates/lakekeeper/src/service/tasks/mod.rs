@@ -194,16 +194,6 @@ impl Deref for TaskId {
     }
 }
 
-impl valuable::Valuable for TaskId {
-    fn as_value(&self) -> valuable::Value<'_> {
-        valuable::Value::U128(self.0.as_u128())
-    }
-
-    fn visit(&self, visit: &mut dyn valuable::Visit) {
-        visit.visit_value(self.as_value());
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskAttemptId {
     pub task_id: TaskId,

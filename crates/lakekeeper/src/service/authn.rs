@@ -16,7 +16,6 @@ use http::{HeaderMap, StatusCode};
 use iceberg_ext::catalog::rest::ErrorModel;
 use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
 use serde::{Deserialize, Serialize};
-use valuable::Valuable;
 
 use super::RoleId;
 use crate::{CONFIG, api};
@@ -27,14 +26,7 @@ pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
 
 #[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    strum_macros::Display,
-    Valuable,
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum_macros::Display,
 )]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum Actor {
@@ -75,7 +67,7 @@ pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authori
     pub events: EventDispatcher,
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq, Valuable)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct UserId(Subject);
 
 pub type UserIdRef = std::sync::Arc<UserId>;

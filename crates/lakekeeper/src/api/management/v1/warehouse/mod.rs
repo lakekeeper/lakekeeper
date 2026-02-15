@@ -41,7 +41,10 @@ use crate::{
             CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
             CatalogWarehouseAction,
         },
-        events::{APIEventContext, context::TabularAction},
+        events::{
+            APIEventContext,
+            context::{TabularAction, authz_to_error_no_audit},
+        },
         require_namespace_for_tabular,
         secrets::SecretStore,
         task_configs::TaskQueueConfigFilter,
@@ -478,7 +481,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .collect::<Vec<_>>(),
             )
             .await
-            .map_err(|e| event_ctx.emit_authz_failure_async(e))?
+            .map_err(authz_to_error_no_audit)?
             .into_inner()
             .into_iter()
             .zip(warehouses)
@@ -515,15 +518,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog,
         )
         .await;
-        let warehouse = authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
                 event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
                 event_ctx.action().clone(),
             )
-            .await
-            .map_err(|e| event_ctx.emit_authz_failure_async(e))?;
+            .await;
+        let (_event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
         Ok((*warehouse).clone().into())
     }
 
@@ -550,15 +553,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
                 event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
                 event_ctx.action().clone(),
             )
-            .await
-            .map_err(|e| event_ctx.emit_authz_failure_async(e))?;
+            .await;
+        let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         C::get_warehouse_stats(
@@ -827,15 +830,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
                 event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
                 event_ctx.action().clone(),
             )
-            .await
-            .map_err(|e| event_ctx.emit_authz_failure_async(e))?;
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -1154,7 +1157,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             let namespace = C::get_namespace(warehouse_id, namespace_id, catalog.clone()).await;
             let namespace = authorizer
                 .require_namespace_presence(warehouse_id, namespace_id, namespace)
-                .map_err(|e| event_ctx.emit_authz_failure_async(e))?;
+                .map_err(|e| event_ctx.emit_late_authz_failure(e))?;
             authorizer
                 .is_allowed_namespace_action(
                     event_ctx.request_metadata(),
@@ -1165,7 +1168,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     CatalogNamespaceAction::ListEverything,
                 )
                 .await
-                .map_err(|e| event_ctx.emit_authz_failure_async(e))?
+                .map_err(authz_to_error_no_audit)?
                 .into_inner()
         } else {
             can_list_everything
@@ -1181,7 +1184,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             pagination_query.page_token,
             |page_size, page_token, t| {
                 let authorizer = authorizer.clone();
-                let event_ctx = event_ctx.clone();
                 let request_metadata = request_metadata.clone();
                 let warehouse = warehouse.clone();
                 async move {
@@ -1219,7 +1221,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                             .map(|t| {
                                 Ok::<_, ErrorModel>((
                                     require_namespace_for_tabular(&namespaces, t)
-                                        .map_err(|e| event_ctx.emit_authz_failure_async(e))?,
+                                        .map_err(authz_to_error_no_audit)?,
                                     t.as_action_request(
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
@@ -1237,7 +1239,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                 &actions,
                             )
                             .await
-                            .map_err(|e| event_ctx.emit_authz_failure_async(e))?
+                            .map_err(authz_to_error_no_audit)?
                             .into_inner()
                     };
 

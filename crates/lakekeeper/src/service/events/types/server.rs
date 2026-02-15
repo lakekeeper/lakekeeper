@@ -3,9 +3,12 @@ use std::sync::Arc;
 use crate::{
     ProjectId,
     api::RequestMetadata,
-    service::events::{
-        APIEventContext,
-        context::{APIEventAction, AuthzChecked, Unresolved, UserProvidedEntityServer},
+    service::{
+        ServerId,
+        events::{
+            APIEventContext,
+            context::{APIEventActions, AuthzChecked, Unresolved},
+        },
     },
 };
 
@@ -17,7 +20,7 @@ pub struct CreateProjectEvent {
     pub request_metadata: Arc<RequestMetadata>,
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedEntityServer, Unresolved, A, AuthzChecked> {
+impl<A: APIEventActions> APIEventContext<ServerId, Unresolved, A, AuthzChecked> {
     pub(crate) fn emit_project_created(self, project_id: ProjectId, project_name: String) {
         let event = CreateProjectEvent {
             project_id,

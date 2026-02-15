@@ -6,7 +6,7 @@ use crate::{
         ResolvedWarehouse, ViewOrTableInfo,
         events::{
             APIEventContext,
-            context::{AuthzChecked, Resolved, TabularAction, UserProvidedTabularsById},
+            context::{AuthzChecked, Resolved, TabularAction, UserProvidedTabularsIDs},
         },
     },
 };
@@ -24,7 +24,7 @@ pub struct UndropTabularEvent {
 
 impl
     APIEventContext<
-        UserProvidedTabularsById,
+        UserProvidedTabularsIDs,
         Resolved<Arc<ResolvedWarehouse>>,
         TabularAction,
         AuthzChecked,

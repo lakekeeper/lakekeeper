@@ -158,13 +158,12 @@ impl AuthorizationFailureSource for AuthZCannotSeeAnonymousNamespace {
             internal_error_stack: internal_server_stack,
             ..
         } = self;
-        ErrorModel {
-            r#type: "NoSuchNamespaceException".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: "Namespace not found or access denied".to_string(),
-            stack: internal_server_stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("NoSuchNamespaceException")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message("Namespace not found or access denied")
+            .stack(internal_server_stack)
+            .build()
     }
 }
 

@@ -113,7 +113,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .json()
         .flatten_event(true)
-        .with_current_span(true)
+        .with_current_span(false)
+        .with_span_list(true)
         .with_file(CONFIG_BIN.debug.extended_logs)
         .with_line_number(CONFIG_BIN.debug.extended_logs)
         .with_env_filter(

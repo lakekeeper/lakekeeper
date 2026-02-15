@@ -1,7 +1,7 @@
 #![allow(clippy::needless_for_each)]
 #![allow(deprecated)]
 
-use std::{collections::HashSet, sync::Arc};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 use http::StatusCode;
 #[cfg(feature = "open-api")]
@@ -22,7 +22,7 @@ use lakekeeper::{
         authz::UserOrRole,
         events::{
             APIEventContext,
-            context::{APIEventAction, IntrospectPermissions, authz_to_error_no_audit},
+            context::{APIEventActions, IntrospectPermissions, authz_to_error_no_audit},
         },
     },
 };
@@ -264,9 +264,9 @@ struct UpdateServerAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<ServerAssignment>,
 }
-impl APIEventAction for UpdateServerAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_server_assignments".to_string()
+impl APIEventActions for UpdateServerAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_server_assignments")]
     }
 }
 
@@ -279,9 +279,9 @@ struct UpdateProjectAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<ProjectAssignment>,
 }
-impl APIEventAction for UpdateProjectAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_project_assignments".to_string()
+impl APIEventActions for UpdateProjectAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_project_assignments")]
     }
 }
 
@@ -294,9 +294,9 @@ struct UpdateWarehouseAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<WarehouseAssignment>,
 }
-impl APIEventAction for UpdateWarehouseAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_warehouse_assignments".to_string()
+impl APIEventActions for UpdateWarehouseAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_warehouse_assignments")]
     }
 }
 
@@ -309,9 +309,9 @@ struct UpdateNamespaceAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<NamespaceAssignment>,
 }
-impl APIEventAction for UpdateNamespaceAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_namespace_assignments".to_string()
+impl APIEventActions for UpdateNamespaceAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_namespace_assignments")]
     }
 }
 
@@ -324,9 +324,9 @@ struct UpdateTableAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<TableAssignment>,
 }
-impl APIEventAction for UpdateTableAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_table_assignments".to_string()
+impl APIEventActions for UpdateTableAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_table_assignments")]
     }
 }
 
@@ -339,9 +339,9 @@ struct UpdateViewAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<ViewAssignment>,
 }
-impl APIEventAction for UpdateViewAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_view_assignments".to_string()
+impl APIEventActions for UpdateViewAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_view_assignments")]
     }
 }
 
@@ -354,9 +354,9 @@ struct UpdateRoleAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<RoleAssignment>,
 }
-impl APIEventAction for UpdateRoleAssignmentsRequest {
-    fn event_action_str(&self) -> String {
-        "update_role_assignments".to_string()
+impl APIEventActions for UpdateRoleAssignmentsRequest {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("update_role_assignments")]
     }
 }
 
@@ -513,6 +513,7 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         IntrospectPermissions {},
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
 
     let relations = get_allowed_actions(
@@ -558,6 +559,7 @@ async fn get_authorizer_server_actions<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         IntrospectPermissions {},
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
 
     let relations = get_allowed_actions(
@@ -1416,6 +1418,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         AllServerAction::CanReadAssignments,
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
 
     let authz_result = authorizer
@@ -1753,7 +1756,8 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
     let event_ctx = APIEventContext::for_server(
         Arc::new(metadata),
         api_context.v1_state.events,
-        Arc::new(request.clone()),
+        request.clone(),
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
     let authz_result = checked_write(
         authorizer,
@@ -1793,7 +1797,7 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
     let authz_result = checked_write(
         authorizer,
@@ -1833,7 +1837,7 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
     let authz_result = checked_write(
         authorizer,
@@ -1873,7 +1877,7 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         warehouse_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
     let authz_result = checked_write(
         authorizer,
@@ -1913,7 +1917,7 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         namespace_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
     let authz_result = checked_write(
         authorizer,
@@ -1955,7 +1959,7 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events,
         warehouse_id,
         table_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
     let authz_result = checked_write(
         authorizer,
@@ -1997,7 +2001,7 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events,
         warehouse_id,
         view_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
     let authz_result = checked_write(
         authorizer,
@@ -2037,7 +2041,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         role_id,
-        Arc::new(request.clone()),
+        request.clone(),
     );
 
     // Improve error message of role being assigned to itself

@@ -285,26 +285,25 @@ impl From<CatalogBackendError> for ErrorModel {
         }
         .as_u16();
 
-        ErrorModel {
-            r#type: "CatalogBackendError".to_string(),
-            code,
-            message: format!("Catalog backend error ({type}): {source}"),
-            stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("CatalogBackendError")
+            .code(code)
+            .message(format!("Catalog backend error ({type}): {source}"))
+            .stack(stack)
+            .source(None)
+            .build()
     }
 }
 impl From<DatabaseIntegrityError> for ErrorModel {
     fn from(err: DatabaseIntegrityError) -> Self {
         let DatabaseIntegrityError { message, stack } = err;
 
-        ErrorModel {
-            r#type: "DatabaseIntegrityError".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            message: format!("Database integrity error: {message}"),
-            stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("DatabaseIntegrityError")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .message(format!("Database integrity error: {message}"))
+            .stack(stack)
+            .build()
     }
 }
 impl_authorization_failure_source!(CatalogBackendError => InternalCatalogError);
@@ -357,13 +356,14 @@ impl From<InvalidPaginationToken> for ErrorModel {
             stack,
         } = err;
 
-        ErrorModel {
-            r#type: "InvalidPaginationToken".to_string(),
-            code: StatusCode::BAD_REQUEST.as_u16(),
-            message: format!("Invalid pagination token - {message}. Got: `{value}`"),
-            stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("InvalidPaginationToken")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(format!(
+                "Invalid pagination token - {message}. Got: `{value}`"
+            ))
+            .stack(stack)
+            .build()
     }
 }
 impl From<InvalidPaginationToken> for IcebergErrorResponse {
@@ -402,15 +402,15 @@ impl From<ResultCountMismatch> for ErrorModel {
             stack,
         } = err;
 
-        ErrorModel {
-            r#type: "ResultCountMismatch".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            message,
-            source: Some(Box::new(InternalErrorMessage(format!(
+        ErrorModel::builder()
+            .r#type("ResultCountMismatch")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .message(message)
+            .source(Some(Box::new(InternalErrorMessage(format!(
                 "Result count mismatch for {type_name} batch operation: expected {expected_results}, got {actual_results}."
-            )))),
-            stack,
-        }
+            )))))
+            .stack(stack)
+            .build()
     }
 }
 impl From<ResultCountMismatch> for IcebergErrorResponse {

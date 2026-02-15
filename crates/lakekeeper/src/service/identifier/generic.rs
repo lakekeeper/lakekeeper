@@ -131,16 +131,6 @@ macro_rules! define_id_type_impl {
             }
         }
 
-        impl valuable::Valuable for $name {
-            fn as_value(&self) -> valuable::Value<'_> {
-                valuable::Value::U128(self.0.as_u128())
-            }
-
-            fn visit(&self, visit: &mut dyn valuable::Visit) {
-                visit.visit_value(self.as_value());
-            }
-        }
-
         // Deserialize is separately implemented to provide better error messages
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> std::result::Result<$name, D::Error>

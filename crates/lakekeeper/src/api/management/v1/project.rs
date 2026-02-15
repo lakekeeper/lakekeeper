@@ -120,6 +120,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events,
             CatalogServerAction::CreateProject,
+            context.v1_state.authz.server_id(),
         );
 
         // ------------------- AuthZ -------------------
@@ -293,6 +294,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata.clone()),
             context.v1_state.events.clone(),
             ServerActionListProjects {},
+            authorizer.server_id(),
         );
 
         let authz_result = authorizer.list_projects(event_ctx.request_metadata()).await;

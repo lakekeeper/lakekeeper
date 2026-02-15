@@ -254,7 +254,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         };
 
         let mut event_ctx = event_ctx;
-        event_ctx.action_mut().clone_from(&action);
+        event_ctx.override_action(action.clone());
 
         let authz_result = authorizer
             .require_namespace_action(

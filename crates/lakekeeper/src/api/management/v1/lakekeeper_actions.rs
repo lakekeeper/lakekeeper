@@ -25,7 +25,9 @@ use crate::{
         },
         events::{
             APIEventContext,
-            context::{APIEventAction, IntrospectPermissions, ResolutionState, UserProvidedEntity},
+            context::{
+                APIEventActions, IntrospectPermissions, ResolutionState, UserProvidedEntity,
+            },
         },
     },
 };
@@ -89,7 +91,7 @@ macro_rules! action_response {
     };
 }
 
-fn push_for_user_context<P: UserProvidedEntity, R: ResolutionState, A: APIEventAction>(
+fn push_for_user_context<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
     event_ctx: &mut APIEventContext<P, R, A>,
     for_user: Option<&UserOrRole>,
 ) {
@@ -126,6 +128,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
         Arc::new(request_metadata),
         state.v1_state.events,
         IntrospectPermissions {},
+        state.v1_state.authz.server_id(),
     );
     push_for_user_context(&mut event_ctx, for_user.as_ref());
 
@@ -161,7 +164,7 @@ pub(super) async fn get_allowed_user_actions<C: CatalogStore, A: Authorizer, S: 
     let mut event_ctx = APIEventContext::for_user(
         Arc::new(request_metadata),
         state.v1_state.events,
-        object.clone(),
+        object,
         IntrospectPermissions {},
     );
     push_for_user_context(&mut event_ctx, for_user.as_ref());
@@ -170,7 +173,7 @@ pub(super) async fn get_allowed_user_actions<C: CatalogStore, A: Authorizer, S: 
         event_ctx.request_metadata(),
         state.v1_state.authz,
         for_user.as_ref(),
-        &object,
+        event_ctx.user_provided_entity(),
     )
     .await;
 

@@ -391,13 +391,6 @@ impl EventListener for CloudEventsPublisher {
             .context("Failed to publish `undropTabulars` event")?;
         Ok(())
     }
-
-    async fn authorization_failed(
-        &self,
-        _event: types::authorization::AuthorizationFailedEvent,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
 }
 
 #[derive(Debug, Clone)]

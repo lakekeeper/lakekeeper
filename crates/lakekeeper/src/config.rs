@@ -619,7 +619,7 @@ impl Default for DynAppConfig {
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
             max_request_time: Duration::from_secs(30),
             audit: AuditConfig {
-                tracing: AuditTracingConfig { enabled: false },
+                tracing: AuditTracingConfig { enabled: true },
             },
         }
     }

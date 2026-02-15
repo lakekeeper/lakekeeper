@@ -78,15 +78,14 @@ impl AuthorizationFailureSource for AuthorizationCountMismatch {
             type_name,
         } = self;
 
-        ErrorModel {
-            r#type: "AuthorizationCountMismatch".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            message: "Authorization service returned invalid response".to_string(),
-            source: Some(Box::new(InternalErrorMessage(format!(
+        ErrorModel::builder()
+            .r#type("AuthorizationCountMismatch")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .message("Authorization service returned invalid response")
+            .source(Some(Box::new(InternalErrorMessage(format!(
                 "Authorization count mismatch for {type_name} batch check: expected {expected_authorizations}, got {actual_authorizations}."
-            )))),
-            stack: vec![],
-        }
+            )))))
+            .build()
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         AuthorizationFailureReason::InternalAuthorizationError
@@ -180,13 +179,13 @@ impl Display for AuthorizationBackendUnavailable {
 
 impl AuthorizationFailureSource for AuthorizationBackendUnavailable {
     fn into_error_model(self) -> ErrorModel {
-        ErrorModel {
-            r#type: "AuthorizationBackendError".to_string(),
-            code: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-            message: "Authorization service is unavailable".to_string(),
-            stack: self.stack,
-            source: Some(self.source),
-        }
+        ErrorModel::builder()
+            .r#type("AuthorizationBackendError")
+            .code(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+            .message("Authorization service is unavailable")
+            .stack(self.stack)
+            .source(Some(self.source))
+            .build()
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         AuthorizationFailureReason::InternalAuthorizationError

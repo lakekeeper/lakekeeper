@@ -78,7 +78,6 @@ tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-valuable = { workspace = true, features = ["derive"] }
 veil = { workspace = true }
 
 [dev-dependencies]

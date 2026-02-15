@@ -156,13 +156,12 @@ impl From<LocationParseError> for InternalParseLocationError {
 }
 impl From<InternalParseLocationError> for ErrorModel {
     fn from(err: InternalParseLocationError) -> Self {
-        ErrorModel {
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            r#type: "InternalParseLocationError".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .r#type("InternalParseLocationError")
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 impl From<InternalParseLocationError> for IcebergErrorResponse {
@@ -190,13 +189,12 @@ define_simple_error!(
 );
 impl From<InvalidTabularIdentifier> for ErrorModel {
     fn from(err: InvalidTabularIdentifier) -> Self {
-        ErrorModel {
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            r#type: "InvalidTabularIdentifier".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .r#type("InvalidTabularIdentifier")
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 impl From<InvalidTabularIdentifier> for IcebergErrorResponse {
@@ -701,7 +699,7 @@ pub struct CatalogSearchTabularResponse {
 
 macro_rules! define_ident_or_id {
     ($enum_name:ident, $id_type:ty, $tabular_variant:ident) => {
-        #[derive(Hash, Debug, Clone, PartialEq, Eq, derive_more::From, valuable::Valuable)]
+        #[derive(Hash, Debug, Clone, PartialEq, Eq, derive_more::From)]
         pub enum $enum_name {
             Ident(TableIdent),
             Id($id_type),
@@ -840,13 +838,12 @@ define_simple_error!(
 );
 impl From<TabularAlreadyExists> for ErrorModel {
     fn from(err: TabularAlreadyExists) -> Self {
-        ErrorModel {
-            code: StatusCode::CONFLICT.as_u16(),
-            r#type: "AlreadyExistsException".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::CONFLICT.as_u16())
+            .r#type("AlreadyExistsException")
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -856,13 +853,12 @@ define_simple_tabular_err!(
 );
 impl From<ProtectedTabularDeletionWithoutForce> for ErrorModel {
     fn from(err: ProtectedTabularDeletionWithoutForce) -> Self {
-        ErrorModel {
-            code: StatusCode::CONFLICT.as_u16(),
-            r#type: "ProtectedTabularDeletionWithoutForce".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::CONFLICT.as_u16())
+            .r#type("ProtectedTabularDeletionWithoutForce")
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -873,13 +869,12 @@ define_simple_tabular_err!(
 );
 impl From<ConcurrentUpdateError> for ErrorModel {
     fn from(err: ConcurrentUpdateError) -> Self {
-        ErrorModel {
-            code: StatusCode::CONFLICT.as_u16(),
-            r#type: CONCURRENT_UPDATE_ERROR_TYPE.to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::CONFLICT.as_u16())
+            .r#type(CONCURRENT_UPDATE_ERROR_TYPE)
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -892,13 +887,12 @@ impl From<TabularNotFound> for ErrorModel {
             "NoSuchTableException"
         };
 
-        ErrorModel {
-            code: StatusCode::NOT_FOUND.as_u16(),
-            r#type: t.to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .r#type(t)
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 impl From<TabularNotFound> for IcebergErrorResponse {
@@ -930,13 +924,13 @@ impl SerializationError {
 }
 impl From<SerializationError> for ErrorModel {
     fn from(err: SerializationError) -> Self {
-        ErrorModel {
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            r#type: "SerializationError".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: Some(err.source),
-        }
+        ErrorModel::builder()
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .r#type("SerializationError")
+            .message(err.to_string())
+            .stack(err.stack)
+            .source(Some(err.source))
+            .build()
     }
 }
 impl_authorization_failure_source!(SerializationError => InternalCatalogError);
@@ -985,13 +979,13 @@ impl From<ConversionError> for ErrorModel {
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
         };
-        ErrorModel {
-            code: code.as_u16(),
-            r#type: "ConversionError".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: Some(err.source),
-        }
+        ErrorModel::builder()
+            .code(code.as_u16())
+            .r#type("ConversionError")
+            .message(err.to_string())
+            .stack(err.stack)
+            .source(Some(err.source))
+            .build()
     }
 }
 
@@ -1021,13 +1015,12 @@ define_simple_tabular_err!(
 );
 impl From<ViewInTableList> for ErrorModel {
     fn from(err: ViewInTableList) -> Self {
-        ErrorModel {
-            message: err.to_string(),
-            r#type: "ViewInTableList".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            source: None,
-            stack: err.stack,
-        }
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("ViewInTableList")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
     }
 }
 define_simple_tabular_err!(
@@ -1036,13 +1029,12 @@ define_simple_tabular_err!(
 );
 impl From<TableInViewList> for ErrorModel {
     fn from(err: TableInViewList) -> Self {
-        ErrorModel {
-            message: err.to_string(),
-            r#type: "TableInViewList".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            source: None,
-            stack: err.stack,
-        }
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("TableInViewList")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -1107,13 +1099,12 @@ define_simple_error!(
 
 impl From<UnexpectedTabularInResponse> for ErrorModel {
     fn from(err: UnexpectedTabularInResponse) -> Self {
-        ErrorModel {
-            message: err.to_string(),
-            r#type: "UnexpectedTabularInResponse".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            source: None,
-            stack: err.stack,
-        }
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("UnexpectedTabularInResponse")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
     }
 }
 impl_authorization_failure_source!(UnexpectedTabularInResponse => InternalCatalogError);
@@ -1201,13 +1192,12 @@ impl LocationAlreadyTaken {
 impl_error_stack_methods!(LocationAlreadyTaken);
 impl From<LocationAlreadyTaken> for ErrorModel {
     fn from(err: LocationAlreadyTaken) -> Self {
-        ErrorModel {
-            code: StatusCode::CONFLICT.as_u16(),
-            r#type: "LocationAlreadyTaken".to_string(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::CONFLICT.as_u16())
+            .r#type("LocationAlreadyTaken")
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 

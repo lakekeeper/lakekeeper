@@ -14,7 +14,7 @@ use crate::{
         events::{
             APIEventContext,
             context::{
-                AuthzChecked, Resolved, ResolvedTable, UserProvidedTable, UserProvidedTablesByIdent,
+                AuthzChecked, Resolved, ResolvedTable, UserProvidedTable, UserProvidedTableIdents,
             },
         },
         storage::StoragePermissions,
@@ -72,7 +72,7 @@ pub struct LoadTableEvent {
 }
 
 pub type APIEventCommitContext = APIEventContext<
-    UserProvidedTablesByIdent,
+    UserProvidedTableIdents,
     Resolved<HashMap<TableIdent, Arc<TableInfo>>>,
     Vec<CatalogTableAction>,
     AuthzChecked,

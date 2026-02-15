@@ -238,6 +238,7 @@ async fn check_server(
         metadata,
         event_dispatcher,
         AllServerAction::CanReadAssignments,
+        lakekeeper::service::authz::Authorizer::server_id(authorizer),
     );
 
     if for_principal.is_some() {

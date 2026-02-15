@@ -22,7 +22,8 @@ use crate::{
         },
         events::{
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
-            CloudEventsPublisherBackgroundTask, EventDispatcher, audit::AuditEventListener,
+            CloudEventsPublisherBackgroundTask, EventDispatcher,
+            backends::audit::AuditEventListener,
         },
         health::ServiceHealthProvider,
         tasks::TaskQueueRegistry,

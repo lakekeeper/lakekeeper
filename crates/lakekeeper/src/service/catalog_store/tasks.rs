@@ -80,13 +80,12 @@ pub struct TaskNotFoundError {
 impl_error_stack_methods!(TaskNotFoundError);
 impl From<TaskNotFoundError> for ErrorModel {
     fn from(value: TaskNotFoundError) -> Self {
-        ErrorModel {
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: value.to_string(),
-            r#type: "TaskNotFoundError".to_string(),
-            stack: value.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(value.to_string())
+            .r#type("TaskNotFoundError")
+            .stack(value.stack)
+            .build()
     }
 }
 
@@ -120,13 +119,12 @@ impl AuthorizationFailureSource for NoWarehouseTaskError {
 impl_error_stack_methods!(NoWarehouseTaskError);
 impl From<NoWarehouseTaskError> for ErrorModel {
     fn from(value: NoWarehouseTaskError) -> Self {
-        ErrorModel {
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: value.to_string(),
-            r#type: "NoWarehouseTaskError".to_string(),
-            stack: value.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(value.to_string())
+            .r#type("NoWarehouseTaskError")
+            .stack(value.stack)
+            .build()
     }
 }
 

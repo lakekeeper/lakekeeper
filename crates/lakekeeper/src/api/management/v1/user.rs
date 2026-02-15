@@ -292,6 +292,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             CatalogServerAction::ProvisionUsers,
+            authorizer.server_id(),
         );
         let acting_user_id = event_ctx.request_metadata().user_id();
 
@@ -359,6 +360,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             ServerActionSearchUsers {},
+            authorizer.server_id(),
         );
 
         let authz_result = authorizer
@@ -429,6 +431,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             CatalogServerAction::ListUsers,
+            authorizer.server_id(),
         );
 
         let authz_result = authorizer

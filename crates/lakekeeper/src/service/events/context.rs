@@ -1,53 +1,146 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::s3::S3Location;
-use valuable::Valuable;
+use tracing::Instrument;
 
 use crate::{
-    ProjectId, WarehouseId,
-    api::{RequestMetadata, management::v1::check::CatalogActionCheckItem},
+    CONFIG, ProjectId, WarehouseId,
+    api::{
+        RequestMetadata,
+        management::v1::check::{
+            CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
+            TabularIdentOrUuid,
+        },
+    },
     service::{
-        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId,
-        TableIdentOrId, TableInfo, TabularId, ViewIdentOrId, ViewInfo,
+        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId,
+        TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{CatalogAction, CatalogTableAction, CatalogViewAction},
         events::{
             AuthorizationError, AuthorizationFailedEvent, AuthorizationFailureSource,
-            AuthorizationSucceededEvent, EventDispatcher, ThreadSafeAuthorizationEvent,
+            AuthorizationSucceededEvent, EventDispatcher,
         },
         storage::StoragePermissions,
         tasks::TaskId,
     },
 };
 
+pub const FIELD_NAME_SERVER_ID: &str = "server-id";
+pub const FIELD_NAME_PROJECT_ID: &str = "project-id";
+pub const FIELD_NAME_WAREHOUSE_ID: &str = "warehouse-id";
+pub const FIELD_NAME_NAMESPACE: &str = "namespace";
+pub const FIELD_NAME_NAMESPACE_ID: &str = "namespace-id";
+pub const FIELD_NAME_TABLE: &str = "table";
+pub const FIELD_NAME_TABLE_ID: &str = "table-id";
+pub const FIELD_NAME_TABLE_LOCATION: &str = "table-location";
+pub const FIELD_NAME_VIEW: &str = "view";
+pub const FIELD_NAME_VIEW_ID: &str = "view-id";
+pub const FIELD_NAME_TASK_ID: &str = "task-id";
+pub const FIELD_NAME_ROLE_ID: &str = "role-id";
+pub const FIELD_NAME_USER_ID: &str = "user-id";
+pub const FIELD_FOR_USER: &str = "for-user";
+
+pub const ENTITY_TYPE_SERVER: &str = "server";
+pub const ENTITY_TYPE_PROJECT: &str = "project";
+pub const ENTITY_TYPE_WAREHOUSE: &str = "warehouse";
+pub const ENTITY_TYPE_NAMESPACE: &str = "namespace";
+pub const ENTITY_TYPE_TABLE: &str = "table";
+pub const ENTITY_TYPE_VIEW: &str = "view";
+pub const ENTITY_TYPE_TASK: &str = "task";
+pub const ENTITY_TYPE_ROLE: &str = "role";
+pub const ENTITY_TYPE_USER: &str = "user";
+
 // ── Traits ──────────────────────────────────────────────────────────────────
 
 // Marker trait to indicate resolution state
 pub trait ResolutionState: Clone + Send + Sync {}
 
-pub trait UserProvidedEntity: Clone + ThreadSafeAuthorizationEvent + 'static {}
-
-pub trait APIEventAction {
-    fn event_action_str(&self) -> String;
+/// A single key-value descriptor for an entity (e.g. "warehouse-id" = "abc-123")
+#[derive(Clone, Debug)]
+pub struct EntityDescriptorField {
+    pub key: &'static str,
+    pub value: String,
 }
 
-impl<T> APIEventAction for T
-where
-    T: CatalogAction,
-{
-    fn event_action_str(&self) -> String {
-        CatalogAction::as_log_str(self)
+impl EntityDescriptorField {
+    pub fn new(key: &'static str, value: &impl ToString) -> Self {
+        Self {
+            key,
+            value: value.to_string(),
+        }
     }
 }
 
-impl<T> APIEventAction for Arc<T>
+/// All fields describing one logical entity (e.g. one table: warehouse-id + namespace + name)
+#[derive(Clone, Debug)]
+pub struct EntityDescriptor {
+    pub fields: Vec<EntityDescriptorField>,
+    pub entity_type: &'static str,
+}
+
+impl EntityDescriptor {
+    #[must_use]
+    pub fn new(entity_type: &'static str) -> Self {
+        Self {
+            fields: Vec::new(),
+            entity_type,
+        }
+    }
+
+    #[must_use]
+    pub fn field(mut self, key: &'static str, value: &impl ToString) -> Self {
+        self.fields.push(EntityDescriptorField::new(key, value));
+        self
+    }
+}
+
+/// The full set of entities involved in an event
+#[derive(Clone, Debug, valuable::Valuable)]
+#[valuable(transparent)]
+pub struct EventEntities {
+    pub entities: Vec<EntityDescriptor>,
+}
+
+impl EventEntities {
+    #[must_use]
+    pub fn one(descriptor: EntityDescriptor) -> Self {
+        Self {
+            entities: vec![descriptor],
+        }
+    }
+
+    pub fn many(descriptors: impl IntoIterator<Item = EntityDescriptor>) -> Self {
+        Self {
+            entities: descriptors.into_iter().collect(),
+        }
+    }
+}
+
+pub trait UserProvidedEntity: 'static + Send + Sync + std::fmt::Debug {
+    /// A list of key-value pairs representing the user-provided entity in log messages.
+    fn event_entities(&self) -> EventEntities;
+}
+
+// #[derive(Clone, Debug)]
+// pub struct APIEventAction {
+//     pub action: &'static str,
+//     pub context: Vec<(&'static str, String)>,
+// }
+
+pub trait APIEventActions: 'static + Send + Sync + std::fmt::Debug {
+    /// A list of string representations of the actions being performed, for use in log messages.
+    fn event_actions(&self) -> Vec<Cow<'static, str>>;
+}
+
+impl<T> APIEventActions for T
 where
-    T: APIEventAction,
+    T: CatalogAction + 'static,
 {
-    fn event_action_str(&self) -> String {
-        (**self).event_action_str()
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Owned(self.as_log_str())]
     }
 }
 
@@ -101,21 +194,7 @@ pub struct ResolvedView {
 
 // ── User-provided entity types ──────────────────────────────────────────────
 
-/// Macro to implement `UserProvidedEntity` trait with automatic conversion to enum
-macro_rules! impl_user_provided_entity {
-    ($ty:ty => $variant:ident) => {
-        impl UserProvidedEntity for $ty {}
-
-        impl ThreadSafeAuthorizationEvent for $ty {}
-    };
-}
-
-#[derive(Clone, Debug, Valuable)]
-pub struct UserProvidedEntityServer {}
-
-impl_user_provided_entity!(UserProvidedEntityServer => Server);
-
-#[derive(Clone, Debug, Valuable)]
+#[derive(Clone, Debug)]
 pub struct UserProvidedNamespace {
     pub warehouse_id: WarehouseId,
     pub namespace: NamespaceIdentOrId,
@@ -130,109 +209,268 @@ impl UserProvidedNamespace {
     }
 }
 
-impl_user_provided_entity!(UserProvidedNamespace => Namespace);
+impl UserProvidedEntity for UserProvidedNamespace {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+            .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id);
+        EventEntities::one(match &self.namespace {
+            NamespaceIdentOrId::Name(ident) => desc.field(FIELD_NAME_NAMESPACE, ident),
+            NamespaceIdentOrId::Id(id) => desc.field(FIELD_NAME_NAMESPACE_ID, id),
+        })
+    }
+}
 
-#[derive(Clone, Debug, Valuable)]
+#[derive(Clone, Debug)]
 pub struct UserProvidedTable {
     pub warehouse_id: WarehouseId,
     pub table: TableIdentOrId,
 }
 
-impl_user_provided_entity!(UserProvidedTable => Table);
+impl UserProvidedEntity for UserProvidedTable {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_TABLE)
+            .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id);
+        EventEntities::one(match &self.table {
+            TableIdentOrId::Ident(ident) => desc
+                .field(FIELD_NAME_NAMESPACE, &ident.namespace)
+                .field(FIELD_NAME_TABLE, &ident.name),
+            TableIdentOrId::Id(id) => desc.field(FIELD_NAME_TABLE_ID, id),
+        })
+    }
+}
 
-#[derive(Clone, Debug, Valuable)]
+#[derive(Clone, Debug)]
 pub struct UserProvidedTableLocation {
     pub warehouse_id: WarehouseId,
     pub table_location: Arc<S3Location>,
 }
 
-impl_user_provided_entity!(UserProvidedTableLocation => TableLocation);
+impl UserProvidedEntity for UserProvidedTableLocation {
+    fn event_entities(&self) -> EventEntities {
+        EventEntities::one(
+            EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                .field(FIELD_NAME_TABLE_LOCATION, &self.table_location),
+        )
+    }
+}
 
-#[derive(Clone, Debug, Valuable)]
-pub struct UserProvidedTabularsById {
+#[derive(Clone, Debug)]
+pub struct UserProvidedTabularsIDs {
     pub warehouse_id: WarehouseId,
     pub tabulars: Vec<TabularId>,
 }
 
-impl_user_provided_entity!(UserProvidedTabularsById => TabularsById);
+impl UserProvidedEntity for UserProvidedTabularsIDs {
+    fn event_entities(&self) -> EventEntities {
+        EventEntities::many(self.tabulars.iter().map(|id| {
+            match id {
+                TabularId::Table(table_id) => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                    .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                    .field(FIELD_NAME_TABLE_ID, table_id),
+                TabularId::View(view_id) => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                    .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                    .field(FIELD_NAME_VIEW_ID, view_id),
+            }
+        }))
+    }
+}
 
-#[derive(Clone, Debug, Valuable)]
-pub struct UserProvidedTablesByIdent {
+#[derive(Clone, Debug)]
+pub struct UserProvidedTableIdents {
     pub warehouse_id: WarehouseId,
     pub tables: Vec<TableIdent>,
 }
 
-impl_user_provided_entity!(UserProvidedTablesByIdent => TablesByIdent);
+impl UserProvidedEntity for UserProvidedTableIdents {
+    fn event_entities(&self) -> EventEntities {
+        EventEntities::many(self.tables.iter().map(|t| {
+            EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                .field(FIELD_NAME_NAMESPACE, &t.namespace)
+                .field(FIELD_NAME_TABLE, &t.name)
+        }))
+    }
+}
 
-#[derive(Clone, Debug, Valuable)]
+#[derive(Clone, Debug)]
 pub struct UserProvidedView {
     pub warehouse_id: WarehouseId,
     pub view: ViewIdentOrId,
 }
 
-impl_user_provided_entity!(UserProvidedView => View);
+impl UserProvidedEntity for UserProvidedView {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_VIEW)
+            .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id);
+        EventEntities::one(match &self.view {
+            ViewIdentOrId::Ident(ident) => desc
+                .field(FIELD_NAME_NAMESPACE, &ident.namespace)
+                .field(FIELD_NAME_VIEW, &ident.name),
+            ViewIdentOrId::Id(id) => desc.field(FIELD_NAME_VIEW_ID, id),
+        })
+    }
+}
 
-#[derive(Clone, Debug, derive_more::From, Valuable)]
+#[derive(Clone, Debug, derive_more::From)]
 pub enum UserProvidedTableOrView {
     Table(UserProvidedTable),
     View(UserProvidedView),
 }
 
-impl_user_provided_entity!(UserProvidedTableOrView => TableOrView);
+impl UserProvidedEntity for UserProvidedTableOrView {
+    fn event_entities(&self) -> EventEntities {
+        match self {
+            UserProvidedTableOrView::Table(table) => table.event_entities(),
+            UserProvidedTableOrView::View(view) => view.event_entities(),
+        }
+    }
+}
 
-#[derive(Clone, Debug, Valuable)]
+#[derive(Clone, Debug)]
 pub struct UserProvidedTask {
     pub warehouse_id: WarehouseId,
     pub task_id: TaskId,
 }
-impl_user_provided_entity!(UserProvidedTask => Task);
+impl UserProvidedEntity for UserProvidedTask {
+    fn event_entities(&self) -> EventEntities {
+        EventEntities::one(
+            EntityDescriptor::new(ENTITY_TYPE_TASK)
+                .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                .field(FIELD_NAME_TASK_ID, &self.task_id),
+        )
+    }
+}
+
+impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
+    fn event_entities(&self) -> EventEntities {
+        EventEntities::many(self.1.iter().map(|item| {
+            let mut desc = match &item.operation {
+                CatalogActionCheckOperation::Server { .. } => {
+                    EntityDescriptor::new(ENTITY_TYPE_SERVER).field(FIELD_NAME_SERVER_ID, &self.0)
+                }
+                CatalogActionCheckOperation::Project { project_id, .. } => match project_id {
+                    Some(id) => {
+                        EntityDescriptor::new(ENTITY_TYPE_PROJECT).field(FIELD_NAME_PROJECT_ID, id)
+                    }
+                    None => EntityDescriptor::new(ENTITY_TYPE_PROJECT)
+                        .field(FIELD_NAME_PROJECT_ID, &"default"),
+                },
+                CatalogActionCheckOperation::Warehouse { warehouse_id, .. } => {
+                    EntityDescriptor::new(ENTITY_TYPE_WAREHOUSE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                }
+                CatalogActionCheckOperation::Namespace { namespace, .. } => match namespace {
+                    NamespaceIdentOrUuid::Id {
+                        namespace_id,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE_ID, namespace_id),
+                    NamespaceIdentOrUuid::Name {
+                        namespace,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, namespace),
+                },
+                CatalogActionCheckOperation::Table { table, .. } => match table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_TABLE_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, namespace)
+                        .field(FIELD_NAME_TABLE, table),
+                },
+                CatalogActionCheckOperation::View { view, .. } => match view {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_VIEW_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, namespace)
+                        .field(FIELD_NAME_VIEW, table),
+                },
+            };
+            if let Some(identity) = &item.identity {
+                desc = desc.field(FIELD_FOR_USER, identity);
+            }
+            desc
+        }))
+    }
+}
 
 // Primitive entity impls
-impl_user_provided_entity!(WarehouseId => WarehouseId);
-impl_user_provided_entity!(ProjectId => ProjectId);
-impl_user_provided_entity!(RoleId => RoleId);
-impl_user_provided_entity!(UserIdRef => UserId);
-impl_user_provided_entity!(Arc<Vec<CatalogActionCheckItem>> => CatalogCheckItems);
-impl_user_provided_entity!(NamespaceId => NamespaceId);
+macro_rules! impl_user_provided_entity {
+    ($ty:ty, $entity_type:expr, $field:expr) => {
+        impl UserProvidedEntity for $ty {
+            fn event_entities(&self) -> EventEntities {
+                EventEntities::one(EntityDescriptor::new($entity_type).field($field, self))
+            }
+        }
+    };
+}
+
+impl_user_provided_entity!(ServerId, ENTITY_TYPE_SERVER, FIELD_NAME_SERVER_ID);
+impl_user_provided_entity!(ProjectId, ENTITY_TYPE_PROJECT, FIELD_NAME_PROJECT_ID);
+impl_user_provided_entity!(WarehouseId, ENTITY_TYPE_WAREHOUSE, FIELD_NAME_WAREHOUSE_ID);
+impl_user_provided_entity!(NamespaceId, ENTITY_TYPE_NAMESPACE, FIELD_NAME_NAMESPACE_ID);
+impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
+impl_user_provided_entity!(UserId, ENTITY_TYPE_USER, FIELD_NAME_USER_ID);
 
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]
 pub struct ServerActionSearchUsers {}
-impl APIEventAction for ServerActionSearchUsers {
-    fn event_action_str(&self) -> String {
-        "search_users".to_string()
+impl APIEventActions for ServerActionSearchUsers {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("search_users")]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ServerActionListProjects {}
-impl APIEventAction for ServerActionListProjects {
-    fn event_action_str(&self) -> String {
-        "list_projects".to_string()
+impl APIEventActions for ServerActionListProjects {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("list_projects")]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct WarehouseActionSearchTabulars {}
-impl APIEventAction for WarehouseActionSearchTabulars {
-    fn event_action_str(&self) -> String {
-        "search_tabulars".to_string()
+impl APIEventActions for WarehouseActionSearchTabulars {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("search_tabulars")]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct IntrospectPermissions {}
-impl APIEventAction for IntrospectPermissions {
-    fn event_action_str(&self) -> String {
-        "introspect_permissions".to_string()
+impl APIEventActions for IntrospectPermissions {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("introspect_permissions")]
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct GetTaskDetailsAction {}
-impl APIEventAction for GetTaskDetailsAction {
-    fn event_action_str(&self) -> String {
-        "get_task_details".to_string()
+impl APIEventActions for GetTaskDetailsAction {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        vec![Cow::Borrowed("get_task_details")]
     }
 }
 
@@ -242,26 +480,23 @@ pub struct TabularAction {
     pub view_action: CatalogViewAction,
 }
 
-impl APIEventAction for TabularAction {
-    fn event_action_str(&self) -> String {
+impl APIEventActions for TabularAction {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
         let tbl_str = self.table_action.as_log_str();
         let view_str = self.view_action.as_log_str();
         if tbl_str == view_str {
-            tbl_str
+            vec![Cow::Owned(tbl_str)]
         } else {
-            format!("{tbl_str}, {view_str}")
+            vec![Cow::Owned(tbl_str), Cow::Owned(view_str)]
         }
     }
 }
 
-impl APIEventAction for Vec<CatalogTableAction> {
-    fn event_action_str(&self) -> String {
-        let actions_str = self
-            .iter()
-            .map(super::super::authz::CatalogAction::as_log_str)
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("Batch[{actions_str}]")
+impl APIEventActions for Vec<CatalogTableAction> {
+    fn event_actions(&self) -> Vec<Cow<'static, str>> {
+        self.iter()
+            .map(|action| Cow::Owned(action.as_log_str()))
+            .collect()
     }
 }
 
@@ -272,13 +507,13 @@ pub struct APIEventContext<P, R, A, Z = AuthzUnchecked>
 where
     P: UserProvidedEntity,
     R: ResolutionState,
-    A: APIEventAction,
+    A: APIEventActions,
     Z: AuthzState,
 {
     pub(super) request_metadata: Arc<RequestMetadata>,
     pub(super) dispatcher: EventDispatcher,
-    pub(super) user_provided_entity: P,
-    pub(super) action: A,
+    pub(super) user_provided_entity: Arc<P>,
+    pub(super) action: Arc<A>,
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
     pub(super) extra_context: HashMap<String, String>,
@@ -286,7 +521,7 @@ where
 
 // ── Core impl (Unresolved) ──────────────────────────────────────────────────
 
-impl<P: UserProvidedEntity, A: APIEventAction> APIEventContext<P, Unresolved, A, AuthzUnchecked> {
+impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A, AuthzUnchecked> {
     /// Create a new context with request metadata, dispatcher, and user-provided entity (unresolved)
     #[must_use]
     pub fn new(
@@ -294,6 +529,24 @@ impl<P: UserProvidedEntity, A: APIEventAction> APIEventContext<P, Unresolved, A,
         dispatcher: EventDispatcher,
         entity: P,
         action: A,
+    ) -> APIEventContext<P, Unresolved, A, AuthzUnchecked> {
+        APIEventContext {
+            request_metadata,
+            dispatcher,
+            user_provided_entity: Arc::new(entity),
+            resolved_entity: Unresolved,
+            action: Arc::new(action),
+            _authz: std::marker::PhantomData,
+            extra_context: HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn new_arc(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        entity: Arc<P>,
+        action: Arc<A>,
     ) -> APIEventContext<P, Unresolved, A, AuthzUnchecked> {
         APIEventContext {
             request_metadata,
@@ -307,7 +560,9 @@ impl<P: UserProvidedEntity, A: APIEventAction> APIEventContext<P, Unresolved, A,
     }
 }
 
-impl<P: UserProvidedEntity, A: APIEventAction, Z: AuthzState> APIEventContext<P, Unresolved, A, Z> {
+impl<P: UserProvidedEntity, A: APIEventActions, Z: AuthzState>
+    APIEventContext<P, Unresolved, A, Z>
+{
     #[must_use]
     pub fn resolve<T>(self, resolved_data: T) -> APIEventContext<P, Resolved<T>, A, Z>
     where
@@ -329,23 +584,19 @@ impl<P: UserProvidedEntity, A: APIEventAction, Z: AuthzState> APIEventContext<P,
 
 // ── Entity-specific constructors ────────────────────────────────────────────
 
-impl<A: APIEventAction> APIEventContext<UserProvidedEntityServer, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<ServerId, Unresolved, A> {
     #[must_use]
     pub fn for_server(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
         action: A,
+        server_id: ServerId,
     ) -> Self {
-        Self::new(
-            request_metadata,
-            dispatcher,
-            UserProvidedEntityServer {},
-            action,
-        )
+        Self::new(request_metadata, dispatcher, server_id, action)
     }
 }
 
-impl<A: APIEventAction> APIEventContext<ProjectId, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
     #[must_use]
     pub fn for_project(
         request_metadata: Arc<RequestMetadata>,
@@ -357,7 +608,7 @@ impl<A: APIEventAction> APIEventContext<ProjectId, Unresolved, A> {
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserIdRef, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserId, Unresolved, A> {
     #[must_use]
     pub fn for_user(
         request_metadata: Arc<RequestMetadata>,
@@ -365,11 +616,11 @@ impl<A: APIEventAction> APIEventContext<UserIdRef, Unresolved, A> {
         user_id: UserIdRef,
         action: A,
     ) -> Self {
-        Self::new(request_metadata, dispatcher, user_id, action)
+        Self::new_arc(request_metadata, dispatcher, user_id, Arc::new(action))
     }
 }
 
-impl<A: APIEventAction> APIEventContext<RoleId, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<RoleId, Unresolved, A> {
     #[must_use]
     pub fn for_role(
         request_metadata: Arc<RequestMetadata>,
@@ -381,7 +632,7 @@ impl<A: APIEventAction> APIEventContext<RoleId, Unresolved, A> {
     }
 }
 
-impl<A: APIEventAction> APIEventContext<WarehouseId, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<WarehouseId, Unresolved, A> {
     #[must_use]
     pub fn for_warehouse(
         request_metadata: Arc<RequestMetadata>,
@@ -393,7 +644,7 @@ impl<A: APIEventAction> APIEventContext<WarehouseId, Unresolved, A> {
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedNamespace, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserProvidedNamespace, Unresolved, A> {
     #[must_use]
     pub fn for_namespace(
         request_metadata: Arc<RequestMetadata>,
@@ -414,7 +665,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedNamespace, Unresolved, A> {
     }
 }
 
-impl<A: APIEventAction> APIEventContext<NamespaceId, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<NamespaceId, Unresolved, A> {
     #[must_use]
     pub fn for_namespace_only_id(
         request_metadata: Arc<RequestMetadata>,
@@ -426,7 +677,7 @@ impl<A: APIEventAction> APIEventContext<NamespaceId, Unresolved, A> {
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedTable, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserProvidedTable, Unresolved, A> {
     #[must_use]
     pub fn for_table(
         request_metadata: Arc<RequestMetadata>,
@@ -468,7 +719,7 @@ impl APIEventContext<UserProvidedTableLocation, Unresolved, CatalogTableAction> 
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedTablesByIdent, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserProvidedTableIdents, Unresolved, A> {
     #[must_use]
     pub fn for_tables_by_ident(
         request_metadata: Arc<RequestMetadata>,
@@ -480,7 +731,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedTablesByIdent, Unresolved, A
         Self::new(
             request_metadata,
             dispatcher,
-            UserProvidedTablesByIdent {
+            UserProvidedTableIdents {
                 warehouse_id,
                 tables,
             },
@@ -489,7 +740,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedTablesByIdent, Unresolved, A
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedTabularsById, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserProvidedTabularsIDs, Unresolved, A> {
     #[must_use]
     pub fn for_tabulars(
         request_metadata: Arc<RequestMetadata>,
@@ -501,7 +752,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedTabularsById, Unresolved, A>
         Self::new(
             request_metadata,
             dispatcher,
-            UserProvidedTabularsById {
+            UserProvidedTabularsIDs {
                 warehouse_id,
                 tabulars,
             },
@@ -510,7 +761,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedTabularsById, Unresolved, A>
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedView, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserProvidedView, Unresolved, A> {
     #[must_use]
     pub fn for_view(
         request_metadata: Arc<RequestMetadata>,
@@ -531,7 +782,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedView, Unresolved, A> {
     }
 }
 
-impl<A: APIEventAction> APIEventContext<UserProvidedTask, Unresolved, A> {
+impl<A: APIEventActions> APIEventContext<UserProvidedTask, Unresolved, A> {
     #[must_use]
     pub fn for_task(
         request_metadata: Arc<RequestMetadata>,
@@ -557,7 +808,7 @@ impl<A: APIEventAction> APIEventContext<UserProvidedTask, Unresolved, A> {
 impl<R, A, P, Z> APIEventContext<P, R, A, Z>
 where
     R: ResolutionState,
-    A: APIEventAction,
+    A: APIEventActions,
     P: UserProvidedEntity,
     Z: AuthzState,
 {
@@ -566,9 +817,12 @@ where
         &self.action
     }
 
-    #[must_use]
-    pub fn action_mut(&mut self) -> &mut A {
-        &mut self.action
+    pub fn override_action(&mut self, action: A) {
+        self.action = Arc::new(action);
+    }
+
+    pub fn override_action_arc(&mut self, action: Arc<A>) {
+        self.action = action;
     }
 
     #[must_use]
@@ -601,7 +855,7 @@ where
 impl<T, A, P, Z> APIEventContext<P, Resolved<T>, A, Z>
 where
     T: Clone + Send + Sync,
-    A: APIEventAction,
+    A: APIEventActions,
     P: UserProvidedEntity,
     Z: AuthzState,
 {
@@ -625,7 +879,7 @@ where
 
 pub type CheckedAPIEventContext<P, R, A, T> = (APIEventContext<P, R, A, AuthzChecked>, T);
 
-impl<R: ResolutionState, A: APIEventAction, P: UserProvidedEntity>
+impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     APIEventContext<P, R, A, AuthzUnchecked>
 {
     /// Check authorization result and emit the corresponding event.
@@ -643,38 +897,26 @@ impl<R: ResolutionState, A: APIEventAction, P: UserProvidedEntity>
             Ok(value) => {
                 let event = AuthorizationSucceededEvent {
                     request_metadata: self.request_metadata.clone(),
-                    entity: Arc::new(self.user_provided_entity.clone()),
-                    action: self.action.event_action_str(),
+                    entities: Arc::new(self.user_provided_entity.event_entities()),
+                    actions: Arc::new(self.action.event_actions()),
                     extra_context: Arc::new(self.extra_context.clone()),
                 };
                 let dispatcher = self.dispatcher.clone();
-                tokio::spawn(async move {
-                    let () = dispatcher.authorization_succeeded(event).await;
-                });
+                let span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        let () = dispatcher.authorization_succeeded(event).await;
+                    }
+                    .instrument(span),
+                );
                 Ok((self.into(), value))
             }
-            Err(e) => {
-                let failure_reason = e.to_failure_reason();
-                let error = e.into_error_model();
-                let event = AuthorizationFailedEvent {
-                    request_metadata: self.request_metadata.clone(),
-                    entity: Arc::new(self.user_provided_entity.clone()),
-                    action: self.action.event_action_str(),
-                    failure_reason,
-                    error: Arc::new(AuthorizationError::clone_from_error_model(&error)),
-                    extra_context: Arc::new(self.extra_context),
-                };
-                let dispatcher = self.dispatcher.clone();
-                tokio::spawn(async move {
-                    let () = dispatcher.authorization_failed(event).await;
-                });
-                Err(error)
-            }
+            Err(e) => Err(self.emit_authz_failure_event(e)),
         }
     }
 }
 
-impl<R: ResolutionState, A: APIEventAction, P: UserProvidedEntity>
+impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     APIEventContext<P, R, A, AuthzChecked>
 {
     /// Convert an authorization failure to an [`ErrorModel`] without emitting any event.
@@ -694,16 +936,50 @@ pub fn authz_to_error_no_audit(error: impl AuthorizationFailureSource) -> ErrorM
     error.into_error_model()
 }
 
-impl<T: ResolutionState, A: APIEventAction, P: UserProvidedEntity, Z: AuthzState>
+impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzState>
     APIEventContext<P, T, A, Z>
 {
-    #[deprecated(note = "Use `emit_authz` instead")]
-    pub fn emit_authz_failure_async(&self, _error: impl AuthorizationFailureSource) -> ErrorModel {
-        todo!("Don't use")
-    }
+    fn emit_authz_failure_event(&self, error: impl AuthorizationFailureSource) -> ErrorModel {
+        let failure_reason = error.to_failure_reason();
+        let mut error = error.into_error_model();
 
-    pub fn emit_early_authz_failure(&self, _error: impl AuthorizationFailureSource) -> ErrorModel {
-        todo!("Implement")
+        if CONFIG.audit.tracing.enabled {
+            error.skip_log = true; // Already emitted in more detail by audit logger
+        }
+
+        let event = AuthorizationFailedEvent {
+            request_metadata: self.request_metadata.clone(),
+            entities: Arc::new(self.user_provided_entity.event_entities()),
+            actions: Arc::new(self.action.event_actions()),
+            failure_reason,
+            error: Arc::new(AuthorizationError::clone_from_error_model(&error)),
+            extra_context: Arc::new(self.extra_context.clone()),
+        };
+        let dispatcher = self.dispatcher.clone();
+        let span = tracing::Span::current();
+        tokio::spawn(
+            async move {
+                let () = dispatcher.authorization_failed(event).await;
+            }
+            .instrument(span),
+        );
+        error
+    }
+}
+
+impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
+    APIEventContext<P, T, A, AuthzUnchecked>
+{
+    pub fn emit_early_authz_failure(&self, error: impl AuthorizationFailureSource) -> ErrorModel {
+        self.emit_authz_failure_event(error)
+    }
+}
+
+impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
+    APIEventContext<P, T, A, AuthzChecked>
+{
+    pub fn emit_late_authz_failure(&self, error: impl AuthorizationFailureSource) -> ErrorModel {
+        self.emit_authz_failure_event(error)
     }
 }
 
@@ -712,7 +988,7 @@ impl<P, R, A> From<APIEventContext<P, R, A, AuthzUnchecked>>
 where
     P: UserProvidedEntity,
     R: ResolutionState,
-    A: APIEventAction,
+    A: APIEventActions,
 {
     fn from(context: APIEventContext<P, R, A, AuthzUnchecked>) -> Self {
         APIEventContext {
