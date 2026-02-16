@@ -154,13 +154,13 @@ where
 
 #[derive(Debug, Clone)]
 pub struct FileInfo {
-    last_modified: DateTime<Utc>,
+    last_modified: Option<DateTime<Utc>>,
     location: Location,
 }
 
 impl FileInfo {
     #[must_use]
-    pub fn new(last_modified: DateTime<Utc>, location: Location) -> Self {
+    pub fn new(last_modified: Option<DateTime<Utc>>, location: Location) -> Self {
         Self {
             last_modified,
             location,
@@ -168,7 +168,7 @@ impl FileInfo {
     }
 
     #[must_use]
-    pub fn last_modified(&self) -> DateTime<Utc> {
+    pub fn last_modified(&self) -> Option<DateTime<Utc>> {
         self.last_modified
     }
 

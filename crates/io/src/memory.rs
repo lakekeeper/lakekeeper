@@ -239,7 +239,7 @@ impl LakekeeperStorage for MemoryStorage {
             match location_str.parse::<Location>() {
                 Ok(location) => {
                     let file_info = FileInfo {
-                        last_modified,
+                        last_modified: Some(last_modified),
                         location,
                     };
                     all_file_infos.push(file_info);

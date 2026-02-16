@@ -467,22 +467,7 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
         })?;
         let last_modified = object
             .updated
-            .ok_or_else(|| {
-                IOError::new(
-                    ErrorKind::Unexpected,
-                    "GCS object is missing `updated` field.".to_string(),
-                    location.as_str().to_string(),
-                )
-            })
-            .and_then(|timestamp| {
-                DateTime::from_timestamp(timestamp.unix_timestamp(), 0).ok_or_else(|| {
-                    IOError::new(
-                        ErrorKind::Unexpected,
-                        "Failed to convert GCS object timestamp to DateTime.".to_string(),
-                        location.as_str().to_string(),
-                    )
-                })
-            })?;
+            .and_then(|timestamp| DateTime::from_timestamp(timestamp.unix_timestamp(), 0));
         Ok(FileInfo {
             last_modified,
             location,
