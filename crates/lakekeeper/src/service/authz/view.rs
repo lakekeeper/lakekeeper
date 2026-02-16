@@ -1,17 +1,17 @@
 use std::{collections::HashMap, sync::Arc};
 
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        Actor, AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
+        AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
         InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
         ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CannotInspectPermissions, CatalogAction, CatalogViewAction, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
@@ -19,6 +19,10 @@ use crate::{
         catalog_store::{
             CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
             TabularListFlags,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedView,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -38,27 +42,50 @@ impl ViewAction for CatalogViewAction {}
 pub struct AuthZCannotSeeView {
     warehouse_id: WarehouseId,
     view: ViewIdentOrId,
+    /// Whether the resource was confirmed not to exist (for audit logging)
+    /// HTTP response is deliberately ambiguous, but audit log should be concrete
+    internal_resource_not_found: bool,
 }
 impl AuthZCannotSeeView {
     #[must_use]
-    pub fn new(warehouse_id: WarehouseId, view: impl Into<ViewIdentOrId>) -> Self {
+    pub fn new(
+        warehouse_id: WarehouseId,
+        view: impl Into<ViewIdentOrId>,
+        resource_not_found: bool,
+    ) -> Self {
         Self {
             warehouse_id,
             view: view.into(),
+            internal_resource_not_found: resource_not_found,
         }
     }
-}
-impl From<AuthZCannotSeeView> for ErrorModel {
-    fn from(err: AuthZCannotSeeView) -> Self {
-        let AuthZCannotSeeView { warehouse_id, view } = err;
-        TabularNotFound::new(warehouse_id, view)
-            .append_detail("View not found or access denied")
-            .into()
+
+    #[must_use]
+    pub fn new_not_found(warehouse_id: WarehouseId, view: impl Into<ViewIdentOrId>) -> Self {
+        Self::new(warehouse_id, view, true)
+    }
+
+    #[must_use]
+    pub fn new_forbidden(warehouse_id: WarehouseId, view: impl Into<ViewIdentOrId>) -> Self {
+        Self::new(warehouse_id, view, false)
     }
 }
-impl From<AuthZCannotSeeView> for IcebergErrorResponse {
-    fn from(err: AuthZCannotSeeView) -> Self {
-        ErrorModel::from(err).into()
+impl AuthorizationFailureSource for AuthZCannotSeeView {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZCannotSeeView {
+            warehouse_id,
+            view,
+            internal_resource_not_found: _,
+        } = self;
+        TabularNotFound::new(warehouse_id, view).into()
+    }
+
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.internal_resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
     }
 }
 // ------------------ Action Forbidden Error ------------------
@@ -67,7 +94,6 @@ pub struct AuthZViewActionForbidden {
     warehouse_id: WarehouseId,
     view: ViewIdentOrId,
     action: String,
-    actor: Box<Actor>,
 }
 impl AuthZViewActionForbidden {
     #[must_use]
@@ -75,36 +101,31 @@ impl AuthZViewActionForbidden {
         warehouse_id: WarehouseId,
         view: impl Into<ViewIdentOrId>,
         action: &impl ViewAction,
-        actor: Actor,
     ) -> Self {
         Self {
             warehouse_id,
             view: view.into(),
             action: action.as_log_str(),
-            actor: Box::new(actor),
         }
     }
 }
-impl From<AuthZViewActionForbidden> for ErrorModel {
-    fn from(err: AuthZViewActionForbidden) -> Self {
+impl AuthorizationFailureSource for AuthZViewActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
         let AuthZViewActionForbidden {
             warehouse_id,
             view,
             action,
-            actor,
-        } = err;
+        } = self;
         ErrorModel::forbidden(
             format!(
-                "View action `{action}` forbidden for `{actor}` on view {view} in warehouse `{warehouse_id}`"
+                "View action `{action}` forbidden on view {view} in warehouse `{warehouse_id}`"
             ),
             "ViewActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZViewActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZViewActionForbidden) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -144,27 +165,18 @@ impl From<GetTabularInfoError> for RequireViewActionError {
         }
     }
 }
-impl From<RequireViewActionError> for ErrorModel {
-    fn from(err: RequireViewActionError) -> Self {
-        match err {
-            RequireViewActionError::AuthZViewActionForbidden(e) => e.into(),
-            RequireViewActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireViewActionError::AuthorizationCountMismatch(e) => e.into(),
-            RequireViewActionError::AuthZCannotSeeView(e) => e.into(),
-            RequireViewActionError::CatalogBackendError(e) => e.into(),
-            RequireViewActionError::InvalidNamespaceIdentifier(e) => e.into(),
-            RequireViewActionError::SerializationError(e) => e.into(),
-            RequireViewActionError::UnexpectedTabularInResponse(e) => e.into(),
-            RequireViewActionError::InternalParseLocationError(e) => e.into(),
-            RequireViewActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
-}
-impl From<RequireViewActionError> for IcebergErrorResponse {
-    fn from(err: RequireViewActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireViewActionError => {
+    AuthZViewActionForbidden,
+    AuthorizationBackendUnavailable,
+    AuthorizationCountMismatch,
+    CannotInspectPermissions,
+    AuthZCannotSeeView,
+    CatalogBackendError,
+    InvalidNamespaceIdentifier,
+    SerializationError,
+    UnexpectedTabularInResponse,
+    InternalParseLocationError,
+});
 
 #[async_trait::async_trait]
 pub trait AuthZViewOps: Authorizer {
@@ -176,7 +188,7 @@ pub trait AuthZViewOps: Authorizer {
     ) -> Result<T, RequireViewActionError> {
         let view = view.map_err(Into::into)?;
         let Some(view) = view else {
-            return Err(AuthZCannotSeeView::new(warehouse_id, user_provided_view).into());
+            return Err(AuthZCannotSeeView::new_not_found(warehouse_id, user_provided_view).into());
         };
         Ok(view)
     }
@@ -190,7 +202,6 @@ pub trait AuthZViewOps: Authorizer {
         view: Result<Option<T>, impl Into<RequireViewActionError> + Send>,
         action: impl Into<Self::ViewAction> + Send,
     ) -> Result<T, RequireViewActionError> {
-        let actor = metadata.actor();
         let warehouse_id = warehouse.warehouse_id;
         // OK to return because this goes via the Into method
         // of RequireViewActionError
@@ -198,7 +209,8 @@ pub trait AuthZViewOps: Authorizer {
         let view = self.require_view_presence(warehouse_id, user_provided_view.clone(), view)?;
         let view_ident = view.view_ident().clone();
 
-        let cant_see_err = AuthZCannotSeeView::new(warehouse_id, user_provided_view.clone()).into();
+        let cant_see_err =
+            AuthZCannotSeeView::new_forbidden(warehouse_id, user_provided_view.clone()).into();
         let action = action.into();
 
         #[cfg(debug_assertions)]
@@ -243,13 +255,7 @@ pub trait AuthZViewOps: Authorizer {
                 .into_inner();
             if can_see_view {
                 is_allowed.then_some(view).ok_or_else(|| {
-                    AuthZViewActionForbidden::new(
-                        warehouse_id,
-                        view_ident.clone(),
-                        &action,
-                        actor.clone(),
-                    )
-                    .into()
+                    AuthZViewActionForbidden::new(warehouse_id, view_ident.clone(), &action).into()
                 })
             } else {
                 return Err(cant_see_err);
@@ -285,19 +291,18 @@ pub trait AuthZViewOps: Authorizer {
     async fn load_and_authorize_view_operation<C>(
         &self,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseId,
-        user_provided_view: impl Into<ViewIdentOrId> + Send,
+        user_provided_view: &UserProvidedView,
         view_flags: TabularListFlags,
         action: impl Into<Self::ViewAction> + Send,
         catalog_state: C::State,
-    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), ErrorModel>
+    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError>
     where
         C: CatalogStore,
     {
-        let user_provided_view = user_provided_view.into();
+        let warehouse_id = user_provided_view.warehouse_id;
 
         // Determine the fetch strategy based on whether we have a ViewId or ViewIdent
-        let (warehouse, namespace, view_info) = match &user_provided_view {
+        let (warehouse, namespace, view_info) = match &user_provided_view.view {
             ViewIdentOrId::Id(view_id) => {
                 fetch_warehouse_namespace_view_by_id::<C, _>(
                     self,
@@ -340,13 +345,13 @@ pub trait AuthZViewOps: Authorizer {
         };
 
         // Validate namespace ID consistency and version (with TOCTOU protection)
-        let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-            self,
+        let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
             &warehouse,
-            &view_info,
             namespace,
+            &view_info,
+            AuthZCannotSeeView::new_not_found(warehouse_id, user_provided_view.view.clone()),
+            self,
             catalog_state,
-            AuthZCannotSeeView::new(warehouse_id, user_provided_view.clone()),
         )
         .await?;
 
@@ -356,7 +361,7 @@ pub trait AuthZViewOps: Authorizer {
                 request_metadata,
                 &warehouse,
                 &namespace,
-                user_provided_view,
+                user_provided_view.view.clone(),
                 Ok::<_, RequireViewActionError>(Some(view_info)),
                 action,
             )
@@ -505,7 +510,7 @@ pub(crate) async fn fetch_warehouse_namespace_view_by_id<C, A>(
     user_provided_view: ViewId,
     table_flags: TabularListFlags,
     catalog_state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), ErrorModel>
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError>
 where
     C: CatalogStore,
     A: AuthzWarehouseOps + AuthzNamespaceOps,

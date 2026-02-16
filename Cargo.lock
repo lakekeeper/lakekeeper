@@ -3218,7 +3218,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=acda05d67eb0bb304ba2f86e135c9ecb6caf793e#acda05d67eb0bb304ba2f86e135c9ecb6caf793e"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=c440a001488a4a5606bef349f46c5e5b7cc41bd9#c440a001488a4a5606bef349f46c5e5b7cc41bd9"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3267,6 +3267,7 @@ dependencies = [
  "typed-builder 0.20.1",
  "url",
  "uuid",
+ "valuable",
  "zstd",
 ]
 
@@ -3829,6 +3830,7 @@ dependencies = [
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
+ "valuable",
  "vaultrs",
  "vaultrs-login",
  "veil",
@@ -3882,7 +3884,7 @@ dependencies = [
 [[package]]
 name = "lakekeeper-console"
 version = "0.11.3"
-source = "git+https://github.com/lakekeeper/console?rev=58e2ea2#58e2ea2f420c96118cb819dfc4af47c6960087d8"
+source = "git+https://github.com/lakekeeper/console?rev=a78db64#a78db649b239cfa57f43b88fcf06b06d3e47b764"
 dependencies = [
  "fs_extra",
  "mime_guess",
@@ -7430,6 +7432,8 @@ checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
 dependencies = [
  "serde",
  "tracing-core",
+ "valuable",
+ "valuable-serde",
 ]
 
 [[package]]
@@ -7451,6 +7455,8 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+ "valuable",
+ "valuable-serde",
 ]
 
 [[package]]
@@ -7754,6 +7760,30 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+dependencies = [
+ "valuable-derive",
+]
+
+[[package]]
+name = "valuable-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e3a32a9bcc0f6c6ccfd5b27bcf298c58e753bcc9eeff268157a303393183a6d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.112",
+]
+
+[[package]]
+name = "valuable-serde"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee0548edecd1b907be7e67789923b7d02275b9ba4a33ebc33300e2c947a8cb1"
+dependencies = [
+ "serde",
+ "valuable",
+]
 
 [[package]]
 name = "vaultrs"

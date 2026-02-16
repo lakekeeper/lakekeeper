@@ -286,13 +286,12 @@ impl EventListener for NamespaceCacheEventListener {
 
     async fn namespace_dropped(&self, event: events::DropNamespaceEvent) -> anyhow::Result<()> {
         let events::DropNamespaceEvent {
-            warehouse_id: _warehouse_id,
-            namespace_id,
+            namespace,
             request_metadata: _request_metadata,
         } = event;
         // This is sufficient also for recursive drops, as the cache only supports loading the full
         // hierarchy, which breaks if any of the entries in the path are missing.
-        namespace_cache_invalidate(namespace_id).await;
+        namespace_cache_invalidate(namespace.namespace_id()).await;
         Ok(())
     }
 

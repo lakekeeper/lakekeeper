@@ -109,7 +109,7 @@ mod test {
         for filter in filters {
             let tasks: Vec<Uuid> = PostgresBackend::list_tasks(
                 &filter,
-                ListTasksRequest {
+                &ListTasksRequest {
                     queue_name: Some(vec![QUEUE_NAME.clone()]),
                     ..Default::default()
                 },

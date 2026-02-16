@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     api::{ApiContext, iceberg::v1::ViewParameters},
     request_metadata::RequestMetadata,
@@ -5,6 +7,7 @@ use crate::{
     service::{
         CatalogStore, Result, SecretStore, State, TabularListFlags,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        events::APIEventContext,
     },
 };
 
@@ -21,16 +24,24 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
 
-    let (_warehouse, _namespace, _view_info) = authorizer
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(request_metadata),
+        state.v1_state.events,
+        warehouse_id,
+        view.clone(),
+        CatalogViewAction::GetMetadata,
+    );
+
+    let authz_result = authorizer
         .load_and_authorize_view_operation::<C>(
-            &request_metadata,
-            warehouse_id,
-            view.clone(),
+            event_ctx.request_metadata(),
+            event_ctx.user_provided_entity(),
             TabularListFlags::active(),
-            CatalogViewAction::GetMetadata,
+            event_ctx.action().clone(),
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await;
+    event_ctx.emit_authz(authz_result)?;
 
     Ok(())
 }

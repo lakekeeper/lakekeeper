@@ -198,12 +198,12 @@ impl EventListener for WarehouseCacheEventListener {
 
     async fn warehouse_deleted(&self, event: events::DeleteWarehouseEvent) -> anyhow::Result<()> {
         let events::DeleteWarehouseEvent {
-            warehouse_id,
+            warehouse,
             request_metadata: _request_metadata,
         } = event;
         // When we invalidate by warehouse_id, the eviction listener will handle
         // removing the entry from NAME_TO_ID_CACHE
-        warehouse_cache_invalidate(warehouse_id).await;
+        warehouse_cache_invalidate(warehouse.warehouse_id).await;
         Ok(())
     }
 

@@ -86,7 +86,6 @@ mod test {
         assert_eq!(stats.stats.first().unwrap().number_of_views, 1);
         assert_eq!(stats.stats.last().unwrap().number_of_tables, 1);
         assert_eq!(stats.stats.last().unwrap().number_of_views, 1);
-        tracing::info!("dropping table {}", tn);
         super::super::drop_table(
             setup.ctx.clone(),
             setup.warehouse.warehouse_id.to_string().as_str(),
@@ -97,8 +96,6 @@ mod test {
         )
         .await
         .unwrap();
-        tracing::info!("dropped table {}", tn);
-
         let new_stats = ApiServer::get_warehouse_statistics(
             whi,
             GetWarehouseStatisticsQuery {
