@@ -94,7 +94,7 @@ async fn get_scheduled_project_ids<C: CatalogStore>(
 
         let response = C::list_tasks(
             &TaskFilter::All,
-            ListTasksRequest::builder()
+            &ListTasksRequest::builder()
                 .status(Some(vec![TaskStatus::Scheduled, TaskStatus::Running]))
                 .queue_name(Some(vec![queue_name.clone()]))
                 .page_size(Some(CONFIG.pagination_size_max.into()))

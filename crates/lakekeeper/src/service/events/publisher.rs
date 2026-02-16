@@ -12,15 +12,9 @@ use uuid::Uuid;
 use super::{dispatch::EventListener, types};
 use crate::{
     CONFIG,
-    api::{
-        RequestMetadata,
-        iceberg::{
-            types::Prefix,
-            v1::{NamespaceParameters, TableParameters},
-        },
-    },
+    api::RequestMetadata,
     server::tables::maybe_body_to_json,
-    service::{TableId, TabularId, WarehouseId},
+    service::{AuthZTableInfo, AuthZViewInfo, TableId, TabularId, WarehouseId},
 };
 
 /// Cached hostname for CloudEvents source URI. Resolved once at first access.
@@ -85,19 +79,22 @@ impl EventListener for CloudEventsPublisher {
         let types::CommitTransactionEvent {
             warehouse_id,
             request,
-            commits: _commits,
-            table_ident_to_id_fn,
+            commits,
             request_metadata,
         } = event;
         let estimated = request.table_changes.len();
         let mut events = Vec::with_capacity(estimated);
         let mut event_table_ids: Vec<(TableIdent, TableId)> = Vec::with_capacity(estimated);
+        let commit_map = commits
+            .iter()
+            .map(|commit| (commit.table_info.table_ident(), commit))
+            .collect::<std::collections::HashMap<_, _>>();
         for commit_table_request in &request.table_changes {
-            if let Some(id) = &commit_table_request.identifier
-                && let Some(uuid) = (*table_ident_to_id_fn)(id)
+            if let Some(ident) = &commit_table_request.identifier
+                && let Some(ctx) = commit_map.get(ident)
             {
                 events.push(maybe_body_to_json(commit_table_request));
-                event_table_ids.push((id.clone(), uuid));
+                event_table_ids.push((ident.clone(), ctx.table_info.table_id()));
             }
         }
         let number_of_events = events.len();
@@ -130,10 +127,8 @@ impl EventListener for CloudEventsPublisher {
 
     async fn table_dropped(&self, event: types::DropTableEvent) -> anyhow::Result<()> {
         let types::DropTableEvent {
-            warehouse_id,
-            parameters: TableParameters { prefix, table },
+            table,
             drop_params: _drop_params,
-            table_id: table_ident_uuid,
             request_metadata,
         } = event;
         self.publish(
@@ -141,11 +136,11 @@ impl EventListener for CloudEventsPublisher {
             "dropTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::Table(table_ident_uuid),
-                warehouse_id,
-                name: table.name,
-                namespace: table.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                tabular_id: table.table.table_id().into(),
+                warehouse_id: table.warehouse.warehouse_id,
+                name: table.table.tabular_ident.name.clone(),
+                namespace: table.table.tabular_ident.namespace.to_string(),
+                prefix: table.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
@@ -159,8 +154,7 @@ impl EventListener for CloudEventsPublisher {
 
     async fn table_registered(&self, event: types::RegisterTableEvent) -> anyhow::Result<()> {
         let types::RegisterTableEvent {
-            warehouse_id,
-            parameters: NamespaceParameters { prefix, namespace },
+            namespace,
             request,
             metadata,
             metadata_location: _metadata_location,
@@ -172,10 +166,10 @@ impl EventListener for CloudEventsPublisher {
             serde_json::Value::Null,
             EventMetadata {
                 tabular_id: TabularId::Table(metadata.uuid().into()),
-                warehouse_id,
+                warehouse_id: namespace.warehouse.warehouse_id,
                 name: request.name.clone(),
-                namespace: namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                namespace: namespace.namespace.namespace_ident().to_string(),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
@@ -189,24 +183,24 @@ impl EventListener for CloudEventsPublisher {
 
     async fn table_created(&self, event: types::CreateTableEvent) -> anyhow::Result<()> {
         let types::CreateTableEvent {
-            warehouse_id,
-            parameters: NamespaceParameters { prefix, namespace },
-            request,
+            namespace,
             metadata,
             metadata_location: _metadata_location,
             data_access: _data_access,
             request_metadata,
+            table_name,
+            request,
         } = event;
         self.publish(
             Uuid::now_v7(),
             "createTable",
-            serde_json::Value::Null,
+            maybe_body_to_json(&request),
             EventMetadata {
                 tabular_id: TabularId::Table(metadata.uuid().into()),
-                warehouse_id,
-                name: request.name.clone(),
-                namespace: namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
+                warehouse_id: namespace.warehouse.warehouse_id,
+                name: table_name,
+                namespace: namespace.namespace.namespace_ident().to_string(),
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
@@ -220,18 +214,18 @@ impl EventListener for CloudEventsPublisher {
 
     async fn table_renamed(&self, event: types::RenameTableEvent) -> anyhow::Result<()> {
         let types::RenameTableEvent {
-            warehouse_id,
-            table_id: table_ident_uuid,
+            source_table,
+            destination_namespace: _,
             request,
             request_metadata,
         } = event;
         self.publish(
             Uuid::now_v7(),
             "renameTable",
-            serde_json::Value::Null,
+            maybe_body_to_json(&request),
             EventMetadata {
-                tabular_id: TabularId::Table(table_ident_uuid),
-                warehouse_id,
+                tabular_id: source_table.table.table_id().into(),
+                warehouse_id: source_table.warehouse.warehouse_id,
                 name: request.source.name.clone(),
                 namespace: request.source.namespace.to_url_string(),
                 prefix: String::new(),
@@ -248,13 +242,12 @@ impl EventListener for CloudEventsPublisher {
 
     async fn view_created(&self, event: types::CreateViewEvent) -> anyhow::Result<()> {
         let types::CreateViewEvent {
-            warehouse_id,
-            parameters,
+            namespace,
             request,
             metadata,
             metadata_location: _metadata_location,
-            data_access: _data_access,
             request_metadata,
+            view_name: _,
         } = event;
         self.publish(
             Uuid::now_v7(),
@@ -262,13 +255,10 @@ impl EventListener for CloudEventsPublisher {
             maybe_body_to_json(&request),
             EventMetadata {
                 tabular_id: TabularId::View(metadata.uuid().into()),
-                warehouse_id,
+                warehouse_id: namespace.warehouse.warehouse_id,
                 name: request.name.clone(),
-                namespace: parameters.namespace.to_url_string(),
-                prefix: parameters
-                    .prefix
-                    .map(Prefix::into_string)
-                    .unwrap_or_default(),
+                namespace: namespace.namespace.namespace_ident().to_string(),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
@@ -282,8 +272,8 @@ impl EventListener for CloudEventsPublisher {
 
     async fn view_committed(&self, event: types::CommitViewEvent) -> anyhow::Result<()> {
         let types::CommitViewEvent {
-            warehouse_id,
-            parameters,
+            view,
+            warehouse,
             request,
             view_commit: metadata,
             data_access: _data_access,
@@ -295,13 +285,10 @@ impl EventListener for CloudEventsPublisher {
             maybe_body_to_json(request),
             EventMetadata {
                 tabular_id: TabularId::View(metadata.new_metadata.uuid().into()),
-                warehouse_id,
-                name: parameters.view.name,
-                namespace: parameters.view.namespace.to_url_string(),
-                prefix: parameters
-                    .prefix
-                    .map(Prefix::into_string)
-                    .unwrap_or_default(),
+                warehouse_id: warehouse.warehouse_id,
+                name: view.view_ident().name.clone(),
+                namespace: view.view_ident().namespace.to_string(),
+                prefix: warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
@@ -315,10 +302,8 @@ impl EventListener for CloudEventsPublisher {
 
     async fn view_dropped(&self, event: types::DropViewEvent) -> anyhow::Result<()> {
         let types::DropViewEvent {
-            warehouse_id,
-            parameters,
+            view,
             drop_params: _drop_params,
-            view_id: view_ident_uuid,
             request_metadata,
         } = event;
         self.publish(
@@ -326,14 +311,11 @@ impl EventListener for CloudEventsPublisher {
             "dropView",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::View(view_ident_uuid),
-                warehouse_id,
-                name: parameters.view.name,
-                namespace: parameters.view.namespace.to_url_string(),
-                prefix: parameters
-                    .prefix
-                    .map(Prefix::into_string)
-                    .unwrap_or_default(),
+                tabular_id: TabularId::View(view.view.view_id()),
+                warehouse_id: view.warehouse.warehouse_id,
+                name: view.view.view_ident().name.clone(),
+                namespace: view.view.view_ident().namespace.to_string(),
+                prefix: view.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
@@ -347,8 +329,8 @@ impl EventListener for CloudEventsPublisher {
 
     async fn view_renamed(&self, event: types::RenameViewEvent) -> anyhow::Result<()> {
         let types::RenameViewEvent {
-            warehouse_id,
-            view_id: view_ident_uuid,
+            source_view,
+            destination_namespace: _,
             request,
             request_metadata,
         } = event;
@@ -357,10 +339,10 @@ impl EventListener for CloudEventsPublisher {
             "renameView",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularId::View(view_ident_uuid),
-                warehouse_id,
+                tabular_id: TabularId::View(source_view.view.view_id()),
+                warehouse_id: source_view.view.warehouse_id(),
                 name: request.source.name.clone(),
-                namespace: request.source.namespace.to_url_string(),
+                namespace: request.source.namespace.to_string(),
                 prefix: String::new(),
                 num_events: 1,
                 sequence_number: 0,
@@ -375,7 +357,7 @@ impl EventListener for CloudEventsPublisher {
 
     async fn tabular_undropped(&self, event: types::UndropTabularEvent) -> anyhow::Result<()> {
         let types::UndropTabularEvent {
-            warehouse_id,
+            warehouse,
             request: _request,
             responses,
             request_metadata,
@@ -389,7 +371,7 @@ impl EventListener for CloudEventsPublisher {
                 serde_json::Value::Null,
                 EventMetadata {
                     tabular_id: tabular_info.tabular_id(),
-                    warehouse_id,
+                    warehouse_id: warehouse.warehouse_id,
                     name: tabular_info.tabular_ident().name.clone(),
                     namespace: tabular_info.tabular_ident().namespace.to_url_string(),
                     prefix: String::new(),

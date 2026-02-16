@@ -65,16 +65,16 @@ use crate::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
         CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, ListNamespacesQuery, ListRolesError, ListTabularsError,
-        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError,
-        ResolvedTask, ResolvedWarehouse, Result, RoleId, SearchRolesError, SearchTabularError,
-        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit,
-        TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError,
-        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError,
+        ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RoleId,
+        SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
+        UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo,
+        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -685,7 +685,7 @@ impl CatalogStore for super::PostgresBackend {
         scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<Vec<ResolvedTask>> {
+    ) -> Result<Vec<ResolvedTask>, ResolveTasksError> {
         resolve_tasks(scope, task_ids, &state.read_pool()).await
     }
 
@@ -711,14 +711,14 @@ impl CatalogStore for super::PostgresBackend {
         scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<TaskDetails>> {
+    ) -> Result<Option<TaskDetails>, GetTaskDetailsError> {
         get_task_details(task_id, scope, num_attempts, &state.read_pool()).await
     }
 
     /// List tasks
     async fn list_tasks_impl(
         filter: &TaskFilter,
-        query: ListTasksRequest,
+        query: &ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<TaskList> {
         list_tasks(filter, query, &mut *transaction).await
@@ -776,7 +776,7 @@ impl CatalogStore for super::PostgresBackend {
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         set_task_queue_config(transaction, queue_name, project_id, warehouse_id, config).await

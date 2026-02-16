@@ -1,17 +1,21 @@
 use std::sync::Arc;
 
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     ProjectId,
     api::{RequestMetadata, management::v1::role::Role},
     service::{
-        Actor, CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, RoleId,
+        CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, RoleId,
         RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogRoleAction,
             MustUse, UserOrRole,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -30,40 +34,61 @@ impl RoleAction for CatalogRoleAction {}
 pub struct AuthZCannotSeeRole {
     project_id: ProjectId,
     role_id: RoleId,
+    /// Whether the resource was confirmed not to exist (for audit logging)
+    /// HTTP response is deliberately ambiguous, but audit log should be concrete
+    internal_resource_not_found: bool,
+    internal_server_stack: Vec<String>,
 }
 impl AuthZCannotSeeRole {
     #[must_use]
-    pub fn new(project_id: ProjectId, role_id: RoleId) -> Self {
+    pub fn new(
+        project_id: ProjectId,
+        role_id: RoleId,
+        resource_not_found: bool,
+        error_stack: Vec<String>,
+    ) -> Self {
         Self {
             project_id,
             role_id,
+            internal_resource_not_found: resource_not_found,
+            internal_server_stack: error_stack,
         }
     }
 }
 impl From<RoleIdNotFoundInProject> for AuthZCannotSeeRole {
     fn from(err: RoleIdNotFoundInProject) -> Self {
-        // Deliberately discard the stack trace to avoid leaking
-        // information about the existence of the role.
+        let RoleIdNotFoundInProject {
+            project_id,
+            role_id,
+            stack,
+        } = err;
         AuthZCannotSeeRole {
-            project_id: err.project_id,
-            role_id: err.role_id,
+            project_id,
+            role_id,
+            internal_resource_not_found: true,
+            internal_server_stack: stack,
         }
     }
 }
-impl From<AuthZCannotSeeRole> for ErrorModel {
-    fn from(err: AuthZCannotSeeRole) -> Self {
+impl AuthorizationFailureSource for AuthZCannotSeeRole {
+    fn into_error_model(self) -> ErrorModel {
         let AuthZCannotSeeRole {
             project_id,
             role_id,
-        } = err;
+            internal_resource_not_found: _,
+            internal_server_stack,
+        } = self;
         RoleIdNotFoundInProject::new(role_id, project_id)
             .append_detail("Role not found or access denied")
+            .append_details(internal_server_stack)
             .into()
     }
-}
-impl From<AuthZCannotSeeRole> for IcebergErrorResponse {
-    fn from(err: AuthZCannotSeeRole) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        if self.internal_resource_not_found {
+            AuthorizationFailureReason::ResourceNotFound
+        } else {
+            AuthorizationFailureReason::CannotSeeResource
+        }
     }
 }
 
@@ -71,35 +96,27 @@ impl From<AuthZCannotSeeRole> for IcebergErrorResponse {
 pub struct AuthZRoleActionForbidden {
     role_id: RoleId,
     action: String,
-    actor: Actor,
 }
 impl AuthZRoleActionForbidden {
     #[must_use]
-    pub fn new(role_id: RoleId, action: impl RoleAction, actor: Actor) -> Self {
+    pub fn new(role_id: RoleId, action: impl RoleAction) -> Self {
         Self {
             role_id,
             action: action.to_string(),
-            actor,
         }
     }
 }
-impl From<AuthZRoleActionForbidden> for ErrorModel {
-    fn from(err: AuthZRoleActionForbidden) -> Self {
-        let AuthZRoleActionForbidden {
-            role_id,
-            action,
-            actor,
-        } = err;
+impl AuthorizationFailureSource for AuthZRoleActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZRoleActionForbidden { role_id, action } = self;
         ErrorModel::forbidden(
-            format!("Role action `{action}` forbidden for {actor} on role `{role_id}`",),
+            format!("Role action `{action}` forbidden on role `{role_id}`",),
             "RoleActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZRoleActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZRoleActionForbidden) -> Self {
-        ErrorModel::from(err).into()
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
 
@@ -125,24 +142,6 @@ impl From<BackendUnavailableOrCountMismatch> for RequireRoleActionError {
         }
     }
 }
-impl From<RequireRoleActionError> for ErrorModel {
-    fn from(err: RequireRoleActionError) -> Self {
-        match err {
-            RequireRoleActionError::AuthZRoleActionForbidden(e) => e.into(),
-            RequireRoleActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireRoleActionError::CannotInspectPermissions(e) => e.into(),
-            RequireRoleActionError::AuthorizationCountMismatch(e) => e.into(),
-            RequireRoleActionError::AuthZCannotSeeRole(e) => e.into(),
-            RequireRoleActionError::CatalogBackendError(e) => e.into(),
-            RequireRoleActionError::InvalidPaginationToken(e) => e.into(),
-        }
-    }
-}
-impl From<RequireRoleActionError> for IcebergErrorResponse {
-    fn from(err: RequireRoleActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
 impl From<GetRoleInProjectError> for RequireRoleActionError {
     fn from(err: GetRoleInProjectError) -> Self {
         match err {
@@ -152,6 +151,15 @@ impl From<GetRoleInProjectError> for RequireRoleActionError {
         }
     }
 }
+delegate_authorization_failure_source!(RequireRoleActionError => {
+    AuthZRoleActionForbidden,
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+    AuthorizationCountMismatch,
+    AuthZCannotSeeRole,
+    CatalogBackendError,
+    InvalidPaginationToken,
+});
 
 #[async_trait::async_trait]
 pub trait AuthZRoleOps: Authorizer {
@@ -243,7 +251,7 @@ pub trait AuthZRoleOps: Authorizer {
         {
             Ok(role)
         } else {
-            Err(AuthZRoleActionForbidden::new(role.id, action, metadata.actor().clone()).into())
+            Err(AuthZRoleActionForbidden::new(role.id, action).into())
         }
     }
 }

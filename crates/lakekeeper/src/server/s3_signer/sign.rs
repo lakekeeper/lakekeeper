@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::SystemTime, vec};
+use std::{collections::HashMap, sync::Arc, time::SystemTime, vec};
 
 use aws_sigv4::{
     http_request::{SignableBody, SignableRequest, SigningSettings, sign as aws_sign},
@@ -21,9 +21,10 @@ use crate::{
         GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
         TabularListFlags,
         authz::{
-            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogTableAction,
-            CatalogWarehouseAction, RequireTableActionError,
+            AuthZCannotSeeTableLocation, AuthZError, AuthZTableOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogTableAction, CatalogWarehouseAction, RequireTableActionError,
         },
+        events::{APIEventContext, context::authz_to_error_no_audit},
         secrets::SecretStore,
         storage::{
             S3Credential, S3Profile, StorageProfile, ValidationError, s3::S3UrlStyleDetectionMode,
@@ -67,14 +68,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
 
+        let request_metadata = Arc::new(request_metadata);
+        let warehouse_event_ctx = APIEventContext::for_warehouse(
+            request_metadata.clone(),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::Use,
+        );
         let warehouse = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                warehouse_event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::Use,
+                warehouse_event_ctx.action().clone(),
             )
-            .await?;
+            .await
+            // Too noisy otherwise
+            .map_err(authz_to_error_no_audit)?;
 
         // Check if remote signing is enabled for this storage profile
         if let StorageProfile::S3(s3_profile) = &warehouse.storage_profile {
@@ -171,42 +181,31 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .map_err(RequireTableActionError::from)
         };
 
-        let Some(table_info) = table_info? else {
-            return Err(ErrorModel::bad_request(
-                "No table found for the given location",
-                "TableNotFoundByLocation",
-                None,
-            )
-            .into());
-        };
-
         let action = match operation {
             Operation::Read => CatalogTableAction::ReadData,
             Operation::Write | Operation::Delete => CatalogTableAction::WriteData,
         };
-        // First check - fail fast if requested table is not allowed.
-        // We also need to check later if the path matches the table location.
-        let namespace_hierarchy = C::get_namespace(
+
+        let event_ctx = APIEventContext::for_table_location(
+            request_metadata,
+            state.v1_state.events,
             warehouse_id,
-            table_info.table_ident().namespace.clone(),
+            Arc::new(first_location.clone()),
+            action,
+        );
+
+        let authz_result = authorize_table_action_for_sign::<C, _>(
+            &warehouse,
+            table_info,
+            event_ctx.user_provided_entity().table_location.clone(),
+            event_ctx.request_metadata(),
+            event_ctx.action().clone(),
+            &authorizer,
             state.v1_state.catalog.clone(),
         )
         .await;
-        let namespace_hierarchy = authorizer.require_namespace_presence(
-            warehouse_id,
-            table_info.table_ident().namespace.clone(),
-            namespace_hierarchy,
-        )?;
-        let table_info = authorizer
-            .require_table_action(
-                &request_metadata,
-                &warehouse,
-                &namespace_hierarchy,
-                table_info.table_ident().clone(),
-                Ok::<_, RequireTableActionError>(Some(table_info)),
-                action,
-            )
-            .await?;
+        let (_event_ctx, table_info) = event_ctx.emit_authz(authz_result)?;
+
         let table_id = table_info.table_id();
         let location = table_info.location;
 
@@ -452,6 +451,51 @@ async fn get_table_info_by_location<C: CatalogStore, A: Authorizer + Clone, S: S
             info
         })
     })
+}
+
+async fn authorize_table_action_for_sign<C: CatalogStore, A: Authorizer + Clone>(
+    warehouse: &ResolvedWarehouse,
+    table_info: Result<Option<TableInfo>, RequireTableActionError>,
+    table_location: Arc<S3Location>,
+    request_metadata: &RequestMetadata,
+    action: CatalogTableAction,
+    authorizer: &A,
+    catalog_state: C::State,
+) -> Result<TableInfo, AuthZError> {
+    let warehouse_id = warehouse.warehouse_id;
+    let table_info = table_info?;
+
+    let Some(table_info) = table_info else {
+        return Err(
+            AuthZCannotSeeTableLocation::new_not_found(warehouse_id, table_location).into(),
+        );
+    };
+
+    // First check - fail fast if requested table is not allowed.
+    // We also need to check later if the path matches the table location.
+    let namespace_hierarchy = C::get_namespace(
+        warehouse_id,
+        table_info.table_ident().namespace.clone(),
+        catalog_state,
+    )
+    .await;
+    let namespace_hierarchy = authorizer.require_namespace_presence(
+        warehouse_id,
+        table_info.table_ident().namespace.clone(),
+        namespace_hierarchy,
+    )?;
+    let table_info = authorizer
+        .require_table_action(
+            request_metadata,
+            warehouse,
+            &namespace_hierarchy,
+            table_info.table_ident().clone(),
+            Ok::<_, RequireTableActionError>(Some(table_info)),
+            action,
+        )
+        .await?;
+
+    Ok(table_info)
 }
 
 fn validate_uri(

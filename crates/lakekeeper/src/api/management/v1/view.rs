@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
@@ -6,6 +8,7 @@ use crate::{
         CatalogStore, CatalogTabularOps, SecretStore, State, TabularId, TabularListFlags,
         Transaction, ViewId,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        events::APIEventContext,
     },
 };
 
@@ -30,16 +33,24 @@ where
         let authorizer = state.v1_state.authz;
         let state_catalog = state.v1_state.catalog;
 
-        let (_warehouse, _namespace, _view) = authorizer
+        let event_ctx = APIEventContext::for_view(
+            Arc::new(request_metadata),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            view_id,
+            CatalogViewAction::SetProtection,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_view_operation::<C>(
-                &request_metadata,
-                warehouse_id,
-                view_id,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
                 TabularListFlags::all(),
-                CatalogViewAction::SetProtection,
+                event_ctx.action().clone(),
                 state_catalog.clone(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, _view) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state_catalog).await?;
@@ -63,20 +74,28 @@ where
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
-        let authorizer = state.v1_state.authz.clone();
-
+        // ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz;
         let state_catalog = state.v1_state.catalog;
 
-        let (_warehouse, _namespace, view) = authorizer
+        let event_ctx = APIEventContext::for_view(
+            Arc::new(request_metadata),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            view_id,
+            CatalogViewAction::GetMetadata,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_view_operation::<C>(
-                &request_metadata,
-                warehouse_id,
-                view_id,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
                 TabularListFlags::all(),
-                CatalogViewAction::GetMetadata,
+                event_ctx.action().clone(),
                 state_catalog.clone(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, (_warehouse, _namespace, view)) = event_ctx.emit_authz(authz_result)?;
 
         Ok(ProtectionResponse {
             protected: view.protected,

@@ -4,7 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iceberg_ext::catalog::rest::ErrorModel;
+use http::StatusCode;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{CatalogStore, Transaction};
 use crate::{
@@ -14,7 +15,9 @@ use crate::{
         tasks::{ListTasksRequest, TaskAttempt},
     },
     service::{
-        Result,
+        CatalogBackendError, DatabaseIntegrityError, Result, define_transparent_error,
+        events::{AuthorizationFailureReason, AuthorizationFailureSource},
+        impl_error_stack_methods, impl_from_with_detail,
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState,
@@ -66,6 +69,72 @@ pub struct TaskDetails {
     pub execution_details: Option<serde_json::Value>,
     pub data: serde_json::Value,
     pub attempts: Vec<TaskAttempt>,
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("Task with id `{task_id}` not found")]
+pub struct TaskNotFoundError {
+    pub task_id: TaskId,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(TaskNotFoundError);
+impl From<TaskNotFoundError> for ErrorModel {
+    fn from(value: TaskNotFoundError) -> Self {
+        ErrorModel::builder()
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(value.to_string())
+            .r#type("TaskNotFoundError")
+            .stack(value.stack)
+            .build()
+    }
+}
+
+define_transparent_error! {
+    pub enum ResolveTasksError,
+    stack_message: "Error resolving tasks in catalog",
+    variants: [
+        TaskNotFoundError,
+        DatabaseIntegrityError,
+        CatalogBackendError
+    ]
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("Expected Warehouse task but received project task")]
+pub struct NoWarehouseTaskError {
+    pub stack: Vec<String>,
+}
+
+impl AuthorizationFailureSource for NoWarehouseTaskError {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InvalidRequestData
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+impl_error_stack_methods!(NoWarehouseTaskError);
+impl From<NoWarehouseTaskError> for ErrorModel {
+    fn from(value: NoWarehouseTaskError) -> Self {
+        ErrorModel::builder()
+            .code(StatusCode::UNPROCESSABLE_ENTITY.as_u16())
+            .message(value.to_string())
+            .r#type("NoWarehouseTaskError")
+            .stack(value.stack)
+            .build()
+    }
+}
+
+define_transparent_error! {
+    pub enum GetTaskDetailsError,
+    stack_message: "Error getting task details in catalog",
+    variants: [
+        TaskNotFoundError,
+        DatabaseIntegrityError,
+        CatalogBackendError
+    ]
 }
 
 #[async_trait::async_trait]
@@ -162,7 +231,7 @@ where
         scope: TaskDetailsScope,
         num_attempts: u16,
         state: Self::State,
-    ) -> Result<Option<TaskDetails>> {
+    ) -> Result<Option<TaskDetails>, GetTaskDetailsError> {
         Self::get_task_details_impl(task_id, scope, num_attempts, state).await
     }
 
@@ -197,7 +266,7 @@ where
     /// List tasks
     async fn list_tasks(
         filter: &TaskFilter,
-        query: ListTasksRequest,
+        query: &ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<TaskList> {
         Self::list_tasks_impl(filter, query, transaction).await
@@ -210,7 +279,7 @@ where
         scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
+    ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>, ResolveTasksError> {
         if task_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -244,16 +313,15 @@ where
         scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>> {
+    ) -> Result<HashMap<TaskId, Arc<ResolvedTask>>, ResolveTasksError> {
         let tasks = Self::resolve_tasks(scope, task_ids, state).await?;
 
         for task_id in task_ids {
             if !tasks.contains_key(task_id) {
-                return Err(ErrorModel::not_found(
-                    format!("Task with id `{task_id}` not found"),
-                    "TaskNotFound",
-                    None,
-                )
+                return Err(TaskNotFoundError {
+                    task_id: *task_id,
+                    stack: Vec::new(),
+                }
                 .into());
             }
         }
@@ -265,7 +333,7 @@ where
         project_id: ProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         Self::set_task_queue_config_impl(project_id, warehouse_id, queue_name, config, transaction)

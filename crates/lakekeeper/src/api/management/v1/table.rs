@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{ApiServer, ProtectionResponse};
 use crate::{
     WarehouseId,
@@ -6,6 +8,7 @@ use crate::{
         CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularId, TabularListFlags,
         Transaction,
         authz::{AuthZTableOps, Authorizer, CatalogTableAction},
+        events::APIEventContext,
     },
 };
 
@@ -30,16 +33,24 @@ where
         let authorizer = state.v1_state.authz;
         let state_catalog = state.v1_state.catalog.clone();
 
-        let (_warehouse, _namespace, _table) = authorizer
+        let event_ctx = APIEventContext::for_table(
+            Arc::new(request_metadata),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            table_id,
+            CatalogTableAction::SetProtection,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_table_operation::<C>(
-                &request_metadata,
-                warehouse_id,
-                table_id,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
                 TabularListFlags::all(),
-                CatalogTableAction::SetProtection,
+                event_ctx.action().clone(),
                 state_catalog.clone(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, _table) = event_ctx.emit_authz(authz_result)?;
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state_catalog).await?;
         let status = C::set_tabular_protected(
@@ -65,16 +76,24 @@ where
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let (_warehouse, _namespace, table) = authorizer
+        let event_ctx = APIEventContext::for_table(
+            Arc::new(request_metadata.clone()),
+            state.v1_state.events.clone(),
+            warehouse_id,
+            table_id,
+            CatalogTableAction::GetMetadata,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_table_operation::<C>(
-                &request_metadata,
-                warehouse_id,
-                table_id,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
                 TabularListFlags::all(),
-                CatalogTableAction::GetMetadata,
+                event_ctx.action().clone(),
                 state.v1_state.catalog,
             )
-            .await?;
+            .await;
+        let (_event_ctx, (_, _, table)) = event_ctx.emit_authz(authz_result)?;
 
         Ok(ProtectionResponse {
             protected: table.protected,

@@ -1,9 +1,11 @@
 use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
 
+use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadViewResult;
 use lakekeeper_io::Location;
 
 use crate::{
+    WarehouseId,
     api::{
         ApiContext,
         iceberg::v1::{DataAccessMode, ViewParameters},
@@ -12,12 +14,13 @@ use crate::{
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
         AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
-        CatalogWarehouseOps, InternalParseLocationError, Result, SecretStore, State,
-        TabularListFlags, Transaction,
+        CatalogWarehouseOps, InternalParseLocationError, ResolvedWarehouse, Result, SecretStore,
+        State, TabularListFlags, Transaction, ViewInfo,
         authz::{
-            AuthZCannotSeeView, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogViewAction, refresh_warehouse_and_namespace_if_needed,
+            AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogViewAction, refresh_warehouse_and_namespace_if_needed,
         },
+        events::{APIEventContext, context::ResolvedView},
         storage::StoragePermissions,
     },
 };
@@ -45,14 +48,95 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let authorizer = state.v1_state.authz;
     let catalog_state = state.v1_state.catalog;
 
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events,
+        warehouse_id,
+        view.clone(),
+        CatalogViewAction::GetMetadata,
+    );
+
+    let authz_result = authorize_load_view::<C, _>(
+        &request_metadata,
+        warehouse_id,
+        &view,
+        &authorizer,
+        catalog_state.clone(),
+    )
+    .await;
+    let (event_ctx, (warehouse, view_info, storage_permissions)) =
+        event_ctx.emit_authz(authz_result)?;
+
+    let event_ctx = event_ctx.resolve(ResolvedView {
+        warehouse,
+        view: Arc::new(view_info),
+    });
+
+    let view_id = event_ctx.resolved().view.view_id();
+    // ------------------- BUSINESS LOGIC -------------------
+    let mut t = C::Transaction::begin_read(catalog_state).await?;
+    let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
+    t.commit().await?;
+
+    let view_location =
+        Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;
+
+    let warehouse = &event_ctx.resolved().warehouse;
+    let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
+        Some(
+            state
+                .v1_state
+                .secrets
+                .require_storage_secret_by_id(secret_id)
+                .await?
+                .secret,
+        )
+    } else {
+        None
+    };
+    let storage_secret_ref = storage_secret.as_deref();
+
+    let access = warehouse
+        .storage_profile
+        .generate_table_config(
+            data_access,
+            storage_secret_ref,
+            &view_location,
+            storage_permissions.unwrap_or(StoragePermissions::Read),
+            &request_metadata,
+            &*event_ctx.resolved().view,
+        )
+        .await?;
+
+    let metadata_ref = view.metadata;
+    let metadata_location_ref = Arc::new(view.metadata_location);
+
+    event_ctx.emit_view_loaded_async(metadata_ref.clone(), metadata_location_ref.clone());
+
+    let load_table_result = LoadViewResult {
+        metadata_location: metadata_location_ref.to_string(),
+        metadata: metadata_ref,
+        config: Some(access.config.into()),
+    };
+
+    Ok(load_table_result)
+}
+
+async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    view: &TableIdent,
+    authorizer: &A,
+    state: C::State,
+) -> Result<(Arc<ResolvedWarehouse>, ViewInfo, Option<StoragePermissions>), AuthZError> {
     let (warehouse, namespace, view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
-        C::get_namespace(warehouse_id, view.namespace.clone(), catalog_state.clone()),
+        C::get_active_warehouse_by_id(warehouse_id, state.clone()),
+        C::get_namespace(warehouse_id, view.namespace.clone(), state.clone()),
         C::get_view_info(
             warehouse_id,
             view.clone(),
             TabularListFlags::active(),
-            catalog_state.clone()
+            state.clone()
         )
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
@@ -60,19 +144,19 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let namespace =
         authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
 
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-        &authorizer,
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
         &warehouse,
-        &view_info,
         namespace,
-        catalog_state.clone(),
-        AuthZCannotSeeView::new(warehouse_id, view.clone()),
+        &view_info,
+        AuthZCannotSeeView::new_not_found(warehouse_id, view.clone()),
+        authorizer,
+        state.clone(),
     )
     .await?;
 
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
-            &request_metadata,
+            request_metadata,
             None,
             &warehouse,
             &namespace,
@@ -89,56 +173,15 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .into_inner();
 
     if !can_load {
-        return Err(AuthZCannotSeeView::new(warehouse_id, view.clone()).into());
+        return Err(AuthZCannotSeeView::new_forbidden(warehouse_id, view.clone()).into());
     }
 
-    let view_id = view_info.view_id();
-    // ------------------- BUSINESS LOGIC -------------------
-    let mut t = C::Transaction::begin_read(catalog_state).await?;
-    let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
-    t.commit().await?;
-
-    let view_location =
-        Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;
-
-    let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
-        Some(
-            state
-                .v1_state
-                .secrets
-                .require_storage_secret_by_id(secret_id)
-                .await?
-                .secret,
-        )
-    } else {
-        None
-    };
-    let storage_secret_ref = storage_secret.as_deref();
-
     let storage_permissions = if can_write {
-        StoragePermissions::ReadWriteDelete
+        Some(StoragePermissions::ReadWriteDelete)
     } else {
-        StoragePermissions::Read
+        Some(StoragePermissions::Read)
     };
-
-    let access = warehouse
-        .storage_profile
-        .generate_table_config(
-            data_access,
-            storage_secret_ref,
-            &view_location,
-            storage_permissions,
-            &request_metadata,
-            &view_info,
-        )
-        .await?;
-    let load_table_result = LoadViewResult {
-        metadata_location: view.metadata_location.to_string(),
-        metadata: view.metadata,
-        config: Some(access.config.into()),
-    };
-
-    Ok(load_table_result)
+    Ok((warehouse, view_info, storage_permissions))
 }
 
 #[cfg(test)]
