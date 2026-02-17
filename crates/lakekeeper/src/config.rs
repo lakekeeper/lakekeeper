@@ -438,6 +438,9 @@ pub struct DebugConfig {
     /// If true, log all request bodies to the debug log for debugging purposes.
     /// This is expensive and should only be used for debugging.
     pub log_request_bodies: bool,
+    /// If true, log the Authorization header in request spans for debugging purposes.
+    /// This exposes sensitive credentials and should never be enabled in production.
+    pub log_authorization_header: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Redact)]
@@ -1170,6 +1173,32 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_REQUEST_BODIES", "false");
             let config = get_config();
             assert!(!config.debug.log_request_bodies);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_debug_log_authorization_header() {
+        // Test default value (should be false)
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.debug.log_authorization_header);
+            Ok(())
+        });
+
+        // Test setting to true
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_AUTHORIZATION_HEADER", "true");
+            let config = get_config();
+            assert!(config.debug.log_authorization_header);
+            Ok(())
+        });
+
+        // Test setting to false explicitly
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_AUTHORIZATION_HEADER", "false");
+            let config = get_config();
+            assert!(!config.debug.log_authorization_header);
             Ok(())
         });
     }

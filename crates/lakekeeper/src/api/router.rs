@@ -174,7 +174,7 @@ pub async fn new_full_router<
                 .layer(
                     TraceLayer::new_for_http()
                         .on_failure(())
-                        .make_span_with(RestMakeSpan::new(tracing::Level::INFO))
+                        .make_span_with(RestMakeSpan::new(tracing::Level::INFO).with_log_authorization_header(CONFIG.debug.log_authorization_header))
                         .on_response(trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)),
                 )
                 .layer(TimeoutLayer::with_status_code(
