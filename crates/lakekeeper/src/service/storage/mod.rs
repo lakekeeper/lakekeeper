@@ -82,6 +82,10 @@ enum StorageProfileBorrowed<'a> {
 pub struct MemoryProfile {
     /// Base location for the local profile
     base_location: String,
+    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub layout: Option<StorageLayout>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Copy, strum_macros::Display)]
@@ -893,6 +897,7 @@ impl Default for MemoryProfile {
             )
             .expect("Failed to create temporary directory location")
             .to_string(),
+            layout: None,
         }
     }
 }
@@ -1100,7 +1105,7 @@ impl PathSegmentContext for NamespaceNameContext {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NamespaceNameRenderer(String);
 
 impl TemplatedPathSegmentRenderer for NamespaceNameRenderer {
@@ -1127,7 +1132,7 @@ impl PathSegmentContext for TableNameContext {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TableNameRenderer(String);
 
 impl TemplatedPathSegmentRenderer for TableNameRenderer {
@@ -1138,7 +1143,7 @@ impl TemplatedPathSegmentRenderer for TableNameRenderer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum StorageLayout {
     Flat(TableNameRenderer),
     Parent(NamespaceNameRenderer, TableNameRenderer),
@@ -1173,6 +1178,12 @@ impl StorageLayout {
             NamespaceNameRenderer(namespace_template),
             TableNameRenderer(table_template),
         ))
+    }
+}
+
+impl Default for StorageLayout {
+    fn default() -> Self {
+        StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))
     }
 }
 
@@ -1372,6 +1383,7 @@ mod tests {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
             sas_enabled: true,
+            layout: None,
         });
 
         let cases = vec![
@@ -1438,6 +1450,7 @@ mod tests {
                 bucket,
                 key_prefix: key_prefix.clone(),
                 sts_enabled: true,
+                layout: None,
             }
             .into();
 
@@ -1822,4 +1835,6 @@ mod tests {
         let layout = layout.expect_err("Expected error due to missing {uuid} in template");
         assert!(matches!(layout, StorageLayoutError::InvalidTemplate(_)));
     }
+
+    // TODO: StorageProfile should contain None for Layout and save to database. Parent is default.
 }

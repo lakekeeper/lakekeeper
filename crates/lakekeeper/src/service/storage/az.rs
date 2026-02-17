@@ -38,7 +38,7 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, StoragePermissions, TableConfig,
+            ShortTermCredentialsRequest, StorageLayout, StoragePermissions, TableConfig,
             cache::{
                 STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
                 insert_stc_into_cache,
@@ -77,6 +77,9 @@ pub struct AdlsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sas_enabled: bool,
+    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
+    #[serde(default)]
+    pub layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -762,6 +765,7 @@ pub(crate) mod test {
                 sas_token_validity_seconds: None,
                 allow_alternative_protocols: false,
                 sas_enabled: true,
+                layout: None,
             }
         }
 
@@ -847,6 +851,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            layout: None,
         };
 
         let sp: StorageProfile = profile.clone().into();
@@ -887,6 +892,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
             sas_enabled: true,
+            layout: None,
         };
 
         assert!(
@@ -907,6 +913,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            layout: None,
         };
 
         assert!(
@@ -940,6 +947,7 @@ mod is_overlapping_location_tests {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            layout: None,
         }
     }
 

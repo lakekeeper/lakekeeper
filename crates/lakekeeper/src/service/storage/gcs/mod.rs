@@ -30,7 +30,7 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, TableConfig,
+            ShortTermCredentialsRequest, StorageLayout, TableConfig,
             cache::{
                 STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
                 insert_stc_into_cache,
@@ -67,6 +67,9 @@ pub struct GcsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sts_enabled: bool,
+    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
+    #[serde(default)]
+    pub layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -580,6 +583,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
+                layout: None,
             };
             (profile, cred)
         }
@@ -650,6 +654,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
+                layout: None,
             };
             (profile, cred)
         }
@@ -687,6 +692,7 @@ mod is_overlapping_location_tests {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
             sts_enabled: true,
+            layout: None,
         }
     }
 
