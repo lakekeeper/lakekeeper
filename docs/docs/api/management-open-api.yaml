@@ -3574,6 +3574,11 @@ components:
             - string
             - 'null'
           description: Subpath in the filesystem to use.
+        layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
         sas-enabled:
           type: boolean
           description: |-
@@ -4268,6 +4273,16 @@ components:
         type:
           type: string
           description: Internal type definition of the error
+    FullLayout:
+      type: object
+      required:
+        - namespace
+        - table
+      properties:
+        namespace:
+          $ref: '#/components/schemas/NamespaceNameRenderer'
+        table:
+          $ref: '#/components/schemas/TableNameRenderer'
     GcsCredential:
       oneOf:
         - type: object
@@ -4333,6 +4348,11 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
         sts-enabled:
           type: boolean
           description: |-
@@ -5892,6 +5912,11 @@ components:
               type: string
               format: uuid
       description: Identifier for a namespace, either a UUID or its name and warehouse ID
+    NamespaceNameRenderer:
+      type: string
+      title: NamespaceNameTemplate
+      description: 'Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: "{name}-{uuid}" renders to "my-namespace-550e8400-e29b-41d4-a716-446655440000".'
+      example: '{uuid}'
     NamespaceRelation:
       type: string
       enum:
@@ -5966,6 +5991,16 @@ components:
         - grant_pass_grants
         - grant_manage_grants
         - change_ownership
+    ParentLayout:
+      type: object
+      required:
+        - namespace
+        - table
+      properties:
+        namespace:
+          $ref: '#/components/schemas/NamespaceNameRenderer'
+        table:
+          $ref: '#/components/schemas/TableNameRenderer'
     ProjectAction:
       type: string
       enum:
@@ -6433,6 +6468,11 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
         legacy-md5-behavior:
           type:
             - boolean
@@ -6922,6 +6962,26 @@ components:
             }"#).unwrap();
             ```
       description: Storage secret for a warehouse.
+    StorageLayout:
+      oneOf:
+        - type: object
+          required:
+            - flat
+          properties:
+            flat:
+              $ref: '#/components/schemas/TableNameRenderer'
+        - type: object
+          required:
+            - parent
+          properties:
+            parent:
+              $ref: '#/components/schemas/ParentLayout'
+        - type: object
+          required:
+            - full
+          properties:
+            full:
+              $ref: '#/components/schemas/FullLayout'
     StorageProfile:
       oneOf:
         - allOf:
@@ -7049,6 +7109,11 @@ components:
                   enum:
                     - modify
           title: TableAssignmentModify
+    TableNameRenderer:
+      type: string
+      title: TableNameTemplate
+      description: 'Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: "{name}-{uuid}" renders to "my-table-550e8400-e29b-41d4-a716-446655440000".'
+      example: '{uuid}'
     TableRelation:
       type: string
       enum:

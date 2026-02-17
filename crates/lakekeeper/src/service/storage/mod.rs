@@ -40,7 +40,7 @@ use crate::{
         storage::{
             error::{IcebergFileIoError, UnexpectedStorageType},
             storage_layout::{
-                NamespaceNameContext, NamespaceNameRenderer, NamespacePath, TableNameContext, TableNameRenderer
+                NamespaceNameContext, NamespacePath, TableNameContext,
             },
         },
     },
@@ -919,10 +919,10 @@ impl StorageProfile {
 }
 
 static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
-    StorageLayout::Parent(
-        NamespaceNameRenderer("{uuid}".to_string()),
-        TableNameRenderer("{uuid}".to_string()),
-    )
+    StorageLayout::try_new_parent(
+        "{uuid}".to_string(),
+        "{uuid}".to_string(),
+    ).expect("Default layout is valid")
 });
 
 #[cfg(feature = "test-utils")]

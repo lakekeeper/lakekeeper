@@ -31,10 +31,26 @@ pub trait TemplatedPathSegmentRenderer {
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
 pub enum StorageLayout {
     Flat(TableNameRenderer),
-    Parent(NamespaceNameRenderer, TableNameRenderer),
-    Full(NamespaceNameRenderer, TableNameRenderer),
+    Parent(ParentLayout),
+    Full(FullLayout),
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+pub struct ParentLayout {
+    pub namespace: NamespaceNameRenderer,
+    pub table: TableNameRenderer,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+pub struct FullLayout {
+    pub namespace: NamespaceNameRenderer,
+    pub table: TableNameRenderer,
 }
 
 impl StorageLayout {
@@ -51,27 +67,27 @@ impl StorageLayout {
         namespace_template: String,
         table_template: String,
     ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Parent(
-            NamespaceNameRenderer(namespace_template),
-            TableNameRenderer(table_template),
-        ))
+        Ok(Self::Parent(ParentLayout {
+            namespace: NamespaceNameRenderer(namespace_template),
+            table: TableNameRenderer(table_template),
+        }))
     }
 
     pub fn try_new_full(
         namespace_template: String,
         table_template: String,
     ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Full(
-            NamespaceNameRenderer(namespace_template),
-            TableNameRenderer(table_template),
-        ))
+        Ok(Self::Full(FullLayout {
+            namespace: NamespaceNameRenderer(namespace_template),
+            table: TableNameRenderer(table_template),
+        }))
     }
 
     pub fn render_table_segment(&self, context: &TableNameContext) -> String {
         let renderer = match self {
             StorageLayout::Flat(renderer) => renderer,
-            StorageLayout::Parent(_, renderer) => renderer,
-            StorageLayout::Full(_, renderer) => renderer,
+            StorageLayout::Parent(layout) => &layout.table,
+            StorageLayout::Full(layout) => &layout.table,
         };
         renderer.render(context)
     }
@@ -79,21 +95,15 @@ impl StorageLayout {
     pub fn render_namespace_path(&self, path_context: &NamespacePath) -> Vec<String> {
         match self {
             StorageLayout::Flat(_) => vec![],
-            StorageLayout::Parent(renderer, _) => path_context
+            StorageLayout::Parent(layout) => path_context
                 .namespace()
-                .map(|path| vec![renderer.render(path)])
+                .map(|path| vec![layout.namespace.render(path)])
                 .unwrap_or_else(|| vec![]),
-            StorageLayout::Full(renderer, _) => path_context
+            StorageLayout::Full(layout) => path_context
                 .into_iter()
-                .map(|path| renderer.render(path))
+                .map(|path| layout.namespace.render(path))
                 .collect(),
         }
-    }
-}
-
-impl Default for StorageLayout {
-    fn default() -> Self {
-        StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))
     }
 }
 
@@ -136,6 +146,14 @@ impl PathSegmentContext for NamespaceNameContext {
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(transparent)]
+#[cfg_attr(feature = "open-api", schema(
+    value_type = String,
+    title = "NamespaceNameTemplate",
+    description = "Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-namespace-550e8400-e29b-41d4-a716-446655440000\".",
+    example = json!("{uuid}")
+))]
 pub struct NamespaceNameRenderer(pub(super) String);
 
 impl TemplatedPathSegmentRenderer for NamespaceNameRenderer {
@@ -163,6 +181,14 @@ impl PathSegmentContext for TableNameContext {
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(transparent)]
+#[cfg_attr(feature = "open-api", schema(
+    value_type = String,
+    title = "TableNameTemplate",
+    description = "Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-table-550e8400-e29b-41d4-a716-446655440000\".",
+    example = json!("{uuid}")
+))]
 pub struct TableNameRenderer(pub(super) String);
 
 impl TemplatedPathSegmentRenderer for TableNameRenderer {
@@ -214,16 +240,16 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let StorageLayout::Parent(namespace_renderer, table_renderer) = layout else {
+        let StorageLayout::Parent(layout) = layout else {
             panic!("Expected parent storage layout");
         };
 
         assert_eq!(
-            table_renderer.render(&table_context),
+            layout.table.render(&table_context),
             format!("{}-{}", table_context.name, table_context.uuid)
         );
         assert_eq!(
-            namespace_renderer.render(&namespace_context),
+            layout.namespace.render(&namespace_context),
             format!("{}-{}", namespace_context.name, namespace_context.uuid)
         );
     }
@@ -246,16 +272,16 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let StorageLayout::Full(namespace_renderer, table_renderer) = layout else {
+        let StorageLayout::Full(layout) = layout else {
             panic!("Expected full storage layout");
         };
 
         assert_eq!(
-            table_renderer.render(&table_context),
+            layout.table.render(&table_context),
             format!("{}-{}", table_context.name, table_context.uuid)
         );
         assert_eq!(
-            namespace_renderer.render(&namespace_context),
+            layout.namespace.render(&namespace_context),
             format!("{}-{}", namespace_context.name, namespace_context.uuid)
         );
     }
