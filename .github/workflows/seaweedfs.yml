@@ -58,45 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Checkout SeaweedFS
-        uses: actions/checkout@v6
-        with:
-          repository: seaweedfs/seaweedfs
-          ref: allow-no-role-arn
-          path: seaweedfs
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Build SeaweedFS
+      - name: Start SeaweedFS Docker Container
         run: |
-          cd seaweedfs/weed
-          go build -o ../../weed
-
-      - name: Start SeaweedFS
-        env:
-          AWS_ACCESS_KEY_ID: some_access_key1
-          AWS_SECRET_ACCESS_KEY: some_secret_key1
-        run: |
-          mkdir -p /tmp/weed-data
-          cat <<EOF > /tmp/weed-data/iam_config.json
-          {
-            "sts": {
-              "tokenDuration": "1h",
-              "maxSessionLength": "12h",
-              "issuer": "seaweedfs-sts",
-              "signingKey": "YmFzZTY0ZW5jb2RlZHNpZ25pbmdrZXl0aGF0aXNsb25nZW5vdXdo"
-            },
-            "policy": {
-              "storeType": "memory",
-              "defaultEffect": "Allow"
-            }
-          }
-          EOF
-          ./weed -v=3 mini -dir=/tmp/weed-data -s3 -s3.iam.config=/tmp/weed-data/iam_config.json -ip 127.0.0.1 > weed.log 2>&1 &
-          sleep 5
+          docker run -d --name seaweedfs -p 8333:8333 \
+            -e "AWS_ACCESS_KEY_ID=some_access_key1" \
+            -e "AWS_SECRET_ACCESS_KEY=some_secret_key1" \
+            chrislusf/seaweedfs:latest mini -ip=localhost -ip.bind 0.0.0.0
 
       - name: Wait for SeaweedFS S3 to be healthy
         shell: bash
@@ -114,8 +81,8 @@ jobs:
           echo "SeaweedFS S3 did not become healthy in time"
           echo "=== Last Curl Output ==="
           curl -v http://127.0.0.1:8333
-          echo "=== Weed Logs ==="
-          cat weed.log
+          echo "=== SeaweedFS Container Logs ==="
+          docker logs seaweedfs
           echo "=== Process List ==="
           ps aux
           echo "=== Open Ports ==="
@@ -247,8 +214,8 @@ jobs:
       - name: Dump SeaweedFS Logs
         if: always()
         run: |
-          echo "=== Weed Logs ==="
-          cat weed.log || echo "weed.log not found"
+          echo "=== SeaweedFS Container Logs ==="
+          docker logs seaweedfs || echo "seaweedfs container not found"
           echo "=== Process List ==="
           ps aux || echo "ps failed"
           echo "=== Open Ports ==="
