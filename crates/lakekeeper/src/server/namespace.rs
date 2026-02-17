@@ -25,8 +25,8 @@ use crate::{
     request_metadata::RequestMetadata,
     server,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, NamedEntity, NamespaceId,
-        ResolvedWarehouse, State, TabularId, Transaction,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, NamedEntity,
+        NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             NamespaceParent,
@@ -38,6 +38,7 @@ use crate::{
             },
         },
         secrets::SecretStore,
+        storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
@@ -275,7 +276,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         // Set location if not specified - validate location if specified
-        set_namespace_location_property(&mut namespace_props, &warehouse, namespace_id)?;
+        set_namespace_location_property(
+            &mut namespace_props,
+            &warehouse,
+            namespace,
+            namespace_id,
+            &parent_namespace,
+        )?;
         remove_managed_namespace_properties(&mut namespace_props);
 
         let mut request = request;
@@ -779,7 +786,9 @@ fn remove_managed_namespace_properties(namespace_props: &mut NamespaceProperties
 fn set_namespace_location_property(
     namespace_props: &mut NamespaceProperties,
     warehouse: &ResolvedWarehouse,
+    namespace_ident: &NamespaceIdent,
     namespace_id: NamespaceId,
+    namespace_parents: &Option<NamespaceHierarchy>,
 ) -> Result<()> {
     let mut location = namespace_props.get_location();
 
@@ -794,9 +803,28 @@ fn set_namespace_location_property(
             .require_allowed_location(&location)?;
         location
     } else {
+        let namespace_name = namespace_ident.last().ok_or_else(|| {
+            ErrorModel::internal("Namespace must have a name", "NamespaceNameMissing", None)
+        })?;
+        let namespace_name_context = NamespaceNameContext {
+            name: namespace_name.clone(),
+            uuid: namespace_id.into(),
+        };
+        let mut namespace_name_contexts = if let Some(parent) = namespace_parents {
+            let mut contexts = vec![NamespaceNameContext::try_from(&parent.namespace)?];
+            for ancestor in &parent.parents {
+                contexts.push(NamespaceNameContext::try_from(ancestor)?);
+            }
+            contexts.reverse();
+            contexts
+        } else {
+            Vec::new()
+        };
+        namespace_name_contexts.push(namespace_name_context);
+        let namespace_path = NamespacePath::new(namespace_name_contexts);
         warehouse
             .storage_profile
-            .default_namespace_location(namespace_id)?
+            .default_namespace_location(&namespace_path)?
     };
 
     namespace_props.insert(&location);

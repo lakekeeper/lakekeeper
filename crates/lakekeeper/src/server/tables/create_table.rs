@@ -207,9 +207,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let storage_profile = &warehouse.storage_profile;
 
     let table_location = determine_tabular_location(
-        &ns_hierarchy.namespace.namespace,
+        &ns_hierarchy,
         request.location.clone(),
         tabular_id,
+        &table,
         storage_profile,
     )?;
 

@@ -24,6 +24,7 @@ use crate::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
             namespace_cache_insert_multiple,
         },
+        storage::storage_layout::NamespaceNameContext,
         tasks::TaskId,
     },
 };
@@ -213,6 +214,27 @@ impl NamespaceHierarchy {
             },
             parents: Vec::new(),
         }
+    }
+}
+
+impl TryFrom<&NamespaceWithParent> for NamespaceNameContext {
+    type Error = ErrorModel;
+
+    fn try_from(value: &NamespaceWithParent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            name: value
+                .namespace_ident()
+                .last()
+                .ok_or_else(|| {
+                    ErrorModel::internal(
+                        "Namespace must have a name",
+                        "NamespaceNameMissing",
+                        None,
+                    )
+                })?
+                .clone(),
+            uuid: value.namespace_id().into(),
+        })
     }
 }
 

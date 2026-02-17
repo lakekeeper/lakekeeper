@@ -30,7 +30,7 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, StorageLayout, TableConfig,
+            ShortTermCredentialsRequest, TableConfig,
             cache::{
                 STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
                 insert_stc_into_cache,
@@ -38,7 +38,7 @@ use crate::{
             error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            },
+            }, storage_layout::StorageLayout,
         },
     },
 };

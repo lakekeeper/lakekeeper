@@ -42,7 +42,7 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            StorageLayout, StoragePermissions, TableConfig,
+            StoragePermissions, TableConfig,
             cache::{
                 STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
                 insert_stc_into_cache,
@@ -50,7 +50,7 @@ use crate::{
             error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            },
+            }, storage_layout::StorageLayout,
         },
     },
 };
@@ -1254,7 +1254,12 @@ pub(crate) mod test {
     use std::str::FromStr as _;
 
     use super::*;
-    use crate::service::{NamespaceId, TabularId, storage::StorageProfile};
+    use crate::service::{
+        storage::{
+            StorageProfile,
+            storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
+        },
+    };
 
     #[test]
     fn test_deserialize_flavor() {
@@ -1409,25 +1414,33 @@ pub(crate) mod test {
         };
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
+        let namespace_uuid = uuid::Uuid::now_v7();
+        let table_uuid = uuid::Uuid::now_v7();
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_ns".to_string(),
+            uuid: namespace_uuid,
+        }]);
+        let table_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: table_uuid,
+        };
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/test_prefix/{namespace_id}/{table_id}")
+            format!("s3://test-bucket/test_prefix/{namespace_uuid}/{table_uuid}")
         );
 
         let mut profile = profile.clone();
         profile.key_prefix = None;
         let sp: StorageProfile = profile.into();
 
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/{namespace_id}/{table_id}")
+            format!("s3://test-bucket/{namespace_uuid}/{table_uuid}")
         );
     }
 
@@ -1458,17 +1471,21 @@ pub(crate) mod test {
         let profile = StorageProfile::from(profile);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
+        let table_uuid = uuid::Uuid::now_v7();
+        let table_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: table_uuid,
+        };
         // Prefix should be ignored as we specify the namespace_location explicitly.
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
-        let expected = format!("s3://test-bucket/foo/{table_id}");
+        let expected = format!("s3://test-bucket/foo/{table_uuid}");
 
-        let location = profile.default_tabular_location(&namespace_location, table_id);
+        let location = profile.default_tabular_location(&namespace_location, &table_name_context);
 
         assert_eq!(location.to_string(), expected);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo").unwrap();
-        let location = profile.default_tabular_location(&namespace_location, table_id);
+        let location = profile.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(location.to_string(), expected);
     }
 

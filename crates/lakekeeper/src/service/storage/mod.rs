@@ -5,8 +5,9 @@ mod cache;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
+pub mod storage_layout;
 
-use std::{borrow::Cow, collections::HashMap, str::FromStr as _};
+use std::{collections::HashMap, str::FromStr as _, sync::LazyLock};
 
 pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
@@ -21,10 +22,11 @@ use lakekeeper_io::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
-use strum::Display;
 use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
+#[cfg(feature = "test-utils")]
+use crate::service::storage::storage_layout::StorageLayout;
 use crate::{
     CONFIG, WarehouseId,
     api::{
@@ -36,7 +38,12 @@ use crate::{
     server::{compression_codec::CompressionCodec, io::list_location},
     service::{
         BasicTabularInfo, NamespaceVersion, TabularId, TabularInfo, WarehouseVersion,
-        storage::error::{IcebergFileIoError, UnexpectedStorageType},
+        storage::{
+            error::{IcebergFileIoError, UnexpectedStorageType},
+            storage_layout::{
+                NamespaceNameContext, NamespaceNameRenderer, NamespacePath, TableNameContext, TableNameRenderer
+            },
+        },
     },
 };
 
@@ -238,12 +245,14 @@ impl StorageProfile {
     /// Fails if the `key_prefix` is not valid for S3 URLs.
     pub fn default_namespace_location(
         &self,
-        namespace_id: NamespaceId,
+        namespace_path: &NamespacePath,
     ) -> Result<Location, ValidationError> {
         let mut base_location: Location = self.base_location()?;
-        base_location
-            .without_trailing_slash()
-            .push(&namespace_id.to_string());
+        base_location.without_trailing_slash();
+        let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
+
+        let segments = layout.render_namespace_path(&namespace_path);
+        base_location.extend(segments);
         Ok(base_location)
     }
 
@@ -344,8 +353,16 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         // ------------- Common validations -------------
         // Test if we can generate a default namespace location
-        let ns_location = self.default_namespace_location(NamespaceId::new_random())?;
-        self.default_tabular_location(&ns_location, TableId::new_random().into());
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        }]);
+        let ns_location = self.default_namespace_location(&namespace_path)?;
+        let tabular_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        self.default_tabular_location(&ns_location, &tabular_name_context);
 
         // ------------- Profile specific validations -------------
         match self {
@@ -382,11 +399,17 @@ impl StorageProfile {
 
         let io = self.file_io(credential).await?;
 
-        let ns_id = NamespaceId::new_random();
-        let table_id = TableId::new_random();
-        let ns_location = self.default_namespace_location(ns_id)?;
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        }]);
+        let tabular_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let ns_location = self.default_namespace_location(&namespace_path)?;
         let test_location = location.map_or_else(
-            || self.default_tabular_location(&ns_location, table_id.into()),
+            || self.default_tabular_location(&ns_location, &tabular_name_context),
             std::borrow::ToOwned::to_owned,
         );
         tracing::debug!("Validating direct read/write access to {test_location}");
@@ -874,13 +897,34 @@ impl StorageProfile {
     pub fn default_tabular_location(
         &self,
         namespace_location: &Location,
-        table_id: TabularId,
+        table_name_context: &TableNameContext,
     ) -> Location {
-        let mut l = namespace_location.clone();
-        l.without_trailing_slash().push(&table_id.to_string());
-        l
+        let mut location = namespace_location.clone();
+
+        let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
+
+        let segment = layout.render_table_segment(&table_name_context);
+        location.without_trailing_slash().push(&segment);
+        location
+    }
+
+    pub fn layout(&self) -> Option<&StorageLayout> {
+        match self {
+            StorageProfile::S3(profile) => profile.layout.as_ref(),
+            StorageProfile::Adls(profile) => profile.layout.as_ref(),
+            StorageProfile::Gcs(profile) => profile.layout.as_ref(),
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(profile) => profile.layout.as_ref(),
+        }
     }
 }
+
+static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
+    StorageLayout::Parent(
+        NamespaceNameRenderer("{uuid}".to_string()),
+        TableNameRenderer("{uuid}".to_string()),
+    )
+});
 
 #[cfg(feature = "test-utils")]
 impl Default for MemoryProfile {
@@ -1057,130 +1101,6 @@ pub(crate) async fn is_empty(
     Ok(true)
 }
 
-#[derive(Debug, Display, thiserror::Error)]
-pub enum StorageLayoutError {
-    InvalidTemplate(String),
-}
-
-pub trait PathSegmentContext {
-    fn get_name(&self) -> Cow<'_, str>;
-
-    fn get_uuid(&self) -> Uuid;
-}
-
-pub trait TemplatedPathSegmentRenderer {
-    type Context: PathSegmentContext;
-
-    fn template(&self) -> Cow<'_, str>;
-
-    fn render(&self, context: &Self::Context) -> String {
-        let template = self.template();
-        let uuid = context.get_uuid();
-        let name = context.get_name();
-        template
-            .replace("{uuid}", &uuid.to_string())
-            .replace("{name}", &name)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NamespaceNameContext {
-    pub name: String,
-    pub uuid: Uuid,
-}
-
-impl PathSegmentContext for NamespaceNameContext {
-    fn get_name(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.name)
-    }
-
-    fn get_uuid(&self) -> Uuid {
-        self.uuid
-    }
-}
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub struct NamespaceNameRenderer(String);
-
-impl TemplatedPathSegmentRenderer for NamespaceNameRenderer {
-    type Context = NamespaceNameContext;
-
-    fn template(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.0)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TableNameContext {
-    pub name: String,
-    pub uuid: Uuid,
-}
-
-impl PathSegmentContext for TableNameContext {
-    fn get_name(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.name)
-    }
-
-    fn get_uuid(&self) -> Uuid {
-        self.uuid
-    }
-}
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub struct TableNameRenderer(String);
-
-impl TemplatedPathSegmentRenderer for TableNameRenderer {
-    type Context = TableNameContext;
-
-    fn template(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.0)
-    }
-}
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub enum StorageLayout {
-    Flat(TableNameRenderer),
-    Parent(NamespaceNameRenderer, TableNameRenderer),
-    Full(NamespaceNameRenderer, TableNameRenderer),
-}
-
-impl StorageLayout {
-    pub fn try_new_flat(table_template: String) -> Result<Self, StorageLayoutError> {
-        if !table_template.contains("{uuid}") {
-            return Err(StorageLayoutError::InvalidTemplate(format!(
-                "For the 'Flat' layout, the table template '{table_template}' must contain the {{uuid}} placeholder to prevent path collisions."
-            )));
-        }
-        Ok(Self::Flat(TableNameRenderer(table_template)))
-    }
-
-    pub fn try_new_parent(
-        namespace_template: String,
-        table_template: String,
-    ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Parent(
-            NamespaceNameRenderer(namespace_template),
-            TableNameRenderer(table_template),
-        ))
-    }
-
-    pub fn try_new_full(
-        namespace_template: String,
-        table_template: String,
-    ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Full(
-            NamespaceNameRenderer(namespace_template),
-            TableNameRenderer(table_template),
-        ))
-    }
-}
-
-impl Default for StorageLayout {
-    fn default() -> Self {
-        StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, str::FromStr};
@@ -1193,7 +1113,13 @@ mod tests {
     };
     use crate::{
         server::io::{delete_file, read_metadata_file, write_file},
-        service::{TableInfo, storage::s3::S3AccessKeyCredential},
+        service::{
+            TableInfo,
+            storage::{
+                s3::S3AccessKeyCredential,
+                storage_layout::{NamespaceNameContext, TableNameContext},
+            },
+        },
     };
 
     #[test]
@@ -1226,20 +1152,33 @@ mod tests {
                 .build(),
         );
 
-        let target_location = "s3://my-bucket/subfolder/00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002";
+        let ns_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000001");
+        let table_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000002");
+        let table_name = "test-table";
 
-        let namespace_id: NamespaceId = uuid::uuid!("00000000-0000-0000-0000-000000000001").into();
-        let namespace_location = profile.default_namespace_location(namespace_id).unwrap();
-        let table_id = TabularId::View(uuid::uuid!("00000000-0000-0000-0000-000000000002").into());
-        let table_location = profile.default_tabular_location(&namespace_location, table_id);
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "ns".to_string(),
+            uuid: ns_uuid,
+        }]);
+
+        let table_name_context = TableNameContext {
+            name: table_name.to_string(),
+            uuid: table_uuid,
+        };
+
+        let target_location = format!("s3://my-bucket/subfolder/{}/{}", ns_uuid, table_uuid);
+
+        let namespace_location = profile.default_namespace_location(&namespace_path).unwrap();
+        let table_location =
+            profile.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(table_location.to_string(), target_location);
 
         let mut namespace_location_without_slash = namespace_location.clone();
         namespace_location_without_slash.without_trailing_slash();
-        let table_location =
-            profile.default_tabular_location(&namespace_location_without_slash, table_id);
+        let table_location_trailing = profile
+            .default_tabular_location(&namespace_location_without_slash, &table_name_context);
         assert!(!namespace_location_without_slash.to_string().ends_with('/'));
-        assert_eq!(table_location.to_string(), target_location);
+        assert_eq!(table_location_trailing.to_string(), target_location);
     }
 
     #[test]
@@ -1744,91 +1683,4 @@ mod tests {
             .await
             .unwrap();
     }
-
-    #[test]
-    fn test_storage_layout_renders_flat_table_format_with_name_and_uuid() {
-        let template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_flat(template.to_string()).unwrap();
-        let context = TableNameContext {
-            name: "my_table".to_string(),
-            uuid: Uuid::new_v4(),
-        };
-
-        let StorageLayout::Flat(renderer) = layout else {
-            panic!("Expected flat storage layout");
-        };
-
-        assert_eq!(
-            renderer.render(&context),
-            format!("{}-{}", context.name, context.uuid)
-        );
-    }
-
-    #[test]
-    fn test_storage_layout_renders_parent_namespace_layout_with_namespace_name_and_uuid_and_table_name_and_uuid()
-     {
-        let template = "{name}-{uuid}";
-        let layout =
-            StorageLayout::try_new_parent(template.to_string(), template.to_string()).unwrap();
-        let table_context = TableNameContext {
-            name: "my_table".to_string(),
-            uuid: Uuid::new_v4(),
-        };
-        let namespace_context = NamespaceNameContext {
-            name: "my_namespace".to_string(),
-            uuid: Uuid::new_v4(),
-        };
-
-        let StorageLayout::Parent(namespace_renderer, table_renderer) = layout else {
-            panic!("Expected parent storage layout");
-        };
-
-        assert_eq!(
-            table_renderer.render(&table_context),
-            format!("{}-{}", table_context.name, table_context.uuid)
-        );
-        assert_eq!(
-            namespace_renderer.render(&namespace_context),
-            format!("{}-{}", namespace_context.name, namespace_context.uuid)
-        );
-    }
-
-    #[test]
-    fn test_storage_layout_renders_full_layout_with_namespace_name_and_uuid_and_table_name_and_uuid()
-     {
-        let template = "{name}-{uuid}";
-        let layout =
-            StorageLayout::try_new_full(template.to_string(), template.to_string()).unwrap();
-        let table_context = TableNameContext {
-            name: "my_table".to_string(),
-            uuid: Uuid::new_v4(),
-        };
-        let namespace_context = NamespaceNameContext {
-            name: "my_namespace".to_string(),
-            uuid: Uuid::new_v4(),
-        };
-
-        let StorageLayout::Full(namespace_renderer, table_renderer) = layout else {
-            panic!("Expected full storage layout");
-        };
-
-        assert_eq!(
-            table_renderer.render(&table_context),
-            format!("{}-{}", table_context.name, table_context.uuid)
-        );
-        assert_eq!(
-            namespace_renderer.render(&namespace_context),
-            format!("{}-{}", namespace_context.name, namespace_context.uuid)
-        );
-    }
-
-    #[test]
-    fn test_storage_layout_table_in_flat_layout_need_uuid() {
-        let invalid_template = "{name}";
-        let layout = StorageLayout::try_new_flat(invalid_template.to_string());
-        let layout = layout.expect_err("Expected error due to missing {uuid} in template");
-        assert!(matches!(layout, StorageLayoutError::InvalidTemplate(_)));
-    }
-
-    // TODO: StorageProfile should contain None for Layout and save to database. Parent is default.
 }

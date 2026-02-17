@@ -38,7 +38,7 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, StorageLayout, StoragePermissions, TableConfig,
+            ShortTermCredentialsRequest, StoragePermissions, TableConfig,
             cache::{
                 STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
                 insert_stc_into_cache,
@@ -46,7 +46,7 @@ use crate::{
             error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            },
+            }, storage_layout::StorageLayout,
         },
     },
 };
@@ -722,8 +722,10 @@ impl TryFrom<AzCredential> for AzureAuth {
 pub(crate) mod test {
     use super::*;
     use crate::service::{
-        NamespaceId, TabularId,
-        storage::{AdlsProfile, StorageProfile, az::DEFAULT_AUTHORITY_HOST},
+        storage::{
+            AdlsProfile, StorageProfile, az::DEFAULT_AUTHORITY_HOST,
+            storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
+        },
     };
 
     #[test]
@@ -856,15 +858,23 @@ pub(crate) mod test {
 
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
+        let namespace_uuid = uuid::Uuid::now_v7();
+        let table_uuid = uuid::Uuid::now_v7();
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_ns".to_string(),
+            uuid: namespace_uuid,
+        }]);
+        let table_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: table_uuid,
+        };
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(
             location.to_string(),
             format!(
-                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_id}/{table_id}"
+                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_uuid}/{table_uuid}"
             )
         );
 
@@ -873,11 +883,11 @@ pub(crate) mod test {
         profile.host = Some("blob.com".to_string());
         let sp: StorageProfile = profile.into();
 
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(
             location.to_string(),
-            format!("abfss://filesystem@account.blob.com/{namespace_id}/{table_id}")
+            format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{table_uuid}")
         );
     }
 
