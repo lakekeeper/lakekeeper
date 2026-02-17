@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
-#[cfg(feature = "test-utils")]
 use crate::service::storage::storage_layout::StorageLayout;
 use crate::{
     CONFIG, WarehouseId,
