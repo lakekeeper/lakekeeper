@@ -29,25 +29,24 @@ pub(super) fn determine_tabular_location(
             namespace.namespace.properties.clone().unwrap_or_default(),
         );
 
-        let namespace_location = match namespace_props.get_location() {
-            Some(location) => location,
-            None => {
-                let mut namespace_name_contexts = vec![NamespaceNameContext::try_from(namespace)?];
-                for ancestor in &namespace_hierarchy.parents {
-                    namespace_name_contexts.push(NamespaceNameContext::try_from(ancestor)?);
-                }
-                namespace_name_contexts.reverse();
-                let namespace_path = NamespacePath::new(namespace_name_contexts);
-                storage_profile
-                    .default_namespace_location(&namespace_path)
-                    .map_err(|e| {
-                        ErrorModel::internal(
-                            "Failed to generate default namespace location",
-                            "InvalidDefaultNamespaceLocation",
-                            Some(Box::new(e)),
-                        )
-                    })?
+        let namespace_location = if let Some(location) = namespace_props.get_location() {
+            location
+        } else {
+            let mut namespace_name_contexts = vec![NamespaceNameContext::try_from(namespace)?];
+            for ancestor in &namespace_hierarchy.parents {
+                namespace_name_contexts.push(NamespaceNameContext::try_from(ancestor)?);
             }
+            namespace_name_contexts.reverse();
+            let namespace_path = NamespacePath::new(namespace_name_contexts);
+            storage_profile
+                .default_namespace_location(&namespace_path)
+                .map_err(|e| {
+                    ErrorModel::internal(
+                        "Failed to generate default namespace location",
+                        "InvalidDefaultNamespaceLocation",
+                        Some(Box::new(e)),
+                    )
+                })?
         };
 
         let table_name_context = TableNameContext {

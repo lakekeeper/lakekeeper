@@ -226,11 +226,7 @@ impl TryFrom<&NamespaceWithParent> for NamespaceNameContext {
                 .namespace_ident()
                 .last()
                 .ok_or_else(|| {
-                    ErrorModel::internal(
-                        "Namespace must have a name",
-                        "NamespaceNameMissing",
-                        None,
-                    )
+                    ErrorModel::internal("Namespace must have a name", "NamespaceNameMissing", None)
                 })?
                 .clone(),
             uuid: value.namespace_id().into(),

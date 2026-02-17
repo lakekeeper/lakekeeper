@@ -46,7 +46,8 @@ use crate::{
             error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            }, storage_layout::StorageLayout,
+            },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -721,11 +722,10 @@ impl TryFrom<AzCredential> for AzureAuth {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::service::{
-        storage::{
-            AdlsProfile, StorageProfile, az::DEFAULT_AUTHORITY_HOST,
-            storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
-        },
+    use crate::service::storage::{
+        AdlsProfile, StorageProfile,
+        az::DEFAULT_AUTHORITY_HOST,
+        storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
     };
 
     #[test]

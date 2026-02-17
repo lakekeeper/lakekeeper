@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
-use crate::service::storage::storage_layout::StorageLayout;
 use crate::{
     CONFIG, WarehouseId,
     api::{
@@ -40,7 +39,7 @@ use crate::{
         storage::{
             error::{IcebergFileIoError, UnexpectedStorageType},
             storage_layout::{
-                NamespaceNameContext, NamespacePath, TableNameContext,
+                NamespaceNameContext, NamespacePath, StorageLayout, TableNameContext,
             },
         },
     },
@@ -250,7 +249,7 @@ impl StorageProfile {
         base_location.without_trailing_slash();
         let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
 
-        let segments = layout.render_namespace_path(&namespace_path);
+        let segments = layout.render_namespace_path(namespace_path);
         base_location.extend(segments);
         Ok(base_location)
     }
@@ -361,7 +360,7 @@ impl StorageProfile {
             name: "test_table".to_string(),
             uuid: Uuid::now_v7(),
         };
-        self.default_tabular_location(&ns_location, &tabular_name_context);
+        let _ = self.default_tabular_location(&ns_location, &tabular_name_context);
 
         // ------------- Profile specific validations -------------
         match self {
@@ -893,6 +892,7 @@ impl StorageProfile {
     }
 
     /// Get the default tabular location for the storage profile.
+    #[must_use]
     pub fn default_tabular_location(
         &self,
         namespace_location: &Location,
@@ -902,11 +902,12 @@ impl StorageProfile {
 
         let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
 
-        let segment = layout.render_table_segment(&table_name_context);
+        let segment = layout.render_table_segment(table_name_context);
         location.without_trailing_slash().push(&segment);
         location
     }
 
+    #[must_use]
     pub fn layout(&self) -> Option<&StorageLayout> {
         match self {
             StorageProfile::S3(profile) => profile.layout.as_ref(),
@@ -919,10 +920,8 @@ impl StorageProfile {
 }
 
 static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
-    StorageLayout::try_new_parent(
-        "{uuid}".to_string(),
-        "{uuid}".to_string(),
-    ).expect("Default layout is valid")
+    StorageLayout::try_new_parent("{uuid}".to_string(), "{uuid}".to_string())
+        .expect("Default layout is valid")
 });
 
 #[cfg(feature = "test-utils")]
@@ -1165,7 +1164,7 @@ mod tests {
             uuid: table_uuid,
         };
 
-        let target_location = format!("s3://my-bucket/subfolder/{}/{}", ns_uuid, table_uuid);
+        let target_location = format!("s3://my-bucket/subfolder/{ns_uuid}/{table_uuid}");
 
         let namespace_location = profile.default_namespace_location(&namespace_path).unwrap();
         let table_location =

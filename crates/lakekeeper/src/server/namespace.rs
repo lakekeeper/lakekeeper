@@ -281,7 +281,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             &warehouse,
             namespace,
             namespace_id,
-            &parent_namespace,
+            parent_namespace.as_ref(),
         )?;
         remove_managed_namespace_properties(&mut namespace_props);
 
@@ -788,7 +788,7 @@ fn set_namespace_location_property(
     warehouse: &ResolvedWarehouse,
     namespace_ident: &NamespaceIdent,
     namespace_id: NamespaceId,
-    namespace_parents: &Option<NamespaceHierarchy>,
+    namespace_parents: Option<&NamespaceHierarchy>,
 ) -> Result<()> {
     let mut location = namespace_props.get_location();
 

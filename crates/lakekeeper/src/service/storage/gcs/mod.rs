@@ -38,7 +38,8 @@ use crate::{
             error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            }, storage_layout::StorageLayout,
+            },
+            storage_layout::StorageLayout,
         },
     },
 };

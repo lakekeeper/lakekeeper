@@ -83,6 +83,7 @@ impl StorageLayout {
         }))
     }
 
+    #[must_use]
     pub fn render_table_segment(&self, context: &TableNameContext) -> String {
         let renderer = match self {
             StorageLayout::Flat(renderer) => renderer,
@@ -92,13 +93,15 @@ impl StorageLayout {
         renderer.render(context)
     }
 
+    #[must_use]
     pub fn render_namespace_path(&self, path_context: &NamespacePath) -> Vec<String> {
         match self {
             StorageLayout::Flat(_) => vec![],
             StorageLayout::Parent(layout) => path_context
                 .namespace()
-                .map(|path| vec![layout.namespace.render(path)])
-                .unwrap_or_else(|| vec![]),
+                .map_or_else(std::vec::Vec::new, |path| {
+                    vec![layout.namespace.render(path)]
+                }),
             StorageLayout::Full(layout) => path_context
                 .into_iter()
                 .map(|path| layout.namespace.render(path))
@@ -111,12 +114,19 @@ impl StorageLayout {
 pub struct NamespacePath(pub(super) Vec<NamespaceNameContext>);
 
 impl NamespacePath {
+    #[must_use]
     pub fn new(segments: Vec<NamespaceNameContext>) -> Self {
         Self(segments)
     }
 
+    #[must_use]
     pub fn namespace(&self) -> Option<&NamespaceNameContext> {
         self.0.last()
+    }
+
+    #[allow(unused)]
+    fn iter(&self) -> Iter<'_, NamespaceNameContext> {
+        <&Self as IntoIterator>::into_iter(self)
     }
 }
 

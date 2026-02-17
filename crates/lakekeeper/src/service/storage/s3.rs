@@ -50,7 +50,8 @@ use crate::{
             error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            }, storage_layout::StorageLayout,
+            },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -1254,11 +1255,9 @@ pub(crate) mod test {
     use std::str::FromStr as _;
 
     use super::*;
-    use crate::service::{
-        storage::{
-            StorageProfile,
-            storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
-        },
+    use crate::service::storage::{
+        StorageProfile,
+        storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
     };
 
     #[test]
