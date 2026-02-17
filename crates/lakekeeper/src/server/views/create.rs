@@ -25,7 +25,7 @@ use crate::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
-        storage::{StorageLocations as _, StoragePermissions},
+        storage::{StoragePermissions},
     },
 };
 

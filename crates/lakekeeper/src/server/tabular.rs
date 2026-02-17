@@ -2,7 +2,7 @@ use crate::{
     server::tables::parse_location,
     service::{
         Namespace, TabularId,
-        storage::{StorageLocations as _, StorageProfile},
+        storage::{StorageProfile},
     },
 };
 

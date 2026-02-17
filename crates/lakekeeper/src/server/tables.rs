@@ -72,7 +72,7 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions},
+        storage::{StoragePermissions},
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},

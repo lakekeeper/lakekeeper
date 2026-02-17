@@ -42,13 +42,15 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            StorageLayout, StoragePermissions, TableConfig, cache::{
+            StorageLayout, StoragePermissions, TableConfig,
+            cache::{
                 STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
                 insert_stc_into_cache,
-            }, error::{
+            },
+            error::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
-            }
+            },
         },
     },
 };
@@ -1252,10 +1254,7 @@ pub(crate) mod test {
     use std::str::FromStr as _;
 
     use super::*;
-    use crate::service::{
-        NamespaceId, TabularId,
-        storage::{StorageLocations as _, StorageProfile},
-    };
+    use crate::service::{NamespaceId, TabularId, storage::StorageProfile};
 
     #[test]
     fn test_deserialize_flavor() {
@@ -1456,6 +1455,7 @@ pub(crate) mod test {
             legacy_md5_behavior: Some(false),
             layout: None,
         };
+        let profile = StorageProfile::from(profile);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
         let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
@@ -1514,7 +1514,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
-            layout: None,
+                layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1576,7 +1576,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
-            layout: None,
+                layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1674,7 +1674,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: Some(std::env::var("AWS_S3_KMS_ARN").unwrap()),
                 legacy_md5_behavior: Some(false),
-            layout: None,
+                layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1740,7 +1740,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
-            layout: None,
+                layout: None,
             };
             let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),

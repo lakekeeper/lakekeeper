@@ -723,7 +723,7 @@ pub(crate) mod test {
     use super::*;
     use crate::service::{
         NamespaceId, TabularId,
-        storage::{AdlsProfile, StorageLocations, StorageProfile, az::DEFAULT_AUTHORITY_HOST},
+        storage::{AdlsProfile, StorageProfile, az::DEFAULT_AUTHORITY_HOST},
     };
 
     #[test]

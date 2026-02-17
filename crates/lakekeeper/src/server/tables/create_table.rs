@@ -32,7 +32,7 @@ use crate::{
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions, ValidationError},
+        storage::{StoragePermissions, ValidationError},
     },
 };
 

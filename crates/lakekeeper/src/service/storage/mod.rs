@@ -850,23 +850,10 @@ impl StorageProfile {
         }
         Ok(())
     }
-}
-
-pub trait StorageLocations {
-    /// Get the default tabular location for the storage profile.
-    fn default_tabular_location(
-        &self,
-        namespace_location: &Location,
-        table_id: TabularId,
-    ) -> Location {
-        let mut l = namespace_location.clone();
-        l.without_trailing_slash().push(&table_id.to_string());
-        l
-    }
 
     #[must_use]
     /// Get the default metadata location for the storage profile.
-    fn default_metadata_location(
+    pub fn default_metadata_location(
         &self,
         table_location: &Location,
         compression_codec: &CompressionCodec,
@@ -882,11 +869,18 @@ pub trait StorageLocations {
         l.without_trailing_slash().extend(&["metadata", &filename]);
         l
     }
-}
 
-impl StorageLocations for StorageProfile {}
-impl StorageLocations for S3Profile {}
-impl StorageLocations for AdlsProfile {}
+    /// Get the default tabular location for the storage profile.
+    pub fn default_tabular_location(
+        &self,
+        namespace_location: &Location,
+        table_id: TabularId,
+    ) -> Location {
+        let mut l = namespace_location.clone();
+        l.without_trailing_slash().push(&table_id.to_string());
+        l
+    }
+}
 
 #[cfg(feature = "test-utils")]
 impl Default for MemoryProfile {
