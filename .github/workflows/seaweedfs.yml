@@ -63,7 +63,7 @@ jobs:
           docker run -d --name seaweedfs -p 8333:8333 \
             -e "AWS_ACCESS_KEY_ID=some_access_key1" \
             -e "AWS_SECRET_ACCESS_KEY=some_secret_key1" \
-            chrislusf/seaweedfs:latest mini -ip=localhost -ip.bind=0.0.0.0 -dir=/data
+            chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
 
       - name: Wait for SeaweedFS S3 to be healthy
         shell: bash
