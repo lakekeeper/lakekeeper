@@ -57,10 +57,13 @@ pub struct StorageLayoutFlat {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum StorageLayout {
+    #[serde(rename = "table-only")]
     Flat(StorageLayoutFlat),
+    #[serde(rename = "parent-namespace-and-table")]
     Parent(StorageLayoutParentNamespaceAndTable),
+    #[serde(rename = "full-hierarchy")]
     Full(StorageLayoutFullHierarchy),
 }
 
@@ -173,8 +176,7 @@ impl PathSegmentContext for NamespaceNameContext {
 #[serde(transparent)]
 #[cfg_attr(feature = "open-api", schema(
     value_type = String,
-    title = "NamespaceNameTemplate",
-    description = "Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-namespace-550e8400-e29b-41d4-a716-446655440000\".",
+    description = "Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-namespace-550e8400-e29b-41d4-a716-446655440001\".",
     example = json!("{uuid}")
 ))]
 pub struct StorageLayoutNamespaceTemplate(pub(super) String);
@@ -208,8 +210,7 @@ impl PathSegmentContext for TableNameContext {
 #[serde(transparent)]
 #[cfg_attr(feature = "open-api", schema(
     value_type = String,
-    title = "TableNameTemplate",
-    description = "Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-table-550e8400-e29b-41d4-a716-446655440000\".",
+    description = "Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-table-550e8400-e29b-41d4-a716-446655440002\".",
     example = json!("{uuid}")
 ))]
 pub struct StorageLayoutTableTemplate(pub(super) String);

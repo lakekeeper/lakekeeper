@@ -4273,16 +4273,6 @@ components:
         type:
           type: string
           description: Internal type definition of the error
-    FullLayout:
-      type: object
-      required:
-        - namespace
-        - table
-      properties:
-        namespace:
-          $ref: '#/components/schemas/NamespaceNameRenderer'
-        table:
-          $ref: '#/components/schemas/TableNameRenderer'
     GcsCredential:
       oneOf:
         - type: object
@@ -5912,11 +5902,6 @@ components:
               type: string
               format: uuid
       description: Identifier for a namespace, either a UUID or its name and warehouse ID
-    NamespaceNameRenderer:
-      type: string
-      title: NamespaceNameTemplate
-      description: 'Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: "{name}-{uuid}" renders to "my-namespace-550e8400-e29b-41d4-a716-446655440000".'
-      example: '{uuid}'
     NamespaceRelation:
       type: string
       enum:
@@ -5991,16 +5976,6 @@ components:
         - grant_pass_grants
         - grant_manage_grants
         - change_ownership
-    ParentLayout:
-      type: object
-      required:
-        - namespace
-        - table
-      properties:
-        namespace:
-          $ref: '#/components/schemas/NamespaceNameRenderer'
-        table:
-          $ref: '#/components/schemas/TableNameRenderer'
     ProjectAction:
       type: string
       enum:
@@ -6964,24 +6939,71 @@ components:
       description: Storage secret for a warehouse.
     StorageLayout:
       oneOf:
-        - type: object
-          required:
-            - flat
-          properties:
-            flat:
-              $ref: '#/components/schemas/TableNameRenderer'
-        - type: object
-          required:
-            - parent
-          properties:
-            parent:
-              $ref: '#/components/schemas/ParentLayout'
-        - type: object
-          required:
-            - full
-          properties:
-            full:
-              $ref: '#/components/schemas/FullLayout'
+        - allOf:
+            - $ref: '#/components/schemas/StorageLayoutFlat'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - table-only
+        - allOf:
+            - $ref: '#/components/schemas/StorageLayoutParentNamespaceAndTable'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - parent-namespace-and-table
+        - allOf:
+            - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - full-hierarchy
+    StorageLayoutFlat:
+      type: object
+      required:
+        - table
+      properties:
+        table:
+          $ref: '#/components/schemas/StorageLayoutTableTemplate'
+    StorageLayoutFullHierarchy:
+      type: object
+      required:
+        - namespace
+        - table
+      properties:
+        namespace:
+          $ref: '#/components/schemas/StorageLayoutNamespaceTemplate'
+        table:
+          $ref: '#/components/schemas/StorageLayoutTableTemplate'
+    StorageLayoutNamespaceTemplate:
+      type: string
+      description: 'Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: "{name}-{uuid}" renders to "my-namespace-550e8400-e29b-41d4-a716-446655440001".'
+      example: '{uuid}'
+    StorageLayoutParentNamespaceAndTable:
+      type: object
+      required:
+        - namespace
+        - table
+      properties:
+        namespace:
+          $ref: '#/components/schemas/StorageLayoutNamespaceTemplate'
+        table:
+          $ref: '#/components/schemas/StorageLayoutTableTemplate'
+    StorageLayoutTableTemplate:
+      type: string
+      description: 'Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: "{name}-{uuid}" renders to "my-table-550e8400-e29b-41d4-a716-446655440002".'
+      example: '{uuid}'
     StorageProfile:
       oneOf:
         - allOf:
@@ -7109,11 +7131,6 @@ components:
                   enum:
                     - modify
           title: TableAssignmentModify
-    TableNameRenderer:
-      type: string
-      title: TableNameTemplate
-      description: 'Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: "{name}-{uuid}" renders to "my-table-550e8400-e29b-41d4-a716-446655440000".'
-      example: '{uuid}'
     TableRelation:
       type: string
       enum:
