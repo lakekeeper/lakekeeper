@@ -615,7 +615,7 @@ mod tests {
         "#;
 
         let layout: StorageLayout =
-            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
 
         let StorageLayout::Full(full_layout) = &layout else {
             panic!("Expected full storage layout");
@@ -666,7 +666,7 @@ mod tests {
         "#;
 
         let layout: StorageLayout =
-            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
 
         let StorageLayout::Parent(parent_layout) = &layout else {
             panic!("Expected parent storage layout");
@@ -713,7 +713,7 @@ mod tests {
         "#;
 
         let layout: StorageLayout =
-            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
 
         let StorageLayout::Flat(flat_layout) = &layout else {
             panic!("Expected flat storage layout");
@@ -755,7 +755,7 @@ mod tests {
         "#;
 
         let layout: StorageLayout =
-            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
 
         let StorageLayout::Default = &layout else {
             panic!("Expected default storage layout");
@@ -782,16 +782,10 @@ mod tests {
 
         assert_eq!(
             namespace_path_rendered,
-            vec![format!(
-                "{}",
-                parent_namespace.uuid
-            ),]
+            vec![format!("{}", parent_namespace.uuid),]
         );
 
         let table_name_rendered = layout.render_table_segment(&table);
-        assert_eq!(
-            table_name_rendered,
-            format!("{}", table.uuid)
-        );
+        assert_eq!(table_name_rendered, format!("{}", table.uuid));
     }
 }
