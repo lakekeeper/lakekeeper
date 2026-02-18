@@ -30,10 +30,13 @@ pub trait TemplatedPathSegmentRenderer {
     }
 }
 
-pub static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
-    StorageLayout::try_new_parent("{uuid}".to_string(), "{uuid}".to_string())
-        .expect("Default layout is valid")
-});
+pub static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(StorageLayout::default);
+
+pub static DEFAULT_TABLE_TEMPLATE: LazyLock<StorageLayoutTableTemplate> =
+    LazyLock::new(StorageLayoutTableTemplate::default);
+
+pub static DEFAULT_NAMESPACE_TEMPLATE: LazyLock<StorageLayoutNamespaceTemplate> =
+    LazyLock::new(StorageLayoutNamespaceTemplate::default);
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -55,10 +58,12 @@ pub struct StorageLayoutFlat {
     pub table: StorageLayoutTableTemplate,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum StorageLayout {
+    #[default]
+    Default,
     #[serde(rename = "table-only")]
     Flat(StorageLayoutFlat),
     #[serde(rename = "parent-namespace-and-table")]
@@ -100,30 +105,45 @@ impl StorageLayout {
     }
 
     #[must_use]
+    pub fn table_template(&self) -> &StorageLayoutTableTemplate {
+        match self {
+            StorageLayout::Flat(template) => &template.table,
+            StorageLayout::Parent(template) => &template.table,
+            StorageLayout::Full(template) => &template.table,
+            StorageLayout::Default => &DEFAULT_TABLE_TEMPLATE,
+        }
+    }
+
+    #[must_use]
     pub fn render_table_segment(&self, context: &TableNameContext) -> String {
-        let renderer = match self {
-            StorageLayout::Flat(renderer) => &renderer.table,
-            StorageLayout::Parent(layout) => &layout.table,
-            StorageLayout::Full(layout) => &layout.table,
-        };
-        renderer.render(context)
+        self.table_template().render(context)
     }
 
     #[must_use]
     pub fn render_namespace_path(&self, path_context: &NamespacePath) -> Vec<String> {
         match self {
             StorageLayout::Flat(_) => vec![],
-            StorageLayout::Parent(layout) => path_context
-                .namespace()
-                .map_or_else(std::vec::Vec::new, |path| {
-                    vec![layout.namespace.render(path)]
-                }),
+            StorageLayout::Parent(layout) => {
+                render_parent_namespace_path(path_context, &layout.namespace)
+            }
             StorageLayout::Full(layout) => path_context
                 .into_iter()
                 .map(|path| layout.namespace.render(path))
                 .collect(),
+            StorageLayout::Default => {
+                render_parent_namespace_path(path_context, &DEFAULT_NAMESPACE_TEMPLATE)
+            }
         }
     }
+}
+
+fn render_parent_namespace_path(
+    path_context: &NamespacePath,
+    template: &StorageLayoutNamespaceTemplate,
+) -> Vec<String> {
+    path_context
+        .namespace()
+        .map_or_else(Vec::new, |path| vec![template.render(path)])
 }
 
 #[derive(Debug, Clone, Default)]
@@ -189,6 +209,12 @@ impl TemplatedPathSegmentRenderer for StorageLayoutNamespaceTemplate {
     }
 }
 
+impl Default for StorageLayoutNamespaceTemplate {
+    fn default() -> Self {
+        Self("{uuid}".to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TableNameContext {
     pub name: String,
@@ -220,6 +246,12 @@ impl TemplatedPathSegmentRenderer for StorageLayoutTableTemplate {
 
     fn template(&self) -> Cow<'_, str> {
         Cow::Borrowed(&self.0)
+    }
+}
+
+impl Default for StorageLayoutTableTemplate {
+    fn default() -> Self {
+        Self("{uuid}".to_string())
     }
 }
 
@@ -370,6 +402,21 @@ mod tests {
         assert_eq!(
             layout.render_table_segment(&context),
             format!("{}-{}", context.name, context.uuid)
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_render_table_segment_in_default_layout_uses_parent_layout_with_uuid_only()
+     {
+        let layout = StorageLayout::Default;
+        let context = TableNameContext {
+            name: "my_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+
+        assert_eq!(
+            layout.render_table_segment(&context),
+            format!("{}", context.uuid)
         );
     }
 
@@ -532,6 +579,28 @@ mod tests {
                 ),
                 format!("{}-{}", parent_namespace.name, parent_namespace.uuid),
             ]
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_render_namespace_segment_in_default_layout_should_render_only_parent() {
+        let layout = StorageLayout::Default;
+        let grand_parent_namespace = NamespaceNameContext {
+            name: "grand_parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let parent_namespace = NamespaceNameContext {
+            name: "parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let path = NamespacePath::new(vec![
+            grand_parent_namespace.clone(),
+            parent_namespace.clone(),
+        ]);
+
+        assert_eq!(
+            *layout.render_namespace_path(&path),
+            vec![format!("{}", parent_namespace.uuid),]
         );
     }
 }
