@@ -78,7 +78,7 @@ pub struct AdlsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sas_enabled: bool,
-    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
+    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.
     #[serde(default)]
     pub layout: Option<StorageLayout>,
 }

@@ -164,7 +164,7 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub legacy_md5_behavior: Option<bool>,
-    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `StorageLayout::Flat(TableNameRenderer("{uuid}".to_string()))`, which does not include the namespace in the path.
+    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub layout: Option<StorageLayout>,
