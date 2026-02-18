@@ -603,4 +603,195 @@ mod tests {
             vec![format!("{}", parent_namespace.uuid),]
         );
     }
+
+    #[test]
+    fn test_storage_layout_deserizalization_of_full_layout() {
+        let json = r#"
+        {
+            "type": "full-hierarchy",
+            "namespace": "{uuid}",
+            "table": "{name}"
+        }
+        "#;
+
+        let layout: StorageLayout =
+            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+
+        let StorageLayout::Full(full_layout) = &layout else {
+            panic!("Expected full storage layout");
+        };
+
+        assert_eq!(full_layout.namespace.0, "{uuid}");
+        assert_eq!(full_layout.table.0, "{name}");
+
+        let grand_parent_namespace = NamespaceNameContext {
+            name: "grand_parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let parent_namespace = NamespaceNameContext {
+            name: "parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let namespace_path = NamespacePath::new(vec![
+            grand_parent_namespace.clone(),
+            parent_namespace.clone(),
+        ]);
+        let table = TableNameContext {
+            name: "my_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+
+        let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
+
+        assert_eq!(
+            namespace_path_rendered,
+            vec![
+                format!("{}", grand_parent_namespace.uuid),
+                format!("{}", parent_namespace.uuid),
+            ]
+        );
+
+        let table_name_rendered = layout.render_table_segment(&table);
+        assert_eq!(table_name_rendered, format!("{}", table.name));
+    }
+
+    #[test]
+    fn test_storage_layout_deserizalization_of_parent_layout() {
+        let json = r#"
+        {
+            "type": "parent-namespace-and-table",
+            "namespace": "{uuid}",
+            "table": "{name}"
+        }
+        "#;
+
+        let layout: StorageLayout =
+            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+
+        let StorageLayout::Parent(parent_layout) = &layout else {
+            panic!("Expected parent storage layout");
+        };
+
+        assert_eq!(parent_layout.namespace.0, "{uuid}");
+        assert_eq!(parent_layout.table.0, "{name}");
+
+        let grand_parent_namespace = NamespaceNameContext {
+            name: "grand_parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let parent_namespace = NamespaceNameContext {
+            name: "parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let namespace_path = NamespacePath::new(vec![
+            grand_parent_namespace.clone(),
+            parent_namespace.clone(),
+        ]);
+        let table = TableNameContext {
+            name: "my_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+
+        let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
+
+        assert_eq!(
+            namespace_path_rendered,
+            vec![format!("{}", parent_namespace.uuid),]
+        );
+
+        let table_name_rendered = layout.render_table_segment(&table);
+        assert_eq!(table_name_rendered, format!("{}", table.name));
+    }
+
+    #[test]
+    fn test_storage_layout_deserizalization_of_flat_layout() {
+        let json = r#"
+        {
+            "type": "table-only",
+            "table": "{name}"
+        }
+        "#;
+
+        let layout: StorageLayout =
+            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+
+        let StorageLayout::Flat(flat_layout) = &layout else {
+            panic!("Expected flat storage layout");
+        };
+
+        assert_eq!(flat_layout.table.0, "{name}");
+
+        let grand_parent_namespace = NamespaceNameContext {
+            name: "grand_parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let parent_namespace = NamespaceNameContext {
+            name: "parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let namespace_path = NamespacePath::new(vec![
+            grand_parent_namespace.clone(),
+            parent_namespace.clone(),
+        ]);
+        let table = TableNameContext {
+            name: "my_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+
+        let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
+
+        assert_eq!(namespace_path_rendered, Vec::<String>::new());
+
+        let table_name_rendered = layout.render_table_segment(&table);
+        assert_eq!(table_name_rendered, format!("{}", table.name));
+    }
+
+    #[test]
+    fn test_storage_layout_deserizalization_of_default_layout() {
+        let json = r#"
+        {
+            "type": "default"
+        }
+        "#;
+
+        let layout: StorageLayout =
+            serde_json::from_str(&json).expect("Failed to deserialize StorageLayout");
+
+        let StorageLayout::Default = &layout else {
+            panic!("Expected default storage layout");
+        };
+
+        let grand_parent_namespace = NamespaceNameContext {
+            name: "grand_parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let parent_namespace = NamespaceNameContext {
+            name: "parent_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let namespace_path = NamespacePath::new(vec![
+            grand_parent_namespace.clone(),
+            parent_namespace.clone(),
+        ]);
+        let table = TableNameContext {
+            name: "my_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+
+        let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
+
+        assert_eq!(
+            namespace_path_rendered,
+            vec![format!(
+                "{}",
+                parent_namespace.uuid
+            ),]
+        );
+
+        let table_name_rendered = layout.render_table_segment(&table);
+        assert_eq!(
+            table_name_rendered,
+            format!("{}", table.uuid)
+        );
+    }
 }
