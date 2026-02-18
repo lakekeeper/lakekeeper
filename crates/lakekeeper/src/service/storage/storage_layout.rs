@@ -1,4 +1,4 @@
-use std::{borrow::Cow, slice::Iter};
+use std::{borrow::Cow, slice::Iter, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
 use strum::Display;
@@ -30,14 +30,10 @@ pub trait TemplatedPathSegmentRenderer {
     }
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum StorageLayout {
-    Flat(TableNameRenderer),
-    Parent(ParentLayout),
-    Full(FullLayout),
-}
+pub static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
+    StorageLayout::try_new_parent("{uuid}".to_string(), "{uuid}".to_string())
+        .expect("Default layout is valid")
+});
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -51,6 +47,15 @@ pub struct ParentLayout {
 pub struct FullLayout {
     pub namespace: NamespaceNameRenderer,
     pub table: TableNameRenderer,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum StorageLayout {
+    Flat(TableNameRenderer),
+    Parent(ParentLayout),
+    Full(FullLayout),
 }
 
 impl StorageLayout {

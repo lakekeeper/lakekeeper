@@ -7,7 +7,7 @@ pub(crate) mod gcs;
 pub mod s3;
 pub mod storage_layout;
 
-use std::{collections::HashMap, str::FromStr as _, sync::LazyLock};
+use std::{collections::HashMap, str::FromStr as _};
 
 pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
@@ -39,7 +39,8 @@ use crate::{
         storage::{
             error::{IcebergFileIoError, UnexpectedStorageType},
             storage_layout::{
-                NamespaceNameContext, NamespacePath, StorageLayout, TableNameContext,
+                DEFAULT_LAYOUT, NamespaceNameContext, NamespacePath, StorageLayout,
+                TableNameContext,
             },
         },
     },
@@ -918,11 +919,6 @@ impl StorageProfile {
         }
     }
 }
-
-static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
-    StorageLayout::try_new_parent("{uuid}".to_string(), "{uuid}".to_string())
-        .expect("Default layout is valid")
-});
 
 #[cfg(feature = "test-utils")]
 impl Default for MemoryProfile {
