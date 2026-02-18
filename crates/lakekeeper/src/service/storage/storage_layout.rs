@@ -37,25 +37,31 @@ pub static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(|| {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-pub struct ParentLayout {
-    pub namespace: NamespaceNameRenderer,
-    pub table: TableNameRenderer,
+pub struct StorageLayoutParentNamespaceAndTable {
+    pub namespace: StorageLayoutNamespaceTemplate,
+    pub table: StorageLayoutTableTemplate,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-pub struct FullLayout {
-    pub namespace: NamespaceNameRenderer,
-    pub table: TableNameRenderer,
+pub struct StorageLayoutFullHierarchy {
+    pub namespace: StorageLayoutNamespaceTemplate,
+    pub table: StorageLayoutTableTemplate,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+pub struct StorageLayoutFlat {
+    pub table: StorageLayoutTableTemplate,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum StorageLayout {
-    Flat(TableNameRenderer),
-    Parent(ParentLayout),
-    Full(FullLayout),
+    Flat(StorageLayoutFlat),
+    Parent(StorageLayoutParentNamespaceAndTable),
+    Full(StorageLayoutFullHierarchy),
 }
 
 impl StorageLayout {
@@ -65,16 +71,18 @@ impl StorageLayout {
                 "For the 'Flat' layout, the table template '{table_template}' must contain the {{uuid}} placeholder to prevent path collisions."
             )));
         }
-        Ok(Self::Flat(TableNameRenderer(table_template)))
+        Ok(Self::Flat(StorageLayoutFlat {
+            table: StorageLayoutTableTemplate(table_template),
+        }))
     }
 
     pub fn try_new_parent(
         namespace_template: String,
         table_template: String,
     ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Parent(ParentLayout {
-            namespace: NamespaceNameRenderer(namespace_template),
-            table: TableNameRenderer(table_template),
+        Ok(Self::Parent(StorageLayoutParentNamespaceAndTable {
+            namespace: StorageLayoutNamespaceTemplate(namespace_template),
+            table: StorageLayoutTableTemplate(table_template),
         }))
     }
 
@@ -82,16 +90,16 @@ impl StorageLayout {
         namespace_template: String,
         table_template: String,
     ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Full(FullLayout {
-            namespace: NamespaceNameRenderer(namespace_template),
-            table: TableNameRenderer(table_template),
+        Ok(Self::Full(StorageLayoutFullHierarchy {
+            namespace: StorageLayoutNamespaceTemplate(namespace_template),
+            table: StorageLayoutTableTemplate(table_template),
         }))
     }
 
     #[must_use]
     pub fn render_table_segment(&self, context: &TableNameContext) -> String {
         let renderer = match self {
-            StorageLayout::Flat(renderer) => renderer,
+            StorageLayout::Flat(renderer) => &renderer.table,
             StorageLayout::Parent(layout) => &layout.table,
             StorageLayout::Full(layout) => &layout.table,
         };
@@ -169,9 +177,9 @@ impl PathSegmentContext for NamespaceNameContext {
     description = "Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-namespace-550e8400-e29b-41d4-a716-446655440000\".",
     example = json!("{uuid}")
 ))]
-pub struct NamespaceNameRenderer(pub(super) String);
+pub struct StorageLayoutNamespaceTemplate(pub(super) String);
 
-impl TemplatedPathSegmentRenderer for NamespaceNameRenderer {
+impl TemplatedPathSegmentRenderer for StorageLayoutNamespaceTemplate {
     type Context = NamespaceNameContext;
 
     fn template(&self) -> Cow<'_, str> {
@@ -204,9 +212,9 @@ impl PathSegmentContext for TableNameContext {
     description = "Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-table-550e8400-e29b-41d4-a716-446655440000\".",
     example = json!("{uuid}")
 ))]
-pub struct TableNameRenderer(pub(super) String);
+pub struct StorageLayoutTableTemplate(pub(super) String);
 
-impl TemplatedPathSegmentRenderer for TableNameRenderer {
+impl TemplatedPathSegmentRenderer for StorageLayoutTableTemplate {
     type Context = TableNameContext;
 
     fn template(&self) -> Cow<'_, str> {
@@ -232,7 +240,7 @@ mod tests {
         };
 
         assert_eq!(
-            renderer.render(&context),
+            renderer.table.render(&context),
             format!("{}-{}", context.name, context.uuid)
         );
     }
