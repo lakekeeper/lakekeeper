@@ -6939,6 +6939,14 @@ components:
       description: Storage secret for a warehouse.
     StorageLayout:
       oneOf:
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - default
         - allOf:
             - $ref: '#/components/schemas/StorageLayoutFlat'
             - type: object
