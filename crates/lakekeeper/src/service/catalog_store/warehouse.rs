@@ -158,13 +158,12 @@ impl_error_stack_methods!(WarehouseIdNotFound);
 
 impl From<WarehouseIdNotFound> for ErrorModel {
     fn from(err: WarehouseIdNotFound) -> Self {
-        ErrorModel {
-            r#type: "WarehouseNotFound".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -189,13 +188,12 @@ impl_error_stack_methods!(WarehouseIdMissing);
 
 impl From<WarehouseIdMissing> for ErrorModel {
     fn from(err: WarehouseIdMissing) -> Self {
-        ErrorModel {
-            r#type: "WarehouseIdMissing".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseIdMissing")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -218,13 +216,12 @@ impl_error_stack_methods!(WarehouseNameNotFound);
 
 impl From<WarehouseNameNotFound> for ErrorModel {
     fn from(err: WarehouseNameNotFound) -> Self {
-        ErrorModel {
-            r#type: "WarehouseNotFound".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -253,13 +250,13 @@ impl From<StorageProfileSerializationError> for ErrorModel {
         let message = err.to_string();
         let StorageProfileSerializationError { source, stack } = err;
 
-        ErrorModel {
-            r#type: "StorageProfileSerializationError".to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            message,
-            stack,
-            source: Some(Box::new(source)),
-        }
+        ErrorModel::builder()
+            .r#type("StorageProfileSerializationError")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .message(message)
+            .stack(stack)
+            .source(Some(Box::new(source)))
+            .build()
     }
 }
 
@@ -299,13 +296,12 @@ impl_error_stack_methods!(WarehouseAlreadyExists);
 
 impl From<WarehouseAlreadyExists> for ErrorModel {
     fn from(err: WarehouseAlreadyExists) -> Self {
-        ErrorModel {
-            r#type: "WarehouseAlreadyExists".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseAlreadyExists")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -327,13 +323,12 @@ impl ProjectIdNotFoundError {
 }
 impl From<ProjectIdNotFoundError> for ErrorModel {
     fn from(err: ProjectIdNotFoundError) -> Self {
-        ErrorModel {
-            r#type: "ProjectNotFound".to_string(),
-            code: StatusCode::NOT_FOUND.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("ProjectNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -357,13 +352,12 @@ define_simple_error!(
 
 impl From<WarehouseHasUnfinishedTasks> for ErrorModel {
     fn from(err: WarehouseHasUnfinishedTasks) -> Self {
-        ErrorModel {
-            r#type: "WarehouseHasUnfinishedTasks".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseHasUnfinishedTasks")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 
@@ -378,24 +372,22 @@ define_simple_error!(
 
 impl From<WarehouseNotEmpty> for ErrorModel {
     fn from(err: WarehouseNotEmpty) -> Self {
-        ErrorModel {
-            r#type: "WarehouseNotEmpty".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseNotEmpty")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 impl From<WarehouseProtected> for ErrorModel {
     fn from(err: WarehouseProtected) -> Self {
-        ErrorModel {
-            r#type: "WarehouseProtected".to_string(),
-            code: StatusCode::CONFLICT.as_u16(),
-            message: err.to_string(),
-            stack: err.stack,
-            source: None,
-        }
+        ErrorModel::builder()
+            .r#type("WarehouseProtected")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
     }
 }
 

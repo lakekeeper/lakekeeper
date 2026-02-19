@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use cloudevents::Event;
 
-use super::CloudEventBackend;
-use crate::CONFIG;
+use crate::{CONFIG, service::events::CloudEventBackend};
 
 /// Generate a NATS publisher from the crates configuration.
 /// Returns `None` if the NATS address or topic is not set.
@@ -17,6 +16,11 @@ pub async fn build_nats_publisher_from_config() -> anyhow::Result<Option<NatsBac
         return Ok(None);
     };
 
+    if nats_topic.trim().is_empty() {
+        tracing::info!("NATS topic is empty. Events are not published to NATS.");
+        return Ok(None);
+    }
+
     let builder = async_nats::ConnectOptions::new();
 
     let builder = if let Some(file) = &CONFIG.nats_creds_file {
@@ -26,7 +30,7 @@ pub async fn build_nats_publisher_from_config() -> anyhow::Result<Option<NatsBac
         );
         builder.credentials_file(file).await?
     } else {
-        async_nats::ConnectOptions::new()
+        builder
     };
 
     let builder = if let (Some(user), Some(pw)) = (&CONFIG.nats_user, &CONFIG.nats_password) {

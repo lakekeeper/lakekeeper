@@ -12,19 +12,22 @@ use unicase::UniCase;
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
+    request_metadata::ProjectIdMissing,
     service::{
         BasicTabularInfo, CachePolicy, CatalogGetNamespaceError, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, NamespaceId, NamespaceVersion, NamespaceWithParent,
         ResolvedWarehouse, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
-        TabularListFlags, TabularNotFound, ViewInfo, ViewOrTableInfo, WarehouseIdNotFound,
-        WarehouseStatus, WarehouseVersion,
+        TabularListFlags, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZProjectOps, AuthZServerOps,
-            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, MustUse, RequireTableActionError,
+            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            MustUse, RequireNamespaceActionError, RequireTableActionError,
             RequireWarehouseActionError, UserOrRole,
         },
+        events::{APIEventContext, context::IntrospectPermissions},
         namespace_cache::namespace_ident_to_cache_key,
     },
 };
@@ -100,7 +103,7 @@ impl TabularIdentOrUuid {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Represents an action on an object
-pub(super) enum CatalogActionCheckOperation {
+pub(crate) enum CatalogActionCheckOperation {
     Server {
         action: CatalogServerAction,
     },
@@ -145,9 +148,9 @@ pub struct CatalogActionCheckItem {
     /// The user or role to check access for.
     /// If not specified, the identity of the user making the request is used.
     #[serde(skip_serializing_if = "Option::is_none")]
-    identity: Option<UserOrRole>,
+    pub(crate) identity: Option<UserOrRole>,
     /// The operation to check
-    operation: CatalogActionCheckOperation,
+    pub(crate) operation: CatalogActionCheckOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -200,7 +203,7 @@ type TabularChecksByIdentMap = HashMap<
     (WarehouseId, Option<UserOrRole>),
     HashMap<TabularIdentOwned, Vec<(usize, TabularActionPair)>>,
 >;
-type AuthzTaskJoinSet = tokio::task::JoinSet<Result<(Vec<usize>, MustUse<Vec<bool>>), ErrorModel>>;
+type AuthzTaskJoinSet = tokio::task::JoinSet<Result<(Vec<usize>, MustUse<Vec<bool>>), AuthZError>>;
 
 /// Grouped checks by resource type
 struct GroupedChecks {
@@ -234,7 +237,7 @@ impl GroupedChecks {
 fn group_checks(
     checks: Vec<CatalogActionCheckItem>,
     metadata: &RequestMetadata,
-) -> Result<(GroupedChecks, Vec<CatalogActionsBatchCheckResult>), ErrorModel> {
+) -> Result<(GroupedChecks, Vec<CatalogActionsBatchCheckResult>), ProjectIdMissing> {
     let mut grouped = GroupedChecks::new();
     let mut results = Vec::with_capacity(checks.len());
 
@@ -389,7 +392,7 @@ async fn fetch_tabulars<C: CatalogStore>(
         HashMap<(WarehouseId, NamespaceId), NamespaceVersion>,
         HashMap<WarehouseId, WarehouseVersion>,
     ),
-    ErrorModel,
+    AuthZError,
 > {
     // Early return if nothing to fetch
     if tabular_checks_by_id.is_empty() && tabular_checks_by_ident.is_empty() {
@@ -478,11 +481,11 @@ async fn fetch_tabulars<C: CatalogStore>(
                 }
             }
             Err(err) => {
-                return Err(ErrorModel::internal(
-                    "Failed to fetch tabular infos",
-                    "FailedToJoinFetchTabularInfosTask",
-                    Some(Box::new(err)),
-                ));
+                return Err(RequireWarehouseActionError::from(
+                    AuthorizationBackendUnavailable::new(Box::new(err))
+                        .append_detail("Failed to join tabular permission check task"),
+                )
+                .into());
             }
         }
     }
@@ -560,7 +563,7 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     authorizer: &A,
     error_on_not_found: bool,
-) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, ErrorModel> {
+) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, AuthZError> {
     if seen_warehouse_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -588,10 +591,9 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     let mut warehouses = HashMap::new();
     while let Some(res) = tasks.join_next().await {
         let (warehouse_id, warehouse) = res.map_err(|e| {
-            ErrorModel::internal(
-                "Failed to join fetch warehouse task",
-                "FailedToJoinFetchWarehouseTask",
-                Some(Box::new(e)),
+            RequireWarehouseActionError::from(
+                AuthorizationBackendUnavailable::new(Box::new(e))
+                    .append_detail("Failed to join warehouse permission check task"),
             )
         })?;
         let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse);
@@ -679,7 +681,7 @@ async fn fetch_namespaces<C: CatalogStore>(
         HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
         HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
     ),
-    ErrorModel,
+    AuthZError,
 > {
     let min_namespace_versions = Arc::new(min_namespace_versions.clone());
 
@@ -702,7 +704,8 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &namespace_idents_refs,
                     catalog_state.clone(),
                 )
-                .await?;
+                .await
+                .map_err(RequireNamespaceActionError::from)?;
 
                 // Refetch namespaces that don't meet minimum version requirements
                 let re_fetched_namespaces = refetch_outdated_namespaces::<C>(
@@ -711,8 +714,8 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &min_namespace_versions,
                     catalog_state.clone(),
                 )
-                .await?;
-
+                .await
+                .map_err(RequireNamespaceActionError::from)?;
                 for ns_hierarchy in re_fetched_namespaces {
                     namespaces.insert(
                         ns_hierarchy.namespace.namespace_id(),
@@ -723,7 +726,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     }
                 }
 
-                Ok::<_, ErrorModel>((true, namespaces))
+                Ok::<_, AuthZError>((true, namespaces))
             });
         }
     }
@@ -746,7 +749,8 @@ async fn fetch_namespaces<C: CatalogStore>(
             tasks.spawn(async move {
                 let mut namespaces =
                     C::get_namespaces_by_id(warehouse_id, &namespace_ids, catalog_state.clone())
-                        .await?;
+                        .await
+                        .map_err(RequireNamespaceActionError::from)?;
 
                 // Refetch namespaces that don't meet minimum version requirements
                 let re_fetched_namespaces = refetch_outdated_namespaces::<C>(
@@ -755,7 +759,8 @@ async fn fetch_namespaces<C: CatalogStore>(
                     &min_namespace_versions,
                     catalog_state.clone(),
                 )
-                .await?;
+                .await
+                .map_err(RequireNamespaceActionError::from)?;
 
                 for ns_hierarchy in re_fetched_namespaces {
                     namespaces.insert(
@@ -767,7 +772,7 @@ async fn fetch_namespaces<C: CatalogStore>(
                     }
                 }
 
-                Ok::<_, ErrorModel>((false, namespaces))
+                Ok::<_, AuthZError>((false, namespaces))
             });
         }
     }
@@ -778,10 +783,9 @@ async fn fetch_namespaces<C: CatalogStore>(
 
     while let Some(res) = tasks.join_next().await {
         let (is_by_ident, namespace_list) = res.map_err(|e| {
-            ErrorModel::internal(
-                "Failed to join fetch namespace task",
-                "FailedToJoinFetchNamespaceTask",
-                Some(Box::new(e)),
+            RequireNamespaceActionError::from(
+                AuthorizationBackendUnavailable::new(Box::new(e))
+                    .append_detail("Failed to join fetch namespace task"),
             )
         })??;
 
@@ -820,7 +824,7 @@ fn spawn_server_checks<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_server_actions_vec(&metadata, for_user.as_ref(), &actions)
                 .await?;
-            Ok::<_, ErrorModel>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
 }
@@ -849,7 +853,7 @@ fn spawn_project_checks<A: Authorizer>(
                         &projects_with_actions,
                     )
                     .await?;
-                Ok::<_, ErrorModel>((original_indices, allowed))
+                Ok::<_, AuthZError>((original_indices, allowed))
             });
         }
     }
@@ -880,7 +884,7 @@ fn spawn_warehouse_checks<A: Authorizer>(
                         &warehouses_with_actions,
                     )
                     .await?;
-                Ok::<_, ErrorModel>((original_indices, allowed))
+                Ok::<_, AuthZError>((original_indices, allowed))
             });
         }
     }
@@ -895,7 +899,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
     error_on_not_found: bool,
-) -> Result<(), ErrorModel> {
+) -> Result<(), AuthZError> {
     for ((warehouse_id, for_user), actions) in namespace_checks_by_id {
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
@@ -904,11 +908,11 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
             w.clone()
         } else {
             if error_on_not_found {
-                return Err(WarehouseIdNotFound::new(warehouse_id).into());
+                return Err(AuthZCannotUseWarehouseId::new_not_found(warehouse_id).into());
             }
             let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
             tracing::debug!(
-                "Warehouse {warehouse_id} not found for namespace-by-id checks, denying {total_actions} action(s) for user {for_user:?}"
+                "Warehouse {warehouse_id} not found for namespace-by-id checks, denying {total_actions} action(s)"
             );
             continue;
         };
@@ -923,10 +927,12 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
             } else {
                 // Namespace not found
                 if error_on_not_found {
-                    return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_id).into());
+                    return Err(
+                        AuthZCannotSeeNamespace::new_not_found(warehouse_id, namespace_id).into(),
+                    );
                 }
                 tracing::debug!(
-                    "Namespace {namespace_id} in warehouse {warehouse_id} not found, denying {count} action(s) for user {for_user:?}",
+                    "Namespace {namespace_id} in warehouse {warehouse_id} not found, denying {count} action(s)",
                     count = actions.len()
                 );
             }
@@ -950,7 +956,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
                     &namespace_with_actions,
                 )
                 .await?;
-            Ok::<_, ErrorModel>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -971,7 +977,7 @@ struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
 /// Spawn namespace authorization check tasks (by ident)
 fn spawn_namespace_checks_by_ident<A: Authorizer>(
     params: NamespaceCheckByIdentParams<'_, A>,
-) -> Result<(), ErrorModel> {
+) -> Result<(), AuthZError> {
     let NamespaceCheckByIdentParams {
         authz_tasks,
         namespace_checks_by_ident,
@@ -990,11 +996,11 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
             w.clone()
         } else {
             if error_on_not_found {
-                return Err(WarehouseIdNotFound::new(warehouse_id).into());
+                return Err(AuthZCannotUseWarehouseId::new_not_found(warehouse_id).into());
             }
             let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
             tracing::debug!(
-                "Warehouse {warehouse_id} not found for namespace-by-name checks, denying {total_actions} action(s) for user {for_user:?}"
+                "Warehouse {warehouse_id} not found for namespace-by-name checks, denying {total_actions} action(s)"
             );
             continue;
         };
@@ -1006,10 +1012,14 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
             let Some(namespace_id) = namespace_ident_lookup.get(&cache_key) else {
                 // Namespace not found by ident
                 if error_on_not_found {
-                    return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_ident).into());
+                    return Err(AuthZCannotSeeNamespace::new_not_found(
+                        warehouse_id,
+                        namespace_ident,
+                    )
+                    .into());
                 }
                 tracing::debug!(
-                    "Namespace '{namespace_ident}' in warehouse {warehouse_id} not found by name, denying {count} action(s) for user {for_user:?}",
+                    "Namespace '{namespace_ident}' in warehouse {warehouse_id} not found by name, denying {count} action(s)",
                     count = actions.len()
                 );
                 continue;
@@ -1019,11 +1029,13 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
                 .and_then(|m| m.get(namespace_id))
             else {
                 // Namespace not found by ID (shouldn't happen if lookup succeeded)
-                return Err(ErrorModel::internal(
-                    "Could not find namespace by ID after successful lookup by ident",
-                    "InconsistentNamespaceLookup",
-                    None,
-                ));
+                return Err(
+                    RequireNamespaceActionError::from(AuthorizationBackendUnavailable::new(Box::new(std::io::Error::other(
+                        format!(
+                            "Could not find namespace by ID {namespace_id} after successful lookup by ident '{namespace_ident}'"
+                        ),
+                    )))).into()
+                );
             };
             checks.push((namespace.clone(), actions));
         }
@@ -1050,7 +1062,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
                     &namespace_with_actions,
                 )
                 .await?;
-            Ok::<_, ErrorModel>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -1071,7 +1083,7 @@ struct TabularCheckByIdParams<'a, A: Authorizer> {
 /// Spawn tabular authorization check tasks (by ID)
 fn spawn_tabular_checks_by_id<A: Authorizer>(
     params: TabularCheckByIdParams<'_, A>,
-) -> Result<(), ErrorModel> {
+) -> Result<(), AuthZError> {
     let TabularCheckByIdParams {
         authz_tasks,
         tabular_checks_by_id,
@@ -1092,11 +1104,11 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
             w.clone()
         } else {
             if error_on_not_found {
-                return Err(WarehouseIdNotFound::new(warehouse_id).into());
+                return Err(AuthZCannotUseWarehouseId::new_not_found(warehouse_id).into());
             }
             let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
             tracing::debug!(
-                "Warehouse {warehouse_id} not found for tabular-by-id checks, denying {total_actions} action(s) for user {for_user:?}"
+                "Warehouse {warehouse_id} not found for tabular-by-id checks, denying {total_actions} action(s)"
             );
             continue;
         };
@@ -1107,7 +1119,14 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                 let Some(tabular_info) = tabular_infos_by_id.get(&(warehouse_id, *tabular_id)) else {
                     // Tabular not found
                     if error_on_not_found {
-                        return Err(TabularNotFound::new(warehouse_id, *tabular_id).into());
+                        match tabular_id {
+                            TabularId::Table(table_id) => {
+                                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, *table_id).into());
+                            }
+                            TabularId::View(view_id) => {
+                                return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *view_id).into());
+                            }
+                        }
                     }
                     tracing::debug!(
                         "Tabular {tabular_id} in warehouse {warehouse_id} not found, denying {count} action(s)",
@@ -1121,7 +1140,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     .and_then(|m| m.get(&namespace_id)) else {
                     // Namespace not found
                     if error_on_not_found {
-                        return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_id).into());
+                        return Err(AuthZCannotSeeNamespace::new_not_found(warehouse_id, namespace_id).into());
                     }
                     tracing::debug!(
                         "Namespace {namespace_id} in warehouse {warehouse_id} not found for tabular {tabular_id}, denying {count} action(s)",
@@ -1154,7 +1173,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     &tabular_with_actions,
                 )
                 .await?;
-            Ok::<_, ErrorModel>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -1175,7 +1194,7 @@ struct TabularCheckByIdentParams<'a, A: Authorizer> {
 /// Spawn tabular authorization check tasks (by ident)
 fn spawn_tabular_checks_by_ident<A: Authorizer>(
     params: TabularCheckByIdentParams<'_, A>,
-) -> Result<(), ErrorModel> {
+) -> Result<(), AuthZError> {
     let TabularCheckByIdentParams {
         authz_tasks,
         tabular_checks_by_ident,
@@ -1196,11 +1215,11 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
             w.clone()
         } else {
             if error_on_not_found {
-                return Err(WarehouseIdNotFound::new(warehouse_id).into());
+                return Err(AuthZCannotUseWarehouseId::new_not_found(warehouse_id).into());
             }
             let total_actions: usize = actions.values().map(std::vec::Vec::len).sum();
             tracing::debug!(
-                "Warehouse {warehouse_id} not found for tabular-by-name checks, denying {total_actions} action(s) for user {for_user:?}"
+                "Warehouse {warehouse_id} not found for tabular-by-name checks, denying {total_actions} action(s)"
             );
             continue;
         };
@@ -1211,7 +1230,14 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                 let Some(tabular_info) = tabular_infos_by_ident.get(&(warehouse_id, tabular_ident.clone())) else {
                     // Tabular not found
                     if error_on_not_found {
-                        return Err(TabularNotFound::new(warehouse_id, tabular_ident.clone()).into());
+                        match tabular_ident {
+                            TabularIdentOwned::Table(table_ident) => {
+                                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, table_ident.clone()).into());
+                            }
+                            TabularIdentOwned::View(view_ident) => {
+                                return Err(AuthZCannotSeeView::new_not_found(warehouse_id, view_ident.clone()).into());
+                            }
+                        }
                     }
                     tracing::debug!(
                         "Tabular '{tabular_ident:?}' in warehouse {warehouse_id} not found by name, denying {count} action(s)",
@@ -1225,7 +1251,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     .and_then(|m| m.get(&namespace_id)) else {
                     // Namespace not found
                     if error_on_not_found {
-                        return Err(AuthZCannotSeeNamespace::new(warehouse_id, namespace_id).into());
+                        return Err(AuthZCannotSeeNamespace::new_not_found(warehouse_id, namespace_id).into());
                     }
                     tracing::debug!(
                         "Namespace {namespace_id} in warehouse {warehouse_id} not found for tabular '{tabular_ident:?}', denying {count} action(s)",
@@ -1258,7 +1284,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     &tabular_with_actions,
                 )
                 .await?;
-            Ok::<_, ErrorModel>((original_indices, allowed))
+            Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
     Ok(())
@@ -1268,26 +1294,22 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
 async fn collect_authz_results(
     authz_tasks: &mut AuthzTaskJoinSet,
     results: &mut [CatalogActionsBatchCheckResult],
-) -> Result<(), ErrorModel> {
+) -> Result<(), AuthZError> {
     while let Some(res) = authz_tasks.join_next().await {
         let (original_indices, allowed) = res.map_err(|e| {
-            ErrorModel::internal(
-                "Failed to join authorization task",
-                "FailedToJoinAuthZTask",
-                Some(Box::new(e)),
+            RequireWarehouseActionError::from(
+                AuthorizationBackendUnavailable::new(Box::new(e))
+                    .append_detail("Failed to join authorization check task"),
             )
         })??;
         let allowed_vec = allowed.into_inner();
         if original_indices.len() != allowed_vec.len() {
-            return Err(ErrorModel::internal(
-                "Authorization result count mismatch",
-                "AuthZResultCountMismatch",
-                Some(Box::new(std::io::Error::other(format!(
-                    "Expected {} authorization results but got {}",
-                    original_indices.len(),
-                    allowed_vec.len()
-                )))),
-            ));
+            return Err(AuthorizationCountMismatch::new(
+                original_indices.len(),
+                allowed_vec.len(),
+                "check endpoint",
+            )
+            .into());
         }
         for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec.into_iter()) {
             results[i].allowed = is_allowed;
@@ -1299,7 +1321,7 @@ async fn collect_authz_results(
 #[allow(clippy::too_many_lines)]
 pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<A, C, S>>,
-    metadata: &RequestMetadata,
+    metadata: RequestMetadata,
     request: CatalogActionsBatchCheckRequest,
 ) -> Result<CatalogActionsBatchCheckResponse, ErrorModel> {
     const MAX_CHECKS: usize = 1000;
@@ -1324,6 +1346,34 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
         ));
     }
 
+    let event_ctx = APIEventContext::new(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        (authorizer.server_id(), checks.clone()),
+        IntrospectPermissions {},
+    );
+
+    let authz_result = spawn_check_and_collect_results::<C, _>(
+        checks,
+        catalog_state,
+        authorizer,
+        event_ctx.request_metadata(),
+        error_on_not_found,
+    )
+    .await;
+
+    let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(CatalogActionsBatchCheckResponse { results })
+}
+
+async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
+    checks: Vec<CatalogActionCheckItem>,
+    catalog_state: C::State,
+    authorizer: A,
+    metadata: &RequestMetadata,
+    error_on_not_found: bool,
+) -> Result<Vec<CatalogActionsBatchCheckResult>, AuthZError> {
     let (grouped, mut results) = group_checks(checks, metadata)?;
     let GroupedChecks {
         server_checks,
@@ -1440,7 +1490,7 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
 
     collect_authz_results(&mut authz_tasks, &mut results).await?;
 
-    Ok(CatalogActionsBatchCheckResponse { results })
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -1538,7 +1588,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1559,7 +1609,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1588,7 +1638,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1617,7 +1667,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1644,7 +1694,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1669,7 +1719,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1710,7 +1760,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1751,7 +1801,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1774,7 +1824,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1838,7 +1888,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1863,7 +1913,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1891,7 +1941,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1916,7 +1966,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -1984,7 +2034,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2008,7 +2058,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2037,7 +2087,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2061,7 +2111,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2157,7 +2207,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2202,7 +2252,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2225,7 +2275,7 @@ mod tests {
             error_on_not_found: true,
         };
 
-        let result = check_internal(api_context.clone(), &metadata, request).await;
+        let result = check_internal(api_context.clone(), metadata.clone(), request).await;
         assert!(result.is_err()); // Should return an error
     }
 
@@ -2268,7 +2318,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let response = check_internal(api_context.clone(), &metadata, request)
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
             .await
             .unwrap();
 
@@ -2312,7 +2362,7 @@ mod tests {
             error_on_not_found: false,
         };
 
-        let result = check_internal(api_context.clone(), &metadata, request).await;
+        let result = check_internal(api_context.clone(), metadata.clone(), request).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.r#type, "TooManyChecks");

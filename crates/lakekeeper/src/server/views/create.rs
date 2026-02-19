@@ -21,6 +21,10 @@ use crate::{
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
         Transaction, ViewId,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        events::{
+            APIEventContext,
+            context::{ResolvedNamespace, UserProvidedNamespace},
+        },
         storage::{StorageLocations as _, StoragePermissions},
     },
 };
@@ -56,24 +60,41 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .into());
     }
 
+    let action = CatalogNamespaceAction::CreateView {
+        properties: Arc::new(request.properties.clone().into_iter().collect()),
+    };
+    let event_ctx = APIEventContext::for_namespace(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events,
+        warehouse_id,
+        provided_ns.clone(),
+        action.clone(),
+    );
+
     // ------------------- AUTHZ -------------------
     let authorizer = &state.v1_state.authz;
-    let (warehouse, ns_hierarchy) = authorizer
+    let authz_result = authorizer
         .load_and_authorize_namespace_action::<C>(
             &request_metadata,
-            warehouse_id,
-            provided_ns,
+            UserProvidedNamespace::new(warehouse_id, provided_ns.clone()),
             CatalogNamespaceAction::CreateView {
                 properties: Arc::new(request.properties.clone().into_iter().collect()),
             },
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )
-        .await?;
+        .await;
+
+    let (event_ctx, (warehouse, ns_hierarchy)) = event_ctx.emit_authz(authz_result)?;
+
+    let event_ctx = event_ctx.resolve(ResolvedNamespace {
+        warehouse: warehouse.clone(),
+        namespace: ns_hierarchy.namespace.clone(),
+    });
 
     // ------------------- BUSINESS LOGIC -------------------
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    require_active_warehouse(warehouse.status)?;
+    require_active_warehouse(event_ctx.resolved().warehouse.status)?;
 
     let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
 
@@ -175,23 +196,21 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     t.commit().await?;
 
-    state
-        .v1_state
-        .hooks
-        .create_view(
-            warehouse_id,
-            parameters.clone(),
-            Arc::new(request),
-            Arc::new(metadata_build_result.metadata.clone()),
-            Arc::new(metadata_location.clone()),
-            data_access,
-            Arc::new(request_metadata),
-        )
-        .await;
+    let view_metadata = Arc::new(metadata_build_result.metadata);
+    let metadata_location_str = metadata_location.to_string();
+    let metadata_location = Arc::new(metadata_location);
+
+    // Emit success event using the event context
+    event_ctx.emit_view_created_async(
+        view_metadata.clone(),
+        metadata_location.clone(),
+        view.name,
+        Arc::new(request),
+    );
 
     let load_view_result = LoadViewResult {
-        metadata_location: metadata_location.to_string(),
-        metadata: Arc::new(metadata_build_result.metadata),
+        metadata_location: metadata_location_str,
+        metadata: view_metadata,
         config: Some(config.config.into()),
     };
 

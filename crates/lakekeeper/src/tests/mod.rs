@@ -15,10 +15,10 @@ use crate::{
     service::{
         UserId,
         contract_verification::ContractVerifiers,
-        endpoint_hooks::EndpointHookCollection,
-        namespace_cache::NamespaceCacheEndpointHook,
+        events::EventDispatcher,
+        namespace_cache::NamespaceCacheEventListener,
         storage::{StorageCredential, StorageProfile},
-        warehouse_cache::WarehouseCacheEndpointHook,
+        warehouse_cache::WarehouseCacheEventListener,
     },
 };
 
@@ -229,9 +229,9 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             catalog: catalog_state,
             secrets: secret_store,
             contract_verifiers: ContractVerifiers::new(vec![]),
-            hooks: EndpointHookCollection::new(vec![
-                std::sync::Arc::new(WarehouseCacheEndpointHook {}),
-                std::sync::Arc::new(NamespaceCacheEndpointHook {}),
+            events: EventDispatcher::new(vec![
+                std::sync::Arc::new(WarehouseCacheEventListener {}),
+                std::sync::Arc::new(NamespaceCacheEventListener {}),
             ]),
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,

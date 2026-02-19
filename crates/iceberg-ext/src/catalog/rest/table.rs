@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[cfg(feature = "axum")]
 use axum::{
@@ -88,7 +88,7 @@ pub struct ListTablesResponse {
     /// APIs (e.g. `ListTables`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page_token: Option<String>,
-    pub identifiers: Vec<TableIdent>,
+    pub identifiers: Arc<Vec<TableIdent>>,
     /// Lakekeeper IDs of the tables.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_uuids: Option<Vec<uuid::Uuid>>,

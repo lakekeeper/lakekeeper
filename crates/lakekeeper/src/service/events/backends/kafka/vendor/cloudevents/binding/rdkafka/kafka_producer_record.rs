@@ -5,7 +5,7 @@
 // Reason: cloudevents rust-sdk latest release at 2024-09-07 is 0.7, which depends on rdkafka 0.29
 // We want to use 0.36
 //
-// Cloudevents SDK Rust is distributed under Apache Licence. See ./mod.rs for a copy of the lincese
+// Cloudevents SDK Rust is distributed under Apache Licence. See ./mod.rs for a copy of the license
 // text
 
 use cloudevents::{
@@ -20,7 +20,7 @@ use rdkafka::{
     producer::FutureRecord,
 };
 
-use crate::service::event_publisher::kafka::vendor::cloudevents::binding::{
+use crate::service::events::backends::kafka::vendor::cloudevents::binding::{
     CLOUDEVENTS_JSON_HEADER, CONTENT_TYPE,
     kafka::{SPEC_VERSION_HEADER, header_prefix},
 };

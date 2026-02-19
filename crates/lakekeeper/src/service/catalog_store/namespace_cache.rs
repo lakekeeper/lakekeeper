@@ -5,14 +5,11 @@ use iceberg::NamespaceIdent;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
+#[cfg(feature = "router")]
+use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
     service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
-};
-#[cfg(feature = "router")]
-use crate::{
-    api::{RequestMetadata, UpdateNamespacePropertiesResponse},
-    service::endpoint_hooks::EndpointHook,
 };
 
 const METRIC_NAMESPACE_CACHE_SIZE: &str = "lakekeeper_namespace_cache_size";
@@ -98,7 +95,7 @@ async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     }
 }
 
-#[allow(dead_code)] // Only required for hooks which are behind a feature flag
+#[allow(dead_code)] // Only required for listeners which are behind a feature flag
 pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
     if CONFIG.cache.namespace.enabled {
         let namespace_id = namespace.namespace.namespace_id;
@@ -265,57 +262,62 @@ fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceI
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct NamespaceCacheEndpointHook;
+pub(crate) struct NamespaceCacheEventListener;
 
 #[cfg(feature = "router")]
-impl std::fmt::Display for NamespaceCacheEndpointHook {
+impl std::fmt::Display for NamespaceCacheEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NamespaceCacheEndpointHook")
+        write!(f, "NamespaceCacheEventListener")
     }
 }
 
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
-impl EndpointHook for NamespaceCacheEndpointHook {
-    async fn create_namespace(
-        &self,
-        _warehouse_id: WarehouseId,
-        namespace: NamespaceWithParent,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+impl EventListener for NamespaceCacheEventListener {
+    async fn namespace_created(&self, event: events::CreateNamespaceEvent) -> anyhow::Result<()> {
+        let events::CreateNamespaceEvent {
+            warehouse_id: _warehouse_id,
+            namespace,
+            request_metadata: _request_metadata,
+        } = event;
         namespace_cache_insert(namespace).await;
         Ok(())
     }
 
-    async fn drop_namespace(
-        &self,
-        _warehouse_id: WarehouseId,
-        namespace_id: NamespaceId,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn namespace_dropped(&self, event: events::DropNamespaceEvent) -> anyhow::Result<()> {
+        let events::DropNamespaceEvent {
+            namespace,
+            request_metadata: _request_metadata,
+        } = event;
         // This is sufficient also for recursive drops, as the cache only supports loading the full
         // hierarchy, which breaks if any of the entries in the path are missing.
-        namespace_cache_invalidate(namespace_id).await;
+        namespace_cache_invalidate(namespace.namespace_id()).await;
         Ok(())
     }
 
-    async fn update_namespace_properties(
+    async fn namespace_properties_updated(
         &self,
-        _warehouse_id: WarehouseId,
-        namespace: NamespaceWithParent,
-        _updated_properties: std::sync::Arc<UpdateNamespacePropertiesResponse>,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
+        event: events::UpdateNamespacePropertiesEvent,
     ) -> anyhow::Result<()> {
+        let events::UpdateNamespacePropertiesEvent {
+            warehouse_id: _warehouse_id,
+            namespace,
+            updated_properties: _updated_properties,
+            request_metadata: _request_metadata,
+        } = event;
         namespace_cache_insert(namespace).await;
         Ok(())
     }
 
-    async fn set_namespace_protection(
+    async fn namespace_protection_set(
         &self,
-        _requested_protected: bool,
-        updated_namespace: NamespaceWithParent,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
+        event: events::SetNamespaceProtectionEvent,
     ) -> anyhow::Result<()> {
+        let events::SetNamespaceProtectionEvent {
+            requested_protected: _requested_protected,
+            updated_namespace,
+            request_metadata: _request_metadata,
+        } = event;
         namespace_cache_insert(updated_namespace).await;
         Ok(())
     }

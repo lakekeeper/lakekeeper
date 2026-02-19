@@ -1,1 +1,1 @@
-doc-valid-idents = ["OpenFGA", "OAuth"]
+doc-valid-idents = ["OpenFGA", "OAuth", "CloudEvents"]

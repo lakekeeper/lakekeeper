@@ -37,10 +37,13 @@ use crate::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         NamespaceId, State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
         authz::{
-            AuthZCannotUseWarehouseId, AuthZProjectOps, AuthZTableOps,
-            AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
             CatalogWarehouseAction,
+        },
+        events::{
+            APIEventContext,
+            context::{TabularAction, authz_to_error_no_audit},
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
@@ -339,13 +342,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        authorizer
+
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            project_id,
+            CatalogProjectAction::CreateWarehouse,
+        );
+
+        let authz_result = authorizer
             .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::CreateWarehouse,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                *event_ctx.action(),
             )
-            .await?;
+            .await;
+
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+        let request_metadata = event_ctx.request_metadata();
+        let project_id = event_ctx.user_provided_entity();
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&warehouse_name)?;
@@ -353,10 +368,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // Run validation and overlap check in parallel
         let validation_future =
-            storage_profile.validate_access(storage_credential.as_ref(), None, &request_metadata);
+            storage_profile.validate_access(storage_credential.as_ref(), None, request_metadata);
         let overlap_check_future = async {
             let warehouses =
-                C::list_warehouses(&project_id, None, context.v1_state.catalog.clone()).await?;
+                C::list_warehouses(project_id, None, context.v1_state.catalog.clone()).await?;
 
             for w in &warehouses {
                 if storage_profile.is_overlapping_location(&w.storage_profile) {
@@ -399,7 +414,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let resolved_warehouse = C::create_warehouse(
             warehouse_name,
-            &project_id,
+            project_id,
             storage_profile,
             delete_profile,
             secret_id,
@@ -408,19 +423,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         authorizer
             .create_warehouse(
-                &request_metadata,
+                request_metadata,
                 resolved_warehouse.warehouse_id,
-                &project_id,
+                project_id,
             )
             .await?;
 
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .create_warehouse(resolved_warehouse.clone(), Arc::new(request_metadata))
-            .await;
+        event_ctx.emit_warehouse_created(resolved_warehouse.clone());
 
         Ok(CreateWarehouseResponse(
             (*resolved_warehouse).clone().into(),
@@ -435,18 +446,26 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let project_id = request_metadata.require_project_id(request.project_id)?;
 
+        let event_ctx = APIEventContext::for_project(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            project_id,
+            CatalogProjectAction::ListWarehouses,
+        );
+
         let authorizer = context.v1_state.authz;
-        authorizer
+        let authz_result = authorizer
             .require_project_action(
-                &request_metadata,
-                &project_id,
-                CatalogProjectAction::ListWarehouses,
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                *event_ctx.action(),
             )
-            .await?;
+            .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let warehouses = C::list_warehouses(
-            &project_id,
+            event_ctx.user_provided_entity(),
             request.warehouse_status,
             context.v1_state.catalog,
         )
@@ -454,14 +473,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let warehouses = authorizer
             .are_allowed_warehouse_actions_vec(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 None,
                 &warehouses
                     .iter()
                     .map(|w| (&**w, CatalogWarehouseAction::IncludeInList))
                     .collect::<Vec<_>>(),
             )
-            .await?
+            .await
+            .map_err(authz_to_error_no_audit)?
             .into_inner()
             .into_iter()
             .zip(warehouses)
@@ -484,6 +504,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetWarehouseResponse> {
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::GetMetadata,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -491,14 +518,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog,
         )
         .await;
-        let warehouse = authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::GetMetadata,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
         Ok((*warehouse).clone().into())
     }
 
@@ -510,6 +538,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<WarehouseStatisticsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::GetMetadata,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -517,14 +553,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::GetMetadata,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         C::get_warehouse_stats(
@@ -544,6 +581,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::Delete,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -551,28 +595,26 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let warehouse = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::Delete,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(warehouse)?;
+        let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
         authorizer
-            .delete_warehouse(&request_metadata, warehouse_id)
+            .delete_warehouse(event_ctx.request_metadata(), warehouse_id)
             .await?;
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .delete_warehouse(warehouse_id, Arc::new(request_metadata))
-            .await;
+        event_ctx.emit_warehouse_deleted();
 
         Ok(())
     }
@@ -586,6 +628,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::SetProtection,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -593,14 +642,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::SetProtection,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -609,15 +660,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .set_warehouse_protection(
-                protection,
-                resolved_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx.emit_warehouse_protection_set(protection, resolved_warehouse.clone());
 
         Ok(ProtectionResponse {
             protected: resolved_warehouse.protected,
@@ -634,6 +677,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::Rename,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -641,14 +691,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::Rename,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&request.new_name)?;
@@ -659,15 +711,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .rename_warehouse(
-                Arc::new(request),
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
         Ok((*updated_warehouse).clone().into())
     }
@@ -681,16 +725,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::ModifySoftDeletion,
+        );
+
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::ModifySoftDeletion,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -702,15 +755,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .update_warehouse_delete_profile(
-                Arc::new(request),
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx
+            .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
 
         Ok((*updated_warehouse).clone().into())
     }
@@ -723,6 +769,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::Deactivate,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -730,14 +783,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::Deactivate,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -762,6 +816,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::Activate,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active_and_inactive(),
@@ -769,14 +830,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::Activate,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -802,6 +864,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::UpdateStorage,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active(),
@@ -809,17 +878,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        let warehouse = authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::UpdateStorage,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse.clone());
 
         // ------------------- Business Logic -------------------
-        let request_for_hook = Arc::new(request.clone());
+        let request_for_event = Arc::new(request.clone());
         let UpdateWarehouseStorageRequest {
             mut storage_profile,
             storage_credential,
@@ -829,7 +900,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Box::pin(storage_profile.validate_access(
             storage_credential.as_ref(),
             None,
-            &request_metadata,
+            event_ctx.request_metadata(),
         ))
         .await?;
 
@@ -862,15 +933,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .update_warehouse_storage(
-                request_for_hook,
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx.emit_warehouse_storage_updated(request_for_event, updated_warehouse.clone());
 
         // Delete the old secret if it exists - never fail the request if the deletion fails
         if let Some(old_secret_id) = old_secret_id {
@@ -897,6 +960,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::UpdateStorage,
+        );
+
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active(),
@@ -904,17 +974,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        let warehouse = authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::UpdateStorage,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse.clone());
 
         // ------------------- Business Logic -------------------
-        let request_for_hook = Arc::new(request.clone());
+        let request_for_event = Arc::new(request.clone());
         let UpdateWarehouseCredentialRequest {
             new_storage_credential,
         } = request;
@@ -924,7 +996,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Box::pin(warehouse.storage_profile.validate_access(
             new_storage_credential.as_ref(),
             None,
-            &request_metadata,
+            event_ctx.request_metadata(),
         ))
         .await?;
 
@@ -950,16 +1022,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .update_warehouse_storage_credential(
-                request_for_hook,
-                old_secret_id,
-                updated_warehouse.clone(),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx.emit_warehouse_storage_credential_updated(
+            request_for_event,
+            old_secret_id,
+            updated_warehouse.clone(),
+        );
 
         // Delete the old secret if it exists - never fail the request if the deletion fails
         if let Some(old_secret_id) = old_secret_id {
@@ -989,35 +1056,34 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
-        let warehouse = C::get_warehouse_by_id_cache_aware(
+        // Initial context on Warehouse level
+        let request_metadata = Arc::new(request_metadata);
+        let event_ctx = APIEventContext::for_tabulars(
+            request_metadata.clone(),
+            context.v1_state.events.clone(),
             warehouse_id,
-            WarehouseStatus::active(),
-            CachePolicy::Skip,
-            context.v1_state.catalog.clone(),
-        )
-        .await;
-        let warehouse = authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                warehouse,
-                CatalogWarehouseAction::Use,
-            )
-            .await?;
+            request.targets.clone(),
+            TabularAction {
+                table_action: CatalogTableAction::Undrop,
+                view_action: CatalogViewAction::Undrop,
+            },
+        );
 
-        undrop::require_undrop_permissions::<A, C>(
-            &warehouse,
-            &request,
+        let authz_result = undrop::require_undrop_permissions::<A, C>(
+            warehouse_id,
+            &event_ctx.user_provided_entity().tabulars,
             &authorizer,
             context.v1_state.catalog.clone(),
-            &request_metadata,
+            event_ctx.request_metadata(),
         )
-        .await?;
+        .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse.clone());
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
         let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
-        let tabular_ids = &request.targets;
+        let tabular_ids = &event_ctx.user_provided_entity().tabulars;
         let undrop_tabular_responses =
             C::clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction.transaction())
                 .await?;
@@ -1041,21 +1107,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         transaction.commit().await?;
 
-        context
-            .v1_state
-            .hooks
-            .undrop_tabular(
-                warehouse_id,
-                Arc::new(request),
-                Arc::new(
-                    undrop_tabular_responses
-                        .into_iter()
-                        .map(ViewOrTableDeletionInfo::into_table_or_view_info)
-                        .collect(),
-                ),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx.emit_tabular_undropped(
+            warehouse,
+            Arc::new(request),
+            Arc::new(
+                undrop_tabular_responses
+                    .into_iter()
+                    .map(ViewOrTableDeletionInfo::into_table_or_view_info)
+                    .collect(),
+            ),
+        );
 
         Ok(())
     }
@@ -1071,50 +1132,43 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog = context.v1_state.catalog;
         let authorizer = context.v1_state.authz;
 
-        let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::ListDeletedTabulars,
+        );
 
-        let [can_use, can_list_deleted_tabulars, can_list_everything] = authorizer
-            .are_allowed_warehouse_actions_arr(
-                &request_metadata,
-                None,
-                &[
-                    (&warehouse, CatalogWarehouseAction::Use),
-                    (&warehouse, CatalogWarehouseAction::ListDeletedTabulars),
-                    (&warehouse, CatalogWarehouseAction::ListEverything),
-                ],
-            )
-            .await?
-            .into_inner();
-
-        if !can_use {
-            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
-        }
-        if !can_list_deleted_tabulars {
-            return Err(AuthZWarehouseActionForbidden::new(
-                warehouse_id,
-                &CatalogWarehouseAction::ListDeletedTabulars,
-                request_metadata.actor().clone(),
-            )
-            .into());
-        }
+        let authz_result = undrop::authorize_list_soft_deleted_tabulars::<C, A>(
+            event_ctx.request_metadata(),
+            warehouse_id,
+            &authorizer,
+            catalog.clone(),
+        )
+        .await;
+        let (event_ctx, authz_response) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(());
+        let warehouse = authz_response.warehouse;
+        let can_list_everything = authz_response.can_list_everything;
 
         let can_list_everything = if can_list_everything {
             can_list_everything
         } else if let Some(namespace_id) = query.namespace_id {
             let namespace = C::get_namespace(warehouse_id, namespace_id, catalog.clone()).await;
-            let namespace =
-                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            let namespace = authorizer
+                .require_namespace_presence(warehouse_id, namespace_id, namespace)
+                .map_err(|e| event_ctx.emit_late_authz_failure(e))?;
             authorizer
                 .is_allowed_namespace_action(
-                    &request_metadata,
+                    event_ctx.request_metadata(),
                     None,
                     &warehouse,
                     &namespace.parents,
                     &namespace.namespace,
                     CatalogNamespaceAction::ListEverything,
                 )
-                .await?
+                .await
+                .map_err(authz_to_error_no_audit)?
                 .into_inner()
         } else {
             can_list_everything
@@ -1123,7 +1177,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
-        let request_metadata = Arc::new(request_metadata);
+        let request_metadata = event_ctx.request_metadata().clone();
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
         let (tabulars, ids, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
             pagination_query.page_size,
@@ -1166,7 +1220,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                             .iter()
                             .map(|t| {
                                 Ok::<_, ErrorModel>((
-                                    require_namespace_for_tabular(&namespaces, t)?,
+                                    require_namespace_for_tabular(&namespaces, t)
+                                        .map_err(authz_to_error_no_audit)?,
                                     t.as_action_request(
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
@@ -1183,7 +1238,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                 &namespaces,
                                 &actions,
                             )
-                            .await?
+                            .await
+                            .map_err(authz_to_error_no_audit)?
                             .into_inner()
                     };
 
@@ -1245,7 +1301,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         t.commit().await?;
 
         Ok(ListDeletedTabularsResponse {
-            tabulars,
+            tabulars: Arc::new(tabulars),
             next_page_token,
         })
     }
@@ -1259,28 +1315,42 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
+        let request = Arc::new(request);
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::ModifyTaskQueueConfig,
+        );
 
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let warehouse_resolved = authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::ModifyTaskQueueConfig,
+                event_ctx.action().clone(),
             )
-            .await?;
-        let project_id = warehouse_resolved.project_id.clone();
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse.clone());
+        let project_id = warehouse.project_id.clone();
 
         // ------------------- Business Logic -------------------
         set_task_queue_config_authorized(
             project_id,
             Some(warehouse_id),
             queue_name,
-            request,
+            &request,
             context,
         )
-        .await
+        .await?;
+
+        event_ctx.emit_set_task_queue_config(queue_name.clone(), request);
+
+        Ok(())
     }
 
     async fn get_task_queue_config(
@@ -1292,16 +1362,24 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
 
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::GetTaskQueueConfig,
+        );
+
         let warehouse =
             C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let _warehouse_resolved = authorizer
+        let authz_result = authorizer
             .require_warehouse_action(
-                &request_metadata,
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::GetTaskQueueConfig,
+                event_ctx.action().clone(),
             )
-            .await?;
+            .await;
+        let _ = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let filter = TaskQueueConfigFilter::WarehouseId { warehouse_id };
@@ -1396,6 +1474,8 @@ mod test {
         assert_eq!(s3_profile.region, "dummy");
         assert_eq!(s3_profile.path_style_access, Some(true));
     }
+
+    use std::sync::Arc;
 
     use iceberg::TableIdent;
     use itertools::Itertools;
@@ -1671,7 +1751,7 @@ mod test {
             assert_eq!(next_four_items[idx], format!("view-{i}"));
         }
 
-        let mut ids = all.tabulars;
+        let mut ids = Arc::unwrap_or_clone(all.tabulars);
         ids.sort_by_key(|e| e.id);
         for t in ids.iter().take(6).skip(4) {
             authz.hide(&format!("view:{}/{}", warehouse.warehouse_id, t.id));

@@ -87,7 +87,7 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "acda05d67eb0bb304ba2f86e135c9ecb6caf793e", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "c440a001488a4a5606bef349f46c5e5b7cc41bd9", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",
@@ -162,7 +162,11 @@ tower-http = { version = "^0.6", features = [
     "normalize-path",
 ] }
 tracing = { version = "^0.1.41", features = ["attributes", "valuable"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.18", features = [
+    "env-filter",
+    "json",
+    "valuable",
+] }
 tracing-test = "0.2.5"
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.23.0"

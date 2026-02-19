@@ -7,6 +7,9 @@ use iceberg_ext::configs::{ConfigProperty as _, namespace::NamespaceProperties};
 use itertools::Itertools;
 use lakekeeper_io::Location;
 
+mod create;
+mod list;
+
 use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
 use crate::{
     CONFIG,
@@ -22,11 +25,17 @@ use crate::{
     request_metadata::RequestMetadata,
     server,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, CatalogWarehouseOps,
-        NamedEntity, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, NamedEntity, NamespaceId,
+        ResolvedWarehouse, State, TabularId, Transaction,
         authz::{
-            AuthZCannotListNamespaces, AuthZCannotUseWarehouseId, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent,
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
+            NamespaceParent,
+        },
+        events::{
+            APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
+            context::{
+                ResolvedNamespace, Unresolved, UserProvidedNamespace, authz_to_error_no_audit,
+            },
         },
         secrets::SecretStore,
         tasks::{
@@ -70,72 +79,39 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let event_ctx = create_namespace_or_warehouse_event_context(
+            parent.clone(),
+            request_metadata,
+            state.v1_state.events,
+            warehouse_id,
+            CatalogNamespaceAction::ListNamespaces,
+            CatalogWarehouseAction::ListNamespaces,
+        );
 
-        let [can_use_warehouse, can_list_namespaces, can_list_everything] = authorizer
-            .are_allowed_warehouse_actions_arr(
-                &request_metadata,
-                None,
-                &[
-                    (&warehouse, CatalogWarehouseAction::Use),
-                    (&warehouse, CatalogWarehouseAction::ListNamespaces),
-                    (&warehouse, CatalogWarehouseAction::ListEverything),
-                ],
-            )
-            .await?
-            .into_inner();
+        let authz_result = list::authorize_namespace_list::<C, A>(
+            authorizer.clone(),
+            event_ctx.request_metadata(),
+            warehouse_id,
+            parent.as_ref(),
+            state.v1_state.catalog.clone(),
+        )
+        .await;
 
-        if !can_use_warehouse {
-            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
-        }
-        if !can_list_namespaces {
-            return Err(AuthZCannotListNamespaces::new(warehouse_id).into());
-        }
-
-        let mut can_list_everything = can_list_everything;
-        if let Some(parent_ident) = parent {
-            let parent_namespace =
-                C::get_namespace(warehouse_id, parent_ident, state.v1_state.catalog.clone()).await;
-
-            let parent_namespace = authorizer
-                .require_namespace_action(
-                    &request_metadata,
-                    &warehouse,
-                    parent_ident,
-                    parent_namespace,
-                    CatalogNamespaceAction::ListNamespaces,
-                )
-                .await?;
-            // Rely on short-circuit of `||` to query `namespace:can_list_everything` only if not
-            // `warehouse:can_list_everything`.
-            can_list_everything = can_list_everything
-                || authorizer
-                    .is_allowed_namespace_action(
-                        &request_metadata,
-                        None,
-                        &warehouse,
-                        &parent_namespace.parents,
-                        &parent_namespace.namespace,
-                        CatalogNamespaceAction::ListEverything,
-                    )
-                    .await?
-                    .into_inner();
-        }
+        let (event_ctx, (can_list_everything, warehouse, _parent_namespace)) =
+            event_ctx.emit_authz(authz_result)?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let request_metadata = Arc::new(request_metadata);
         let (idents, ids, next_page_token) = server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token.clone(),
             |ps, page_token, trx| {
                 let parent = parent.clone();
                 let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
                 let warehouse = warehouse.clone();
+                let request_metadata = event_ctx.request_metadata().clone();
                 async move {
+                    let request_metadata = &request_metadata;
                     let query = ListNamespacesQuery {
                         page_size: Some(ps),
                         page_token: page_token.into(),
@@ -162,7 +138,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     } else {
                         authorizer
                             .are_allowed_namespace_actions_vec(
-                                &request_metadata,
+                                request_metadata,
                                 None,
                                 &warehouse,
                                 &parent_namespaces,
@@ -171,7 +147,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                                     .map(|id| (id, CatalogNamespaceAction::IncludeInList))
                                     .collect::<Vec<_>>(),
                             )
-                            .await?
+                            .await
+                            .map_err(authz_to_error_no_audit)?
                             .into_inner()
                     };
 
@@ -208,6 +185,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into_iter()
             .map(|n| (n.namespace_ident().clone(), n.is_protected()))
             .unzip();
+        let namespaces = Arc::new(namespaces);
+
         Ok(ListNamespacesResponse {
             next_page_token,
             namespaces,
@@ -250,44 +229,44 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-
-        let properties_btree =
+        let properties_btree: Arc<std::collections::BTreeMap<String, String>> =
             Arc::new(properties.clone().unwrap_or_default().into_iter().collect());
 
-        let (warehouse, parent_namespace) = if let Some(namespace_parent) = namespace.parent() {
-            let parent_namespace = C::get_namespace(
-                warehouse_id,
-                &namespace_parent,
-                state.v1_state.catalog.clone(),
-            )
-            .await;
-            let parent_namespace = authorizer
-                .require_namespace_action(
-                    &request_metadata,
-                    &warehouse,
-                    namespace_parent,
-                    parent_namespace,
-                    CatalogNamespaceAction::CreateNamespace {
-                        properties: properties_btree,
-                    },
-                )
-                .await?;
-            (warehouse, Some(parent_namespace.namespace_id()))
-        } else {
-            let warehouse = authorizer
-                .require_warehouse_action(
-                    &request_metadata,
-                    warehouse_id,
-                    Ok(Some(warehouse)),
-                    CatalogWarehouseAction::CreateNamespace {
-                        properties: properties_btree,
-                    },
-                )
-                .await?;
-            (warehouse, None)
+        let event_ctx = create_namespace_or_warehouse_event_context(
+            namespace.parent().clone(),
+            request_metadata,
+            state.v1_state.events,
+            warehouse_id,
+            CatalogNamespaceAction::CreateNamespace {
+                properties: properties_btree.clone(),
+            },
+            CatalogWarehouseAction::CreateNamespace {
+                properties: properties_btree.clone(),
+            },
+        );
+
+        let authz_result = create::authorize_namespace_create::<C, _>(
+            &authorizer,
+            event_ctx.request_metadata(),
+            warehouse_id,
+            namespace.parent().as_ref(),
+            state.v1_state.catalog.clone(),
+            properties_btree,
+        )
+        .await;
+
+        let (event_ctx, (warehouse, parent_namespace)) = event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = match (&parent_namespace, event_ctx) {
+            (Some(parent_namespace), NamespaceOrWarehouseAPIContext::Namespace(ctx)) => NamespaceOrWarehouseAPIContext::Namespace(ctx
+                .resolve(ResolvedNamespace {
+                    warehouse: warehouse.clone(),
+                    namespace: parent_namespace.namespace.clone(),
+                })),
+            (None, NamespaceOrWarehouseAPIContext::Warehouse(ctx)) => {
+                 NamespaceOrWarehouseAPIContext::Warehouse(ctx.resolve(warehouse.clone()))
+            }
+            _ => return Err(ErrorModel::internal("Inconsistent authorization context after namespace creation authorization. Please report this to the developers.".to_string(), "InconsistentAuthZContext", None).into()),
         };
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -304,21 +283,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
-        let authz_parent = if let Some(parent_id) = parent_namespace {
-            NamespaceParent::Namespace(parent_id)
+        let authz_parent = if let Some(parent_namespace) = &parent_namespace {
+            NamespaceParent::Namespace(parent_namespace.namespace_id())
         } else {
             NamespaceParent::Warehouse(warehouse_id)
         };
         authorizer
-            .create_namespace(&request_metadata, namespace_id, authz_parent)
+            .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
         t.commit().await?;
 
-        state
-            .v1_state
-            .hooks
-            .create_namespace(warehouse_id, r.clone(), Arc::new(request_metadata))
-            .await;
+        event_ctx.emit_namespace_created_async(r.clone());
 
         let r_namespace = r.namespace.clone();
         let mut properties = r_namespace.properties.clone().unwrap_or_default();
@@ -343,24 +318,48 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        let (_warehouse, namespace) = authorizer
+
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events,
+            warehouse_id,
+            parameters.namespace.clone(),
+            CatalogNamespaceAction::GetMetadata,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
-                &request_metadata,
-                warehouse_id,
-                parameters.namespace,
-                CatalogNamespaceAction::GetMetadata,
+                event_ctx.request_metadata(),
+                UserProvidedNamespace {
+                    warehouse_id,
+                    namespace: parameters.namespace.into(),
+                },
+                event_ctx.action().clone(),
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await;
+
+        let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = event_ctx.resolve(ResolvedNamespace {
+            warehouse,
+            namespace: namespace.namespace,
+        });
+        let namespace = &event_ctx.resolved().namespace;
+        let namespace_ident = namespace.namespace_ident().clone();
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
         let mut properties = namespace.properties().cloned().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
+        let properties = Arc::new(properties);
+
+        event_ctx.emit_namespace_metadata_loaded_async(properties.clone());
+
         Ok(GetNamespaceResponse {
             properties: Some(properties),
-            namespace: namespace.namespace_ident().clone(),
+            namespace: namespace_ident,
             namespace_uuid: return_uuid.then_some(*namespace_id),
         })
     }
@@ -373,17 +372,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<()> {
         let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
 
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events,
+            warehouse_id,
+            parameters.namespace.clone(),
+            CatalogNamespaceAction::GetMetadata,
+        );
+
         let authorizer = state.v1_state.authz;
-        let (_warehouse, _namespace) = authorizer
+        let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
-                &request_metadata,
-                warehouse_id,
-                parameters.namespace,
-                CatalogNamespaceAction::GetMetadata,
+                event_ctx.request_metadata(),
+                UserProvidedNamespace {
+                    warehouse_id,
+                    namespace: parameters.namespace.into(),
+                },
+                event_ctx.action().clone(),
                 CachePolicy::Skip,
                 state.v1_state.catalog,
             )
-            .await?;
+            .await;
+
+        event_ctx.emit_authz(authz_result)?;
 
         Ok(())
     }
@@ -413,16 +424,33 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        let (warehouse, namespace) = authorizer
+
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata.clone()),
+            state.v1_state.events,
+            warehouse_id,
+            parameters.namespace.clone(),
+            CatalogNamespaceAction::Delete,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
-                &request_metadata,
-                warehouse_id,
-                parameters.namespace,
-                CatalogNamespaceAction::Delete,
+                event_ctx.request_metadata(),
+                UserProvidedNamespace {
+                    warehouse_id,
+                    namespace: parameters.namespace.into(),
+                },
+                event_ctx.action().clone(),
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await;
+        let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+
+        let event_ctx = event_ctx.resolve(ResolvedNamespace {
+            warehouse: warehouse.clone(),
+            namespace: namespace.namespace.clone(),
+        });
 
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
@@ -448,11 +476,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         match r {
             Ok(()) => {
-                state
-                    .v1_state
-                    .hooks
-                    .drop_namespace(warehouse_id, namespace_id, Arc::new(request_metadata))
-                    .await;
+                event_ctx.emit_namespace_dropped_async();
                 Ok(())
             }
             Err(err) => Err(err),
@@ -486,21 +510,39 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let (_warehouse, namespace) = authorizer
+        let action = CatalogNamespaceAction::UpdateProperties {
+            updated_properties: Arc::new(updates.clone().into_iter().collect()),
+            removed_properties: Arc::new(removals.clone().unwrap_or_default()),
+        };
+        let event_ctx = APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            state.v1_state.events,
+            warehouse_id,
+            parameters.namespace.clone(),
+            action,
+        );
+
+        let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
-                &request_metadata,
-                warehouse_id,
-                parameters.namespace,
-                CatalogNamespaceAction::UpdateProperties {
-                    updated_properties: Arc::new(updates.clone().into_iter().collect()),
-                    removed_properties: Arc::new(removals.clone().unwrap_or_default()),
+                event_ctx.request_metadata(),
+                UserProvidedNamespace {
+                    warehouse_id,
+                    namespace: parameters.namespace.into(),
                 },
+                event_ctx.action().clone(),
                 CachePolicy::Skip,
                 state.v1_state.catalog.clone(),
             )
-            .await?;
+            .await;
+
+        let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(ResolvedNamespace {
+            warehouse,
+            namespace: namespace.namespace,
+        });
 
         //  ------------------- BUSINESS LOGIC -------------------
+        let namespace = &event_ctx.resolved().namespace;
         let namespace_id = namespace.namespace_id();
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
@@ -515,16 +557,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .await?;
         t.commit().await?;
 
-        state
-            .v1_state
-            .hooks
-            .update_namespace_properties(
-                warehouse_id,
-                updated_namespace,
-                Arc::new(r.clone()),
-                Arc::new(request_metadata),
-            )
-            .await;
+        event_ctx.emit_namespace_properties_updated_async(updated_namespace, Arc::new(r.clone()));
 
         Ok(r)
     }
@@ -842,6 +875,34 @@ fn namespace_location_may_not_change(
     }
 
     Ok(())
+}
+
+/// Helper function to create event context for either namespace or warehouse actions
+fn create_namespace_or_warehouse_event_context(
+    namespace: Option<NamespaceIdent>,
+    request_metadata: RequestMetadata,
+    events: EventDispatcher,
+    warehouse_id: crate::service::WarehouseId,
+    namespace_action: CatalogNamespaceAction,
+    warehouse_action: CatalogWarehouseAction,
+) -> NamespaceOrWarehouseAPIContext<Unresolved, Unresolved> {
+    match namespace {
+        Some(parent_ident) => APIEventContext::for_namespace(
+            Arc::new(request_metadata),
+            events,
+            warehouse_id,
+            parent_ident,
+            namespace_action,
+        )
+        .into(),
+        None => APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            events,
+            warehouse_id,
+            warehouse_action,
+        )
+        .into(),
+    }
 }
 
 #[cfg(test)]
@@ -1203,8 +1264,8 @@ mod tests {
         assert_eq!(first_six.namespaces.len(), 6);
         let first_six_items: HashSet<String, RandomState> = first_six
             .namespaces
-            .into_iter()
-            .map(|ns| ns.to_url_string())
+            .iter()
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
         for i in 0..6 {
             assert!(first_six_items.contains(&format!("ns-{i}")));
@@ -1226,8 +1287,8 @@ mod tests {
         .unwrap();
         let next_four_items: HashSet<String, RandomState> = next_four
             .namespaces
-            .into_iter()
-            .map(|ns| ns.to_url_string())
+            .iter()
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
         for i in 6..10 {
             assert!(next_four_items.contains(&format!("ns-{i}")));
@@ -1259,8 +1320,8 @@ mod tests {
 
         let page_items: HashSet<String, RandomState> = page
             .namespaces
-            .into_iter()
-            .map(|ns| ns.to_url_string())
+            .iter()
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
 
         for i in 0..5 {
@@ -1285,8 +1346,8 @@ mod tests {
 
         let next_page_items: HashSet<String, RandomState> = next_page
             .namespaces
-            .into_iter()
-            .map(|ns| ns.to_url_string())
+            .iter()
+            .map(iceberg::NamespaceIdent::to_url_string)
             .collect();
 
         for i in 7..10 {
