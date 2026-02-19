@@ -11,7 +11,10 @@ use crate::{
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{
-        CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CreateRoleError, ListRolesError, ListRolesResponse, ProjectIdNotFoundError, Result, Role, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleSourceIdConflict, SearchRoleResponse, SearchRolesError, UpdateRoleError
+        CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CreateRoleError,
+        ListRolesError, ListRolesResponse, ProjectIdNotFoundError, Result, Role, RoleId,
+        RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleSourceIdConflict,
+        SearchRoleResponse, SearchRolesError, UpdateRoleError,
     },
 };
 

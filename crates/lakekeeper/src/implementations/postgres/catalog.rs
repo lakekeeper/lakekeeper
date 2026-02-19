@@ -56,10 +56,32 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError, CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError, CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError, ListRolesResponse, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus, authn::UserId, storage::StorageProfile, task_configs::TaskQueueConfigFilter, tasks::{
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
+        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
+        CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError,
+        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse,
+        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
+        CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError,
+        ListRolesResponse, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
+        RoleId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
+        SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
+        SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList,
+        Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        authn::UserId,
+        storage::StorageProfile,
+        task_configs::TaskQueueConfigFilter,
+        tasks::{
             CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
             TaskId, TaskInput, TaskQueueName, TaskResolveScope,
-        }
+        },
     },
 };
 
@@ -321,12 +343,7 @@ impl CatalogStore for super::PostgresBackend {
         role_id_filter: Option<&[RoleId]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
-        delete_roles(
-            project_id,
-            role_id_filter,
-            &mut **transaction,
-        )
-        .await
+        delete_roles(project_id, role_id_filter, &mut **transaction).await
     }
 
     async fn search_role_impl(

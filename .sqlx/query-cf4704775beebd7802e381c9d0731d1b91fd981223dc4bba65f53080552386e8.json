@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            description,\n            project_id,\n            source_id,\n            created_at,\n            updated_at\n        FROM role r\n        WHERE ($9 or project_id = $1)\n            AND ($2 OR id = any($3))\n            AND ($4 OR source_id = any($5))\n            --- PAGINATION\n            AND ((r.created_at > $6 OR $6 IS NULL) OR (r.created_at = $6 AND r.id > $7))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $8\n        ",
+  "query": "\n        INSERT INTO role (id, name, description, source_id, provider_id, project_id)\n        SELECT u.*, $6 FROM UNNEST($1::UUID[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TEXT[]) u\n        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -25,31 +25,33 @@
       },
       {
         "ordinal": 4,
-        "name": "source_id",
+        "name": "provider_id",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Bool",
         "UuidArray",
-        "Bool",
         "TextArray",
-        "Timestamptz",
-        "Uuid",
-        "Int8",
-        "Bool"
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Text"
       ]
     },
     "nullable": [
@@ -57,10 +59,11 @@
       false,
       true,
       false,
-      true,
+      false,
+      false,
       false,
       true
     ]
   },
-  "hash": "e3b7cafb2fed492841641a3af08edeb44910e8b3005f181254c04127efd6e1c3"
+  "hash": "cf4704775beebd7802e381c9d0731d1b91fd981223dc4bba65f53080552386e8"
 }

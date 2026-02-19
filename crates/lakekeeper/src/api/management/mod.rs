@@ -114,7 +114,10 @@ pub mod v1 {
                 check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::{ListRolesResponse, RoleMetadataRef, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+                role::{
+                    ListRolesResponse, RoleMetadataRef, SearchRoleResponse,
+                    UpdateRoleSourceSystemRequest,
+                },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
                 tasks::{
