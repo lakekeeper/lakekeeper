@@ -16,9 +16,8 @@ CREATE INDEX task_warehouse_entity_id_queue_idx ON task (warehouse_id, entity_id
 WHERE
     entity_type IN ('table', 'view');
 
--- Add a stored generated column for namespace depth. While array_length(namespace_name, 1)
--- can be used in a functional index, a stored column generally performs better and composes
--- more naturally in composite indexes, allowing the index below to filter by depth without a heap scan.
+-- Add a stored generated column for namespace depth (array_length is not indexable).
+-- This allows the index below to filter by depth without a heap scan.
 ALTER TABLE namespace
 ADD COLUMN IF NOT EXISTS depth int GENERATED ALWAYS AS (array_length (namespace_name, 1)) STORED;
 
