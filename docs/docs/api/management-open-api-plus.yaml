@@ -219,6 +219,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListCedarPolicySourcesResponse'
+  /management/v1/permissions/cedar/schema:
+    get:
+      tags:
+        - permissions-cedar
+      summary: Get the currently active Cedar schema.
+      operationId: get_cedar_schema
+      responses:
+        '200':
+          description: Currently active cedar schema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetCedarSchemaResponse'
   /management/v1/permissions/check:
     post:
       tags:
@@ -4782,6 +4795,20 @@ components:
             List of JSON formatted Cedar policies.
 
             For schema details, see `<https://docs.cedarpolicy.com/policies/json-format.html>`
+    GetCedarSchemaResponse:
+      type: object
+      required:
+        - schema-fragments
+      properties:
+        schema-fragments:
+          type: object
+          description: |-
+            The currently active Cedar schema fragments.
+            The key is the fragment file path, and the value is the fragment content.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
     GetEndpointStatisticsRequest:
       type: object
       required:
