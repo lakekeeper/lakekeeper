@@ -14,8 +14,8 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps,
-        CatalogStore, CreateRoleError, DeleteRoleError, Result, RoleId, SecretStore, State,
-        Transaction, UpdateRoleError,
+        CatalogStore, CreateRoleError, DeleteRoleError, Result, RoleId, RoleIdentRef,
+        RoleProviderId, RoleRef, RoleSourceId, SecretStore, State, Transaction, UpdateRoleError,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
             CatalogRoleAction,
@@ -40,20 +40,37 @@ pub struct CreateRoleRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
-    /// Identifier of the role in an external system (source of truth).
-    /// `source-id` must be unique within a project.
+    /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+    /// Must be provided together with `source-id`. Omit both to let the server
+    /// assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
     #[serde(default)]
     #[builder(default)]
-    pub source_id: Option<String>,
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
+    pub provider_id: Option<RoleProviderId>,
+    /// Identifier of the role within the provider's namespace.
+    /// Must be provided together with `provider-id`.
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
+    pub source_id: Option<RoleSourceId>,
 }
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct Role {
-    /// Globally unique id of this role
-    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    /// Globally unique UUID identifier (internal DB primary key).
+    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub id: RoleId,
+    /// Composite project-scoped identifier (`provider~source_id`).
+    /// Unique within a project;
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub ident: RoleIdentRef,
+    /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub provider_id: RoleProviderId,
+    /// Identifier of the role within the provider's namespace.
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub source_id: RoleSourceId,
     /// Name of the role
     pub name: String,
     /// Description of the role
@@ -61,13 +78,26 @@ pub struct Role {
     /// Project ID in which the role is created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
     pub project_id: ProjectId,
-    /// Identifier of the role in an external system (source of truth).
-    /// `source-id` is guaranteed to be unique within a project.
-    pub source_id: Option<String>,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the role was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl From<crate::service::Role> for Role {
+    fn from(value: crate::service::Role) -> Self {
+        Self {
+            id: value.id,
+            provider_id: value.ident.provider_id().clone(),
+            source_id: value.ident.source_id().clone(),
+            ident: value.ident,
+            name: value.name,
+            description: value.description,
+            project_id: value.project_id,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -76,9 +106,18 @@ pub struct Role {
 /// Metadata of a role with reduced information.
 /// Returned for cross-project role references.
 pub struct RoleMetadata {
-    /// Globally unique id of this role
-    #[cfg_attr(feature = "open-api", schema(value_type=uuid::Uuid))]
+    /// Globally unique UUID identifier (internal DB primary key).
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub id: RoleId,
+    /// Composite project-scoped identifier (`provider~source_id`).
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub ident: RoleIdentRef,
+    /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub provider_id: RoleProviderId,
+    /// Identifier of the role within the provider's namespace.
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub source_id: RoleSourceId,
     /// Name of the role
     pub name: String,
     /// Project ID in which the role is created.
@@ -88,28 +127,23 @@ pub struct RoleMetadata {
 
 impl_arc_into_response!(RoleMetadata);
 
-#[cfg(feature = "test-utils")]
-impl Role {
-    #[must_use]
-    pub fn new_random() -> Self {
-        let role_id = RoleId::new_random();
-        Self {
-            id: role_id,
-            name: format!("role-{role_id}"),
-            description: Some("A randomly generated role".to_string()),
-            source_id: None,
-            project_id: ProjectId::new_random(),
-            created_at: chrono::Utc::now(),
-            updated_at: None,
-        }
-    }
-}
-
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchRoleResponse {
     /// List of roles matching the search criteria
-    pub roles: Vec<Arc<Role>>,
+    pub roles: Vec<Role>,
+}
+
+impl From<crate::service::SearchRoleResponse> for SearchRoleResponse {
+    fn from(value: crate::service::SearchRoleResponse) -> Self {
+        Self {
+            roles: value
+                .roles
+                .into_iter()
+                .map(|r| (*r).clone().into())
+                .collect(),
+        }
+    }
 }
 
 impl_arc_into_response!(SearchRoleResponse);
@@ -130,16 +164,33 @@ pub struct UpdateRoleRequest {
 #[serde(rename_all = "kebab-case")]
 pub struct UpdateRoleSourceSystemRequest {
     /// New Source ID / External ID of the role.
-    pub source_id: String,
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub source_id: RoleSourceId,
+    /// New Provider ID of the role.
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub provider_id: RoleProviderId,
 }
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRolesResponse {
-    pub roles: Vec<Arc<Role>>,
+    pub roles: Vec<Role>,
     #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
+}
+
+impl From<crate::service::ListRolesResponse> for ListRolesResponse {
+    fn from(value: crate::service::ListRolesResponse) -> Self {
+        Self {
+            roles: value
+                .roles
+                .into_iter()
+                .map(|r| (*r).clone().into())
+                .collect(),
+            next_page_token: value.next_page_token,
+        }
+    }
 }
 
 impl_arc_into_response!(ListRolesResponse);
@@ -186,7 +237,12 @@ pub struct ListRolesQuery {
     pub role_ids: Option<Vec<RoleId>>,
     /// Filter by source IDs
     #[serde(default)]
-    pub source_ids: Option<Vec<String>>,
+    #[cfg_attr(feature = "open-api", param(value_type=Option<Vec<String>>))]
+    pub source_ids: Option<Vec<RoleSourceId>>,
+    /// Filter by provider IDs
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", param(value_type=Option<Vec<String>>))]
+    pub provider_ids: Option<Vec<RoleProviderId>>,
 }
 
 impl ListRolesQuery {
@@ -219,7 +275,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request: CreateRoleRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<Arc<Role>> {
+    ) -> Result<Role> {
         // -------------------- VALIDATIONS --------------------
         if request.name.is_empty() {
             return Err(ErrorModel::bad_request(
@@ -228,6 +284,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 None,
             )
             .into());
+        }
+        match (&request.provider_id, &request.source_id) {
+            (None, None) | (Some(_), Some(_)) => {}
+            _ => {
+                return Err(ErrorModel::bad_request(
+                    "provider-id and source-id must be provided together, or both omitted",
+                    "InvalidRoleIdentifier",
+                    None,
+                )
+                .into());
+            }
         }
 
         let authorizer = context.v1_state.authz;
@@ -245,14 +312,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             authorize_create_role::<A, C>(authorizer, catalog_state, &event_ctx, request).await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = Arc::new(event_ctx.resolve(role));
-        Ok(event_ctx.resolved().clone())
+        Ok((**event_ctx.resolved()).clone().into())
     }
 
     async fn list_roles(
         context: ApiContext<State<A, C, S>>,
         query: ListRolesQuery,
         request_metadata: RequestMetadata,
-    ) -> Result<Arc<ListRolesResponse>> {
+    ) -> Result<ListRolesResponse> {
         // -------------------- VALIDATIONS --------------------
         let project_id = request_metadata.require_project_id(query.project_id.clone())?;
 
@@ -267,16 +334,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result =
             authorize_list_roles::<A, C>(authorizer, catalog_state, &event_ctx, query).await;
-        let (event_ctx, roles) = event_ctx.emit_authz(authz_result)?;
-        let event_ctx = event_ctx.resolve(roles);
-        Ok(event_ctx.resolved().clone())
+        let (_event_ctx, roles) = event_ctx.emit_authz(authz_result)?;
+        Ok(roles.into())
     }
 
     async fn get_role(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         role_id: RoleId,
-    ) -> Result<Arc<Role>> {
+    ) -> Result<Role> {
         let event_ctx = APIEventContext::for_role(
             request_metadata.into(),
             context.v1_state.events.clone(),
@@ -299,7 +365,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = event_ctx.resolve(role);
 
-        Ok(event_ctx.resolved().clone())
+        Ok((**event_ctx.resolved()).clone().into())
     }
 
     async fn get_role_metadata(
@@ -327,7 +393,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         request: SearchRoleRequest,
-    ) -> Result<Arc<SearchRoleResponse>> {
+    ) -> Result<SearchRoleResponse> {
         let project_id = request_metadata.require_project_id(request.project_id.clone())?;
 
         // -------------------- AUTHZ --------------------
@@ -341,9 +407,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result =
             authorize_search_role::<A, C>(authorizer, catalog_state, &event_ctx, request).await;
-        let (event_ctx, response) = event_ctx.emit_authz(authz_result)?;
-        let event_ctx = event_ctx.resolve(response);
-        Ok(event_ctx.resolved().clone())
+        let (_event_ctx, response) = event_ctx.emit_authz(authz_result)?;
+        Ok(response.into())
     }
 
     async fn delete_role(
@@ -363,7 +428,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
         let authz_result =
-            authorize_delete_role::<A, C>(authorizer, catalog_state, &event_ctx, project_id).await;
+            authorized_delete_role::<A, C>(authorizer, catalog_state, &event_ctx, project_id).await;
         event_ctx.emit_authz(authz_result)?;
         Ok(())
     }
@@ -373,7 +438,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         role_id: RoleId,
         request: UpdateRoleRequest,
-    ) -> Result<Arc<Role>> {
+    ) -> Result<Role> {
         // -------------------- VALIDATIONS --------------------
         if request.name.is_empty() {
             return Err(ErrorModel::bad_request(
@@ -405,7 +470,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = event_ctx.resolve(role);
-        Ok(event_ctx.resolved().clone())
+        Ok((**event_ctx.resolved()).clone().into())
     }
 
     async fn update_role_source_system(
@@ -413,7 +478,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         role_id: RoleId,
         request: UpdateRoleSourceSystemRequest,
-    ) -> Result<Arc<Role>> {
+    ) -> Result<Role> {
         let project_id = request_metadata.require_project_id(None)?;
 
         // -------------------- AUTHZ --------------------
@@ -435,7 +500,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = event_ctx.resolve(role);
-        Ok(event_ctx.resolved().clone())
+        Ok((**event_ctx.resolved()).clone().into())
     }
 }
 
@@ -444,7 +509,7 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     request: CreateRoleRequest,
-) -> Result<Arc<Role>, AuthZError> {
+) -> Result<RoleRef, AuthZError> {
     let project_id = event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -460,11 +525,17 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
             .await
             .map_err(|e| CatalogBackendError::new_unexpected(e.error))
             .map_err(CreateRoleError::from)?;
+
+    let source_id = request
+        .source_id
+        .unwrap_or_else(|| RoleSourceId::new_from_role_id(role_id));
+    let provider_id = request.provider_id.unwrap_or_default();
     let catalog_create_role_request = CatalogCreateRoleRequest {
         role_id,
         role_name: &request.name,
         description: description.as_deref(),
-        source_id: request.source_id.as_deref(),
+        source_id: &source_id,
+        provider_id: &provider_id,
     };
     let role = C::create_role(project_id, catalog_create_role_request, t.transaction()).await?;
     authorizer
@@ -482,7 +553,7 @@ async fn authorize_list_roles<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     query: ListRolesQuery,
-) -> Result<Arc<ListRolesResponse>, AuthZError> {
+) -> Result<crate::service::ListRolesResponse, AuthZError> {
     let project_id = event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -492,23 +563,26 @@ async fn authorize_list_roles<A: Authorizer, C: CatalogStore>(
 
     // -------------------- Business Logic --------------------
     let pagination_query = query.pagination_query();
+    let provider_ids = query
+        .provider_ids
+        .as_ref()
+        .map(|v| v.iter().collect::<Vec<_>>());
+    let source_ids = query
+        .source_ids
+        .as_ref()
+        .map(|v| v.iter().collect::<Vec<_>>());
     let roles = C::list_roles(
         project_id,
         CatalogListRolesFilter::builder()
             .role_ids(query.role_ids.as_deref())
-            .source_ids(
-                query
-                    .source_ids
-                    .as_ref()
-                    .map(|ids| ids.iter().map(String::as_str).collect::<Vec<_>>())
-                    .as_deref(),
-            )
+            .source_ids(source_ids.as_deref())
+            .provider_ids(provider_ids.as_deref())
             .build(),
         pagination_query,
         catalog_state,
     )
     .await?;
-    Ok(roles.into())
+    Ok(roles)
 }
 
 async fn authorize_get_role_metadata<A: Authorizer, C: CatalogStore>(
@@ -528,6 +602,9 @@ async fn authorize_get_role_metadata<A: Authorizer, C: CatalogStore>(
 
     let role_metadata = RoleMetadata {
         id: role.id,
+        source_id: role.source_id().clone(),
+        provider_id: role.provider_id().clone(),
+        ident: role.ident.clone(),
         name: role.name.clone(),
         project_id: role.project_id.clone(),
     };
@@ -540,7 +617,7 @@ async fn authorize_search_role<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     request: SearchRoleRequest,
-) -> Result<Arc<SearchRoleResponse>, AuthZError> {
+) -> Result<crate::service::SearchRoleResponse, AuthZError> {
     let project_id = event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -554,10 +631,10 @@ async fn authorize_search_role<A: Authorizer, C: CatalogStore>(
         search = search.chars().take(64).collect();
     }
     let result = C::search_role(project_id, &search, catalog_state).await?;
-    Ok(result.into())
+    Ok(result)
 }
 
-async fn authorize_delete_role<A: Authorizer, C: CatalogStore>(
+async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
@@ -593,7 +670,7 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
     project_id: ProjectId,
     request: UpdateRoleRequest,
-) -> Result<Arc<Role>, AuthZError> {
+) -> Result<RoleRef, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -630,7 +707,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
     project_id: ProjectId,
     request: UpdateRoleSourceSystemRequest,
-) -> Result<Arc<Role>, AuthZError> {
+) -> Result<RoleRef, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();

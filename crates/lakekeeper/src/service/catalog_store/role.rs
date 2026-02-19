@@ -5,18 +5,74 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
     ProjectId,
-    api::{
-        iceberg::v1::PaginationQuery,
-        management::v1::role::{
-            ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest,
-        },
-    },
+    api::{iceberg::v1::PaginationQuery, management::v1::role::UpdateRoleSourceSystemRequest},
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogStore, InvalidPaginationToken,
-        ProjectIdNotFoundError, ResultCountMismatch, RoleId, Transaction, define_transparent_error,
+        ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleProviderId, RoleSourceId,
+        Transaction, define_transparent_error, identifier::role::RoleIdentRef,
         impl_error_stack_methods, impl_from_with_detail,
     },
 };
+
+/// Reference to a [`Role`]
+pub type RoleRef = Arc<Role>;
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Role {
+    /// Global unique identifier for the role.
+    pub id: RoleId,
+    pub ident: RoleIdentRef,
+    /// Name of the role
+    pub name: String,
+    /// Description of the role
+    pub description: Option<String>,
+    /// Project ID in which the role is created.
+    pub project_id: ProjectId,
+    /// Timestamp when the role was created
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Timestamp when the role was last updated
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl Role {
+    #[must_use]
+    pub fn source_id(&self) -> &RoleSourceId {
+        self.ident.source_id()
+    }
+
+    #[must_use]
+    pub fn provider_id(&self) -> &RoleProviderId {
+        self.ident.provider_id()
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn new_random() -> Self {
+        let id = RoleId::new_random();
+        let ident = crate::service::RoleIdent::new_random_arc();
+        Self {
+            name: format!("role-{id}"),
+            id,
+            ident,
+            description: Some("A randomly generated role".to_string()),
+            project_id: ProjectId::new_random(),
+            created_at: chrono::Utc::now(),
+            updated_at: None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ListRolesResponse {
+    pub roles: Vec<RoleRef>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SearchRoleResponse {
+    /// List of roles matching the search criteria
+    pub roles: Vec<RoleRef>,
+}
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("A role with id '{role_id}' does not exist in project with id '{project_id}'")]
@@ -113,7 +169,9 @@ impl From<RoleNameAlreadyExists> for ErrorModel {
 }
 
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
-#[error("A role with the specified combination of (project_id, source_id) already exists")]
+#[error(
+    "A role with the specified combination of (project_id, provider_id, source_id) already exists"
+)]
 pub struct RoleSourceIdConflict {
     pub stack: Vec<String>,
 }
@@ -220,7 +278,9 @@ pub struct CatalogListRolesFilter<'a> {
     #[builder(default)]
     pub role_ids: Option<&'a [RoleId]>,
     #[builder(default)]
-    pub source_ids: Option<&'a [&'a str]>,
+    pub source_ids: Option<&'a [&'a RoleSourceId]>,
+    #[builder(default)]
+    pub provider_ids: Option<&'a [&'a RoleProviderId]>,
 }
 
 #[async_trait::async_trait]
@@ -261,7 +321,7 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), DeleteRoleError> {
         let deleted_roles =
-            Self::delete_roles_impl(project_id, Some(&[role_id]), None, transaction).await?;
+            Self::delete_roles_impl(project_id, Some(&[role_id]), transaction).await?;
         if deleted_roles.is_empty() {
             Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
         } else {

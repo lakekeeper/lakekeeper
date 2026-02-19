@@ -103,10 +103,7 @@ pub mod v1 {
     pub(crate) use impl_arc_into_response;
 
     #[cfg(feature = "open-api")]
-    use crate::api::management::v1::{
-        role::{ListRolesResponse, RoleMetadata, SearchRoleResponse},
-        tasks::GetTaskDetailsResponse,
-    };
+    use crate::api::management::v1::{role::RoleMetadata, tasks::GetTaskDetailsResponse};
     use crate::{
         ProjectId, WarehouseId,
         api::{
@@ -117,10 +114,7 @@ pub mod v1 {
                 check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::{
-                    ListRolesResponseRef, RoleMetadataRef, SearchRoleResponseRef,
-                    UpdateRoleSourceSystemRequest,
-                },
+                role::{ListRolesResponse, RoleMetadataRef, SearchRoleResponse, UpdateRoleSourceSystemRequest},
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
                 tasks::{
@@ -469,9 +463,9 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchRoleRequest>,
-    ) -> Result<SearchRoleResponseRef> {
+    ) -> Result<SearchRoleResponse> {
         let response = ApiServer::<C, A, S>::search_role(api_context, metadata, request).await?;
-        Ok(SearchRoleResponseRef(response))
+        Ok(response)
     }
 
     /// List Roles
@@ -491,9 +485,9 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<ListRolesQuery>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<ListRolesResponseRef> {
+    ) -> Result<ListRolesResponse> {
         let response = ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await?;
-        Ok(ListRolesResponseRef(response))
+        Ok(response)
     }
 
     /// Delete Role
@@ -536,7 +530,7 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+    ) -> Result<(StatusCode, Json<Role>)> {
         ApiServer::<C, A, S>::get_role(api_context, metadata, role_id)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -584,7 +578,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleRequest>,
-    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+    ) -> Result<(StatusCode, Json<Role>)> {
         ApiServer::<C, A, S>::update_role(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -607,7 +601,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleSourceSystemRequest>,
-    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+    ) -> Result<(StatusCode, Json<Role>)> {
         ApiServer::<C, A, S>::update_role_source_system(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))

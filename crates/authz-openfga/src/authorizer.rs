@@ -6,13 +6,13 @@ use std::{
 use futures::future::try_join_all;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata, management::v1::role::Role},
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
     async_trait,
     axum::Router,
     service::{
         Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel,
-        NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, UserId, ViewId,
+        NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId,
+        State, TableId, UserId, ViewId,
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
             CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,

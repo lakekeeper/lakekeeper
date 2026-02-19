@@ -4,9 +4,9 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     ProjectId,
-    api::{RequestMetadata, management::v1::role::Role},
+    api::RequestMetadata,
     service::{
-        CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, RoleId,
+        CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, Role, RoleId,
         RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
