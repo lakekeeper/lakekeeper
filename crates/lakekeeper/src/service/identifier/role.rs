@@ -300,10 +300,7 @@ impl RoleIdent {
     /// validation is intentionally skipped.
     ///
     /// **Do not use this outside of DB deserialization code.**
-    pub(crate) fn from_db_unchecked(
-        provider: impl Into<String>,
-        source_id: impl Into<String>,
-    ) -> Self {
+    pub fn from_db_unchecked(provider: impl Into<String>, source_id: impl Into<String>) -> Self {
         Self {
             provider: RoleProviderId(provider.into()),
             source_id: RoleSourceId(source_id.into()),
