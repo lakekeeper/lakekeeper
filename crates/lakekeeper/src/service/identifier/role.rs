@@ -25,6 +25,10 @@ pub enum RoleProviderIdError {
     ContainsSeparator(String),
     #[error("role provider ID must not contain control characters, got: {0}")]
     ContainsControlChars(String),
+    #[error(
+        "role provider ID must only contain lowercase ASCII letters, digits, and hyphens, got: {0}"
+    )]
+    InvalidCharacters(String),
 }
 
 /// Validation error for [`RoleSourceId`].
@@ -57,9 +61,9 @@ impl From<RoleIdentifierError> for ErrorModel {
 
 /// Identifies the system of record that owns a role.
 ///
-/// Must be non-empty, lowercase ASCII, and must not contain the `~` separator
-/// or control characters. Well-known values: `"lakekeeper"` (server-managed),
-/// `"oidc"`, `"ldap"`, etc.
+/// Must be non-empty and contain only lowercase ASCII letters (a-z), digits (0-9),
+/// and hyphens (-). Must not contain the `~` separator or any other special characters.
+/// Well-known values: `"lakekeeper"` (server-managed), `"oidc"`, `"ldap"`, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct RoleProviderId(String);
@@ -74,22 +78,22 @@ impl RoleProviderId {
     /// Constructs a validated [`RoleProviderId`].
     ///
     /// # Errors
-    /// Returns [`RoleProviderIdError`] if the value is empty, contains `~`,
-    /// contains control characters, or is not fully lowercase.
+    /// Returns [`RoleProviderIdError`] if the value is empty, contains invalid characters,
+    /// or does not match the allowed character set (lowercase ASCII letters, digits, hyphens).
     pub fn try_new(value: impl Into<String>) -> Result<Self, RoleProviderIdError> {
         let value = value.into();
         if value.is_empty() {
             return Err(RoleProviderIdError::Empty);
         }
-        if value.contains(ROLE_ID_SEPARATOR) {
-            return Err(RoleProviderIdError::ContainsSeparator(value));
+
+        // Check that all characters are lowercase ASCII letters, digits, or hyphens
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(RoleProviderIdError::InvalidCharacters(value));
         }
-        if value.contains(|c: char| c.is_control()) {
-            return Err(RoleProviderIdError::ContainsControlChars(value));
-        }
-        if value != value.to_lowercase() {
-            return Err(RoleProviderIdError::NotLowercase(value));
-        }
+
         Ok(Self(value))
     }
 
@@ -515,6 +519,13 @@ mod tests {
     fn provider_id_valid() {
         let p = RoleProviderId::try_new("lakekeeper").unwrap();
         assert_eq!(p.as_str(), "lakekeeper");
+
+        // Valid: lowercase, digits, hyphens
+        assert!(RoleProviderId::try_new("oidc").is_ok());
+        assert!(RoleProviderId::try_new("ldap").is_ok());
+        assert!(RoleProviderId::try_new("my-provider").is_ok());
+        assert!(RoleProviderId::try_new("provider123").is_ok());
+        assert!(RoleProviderId::try_new("a1-b2-c3").is_ok());
     }
 
     #[test]
@@ -529,7 +540,7 @@ mod tests {
     fn provider_id_contains_separator() {
         assert!(matches!(
             RoleProviderId::try_new("oidc~ext").unwrap_err(),
-            RoleProviderIdError::ContainsSeparator(_)
+            RoleProviderIdError::InvalidCharacters(_)
         ));
     }
 
@@ -537,7 +548,11 @@ mod tests {
     fn provider_id_not_lowercase() {
         assert!(matches!(
             RoleProviderId::try_new("Oidc").unwrap_err(),
-            RoleProviderIdError::NotLowercase(_)
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("OIDC").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
         ));
     }
 
@@ -545,7 +560,49 @@ mod tests {
     fn provider_id_control_chars() {
         assert!(matches!(
             RoleProviderId::try_new("oidc\n").unwrap_err(),
-            RoleProviderIdError::ContainsControlChars(_)
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("oidc\t").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+    }
+
+    #[test]
+    fn provider_id_invalid_special_chars() {
+        // Reject special characters that are not hyphen
+        assert!(matches!(
+            RoleProviderId::try_new("oidc_ext").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("oidc.ext").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("oidc/ext").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("oidc ext").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("oidc@ext").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+    }
+
+    #[test]
+    fn provider_id_non_ascii() {
+        // Reject non-ASCII characters
+        assert!(matches!(
+            RoleProviderId::try_new("oidc-\u{00E9}").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
+        assert!(matches!(
+            RoleProviderId::try_new("\u{1F600}").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
         ));
     }
 
@@ -636,7 +693,7 @@ mod tests {
         // ~ in provider is now invalid
         assert!(matches!(
             RoleIdent::try_new_from_strs("oidc~ext", "group").unwrap_err(),
-            RoleIdentifierError::InvalidProvider(RoleProviderIdError::ContainsSeparator(_))
+            RoleIdentifierError::InvalidProvider(RoleProviderIdError::InvalidCharacters(_))
         ));
     }
 
