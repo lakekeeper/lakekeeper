@@ -977,8 +977,7 @@ pub(crate) mod tests {
         implementations::postgres::{
             CatalogState, PostgresTransaction,
             tabular::{
-                mark_tabular_as_deleted,
-                set_tabular_protected,
+                mark_tabular_as_deleted, set_tabular_protected,
                 table::{load_tables, tests::initialize_table},
             },
         },
