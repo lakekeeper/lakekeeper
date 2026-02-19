@@ -30,9 +30,9 @@ pub enum RoleProviderIdError {
 /// Validation error for [`RoleSourceId`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RoleSourceIdError {
-    #[error("Provided Role ID cannot be empty")]
+    #[error("role source ID cannot be empty")]
     Empty,
-    #[error("Provided Role ID must not contain control characters, got: {0}")]
+    #[error("role source ID must not contain control characters, got: {0}")]
     ContainsControlChars(String),
 }
 
@@ -43,7 +43,7 @@ pub enum RoleIdentifierError {
     InvalidProvider(#[from] RoleProviderIdError),
     #[error("{0}")]
     InvalidSourceId(#[from] RoleSourceIdError),
-    #[error("role Identifier must be in format 'provider{ROLE_ID_SEPARATOR}id', got: `{0}`")]
+    #[error("Role Identifier must be in format 'provider{ROLE_ID_SEPARATOR}id', got: `{0}`")]
     MissingFormatSeparator(String),
 }
 
@@ -229,8 +229,8 @@ impl FromStr for RoleSourceId {
 ///
 /// **Not globally unique.** The same `provider~source_id` string can appear in multiple
 /// projects; uniqueness is enforced by the DB only on `(project_id, provider_id, source_id)`.
-/// The DB's opaque UUID primary key is the globally unique handle and is never surfaced
-/// in API responses.
+/// The DB's opaque UUID primary key (`RoleId`) is the globally unique handle and is
+/// also surfaced in API responses alongside the composite `ident` string.
 ///
 /// Serializes and parses as `"provider~source_id"` (e.g. `"lakekeeper~019756ab-..."`
 /// or `"oidc~admin-group"`). This composite string is used in REST path parameters
@@ -254,7 +254,7 @@ impl RoleIdent {
     /// Convenience constructor that validates both parts from raw strings.
     ///
     /// # Errors
-    /// Returns [`RoleIdError`] if either part fails its validation rules.
+    /// Returns [`RoleIdentifierError`] if either part fails its validation rules.
     pub fn try_new_from_strs(
         provider: impl Into<String>,
         source_id: impl Into<String>,
@@ -298,6 +298,7 @@ impl RoleIdent {
     /// validation is intentionally skipped.
     ///
     /// **Do not use this outside of DB deserialization code.**
+    #[doc(hidden)]
     pub fn from_db_unchecked(provider: impl Into<String>, source_id: impl Into<String>) -> Self {
         Self {
             provider: RoleProviderId(provider.into()),

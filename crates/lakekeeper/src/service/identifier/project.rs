@@ -3,7 +3,7 @@ use std::{ops::Deref, str::FromStr, sync::Arc};
 use iceberg_ext::catalog::rest::ErrorModel;
 
 /// Reference to [`ProjectId`] that can be cheaply cloned and shared.
-pub type ProjectIdRef = Arc<ProjectId>;
+pub type ProjectIdArc = Arc<ProjectId>;
 
 #[derive(Debug, serde::Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
@@ -74,6 +74,7 @@ impl ProjectId {
     }
 
     #[must_use]
+    #[doc(hidden)]
     pub fn from_db_unchecked(id: String) -> Self {
         Self(id)
     }

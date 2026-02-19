@@ -4042,7 +4042,7 @@ components:
             - string
             - 'null'
           description: |-
-            Identifier of the role in the provider..
+            Identifier of the role in the provider.
             Must be provided together with `provider-id`.
     CreateUserRequest:
       type: object
@@ -6240,7 +6240,7 @@ components:
           type: string
           description: |-
             Composite project-scoped identifier (`provider~source_id`).
-            Unique within a project;
+            Unique within a project.
         name:
           type: string
           description: Name of the role
@@ -6252,7 +6252,7 @@ components:
           description: Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
         source-id:
           type: string
-          description: Identifier of the role in the provider..
+          description: Identifier of the role in the provider.
         updated-at:
           type:
             - string
@@ -6308,6 +6308,7 @@ components:
       properties:
         id:
           type: string
+          format: uuid
           description: Globally unique UUID identifier
         ident:
           type: string
@@ -6323,7 +6324,7 @@ components:
           description: Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
         source-id:
           type: string
-          description: Identifier of the role in the provider..
+          description: Identifier of the role in the provider.
     RoleRelation:
       type: string
       enum:
