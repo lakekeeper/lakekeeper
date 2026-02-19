@@ -1788,6 +1788,16 @@ paths:
               - 'null'
             items:
               type: string
+        - name: providerIds
+          in: query
+          description: Filter by provider IDs
+          required: false
+          schema:
+            type:
+              - array
+              - 'null'
+            items:
+              type: string
         - name: x-project-id
           in: header
           description: Project ID (optional; falls back to the default project if not provided)
@@ -4019,13 +4029,21 @@ components:
           description: |-
             Project ID in which the role is created.
             Deprecated: Please use the `x-project-id` header instead.
+        provider-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+            Must be provided together with `source-id`. Omit both to let the server
+            assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
         source-id:
           type:
             - string
             - 'null'
           description: |-
-            Identifier of the role in an external system (source of truth).
-            `source-id` must be unique within a project.
+            Identifier of the role in the provider..
+            Must be provided together with `provider-id`.
     CreateUserRequest:
       type: object
       properties:
@@ -6198,6 +6216,9 @@ components:
       type: object
       required:
         - id
+        - ident
+        - provider-id
+        - source-id
         - name
         - project-id
         - created-at
@@ -6214,20 +6235,24 @@ components:
         id:
           type: string
           format: uuid
-          description: Globally unique id of this role
+          description: Globally unique UUID identifier
+        ident:
+          type: string
+          description: |-
+            Composite project-scoped identifier (`provider~source_id`).
+            Unique within a project;
         name:
           type: string
           description: Name of the role
         project-id:
           type: string
           description: Project ID in which the role is created.
+        provider-id:
+          type: string
+          description: Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
         source-id:
-          type:
-            - string
-            - 'null'
-          description: |-
-            Identifier of the role in an external system (source of truth).
-            `source-id` is guaranteed to be unique within a project.
+          type: string
+          description: Identifier of the role in the provider..
         updated-at:
           type:
             - string
@@ -6275,19 +6300,30 @@ components:
         Returned for cross-project role references.
       required:
         - id
+        - ident
+        - provider-id
+        - source-id
         - name
         - project-id
       properties:
         id:
           type: string
-          format: uuid
-          description: Globally unique id of this role
+          description: Globally unique UUID identifier
+        ident:
+          type: string
+          description: Composite project-scoped identifier (`provider~source_id`).
         name:
           type: string
           description: Name of the role
         project-id:
           type: string
           description: Project ID in which the role is created.
+        provider-id:
+          type: string
+          description: Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+        source-id:
+          type: string
+          description: Identifier of the role in the provider..
     RoleRelation:
       type: string
       enum:
@@ -7332,7 +7368,11 @@ components:
       type: object
       required:
         - source-id
+        - provider-id
       properties:
+        provider-id:
+          type: string
+          description: New Provider ID of the role.
         source-id:
           type: string
           description: New Source ID / External ID of the role.

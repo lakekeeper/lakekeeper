@@ -47,7 +47,7 @@ pub struct CreateRoleRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub provider_id: Option<RoleProviderId>,
-    /// Identifier of the role within the provider's namespace.
+    /// Identifier of the role in the provider..
     /// Must be provided together with `provider-id`.
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
@@ -58,7 +58,7 @@ pub struct CreateRoleRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct Role {
-    /// Globally unique UUID identifier (internal DB primary key).
+    /// Globally unique UUID identifier
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub id: RoleId,
     /// Composite project-scoped identifier (`provider~source_id`).
@@ -68,7 +68,7 @@ pub struct Role {
     /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub provider_id: RoleProviderId,
-    /// Identifier of the role within the provider's namespace.
+    /// Identifier of the role in the provider..
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub source_id: RoleSourceId,
     /// Name of the role
@@ -106,7 +106,7 @@ impl From<crate::service::Role> for Role {
 /// Metadata of a role with reduced information.
 /// Returned for cross-project role references.
 pub struct RoleMetadata {
-    /// Globally unique UUID identifier (internal DB primary key).
+    /// Globally unique UUID identifier
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub id: RoleId,
     /// Composite project-scoped identifier (`provider~source_id`).
@@ -115,7 +115,7 @@ pub struct RoleMetadata {
     /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub provider_id: RoleProviderId,
-    /// Identifier of the role within the provider's namespace.
+    /// Identifier of the role in the provider..
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub source_id: RoleSourceId,
     /// Name of the role
