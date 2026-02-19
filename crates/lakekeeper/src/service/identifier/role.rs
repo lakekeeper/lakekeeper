@@ -17,13 +17,13 @@ pub(crate) const LAKEKEEPER_ROLE_PROVIDER_ID: &str = "lakekeeper";
 /// Validation error for [`RoleProviderId`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RoleProviderIdError {
-    #[error("provider ID cannot be empty")]
+    #[error("role provider ID cannot be empty")]
     Empty,
-    #[error("provider ID must be lowercase, got: {0:?}")]
+    #[error("role provider ID must be lowercase, got: {0}")]
     NotLowercase(String),
-    #[error("provider ID must not contain the separator '{ROLE_ID_SEPARATOR}', got: {0:?}")]
+    #[error("role provider ID must not contain the separator '{ROLE_ID_SEPARATOR}', got: {0}")]
     ContainsSeparator(String),
-    #[error("provider ID must not contain control characters, got: {0:?}")]
+    #[error("role provider ID must not contain control characters, got: {0}")]
     ContainsControlChars(String),
 }
 
@@ -32,25 +32,23 @@ pub enum RoleProviderIdError {
 pub enum RoleSourceIdError {
     #[error("Provided Role ID cannot be empty")]
     Empty,
-    #[error("Provided Role ID must not contain control characters, got: {0:?}")]
+    #[error("Provided Role ID must not contain control characters, got: {0}")]
     ContainsControlChars(String),
 }
 
 /// Validation error for [`RoleIdent`] parsing.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum RoleIdError {
-    #[error("invalid role provider ID: {0}")]
+pub enum RoleIdentifierError {
+    #[error("{0}")]
     InvalidProvider(#[from] RoleProviderIdError),
-    #[error("invalid role source ID: {0}")]
+    #[error("{0}")]
     InvalidSourceId(#[from] RoleSourceIdError),
-    #[error("role ID must be in format 'provider{ROLE_ID_SEPARATOR}id', got: `{0}`")]
+    #[error("role Identifier must be in format 'provider{ROLE_ID_SEPARATOR}id', got: `{0}`")]
     MissingFormatSeparator(String),
-    #[error("role ID exceeds maximum length of {max} characters, actual length: {actual}")]
-    TooLong { max: usize, actual: usize },
 }
 
-impl From<RoleIdError> for ErrorModel {
-    fn from(e: RoleIdError) -> Self {
+impl From<RoleIdentifierError> for ErrorModel {
+    fn from(e: RoleIdentifierError) -> Self {
         ErrorModel::bad_request(e.to_string(), "InvalidRoleId", None)
     }
 }
@@ -260,7 +258,7 @@ impl RoleIdent {
     pub fn try_new_from_strs(
         provider: impl Into<String>,
         source_id: impl Into<String>,
-    ) -> Result<Self, RoleIdError> {
+    ) -> Result<Self, RoleIdentifierError> {
         let provider = RoleProviderId::try_new(provider)?;
         let source_id = RoleSourceId::try_new(source_id)?;
         Ok(Self::new(provider, source_id))
@@ -349,7 +347,7 @@ impl std::fmt::Display for RoleIdent {
 }
 
 impl FromStr for RoleIdent {
-    type Err = RoleIdError;
+    type Err = RoleIdentifierError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -357,18 +355,18 @@ impl FromStr for RoleIdent {
 }
 
 impl TryFrom<&str> for RoleIdent {
-    type Error = RoleIdError;
+    type Error = RoleIdentifierError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (provider, source_id) = s
             .split_once(ROLE_ID_SEPARATOR)
-            .ok_or_else(|| RoleIdError::MissingFormatSeparator(s.to_string()))?;
+            .ok_or_else(|| RoleIdentifierError::MissingFormatSeparator(s.to_string()))?;
         Self::try_new_from_strs(provider, source_id)
     }
 }
 
 impl TryFrom<String> for RoleIdent {
-    type Error = RoleIdError;
+    type Error = RoleIdentifierError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::try_from(value.as_str())
@@ -458,7 +456,7 @@ impl From<RoleIdent> for RoleIdWithFallback {
 }
 
 impl TryFrom<&str> for RoleIdWithFallback {
-    type Error = RoleIdError;
+    type Error = RoleIdentifierError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         // Backward-compat: bare UUID → lakekeeper~<uuid>
@@ -473,7 +471,7 @@ impl TryFrom<&str> for RoleIdWithFallback {
 }
 
 impl TryFrom<String> for RoleIdWithFallback {
-    type Error = RoleIdError;
+    type Error = RoleIdentifierError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::try_from(value.as_str())
@@ -481,7 +479,7 @@ impl TryFrom<String> for RoleIdWithFallback {
 }
 
 impl FromStr for RoleIdWithFallback {
-    type Err = RoleIdError;
+    type Err = RoleIdentifierError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -619,7 +617,7 @@ mod tests {
         let uuid = "123e4567-e89b-12d3-a456-426614174000";
         assert!(matches!(
             RoleIdent::try_from(uuid).unwrap_err(),
-            RoleIdError::MissingFormatSeparator(_)
+            RoleIdentifierError::MissingFormatSeparator(_)
         ));
     }
 
@@ -637,7 +635,7 @@ mod tests {
         // ~ in provider is now invalid
         assert!(matches!(
             RoleIdent::try_new_from_strs("oidc~ext", "group").unwrap_err(),
-            RoleIdError::InvalidProvider(RoleProviderIdError::ContainsSeparator(_))
+            RoleIdentifierError::InvalidProvider(RoleProviderIdError::ContainsSeparator(_))
         ));
     }
 
@@ -645,16 +643,7 @@ mod tests {
     fn role_id_missing_separator() {
         assert!(matches!(
             RoleIdent::try_from("no-separator").unwrap_err(),
-            RoleIdError::MissingFormatSeparator(_)
-        ));
-    }
-
-    #[test]
-    fn role_id_too_long() {
-        let long_id = "a".repeat(300);
-        assert!(matches!(
-            RoleIdent::try_new_from_strs("provider", &long_id).unwrap_err(),
-            RoleIdError::TooLong { .. }
+            RoleIdentifierError::MissingFormatSeparator(_)
         ));
     }
 
@@ -691,7 +680,7 @@ mod tests {
         // Non-UUID without separator should still fail
         assert!(matches!(
             RoleIdWithFallback::try_from("no-separator").unwrap_err(),
-            RoleIdError::MissingFormatSeparator(_)
+            RoleIdentifierError::MissingFormatSeparator(_)
         ));
     }
 
