@@ -684,7 +684,7 @@ where
             FROM tabular t
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
-            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
+            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND tt.queue_name = 'tabular_expiration' AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
             WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
