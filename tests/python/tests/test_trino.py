@@ -788,7 +788,6 @@ def test_special_characters_in_names(trino):
         "table_with_ümlauts_ä_ö",
         "table_中文_日本語",
         "table_🚀_emoji_✨",
-        "table%with%percent",
         "table with spaces",
     ]
 

@@ -68,9 +68,9 @@ pub struct GcsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sts_enabled: bool,
-    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.
+    /// Storage layout for namespace and table paths.
     #[serde(default)]
-    pub layout: Option<StorageLayout>,
+    pub storage_layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -584,7 +584,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
-                layout: None,
+                storage_layout: None,
             };
             (profile, cred)
         }
@@ -655,7 +655,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
-                layout: None,
+                storage_layout: None,
             };
             (profile, cred)
         }
@@ -693,7 +693,7 @@ mod is_overlapping_location_tests {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
             sts_enabled: true,
-            layout: None,
+            storage_layout: None,
         }
     }
 

@@ -88,10 +88,10 @@ enum StorageProfileBorrowed<'a> {
 pub struct MemoryProfile {
     /// Base location for the local profile
     base_location: String,
-    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.
+    /// Storage layout for namespace and table paths.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
-    pub layout: Option<StorageLayout>,
+    pub storage_layout: Option<StorageLayout>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Copy, strum_macros::Display)]
@@ -911,11 +911,11 @@ impl StorageProfile {
     #[must_use]
     pub fn layout(&self) -> Option<&StorageLayout> {
         match self {
-            StorageProfile::S3(profile) => profile.layout.as_ref(),
-            StorageProfile::Adls(profile) => profile.layout.as_ref(),
-            StorageProfile::Gcs(profile) => profile.layout.as_ref(),
+            StorageProfile::S3(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::Adls(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::Gcs(profile) => profile.storage_layout.as_ref(),
             #[cfg(feature = "test-utils")]
-            StorageProfile::Memory(profile) => profile.layout.as_ref(),
+            StorageProfile::Memory(profile) => profile.storage_layout.as_ref(),
         }
     }
 }
@@ -929,7 +929,7 @@ impl Default for MemoryProfile {
             )
             .expect("Failed to create temporary directory location")
             .to_string(),
-            layout: None,
+            storage_layout: None,
         }
     }
 }
@@ -1310,7 +1310,7 @@ mod tests {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
             sas_enabled: true,
-            layout: None,
+            storage_layout: None,
         });
 
         let cases = vec![
@@ -1377,7 +1377,7 @@ mod tests {
                 bucket,
                 key_prefix: key_prefix.clone(),
                 sts_enabled: true,
-                layout: None,
+                storage_layout: None,
             }
             .into();
 

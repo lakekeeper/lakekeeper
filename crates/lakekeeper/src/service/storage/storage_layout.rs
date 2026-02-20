@@ -45,28 +45,60 @@ pub static DEFAULT_TABLE_TEMPLATE: LazyLock<StorageLayoutTableTemplate> =
 pub static DEFAULT_NAMESPACE_TEMPLATE: LazyLock<StorageLayoutNamespaceTemplate> =
     LazyLock::new(StorageLayoutNamespaceTemplate::default);
 
+/// One directory per direct-parent namespace, one per table.
+///
+/// For a table `my_table` (uuid `…002`) in namespace `my_ns` (uuid `…001`) the path is:
+/// `<base>/<namespace-segment>/<table-segment>`.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(
+    example = json!({"namespace": "{uuid}", "table": "{uuid}"})
+))]
 pub struct StorageLayoutParentNamespaceAndTable {
     pub namespace: StorageLayoutNamespaceTemplate,
     pub table: StorageLayoutTableTemplate,
 }
 
+/// One directory per namespace level, one per table.
+///
+/// For a table `my_table` (uuid `…003`) in `grandparent_ns` / `parent_ns` the path is:
+/// `<base>/<grandparent-segment>/<parent-segment>/<table-segment>`.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(
+    example = json!({"namespace": "{name}-{uuid}", "table": "{name}-{uuid}"})
+))]
 pub struct StorageLayoutFullHierarchy {
     pub namespace: StorageLayoutNamespaceTemplate,
     pub table: StorageLayoutTableTemplate,
 }
 
+/// No namespace directories; all tables are placed directly under the base location.
+///
+/// For a table `my_table` (uuid `…002`) the path is: `<base>/<table-segment>`.
+/// The table template must contain `{uuid}` to avoid collisions between tables with the same name.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(
+    example = json!({"table": "{name}-{uuid}"})
+))]
 pub struct StorageLayoutFlat {
     pub table: StorageLayoutTableTemplate,
 }
 
+/// Controls how namespace and table paths are constructed under the warehouse base location.
+///
+/// - `default` / omitted: same as `parent-namespace-and-table` with `"{uuid}"` segments.
+/// - `parent-namespace-and-table`: one directory per direct-parent namespace, one per table.
+/// - `full-hierarchy`: one directory per namespace level, one per table.
+/// - `table-only`: no namespace directories; all tables are placed directly under the base location.
+///
+/// Segment templates may use `{uuid}` and `{name}` as placeholders.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(
+    example = json!({"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"})
+))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum StorageLayout {
     #[default]

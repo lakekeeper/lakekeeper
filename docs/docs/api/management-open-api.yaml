@@ -3574,11 +3574,6 @@ components:
             - string
             - 'null'
           description: Subpath in the filesystem to use.
-        layout:
-          oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/StorageLayout'
-              description: 'The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.'
         sas-enabled:
           type: boolean
           description: |-
@@ -3592,6 +3587,11 @@ components:
           format: int64
           description: 'The validity of the sas token in seconds. Default: 3600.'
           minimum: 0
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and table paths.
     AzCredential:
       oneOf:
         - type: object
@@ -4338,11 +4338,11 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
-        layout:
+        storage-layout:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/StorageLayout'
-              description: 'The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.'
+              description: Storage layout for namespace and table paths.
         sts-enabled:
           type: boolean
           description: |-
@@ -6443,11 +6443,6 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
-        layout:
-          oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/StorageLayout'
-              description: 'The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.'
         legacy-md5-behavior:
           type:
             - boolean
@@ -6508,6 +6503,11 @@ components:
             Path style:
               - <https://s3.endpoint.com/bucket/bar/a/key>
               - <https://s3.us-east-1.amazonaws.com/bucket/file>
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and table paths.
         sts-enabled:
           type: boolean
         sts-role-arn:
@@ -6977,15 +6977,40 @@ components:
                   type: string
                   enum:
                     - full-hierarchy
+      description: |-
+        Controls how namespace and table paths are constructed under the warehouse base location.
+
+        - `default` / omitted: same as `parent-namespace-and-table` with `"{uuid}"` segments.
+        - `parent-namespace-and-table`: one directory per direct-parent namespace, one per table.
+        - `full-hierarchy`: one directory per namespace level, one per table.
+        - `table-only`: no namespace directories; all tables are placed directly under the base location.
+
+        Segment templates may use `{uuid}` and `{name}` as placeholders.
+      example:
+        type: full-hierarchy
+        namespace: '{name}-{uuid}'
+        table: '{name}-{uuid}'
     StorageLayoutFlat:
       type: object
+      description: |-
+        No namespace directories; all tables are placed directly under the base location.
+
+        For a table `my_table` (uuid `…002`) the path is: `<base>/<table-segment>`.
+        The table template must contain `{uuid}` to avoid collisions between tables with the same name.
       required:
         - table
       properties:
         table:
           $ref: '#/components/schemas/StorageLayoutTableTemplate'
+      example:
+        table: '{name}-{uuid}'
     StorageLayoutFullHierarchy:
       type: object
+      description: |-
+        One directory per namespace level, one per table.
+
+        For a table `my_table` (uuid `…003`) in `grandparent_ns` / `parent_ns` the path is:
+        `<base>/<grandparent-segment>/<parent-segment>/<table-segment>`.
       required:
         - namespace
         - table
@@ -6994,12 +7019,20 @@ components:
           $ref: '#/components/schemas/StorageLayoutNamespaceTemplate'
         table:
           $ref: '#/components/schemas/StorageLayoutTableTemplate'
+      example:
+        namespace: '{name}-{uuid}'
+        table: '{name}-{uuid}'
     StorageLayoutNamespaceTemplate:
       type: string
       description: 'Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: "{name}-{uuid}" renders to "my-namespace-550e8400-e29b-41d4-a716-446655440001".'
       example: '{uuid}'
     StorageLayoutParentNamespaceAndTable:
       type: object
+      description: |-
+        One directory per direct-parent namespace, one per table.
+
+        For a table `my_table` (uuid `…002`) in namespace `my_ns` (uuid `…001`) the path is:
+        `<base>/<namespace-segment>/<table-segment>`.
       required:
         - namespace
         - table
@@ -7008,6 +7041,9 @@ components:
           $ref: '#/components/schemas/StorageLayoutNamespaceTemplate'
         table:
           $ref: '#/components/schemas/StorageLayoutTableTemplate'
+      example:
+        namespace: '{uuid}'
+        table: '{uuid}'
     StorageLayoutTableTemplate:
       type: string
       description: 'Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: "{name}-{uuid}" renders to "my-table-550e8400-e29b-41d4-a716-446655440002".'

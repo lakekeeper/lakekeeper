@@ -164,10 +164,10 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub legacy_md5_behavior: Option<bool>,
-    /// The layout to use for namespaces and tables stored in this storage profile. If not set, the default layout is `parent-namespace-and-table` with `"{uuid}"` for namespace and table segments. Example: `{"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"}`.
+    /// Storage layout for namespace and table paths.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
-    pub layout: Option<StorageLayout>,
+    pub storage_layout: Option<StorageLayout>,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1407,7 +1407,7 @@ pub(crate) mod test {
             push_s3_delete_disabled: false,
             aws_kms_key_arn: None,
             legacy_md5_behavior: Some(false),
-            layout: None,
+            storage_layout: None,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -1463,7 +1463,7 @@ pub(crate) mod test {
             push_s3_delete_disabled: false,
             aws_kms_key_arn: None,
             legacy_md5_behavior: Some(false),
-            layout: None,
+            storage_layout: None,
         };
         let profile = StorageProfile::from(profile);
 
@@ -1528,7 +1528,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
-                layout: None,
+                storage_layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1590,7 +1590,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
-                layout: None,
+                storage_layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1688,7 +1688,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: Some(std::env::var("AWS_S3_KMS_ARN").unwrap()),
                 legacy_md5_behavior: Some(false),
-                layout: None,
+                storage_layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1754,7 +1754,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
-                layout: None,
+                storage_layout: None,
             };
             let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),
@@ -1840,7 +1840,7 @@ mod is_overlapping_location_tests {
             push_s3_delete_disabled: true,
             aws_kms_key_arn: None,
             legacy_md5_behavior: Some(false),
-            layout: None,
+            storage_layout: None,
         }
     }
 
