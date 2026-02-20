@@ -1,25 +1,28 @@
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    DeleteBatchError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
-    ReadError, WriteError, error::ErrorKind,
+    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
+    Location, ReadError, WriteError, error::ErrorKind,
 };
+
+type MemoryFile = (Bytes, DateTime<Utc>);
 
 /// In-memory storage implementation for testing and development purposes.
 /// All data is stored in memory and persists across instances within the same thread.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
-    data: Arc<RwLock<HashMap<String, Bytes>>>,
+    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
     use_global_store: bool,
 }
 
 thread_local! {
     #[allow(clippy::type_complexity)]
-    static GLOBAL_MEMORY_STORE: RefCell<Option<Arc<RwLock<HashMap<String, Bytes>>>>> = const { RefCell::new(None) };
+    static GLOBAL_MEMORY_STORE: RefCell<Option<Arc<RwLock<HashMap<String, (Bytes, DateTime<Utc>)>>>>> = const { RefCell::new(None) };
 }
 
 impl Default for MemoryStorage {
@@ -83,6 +86,20 @@ impl MemoryStorage {
     /// This creates an isolated instance not connected to the global store.
     #[must_use]
     pub fn with_data(data: HashMap<String, Bytes>) -> Self {
+        let data = data
+            .into_iter()
+            .map(|(k, v)| (k, (v, Utc::now())))
+            .collect::<HashMap<_, _>>();
+        MemoryStorage {
+            data: Arc::new(RwLock::new(data)),
+            use_global_store: false,
+        }
+    }
+
+    /// Create a new memory storage instance with pre-populated data and custom timestamps.
+    /// This creates an isolated instance not connected to the global store.
+    #[must_use]
+    pub fn with_timed_data(data: HashMap<String, (Bytes, DateTime<Utc>)>) -> Self {
         MemoryStorage {
             data: Arc::new(RwLock::new(data)),
             use_global_store: false,
@@ -169,7 +186,7 @@ impl LakekeeperStorage for MemoryStorage {
         let key = normalize_memory_path(path_str)?;
 
         let mut data = self.data.write().await;
-        data.insert(key, bytes);
+        data.insert(key, (bytes, Utc::now()));
         Ok(())
     }
 
@@ -179,7 +196,7 @@ impl LakekeeperStorage for MemoryStorage {
 
         let data = self.data.read().await;
         match data.get(&key) {
-            Some(bytes) => Ok(bytes.clone()),
+            Some((bytes, _)) => Ok(bytes.clone()),
             None => Err(ReadError::IOError(IOError::new(
                 ErrorKind::NotFound,
                 "Object not found in memory storage",
@@ -196,7 +213,7 @@ impl LakekeeperStorage for MemoryStorage {
         &self,
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
-    ) -> Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError> {
+    ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
         let path_str = path.as_ref();
         let prefix = if path_str.ends_with('/') {
             normalize_memory_path(path_str)?
@@ -205,22 +222,28 @@ impl LakekeeperStorage for MemoryStorage {
         };
 
         let data = self.data.read().await;
-        let mut matching_keys: Vec<String> = data
-            .keys()
-            .filter(|key| key.starts_with(&prefix))
-            .cloned()
+        let mut matching_files: Vec<(String, DateTime<Utc>)> = data
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, (_, last_modified))| (key.clone(), *last_modified))
             .collect();
 
         // Sort for consistent ordering
-        matching_keys.sort();
+        matching_files.sort();
 
         let page_size = page_size.unwrap_or(1000);
 
-        let mut all_locations = Vec::new();
-        for key in matching_keys {
+        let mut all_file_infos = Vec::new();
+        for (key, last_modified) in matching_files {
             let location_str = format!("{MEMORY_PREFIX}{key}");
             match location_str.parse::<Location>() {
-                Ok(location) => all_locations.push(location),
+                Ok(location) => {
+                    let file_info = FileInfo {
+                        last_modified: Some(last_modified),
+                        location,
+                    };
+                    all_file_infos.push(file_info);
+                }
                 Err(e) => {
                     let error = IOError::new(
                         ErrorKind::Unexpected,
@@ -234,10 +257,10 @@ impl LakekeeperStorage for MemoryStorage {
             }
         }
 
-        // Convert to Vec<Vec<Location>> by chunking, then create an iterator over those chunks
-        let chunks: Vec<Vec<Location>> = all_locations
+        // Convert to Vec<Vec<FileInfo>> by chunking, then create an iterator over those chunks
+        let chunks: Vec<Vec<FileInfo>> = all_file_infos
             .chunks(page_size)
-            .map(<[Location]>::to_vec)
+            .map(<[FileInfo]>::to_vec)
             .collect();
 
         // Create a stream that returns pages of locations
@@ -363,18 +386,18 @@ mod tests {
         let list_path = "memory://data/subdir";
         let mut stream = storage.list(list_path, None).await.unwrap();
 
-        let mut all_locations = Vec::new();
+        let mut all_file_infos = Vec::new();
         while let Some(result) = stream.next().await {
-            let locations = result.unwrap();
-            all_locations.extend(locations);
+            let file_infos = result.unwrap();
+            all_file_infos.extend(file_infos);
         }
 
-        assert_eq!(all_locations.len(), 2);
+        assert_eq!(all_file_infos.len(), 2);
 
         // Verify the locations match our test files
-        let location_strings: Vec<String> = all_locations
+        let location_strings: Vec<String> = all_file_infos
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(|file_info| file_info.location().to_string())
             .collect();
 
         assert!(location_strings.contains(&"memory://data/subdir/file1.txt".to_string()));

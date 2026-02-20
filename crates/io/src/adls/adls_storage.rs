@@ -8,15 +8,16 @@ use std::{
 use azure_core::prelude::Range;
 use azure_storage::CloudLocation;
 use azure_storage_datalake::prelude::{
-    DataLakeClient, DirectoryClient, FileClient, FileSystemClient,
+    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, Path,
 };
 use bytes::Bytes;
+use chrono::DateTime;
 use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    DeleteBatchError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
-    ReadError, WriteError,
+    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
+    Location, ReadError, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
     calculate_ranges, delete_not_found_is_ok,
     error::ErrorKind,
@@ -382,7 +383,7 @@ impl LakekeeperStorage for AdlsStorage {
         &self,
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
-    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>
+    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
         let path = format!("{}/", path.as_ref().trim_end_matches('/'));
         let adls_location = AdlsLocation::try_from_str(&path, true)
@@ -417,21 +418,7 @@ impl LakekeeperStorage for AdlsStorage {
             result.map(|page| {
                 page.paths
                     .iter()
-                    .filter_map(|path| {
-                        // Create a location from account, filesystem and blob name
-                        let path_name = if path.is_directory {
-                            format!("{}/", path.name.trim_end_matches('/'))
-                        } else {
-                            path.name.clone()
-                        };
-                        let full_path = format!(
-                            "{}://{}/{}",
-                            base_location.scheme(),
-                            base_location.authority_with_host(),
-                            path_name
-                        );
-                        Location::from_str(&full_path).ok()
-                    })
+                    .filter_map(try_parse_file_info(&base_location))
                     .collect::<Vec<_>>()
             })
         });
@@ -456,6 +443,30 @@ impl LakekeeperStorage for AdlsStorage {
         }
 
         Ok(())
+    }
+}
+
+fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<FileInfo> {
+    |path| {
+        // Create a location from account, filesystem and blob name
+        let path_name = if path.is_directory {
+            format!("{}/", path.name.trim_end_matches('/'))
+        } else {
+            path.name.clone()
+        };
+        let full_path = format!(
+            "{}://{}/{}",
+            base_location.scheme(),
+            base_location.authority_with_host(),
+            path_name
+        );
+        let location = Location::from_str(&full_path).ok()?;
+        let last_modified = path.last_modified;
+        let last_modified = DateTime::from_timestamp(last_modified.unix_timestamp(), 0);
+        Some(FileInfo {
+            last_modified,
+            location,
+        })
     }
 }
 
