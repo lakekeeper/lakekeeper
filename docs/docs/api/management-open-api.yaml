@@ -7024,7 +7024,7 @@ components:
         table: '{name}-{uuid}'
     StorageLayoutNamespaceTemplate:
       type: string
-      description: 'Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: "{name}-{uuid}" renders to "my-namespace-550e8400-e29b-41d4-a716-446655440001".'
+      description: 'Template string for namespace path segments. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. The {name} value is percent-encoded (URL percent-encoding) so spaces and special characters are escaped (e.g. "my name" becomes "my%20name"). The {uuid} value is inserted as-is without encoding. Example: "{name}-{uuid}" for a namespace named "my ns" renders to "my%20ns-550e8400-e29b-41d4-a716-446655440001".'
       example: '{uuid}'
     StorageLayoutParentNamespaceAndTable:
       type: object
@@ -7046,7 +7046,7 @@ components:
         table: '{uuid}'
     StorageLayoutTableTemplate:
       type: string
-      description: 'Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: "{name}-{uuid}" renders to "my-table-550e8400-e29b-41d4-a716-446655440002".'
+      description: 'Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. The {name} value is percent-encoded (URL percent-encoding) so spaces and special characters are escaped (e.g. "my table" becomes "my%20table"). The {uuid} value is inserted as-is without encoding. Example: "{name}-{uuid}" for a table named "my table" renders to "my%20table-550e8400-e29b-41d4-a716-446655440002".'
       example: '{uuid}'
     StorageProfile:
       oneOf:

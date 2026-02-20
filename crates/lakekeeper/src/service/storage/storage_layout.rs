@@ -144,6 +144,7 @@ impl StorageLayout {
         StorageLayoutFlat::try_new(table_template).map(Self::Flat)
     }
 
+    #[must_use]
     pub fn new_parent(namespace_template: String, table_template: String) -> Self {
         Self::Parent(StorageLayoutParentNamespaceAndTable {
             namespace: StorageLayoutNamespaceTemplate(namespace_template),
@@ -151,6 +152,7 @@ impl StorageLayout {
         })
     }
 
+    #[must_use]
     pub fn new_full(namespace_template: String, table_template: String) -> Self {
         Self::Full(StorageLayoutFullHierarchy {
             namespace: StorageLayoutNamespaceTemplate(namespace_template),
