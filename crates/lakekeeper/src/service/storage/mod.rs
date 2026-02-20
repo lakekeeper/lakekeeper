@@ -5,6 +5,7 @@ mod cache;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
+pub mod storage_layout;
 
 use std::{collections::HashMap, str::FromStr as _};
 
@@ -21,6 +22,7 @@ use lakekeeper_io::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
 use crate::{
@@ -34,7 +36,13 @@ use crate::{
     server::{compression_codec::CompressionCodec, io::list_location},
     service::{
         BasicTabularInfo, NamespaceVersion, TabularId, TabularInfo, WarehouseVersion,
-        storage::error::{IcebergFileIoError, UnexpectedStorageType},
+        storage::{
+            error::{IcebergFileIoError, UnexpectedStorageType},
+            storage_layout::{
+                DEFAULT_LAYOUT, NamespaceNameContext, NamespacePath, StorageLayout,
+                TableNameContext,
+            },
+        },
     },
 };
 
@@ -80,6 +88,10 @@ enum StorageProfileBorrowed<'a> {
 pub struct MemoryProfile {
     /// Base location for the local profile
     base_location: String,
+    /// Storage layout for namespace and table paths.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub storage_layout: Option<StorageLayout>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Copy, strum_macros::Display)]
@@ -232,12 +244,14 @@ impl StorageProfile {
     /// Fails if the `key_prefix` is not valid for S3 URLs.
     pub fn default_namespace_location(
         &self,
-        namespace_id: NamespaceId,
+        namespace_path: &NamespacePath,
     ) -> Result<Location, ValidationError> {
         let mut base_location: Location = self.base_location()?;
-        base_location
-            .without_trailing_slash()
-            .push(&namespace_id.to_string());
+        base_location.without_trailing_slash();
+        let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
+
+        let segments = layout.render_namespace_path(namespace_path);
+        base_location.extend(segments);
         Ok(base_location)
     }
 
@@ -338,8 +352,16 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         // ------------- Common validations -------------
         // Test if we can generate a default namespace location
-        let ns_location = self.default_namespace_location(NamespaceId::new_random())?;
-        self.default_tabular_location(&ns_location, TableId::new_random().into());
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        }]);
+        let ns_location = self.default_namespace_location(&namespace_path)?;
+        let tabular_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let _ = self.default_tabular_location(&ns_location, &tabular_name_context);
 
         // ------------- Profile specific validations -------------
         match self {
@@ -376,11 +398,17 @@ impl StorageProfile {
 
         let io = self.file_io(credential).await?;
 
-        let ns_id = NamespaceId::new_random();
-        let table_id = TableId::new_random();
-        let ns_location = self.default_namespace_location(ns_id)?;
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        }]);
+        let tabular_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let ns_location = self.default_namespace_location(&namespace_path)?;
         let test_location = location.map_or_else(
-            || self.default_tabular_location(&ns_location, table_id.into()),
+            || self.default_tabular_location(&ns_location, &tabular_name_context),
             std::borrow::ToOwned::to_owned,
         );
         tracing::debug!("Validating direct read/write access to {test_location}");
@@ -844,23 +872,10 @@ impl StorageProfile {
         }
         Ok(())
     }
-}
-
-pub trait StorageLocations {
-    /// Get the default tabular location for the storage profile.
-    fn default_tabular_location(
-        &self,
-        namespace_location: &Location,
-        table_id: TabularId,
-    ) -> Location {
-        let mut l = namespace_location.clone();
-        l.without_trailing_slash().push(&table_id.to_string());
-        l
-    }
 
     #[must_use]
     /// Get the default metadata location for the storage profile.
-    fn default_metadata_location(
+    pub fn default_metadata_location(
         &self,
         table_location: &Location,
         compression_codec: &CompressionCodec,
@@ -876,11 +891,34 @@ pub trait StorageLocations {
         l.without_trailing_slash().extend(&["metadata", &filename]);
         l
     }
-}
 
-impl StorageLocations for StorageProfile {}
-impl StorageLocations for S3Profile {}
-impl StorageLocations for AdlsProfile {}
+    /// Get the default tabular location for the storage profile.
+    #[must_use]
+    pub fn default_tabular_location(
+        &self,
+        namespace_location: &Location,
+        table_name_context: &TableNameContext,
+    ) -> Location {
+        let mut location = namespace_location.clone();
+
+        let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
+
+        let segment = layout.render_table_segment(table_name_context);
+        location.without_trailing_slash().push(&segment);
+        location
+    }
+
+    #[must_use]
+    pub fn layout(&self) -> Option<&StorageLayout> {
+        match self {
+            StorageProfile::S3(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::Adls(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::Gcs(profile) => profile.storage_layout.as_ref(),
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(profile) => profile.storage_layout.as_ref(),
+        }
+    }
+}
 
 #[cfg(feature = "test-utils")]
 impl Default for MemoryProfile {
@@ -891,6 +929,7 @@ impl Default for MemoryProfile {
             )
             .expect("Failed to create temporary directory location")
             .to_string(),
+            storage_layout: None,
         }
     }
 }
@@ -1068,7 +1107,13 @@ mod tests {
     };
     use crate::{
         server::io::{delete_file, read_metadata_file, write_file},
-        service::{TableInfo, storage::s3::S3AccessKeyCredential},
+        service::{
+            TableInfo,
+            storage::{
+                s3::S3AccessKeyCredential,
+                storage_layout::{NamespaceNameContext, TableNameContext},
+            },
+        },
     };
 
     #[test]
@@ -1101,20 +1146,33 @@ mod tests {
                 .build(),
         );
 
-        let target_location = "s3://my-bucket/subfolder/00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002";
+        let ns_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000001");
+        let table_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000002");
+        let table_name = "test-table";
 
-        let namespace_id: NamespaceId = uuid::uuid!("00000000-0000-0000-0000-000000000001").into();
-        let namespace_location = profile.default_namespace_location(namespace_id).unwrap();
-        let table_id = TabularId::View(uuid::uuid!("00000000-0000-0000-0000-000000000002").into());
-        let table_location = profile.default_tabular_location(&namespace_location, table_id);
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "ns".to_string(),
+            uuid: ns_uuid,
+        }]);
+
+        let table_name_context = TableNameContext {
+            name: table_name.to_string(),
+            uuid: table_uuid,
+        };
+
+        let target_location = format!("s3://my-bucket/subfolder/{ns_uuid}/{table_uuid}");
+
+        let namespace_location = profile.default_namespace_location(&namespace_path).unwrap();
+        let table_location =
+            profile.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(table_location.to_string(), target_location);
 
         let mut namespace_location_without_slash = namespace_location.clone();
         namespace_location_without_slash.without_trailing_slash();
-        let table_location =
-            profile.default_tabular_location(&namespace_location_without_slash, table_id);
+        let table_location_trailing = profile
+            .default_tabular_location(&namespace_location_without_slash, &table_name_context);
         assert!(!namespace_location_without_slash.to_string().ends_with('/'));
-        assert_eq!(table_location.to_string(), target_location);
+        assert_eq!(table_location_trailing.to_string(), target_location);
     }
 
     #[test]
@@ -1252,6 +1310,7 @@ mod tests {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
             sas_enabled: true,
+            storage_layout: None,
         });
 
         let cases = vec![
@@ -1318,6 +1377,7 @@ mod tests {
                 bucket,
                 key_prefix: key_prefix.clone(),
                 sts_enabled: true,
+                storage_layout: None,
             }
             .into();
 

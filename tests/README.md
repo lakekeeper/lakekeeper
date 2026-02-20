@@ -14,12 +14,14 @@ export LAKEKEEPER_TEST__SERVER_IMAGE=localhost/lakekeeper-local:latest
 cd tests
 # Regular tests
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
-# S3
-docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_sts-1.8.0"
+# S3 (STS)
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_sts-1.10.0"
+# S3 (Remote Signing)
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_remote_signing-1.10.0"
 # S3a (alternative protocol)
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_s3a-1.7.1"
 # ADLS 
-docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_adls-1.9.2"
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_adls-1.10.0"
 # WASBS (alternative protocol)
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_wasbs-1.10.0"
 # Pyiceberg
