@@ -2,6 +2,7 @@ use std::{borrow::Cow, slice::Iter, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
 use strum::Display;
+use urlencoding;
 use uuid::Uuid;
 
 #[derive(Debug, Display, thiserror::Error)]
@@ -15,6 +16,11 @@ pub trait PathSegmentContext {
     fn get_uuid(&self) -> Uuid;
 }
 
+// Helper function for encoding path segments
+fn encode_path_segment(value: &str) -> Cow<'_, str> {
+    urlencoding::encode(value)
+}
+
 pub trait TemplatedPathSegmentRenderer {
     type Context: PathSegmentContext;
 
@@ -24,6 +30,7 @@ pub trait TemplatedPathSegmentRenderer {
         let template = self.template();
         let uuid = context.get_uuid();
         let name = context.get_name();
+        let name = encode_path_segment(&name);
         template
             .replace("{uuid}", &uuid.to_string())
             .replace("{name}", &name)
@@ -605,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_deserizalization_of_full_layout() {
+    fn test_storage_layout_deserialization_of_full_layout() {
         let json = r#"
         {
             "type": "full-hierarchy",
@@ -656,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_deserizalization_of_parent_layout() {
+    fn test_storage_layout_deserialization_of_parent_layout() {
         let json = r#"
         {
             "type": "parent-namespace-and-table",
@@ -704,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_deserizalization_of_flat_layout() {
+    fn test_storage_layout_deserialization_of_flat_layout() {
         let json = r#"
         {
             "type": "table-only",
@@ -747,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_deserizalization_of_default_layout() {
+    fn test_storage_layout_deserialization_of_default_layout() {
         let json = r#"
         {
             "type": "default"
@@ -787,5 +794,93 @@ mod tests {
 
         let table_name_rendered = layout.render_table_segment(&table);
         assert_eq!(table_name_rendered, format!("{}", table.uuid));
+    }
+
+    #[test]
+    fn test_storage_layout_should_handle_special_characters_in_namespace_name() {
+        let special_namespace_names = vec![
+            "namespace with spaces",
+            "namespace-with-hyphens",
+            "namespace_with_underscores",
+            "namespace!with@special#chars$",
+            "naméspace_with_àccents_ñ",
+            "namespace_with_ümlauts_ä_ö",
+            "namespace_中文_日本語",
+            "namespace_עברית_العربية",
+            "namespace_🚀_emoji_✨",
+            "namespace-Mix!_OF_everything_中文_ä_🎉",
+            "namespace%with%percent",
+            "namespace&with&ampersands",
+            "namespace=with=equals",
+        ];
+        let expected_namespace_names = vec![
+            "namespace%20with%20spaces",
+            "namespace-with-hyphens",
+            "namespace_with_underscores",
+            "namespace%21with%40special%23chars%24",
+            "nam%C3%A9space_with_%C3%A0ccents_%C3%B1",
+            "namespace_with_%C3%BCmlauts_%C3%A4_%C3%B6",
+            "namespace_%E4%B8%AD%E6%96%87_%E6%97%A5%E6%9C%AC%E8%AA%9E",
+            "namespace_%D7%A2%D7%91%D7%A8%D7%99%D7%AA_%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9",
+            "namespace_%F0%9F%9A%80_emoji_%E2%9C%A8",
+            "namespace-Mix%21_OF_everything_%E4%B8%AD%E6%96%87_%C3%A4_%F0%9F%8E%89",
+            "namespace%25with%25percent",
+            "namespace%26with%26ampersands",
+            "namespace%3Dwith%3Dequals",
+        ];
+        let namespace_template = StorageLayoutNamespaceTemplate("{name}".to_string());
+        let special_namespaces = special_namespace_names
+            .iter()
+            .map(|special_namespace_name| NamespaceNameContext {
+                name: (*special_namespace_name).to_string(),
+                uuid: Uuid::now_v7(),
+            })
+            .map(|context| namespace_template.render(&context))
+            .collect::<Vec<_>>();
+        assert_eq!(special_namespaces, expected_namespace_names);
+    }
+
+    #[test]
+    fn test_storage_layout_should_handle_special_characters_in_table_name() {
+        let special_table_names = vec![
+            "table with spaces",
+            "table-with-hyphens",
+            "table_with_underscores",
+            "table!with@special#chars$",
+            "tablé_with_àccents_ñ",
+            "table_with_ümlauts_ä_ö",
+            "table_中文_日本語",
+            "table_עברית_العربية",
+            "table_🚀_emoji_✨",
+            "table-Mix!_OF_everything_中文_ä_🎉",
+            "table%with%percent",
+            "table&with&ampersands",
+            "table=with=equals",
+        ];
+        let expected_table_names = vec![
+            "table%20with%20spaces",
+            "table-with-hyphens",
+            "table_with_underscores",
+            "table%21with%40special%23chars%24",
+            "tabl%C3%A9_with_%C3%A0ccents_%C3%B1",
+            "table_with_%C3%BCmlauts_%C3%A4_%C3%B6",
+            "table_%E4%B8%AD%E6%96%87_%E6%97%A5%E6%9C%AC%E8%AA%9E",
+            "table_%D7%A2%D7%91%D7%A8%D7%99%D7%AA_%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9",
+            "table_%F0%9F%9A%80_emoji_%E2%9C%A8",
+            "table-Mix%21_OF_everything_%E4%B8%AD%E6%96%87_%C3%A4_%F0%9F%8E%89",
+            "table%25with%25percent",
+            "table%26with%26ampersands",
+            "table%3Dwith%3Dequals",
+        ];
+        let table_template = StorageLayoutTableTemplate("{name}".to_string());
+        let special_tables = special_table_names
+            .iter()
+            .map(|special_table_name| TableNameContext {
+                name: (*special_table_name).to_string(),
+                uuid: Uuid::now_v7(),
+            })
+            .map(|context| table_template.render(&context))
+            .collect::<Vec<_>>();
+        assert_eq!(special_tables, expected_table_names);
     }
 }

@@ -327,7 +327,8 @@ async fn sign(
         }
     }
 
-    let encoded_uri = urldecode_uri_path_segments(request_url)?;
+    // let encoded_uri = urldecode_uri_path_segments(request_url)?;
+    let encoded_uri = request_url;
     let signable_request = SignableRequest::new(
         request_method.as_str(),
         encoded_uri.to_string(),
