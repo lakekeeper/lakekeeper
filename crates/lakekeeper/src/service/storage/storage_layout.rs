@@ -77,13 +77,41 @@ pub struct StorageLayoutFullHierarchy {
 ///
 /// For a table `my_table` (uuid `…002`) the path is: `<base>/<table-segment>`.
 /// The table template must contain `{uuid}` to avoid collisions between tables with the same name.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(
     example = json!({"table": "{name}-{uuid}"})
 ))]
 pub struct StorageLayoutFlat {
     pub table: StorageLayoutTableTemplate,
+}
+
+impl StorageLayoutFlat {
+    pub fn try_new(table_template: String) -> Result<Self, StorageLayoutError> {
+        if !table_template.contains("{uuid}") {
+            return Err(StorageLayoutError::InvalidTemplate(format!(
+                "For the 'Flat' layout, the table template '{table_template}' must contain the {{uuid}} placeholder to prevent path collisions."
+            )));
+        }
+        Ok(Self {
+            table: StorageLayoutTableTemplate(table_template),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for StorageLayoutFlat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StorageLayoutFlatHelper {
+            table: StorageLayoutTableTemplate,
+        }
+
+        let helper = StorageLayoutFlatHelper::deserialize(deserializer)?;
+        StorageLayoutFlat::try_new(helper.table.0).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Controls how namespace and table paths are constructed under the warehouse base location.
@@ -94,7 +122,7 @@ pub struct StorageLayoutFlat {
 /// - `table-only`: no namespace directories; all tables are placed directly under the base location.
 ///
 /// Segment templates may use `{uuid}` and `{name}` as placeholders.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, Default, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(
     example = json!({"type": "full-hierarchy", "namespace": "{name}-{uuid}", "table": "{name}-{uuid}"})
@@ -113,34 +141,21 @@ pub enum StorageLayout {
 
 impl StorageLayout {
     pub fn try_new_flat(table_template: String) -> Result<Self, StorageLayoutError> {
-        if !table_template.contains("{uuid}") {
-            return Err(StorageLayoutError::InvalidTemplate(format!(
-                "For the 'Flat' layout, the table template '{table_template}' must contain the {{uuid}} placeholder to prevent path collisions."
-            )));
-        }
-        Ok(Self::Flat(StorageLayoutFlat {
-            table: StorageLayoutTableTemplate(table_template),
-        }))
+        StorageLayoutFlat::try_new(table_template).map(Self::Flat)
     }
 
-    pub fn try_new_parent(
-        namespace_template: String,
-        table_template: String,
-    ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Parent(StorageLayoutParentNamespaceAndTable {
+    pub fn new_parent(namespace_template: String, table_template: String) -> Self {
+        Self::Parent(StorageLayoutParentNamespaceAndTable {
             namespace: StorageLayoutNamespaceTemplate(namespace_template),
             table: StorageLayoutTableTemplate(table_template),
-        }))
+        })
     }
 
-    pub fn try_new_full(
-        namespace_template: String,
-        table_template: String,
-    ) -> Result<Self, StorageLayoutError> {
-        Ok(Self::Full(StorageLayoutFullHierarchy {
+    pub fn new_full(namespace_template: String, table_template: String) -> Self {
+        Self::Full(StorageLayoutFullHierarchy {
             namespace: StorageLayoutNamespaceTemplate(namespace_template),
             table: StorageLayoutTableTemplate(table_template),
-        }))
+        })
     }
 
     #[must_use]
@@ -235,7 +250,7 @@ impl PathSegmentContext for NamespaceNameContext {
 #[serde(transparent)]
 #[cfg_attr(feature = "open-api", schema(
     value_type = String,
-    description = "Template string for namespace names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-namespace-550e8400-e29b-41d4-a716-446655440001\".",
+    description = "Template string for namespace path segments. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. The {name} value is percent-encoded (URL percent-encoding) so spaces and special characters are escaped (e.g. \"my name\" becomes \"my%20name\"). The {uuid} value is inserted as-is without encoding. Example: \"{name}-{uuid}\" for a namespace named \"my ns\" renders to \"my%20ns-550e8400-e29b-41d4-a716-446655440001\".",
     example = json!("{uuid}")
 ))]
 pub struct StorageLayoutNamespaceTemplate(pub(super) String);
@@ -275,7 +290,7 @@ impl PathSegmentContext for TableNameContext {
 #[serde(transparent)]
 #[cfg_attr(feature = "open-api", schema(
     value_type = String,
-    description = "Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. Example: \"{name}-{uuid}\" renders to \"my-table-550e8400-e29b-41d4-a716-446655440002\".",
+    description = "Template string for table names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual table UUID and name respectively. The {name} value is percent-encoded (URL percent-encoding) so spaces and special characters are escaped (e.g. \"my table\" becomes \"my%20table\"). The {uuid} value is inserted as-is without encoding. Example: \"{name}-{uuid}\" for a table named \"my table\" renders to \"my%20table-550e8400-e29b-41d4-a716-446655440002\".",
     example = json!("{uuid}")
 ))]
 pub struct StorageLayoutTableTemplate(pub(super) String);
@@ -321,11 +336,10 @@ mod tests {
     fn test_storage_layout_renders_parent_namespace_layout_with_namespace_name_and_uuid_and_table_name_and_uuid()
      {
         let table_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_parent(
+        let layout = StorageLayout::new_parent(
             table_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let table_context = TableNameContext {
             name: "my_table".to_string(),
             uuid: Uuid::new_v4(),
@@ -353,11 +367,10 @@ mod tests {
     fn test_storage_layout_renders_full_layout_with_namespace_name_and_uuid_and_table_name_and_uuid()
      {
         let table_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_full(
+        let layout = StorageLayout::new_full(
             table_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let table_context = TableNameContext {
             name: "my_table".to_string(),
             uuid: Uuid::new_v4(),
@@ -408,11 +421,10 @@ mod tests {
     fn test_storage_layout_render_table_segment_in_parent_layout() {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_parent(
+        let layout = StorageLayout::new_parent(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let context = TableNameContext {
             name: "my_table".to_string(),
             uuid: Uuid::now_v7(),
@@ -428,11 +440,10 @@ mod tests {
     fn test_storage_layout_render_table_segment_in_full_layout() {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_full(
+        let layout = StorageLayout::new_full(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let context = TableNameContext {
             name: "my_table".to_string(),
             uuid: Uuid::now_v7(),
@@ -485,11 +496,10 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_parent_layout() {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_parent(
+        let layout = StorageLayout::new_parent(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let parent_namespace = NamespaceNameContext {
             name: "my_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -509,11 +519,10 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_parent_layout_should_only_render_parent() {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_parent(
+        let layout = StorageLayout::new_parent(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let grand_parent_namespace = NamespaceNameContext {
             name: "grand_parent_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -538,11 +547,10 @@ mod tests {
     {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_parent(
+        let layout = StorageLayout::new_parent(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let path = NamespacePath::new(vec![]);
 
         assert!(layout.render_namespace_path(&path).is_empty());
@@ -552,11 +560,10 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_full_layout() {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_full(
+        let layout = StorageLayout::new_full(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let parent_namespace = NamespaceNameContext {
             name: "parent_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -576,11 +583,10 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_full_layout_should_render_empty_namespace() {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_full(
+        let layout = StorageLayout::new_full(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let path = NamespacePath::new(vec![]);
 
         assert!(layout.render_namespace_path(&path).is_empty());
@@ -591,11 +597,10 @@ mod tests {
      {
         let table_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::try_new_full(
+        let layout = StorageLayout::new_full(
             namespace_name_template.to_string(),
             table_name_template.to_string(),
-        )
-        .unwrap();
+        );
         let grand_parent_namespace = NamespaceNameContext {
             name: "grand_parent_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -744,6 +749,8 @@ mod tests {
 
     #[test]
     fn test_storage_layout_deserialization_of_flat_layout() {
+        // A Flat layout without {uuid} in the table template must be rejected at
+        // deserialization time to prevent path collisions.
         let json = r#"
         {
             "type": "table-only",
@@ -751,38 +758,11 @@ mod tests {
         }
         "#;
 
-        let layout: StorageLayout =
-            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
-
-        let StorageLayout::Flat(flat_layout) = &layout else {
-            panic!("Expected flat storage layout");
-        };
-
-        assert_eq!(flat_layout.table.0, "{name}");
-
-        let grand_parent_namespace = NamespaceNameContext {
-            name: "grand_parent_namespace".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-        let parent_namespace = NamespaceNameContext {
-            name: "parent_namespace".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-        let namespace_path = NamespacePath::new(vec![
-            grand_parent_namespace.clone(),
-            parent_namespace.clone(),
-        ]);
-        let table = TableNameContext {
-            name: "my_table".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-
-        let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
-
-        assert_eq!(namespace_path_rendered, Vec::<String>::new());
-
-        let table_name_rendered = layout.render_table_segment(&table);
-        assert_eq!(table_name_rendered, format!("{}", table.name));
+        let result: Result<StorageLayout, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Expected deserialization to fail for Flat layout without {{uuid}} in table template"
+        );
     }
 
     #[test]

@@ -143,7 +143,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Fails if the `bucket`, `region` or `key_prefix` is different.
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.filesystem != other.filesystem {
             return Err(UpdateError::ImmutableField("filesystem".to_string()));
         }
@@ -158,6 +158,10 @@ impl AdlsProfile {
 
         if self.host != other.host {
             return Err(UpdateError::ImmutableField("host".to_string()));
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)

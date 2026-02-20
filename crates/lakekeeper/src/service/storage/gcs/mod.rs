@@ -230,13 +230,17 @@ impl GcsProfile {
     /// Validate the GCS profile with credentials.
     /// # Errors
     /// - Fails if the bucket or key prefix changed
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.bucket != other.bucket {
             return Err(UpdateError::ImmutableField("bucket".to_string()));
         }
 
         if self.key_prefix != other.key_prefix {
             return Err(UpdateError::ImmutableField("key_prefix".to_string()));
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)

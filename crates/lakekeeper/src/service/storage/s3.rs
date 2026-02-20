@@ -377,6 +377,10 @@ impl S3Profile {
             other.allow_alternative_protocols = Some(true);
         }
 
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
+        }
+
         Ok(other)
     }
 
