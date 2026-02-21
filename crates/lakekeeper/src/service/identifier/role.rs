@@ -277,6 +277,15 @@ impl RoleIdent {
         }
     }
 
+    /// Creates a new Lakekeeper-managed role ID with the given `RoleId` as the source ID.
+    #[must_use]
+    pub fn new_internal_with_role_id(role_id: RoleId) -> Self {
+        Self {
+            provider: RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string()),
+            source_id: RoleSourceId(role_id.to_string()),
+        }
+    }
+
     /// Generates a new Lakekeeper-managed role ID with a UUIDv7 source ID in an `Arc`.
     #[must_use]
     pub fn new_random_arc() -> Arc<Self> {

@@ -49,7 +49,7 @@ impl Role {
     #[must_use]
     pub fn new_random() -> Self {
         let id = RoleId::new_random();
-        let ident = crate::service::RoleIdent::new_random_arc();
+        let ident = Arc::new(crate::service::RoleIdent::new_internal_with_role_id(id));
         Self {
             name: format!("role-{id}"),
             id,
