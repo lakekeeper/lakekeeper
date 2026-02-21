@@ -28,7 +28,7 @@ use crate::{
         management::v1::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
             tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
@@ -66,15 +66,15 @@ use crate::{
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
         CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError,
-        ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
+        ListRolesResponse, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
         MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RoleId,
-        SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
+        RoleId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
+        SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
+        SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList,
+        Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -341,16 +341,9 @@ impl CatalogStore for super::PostgresBackend {
     async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
         role_id_filter: Option<&[RoleId]>,
-        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
-        delete_roles(
-            project_id,
-            role_id_filter,
-            source_id_filter,
-            &mut **transaction,
-        )
-        .await
+        delete_roles(project_id, role_id_filter, &mut **transaction).await
     }
 
     async fn search_role_impl(

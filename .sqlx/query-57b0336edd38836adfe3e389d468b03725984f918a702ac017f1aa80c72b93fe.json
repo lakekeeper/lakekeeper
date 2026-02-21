@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE role\n        SET source_id = $3\n        WHERE id = $1 AND project_id = $2\n        RETURNING id, name, description, project_id, source_id, created_at, updated_at\n        ",
+  "query": "\n        UPDATE role\n        SET source_id = $3, provider_id = $4\n        WHERE id = $1 AND project_id = $2\n        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -25,16 +25,21 @@
       },
       {
         "ordinal": 4,
-        "name": "source_id",
+        "name": "provider_id",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -42,6 +47,7 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Text",
         "Text",
         "Text"
       ]
@@ -51,10 +57,11 @@
       false,
       true,
       false,
-      true,
+      false,
+      false,
       false,
       true
     ]
   },
-  "hash": "18f0d8213714f504a8ff87d1275da3e65739fb99398b29e6662568e397ea2835"
+  "hash": "57b0336edd38836adfe3e389d468b03725984f918a702ac017f1aa80c72b93fe"
 }

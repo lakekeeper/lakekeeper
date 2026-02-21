@@ -14,11 +14,11 @@ use super::{
     health::HealthExt,
 };
 use crate::{
-    api::{iceberg::v1::Result, management::v1::role::Role},
+    api::iceberg::v1::Result,
     request_metadata::RequestMetadata,
     service::{
         Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
-        ResolvedWarehouse, ServerId, TableInfo,
+        ResolvedWarehouse, Role, ServerId, TableInfo,
     },
 };
 
@@ -999,10 +999,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        api::management::v1::role::Role,
-        service::{Namespace, NamespaceHierarchy, health::Health},
-    };
+    use crate::service::{Namespace, NamespaceHierarchy, health::Health};
 
     #[test]
     fn test_warehouse_action_variant_completeness() {

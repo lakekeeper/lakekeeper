@@ -23,7 +23,7 @@ use crate::{
         management::v1::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
             tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
@@ -31,7 +31,7 @@ use crate::{
         },
     },
     service::{
-        TabularId, TabularIdentBorrowed,
+        RoleProviderId, RoleSourceId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -149,8 +149,8 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub role_name: &'a str,
     #[builder(default)]
     pub description: Option<&'a str>,
-    #[builder(default)]
-    pub source_id: Option<&'a str>,
+    pub source_id: &'a RoleSourceId,
+    pub provider_id: &'a RoleProviderId,
 }
 
 #[async_trait::async_trait]
@@ -526,7 +526,6 @@ where
     async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
         role_id_filter: Option<&[RoleId]>,
-        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 

@@ -8,12 +8,12 @@ use axum::Router;
 use utoipa::OpenApi;
 
 use crate::{
-    api::{ApiContext, iceberg::v1::Result, management::v1::role::Role},
+    api::{ApiContext, iceberg::v1::Result},
     request_metadata::RequestMetadata,
     service::{
         AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
-        NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, ViewId, WarehouseId,
+        NamespaceWithParent, ProjectId, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId,
+        State, TableId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
