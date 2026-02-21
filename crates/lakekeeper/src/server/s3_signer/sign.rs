@@ -1173,7 +1173,7 @@ mod test {
             },
             // Basic bucket-style with special characters in key
             TC {
-                request_uri: "https://bucket.s3.my-region.amazonaws.com/key/with-special-chars%2520/foo",
+                request_uri: "https://bucket.s3.my-region.amazonaws.com/key/with-special-chars%20/foo",
                 table_location: "s3://bucket/key/with-special-chars%20/foo",
                 endpoint: None,
                 expected_outcome: true,
