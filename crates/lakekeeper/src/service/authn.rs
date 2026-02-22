@@ -17,7 +17,6 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
 use serde::{Deserialize, Serialize};
 
-use super::RoleId;
 use crate::{CONFIG, api, service::ArcRole};
 #[cfg(feature = "router")]
 use crate::{request_metadata::RequestMetadata, service::events::EventDispatcher};
@@ -312,7 +311,7 @@ pub(crate) async fn auth_middleware_fn<
 #[cfg(feature = "router")]
 fn extract_role_id(
     headers: &HeaderMap,
-) -> Result<Option<RoleId>, iceberg_ext::catalog::rest::IcebergErrorResponse> {
+) -> Result<Option<super::RoleId>, iceberg_ext::catalog::rest::IcebergErrorResponse> {
     if let Some(role_id) = headers.get(ASSUME_ROLE_BY_ID_HEADER) {
         let role_id = role_id.to_str().map_err(|e| {
             ErrorModel::bad_request(
@@ -321,7 +320,7 @@ fn extract_role_id(
                 Some(Box::new(e)),
             )
         })?;
-        Ok(Some(RoleId::from_str_or_bad_request(role_id)?))
+        Ok(Some(super::RoleId::from_str_or_bad_request(role_id)?))
     } else {
         Ok(None)
     }
@@ -486,6 +485,8 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
+
+    use crate::service::RoleId;
 
     use super::*;
 
