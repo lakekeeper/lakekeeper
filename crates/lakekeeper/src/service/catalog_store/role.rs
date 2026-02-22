@@ -315,7 +315,7 @@ impl_error_stack_methods!(RoleIdentNotFoundInProject);
 impl From<RoleIdentNotFoundInProject> for ErrorModel {
     fn from(err: RoleIdentNotFoundInProject) -> Self {
         ErrorModel::builder()
-            .r#type("RoleNotFoundInProject")
+            .r#type("RoleIdentNotFoundInProject")
             .code(StatusCode::NOT_FOUND.as_u16())
             .message(err.to_string())
             .stack(err.stack)
