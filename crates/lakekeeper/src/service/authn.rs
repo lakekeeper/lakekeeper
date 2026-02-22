@@ -486,9 +486,8 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
 mod tests {
     use uuid::Uuid;
 
-    use crate::service::RoleId;
-
     use super::*;
+    use crate::service::RoleId;
 
     #[test]
     fn test_user_id() {
