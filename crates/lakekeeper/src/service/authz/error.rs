@@ -111,7 +111,7 @@ pub struct AuthorizerValidationFailed {
 }
 impl AuthorizerValidationFailed {
     #[must_use]
-    pub fn new(reason: &impl ToString) -> Self {
+    pub fn new(reason: impl ToString) -> Self {
         Self {
             reason: reason.to_string(),
         }
