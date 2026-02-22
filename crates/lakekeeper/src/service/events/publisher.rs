@@ -662,6 +662,24 @@ mod tests {
     }
 
     #[test]
+    fn test_actor_serde_role() {
+        let actor = Actor::Role {
+            principal: UserId::try_from("oidc~123").unwrap(),
+            assumed_role: RoleId::new(uuid::Uuid::nil()),
+        };
+        let expected_json = serde_json::json!({
+            "type": "role",
+            "principal": "oidc~123",
+            "assumed-role": "00000000-0000-0000-0000-000000000000"
+        });
+
+        let actor_json = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, expected_json);
+        let actor_from_json: Actor = serde_json::from_value(actor_json).unwrap();
+        assert_eq!(actor_from_json, actor);
+    }
+
+    #[test]
     fn test_actor_serde_anonymous() {
         let actor_json = serde_json::json!({"type": "anonymous"});
         let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
