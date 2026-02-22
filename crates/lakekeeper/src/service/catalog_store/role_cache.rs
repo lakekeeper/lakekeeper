@@ -35,23 +35,32 @@ pub(crate) static ROLE_CACHE: LazyLock<Cache<RoleId, ArcRole>> = LazyLock::new(|
         .time_to_live(Duration::from_secs(CONFIG.cache.role.time_to_live_secs))
         .async_eviction_listener(|key, value: ArcRole, cause| {
             Box::pin(async move {
-                // On Replaced: only invalidate the secondary index if the ident or
-                // project changed (e.g. set_role_source_system was called).
+                // On Replaced: invalidate the old secondary index mapping immediately,
+                // then spawn a task to re-insert the new mapping (avoids re-entrant
+                // ROLE_CACHE.get() calls which can deadlock).
                 // On all other causes (expired, explicit): always invalidate.
-                let should_invalidate = match cause {
+                match cause {
                     RemovalCause::Replaced => {
-                        if let Some(curr) = ROLE_CACHE.get(&*key).await {
-                            curr.project_id != value.project_id || curr.ident() != value.ident()
-                        } else {
-                            true
-                        }
+                        let key = *key;
+                        // Immediately invalidate the old (project_id, ident) → role_id mapping
+                        IDENT_TO_ID_CACHE
+                            .invalidate(&(value.project_id_arc(), value.ident_arc()))
+                            .await;
+
+                        // Spawn task to add the new mapping (avoids re-entrant ROLE_CACHE.get)
+                        tokio::spawn(async move {
+                            if let Some(curr) = ROLE_CACHE.get(&key).await {
+                                IDENT_TO_ID_CACHE
+                                    .insert((curr.project_id_arc(), curr.ident_arc()), key)
+                                    .await;
+                            }
+                        });
                     }
-                    _ => true,
-                };
-                if should_invalidate {
-                    IDENT_TO_ID_CACHE
-                        .invalidate(&(value.project_id_arc(), value.ident_arc()))
-                        .await;
+                    _ => {
+                        IDENT_TO_ID_CACHE
+                            .invalidate(&(value.project_id_arc(), value.ident_arc()))
+                            .await;
+                    }
                 }
             })
         })

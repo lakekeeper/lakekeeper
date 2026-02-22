@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_project_id_cant_contain_role_separator() {
-        let id = format!("invalid{}id", ROLE_PROVIDER_SEPARATOR);
+        let id = format!("invalid{ROLE_PROVIDER_SEPARATOR}id");
         assert!(ProjectId::try_new(id).is_err());
     }
 }

@@ -617,7 +617,11 @@ where
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleInProjectError> {
         if let Some(role) = role_cache_get_by_id(role_id).await {
-            return Ok(role);
+            // Verify the cached role belongs to the requested project
+            if role.project_id.as_ref() == project_id {
+                return Ok(role);
+            }
+            // Cache hit for wrong project - treat as cache miss
         }
         let roles = Self::list_roles_impl(
             Some(project_id),
@@ -669,7 +673,11 @@ where
     ) -> Result<Arc<Role>, GetRoleByIdentError> {
         if let Some(role) = role_cache_get_by_ident(arc_project_id.clone(), arc_ident.clone()).await
         {
-            return Ok(role);
+            // Verify the cached role belongs to the requested project
+            if role.project_id == arc_project_id {
+                return Ok(role);
+            }
+            // Cache hit for wrong project - treat as cache miss
         }
         let roles =
             Self::list_roles_by_idents_impl(&arc_project_id, &[&*arc_ident], catalog_state).await?;
@@ -710,6 +718,7 @@ where
             }
             CachePolicy::RequireMinimumVersion(min_version) => {
                 if let Some(role) = role_cache_get_by_id(role_id).await
+                    && role.project_id.as_ref() == project_id
                     && *role.version >= min_version
                 {
                     return Ok(role);
@@ -806,6 +815,7 @@ where
             }
             CachePolicy::RequireMinimumVersion(min_version) => {
                 if let Some(role) = role_cache_get_by_ident(project_id.clone(), ident.clone()).await
+                    && role.project_id == project_id
                     && *role.version >= min_version
                 {
                     return Ok(role);

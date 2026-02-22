@@ -554,7 +554,7 @@ impl std::default::Default for SecretsCache {
 pub(crate) struct RoleCache {
     pub(crate) enabled: bool,
     pub(crate) capacity: u64,
-    /// Time-to-live for cache entries in seconds. Defaults to 60 seconds.
+    /// Time-to-live for cache entries in seconds. Defaults to 120 seconds.
     pub(crate) time_to_live_secs: u64,
 }
 
