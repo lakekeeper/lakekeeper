@@ -104,13 +104,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn check_assume_role_impl(
         &self,
         principal: &UserId,
-        assumed_role: RoleId,
+        assumed_role: &Role,
         _request_metadata: &RequestMetadata,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         self.check(CheckRequestTupleKey {
             user: Actor::Principal(principal.clone()).to_openfga(),
             relation: relations::RoleRelation::CanAssume.to_string(),
-            object: assumed_role.to_openfga(),
+            object: assumed_role.id.to_openfga(),
         })
         .await
         .map_err(Into::into)
@@ -198,8 +198,10 @@ impl Authorizer for OpenFGAAuthorizer {
         // This does not include assignments to the role.
         // Used for cross-project role get so that we can show role names and not just IDs.
 
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         // Separate CanRead actions from others to avoid unnecessary batch checks
         let mut results = Vec::with_capacity(roles_with_actions.len());
@@ -286,7 +288,10 @@ impl Authorizer for OpenFGAAuthorizer {
         if !batch_indices.is_empty() {
             let server_id = self.openfga_server().clone();
             let actor_openfga = metadata.actor().to_openfga();
-            let user = for_user.map_or_else(|| actor_openfga.clone(), OpenFgaEntity::to_openfga);
+            let user = for_user.map_or_else(
+                || actor_openfga.clone(),
+                |u| u.api_user_or_role().to_openfga(),
+            );
 
             let batch_results = self
                 .batch_check(vec![
@@ -336,8 +341,10 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         actions: &[Self::ServerAction],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
         let object = self.openfga_server().clone();
 
         let items: Vec<_> = actions
@@ -369,8 +376,10 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
     ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = projects_with_actions
             .iter()
@@ -410,8 +419,10 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
     ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = warehouses_with_actions
             .iter()
@@ -453,8 +464,10 @@ impl Authorizer for OpenFGAAuthorizer {
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = actions
             .iter()
@@ -500,8 +513,10 @@ impl Authorizer for OpenFGAAuthorizer {
             Self::TableAction,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = tables_with_actions
             .iter()
@@ -543,8 +558,10 @@ impl Authorizer for OpenFGAAuthorizer {
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = views_with_actions
             .iter()
@@ -1845,7 +1862,7 @@ pub(crate) mod tests {
                             condition: None,
                         },
                         TupleKey {
-                            user: target_user.to_openfga(),
+                            user: target_user.api_user_or_role().to_openfga(),
                             relation: ProjectRelation::DataAdmin.to_string(),
                             object: project_id.to_openfga(),
                             condition: None,

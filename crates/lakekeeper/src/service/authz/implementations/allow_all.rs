@@ -85,7 +85,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn check_assume_role_impl(
         &self,
         _principal: &UserId,
-        _assumed_role: RoleId,
+        _assumed_role: &Role,
         _request_metadata: &RequestMetadata,
     ) -> Result<bool, AuthorizationBackendUnavailable> {
         Ok(true)

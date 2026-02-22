@@ -472,6 +472,8 @@ pub(crate) struct Cache {
     pub(crate) namespace: NamespaceCache,
     /// Secrets cache configuration.
     pub(crate) secrets: SecretsCache,
+    /// Role cache configuration.
+    pub(crate) role: RoleCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -543,6 +545,25 @@ impl std::default::Default for SecretsCache {
             enabled: true,
             capacity: 500,
             time_to_live_secs: 600,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 120 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for RoleCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+            time_to_live_secs: 120,
         }
     }
 }

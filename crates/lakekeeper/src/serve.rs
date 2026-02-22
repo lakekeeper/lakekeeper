@@ -385,6 +385,14 @@ async fn serve_inner<
     } else {
         tracing::info!("Namespace cache is disabled");
     }
+    if CONFIG.cache.role.enabled {
+        tracing::info!("Role cache is enabled, registering role cache event listener");
+        dispatcher.append(Arc::new(
+            crate::service::role_cache::RoleCacheEventListener {},
+        ));
+    } else {
+        tracing::info!("Role cache is disabled");
+    }
     if CONFIG.audit.tracing.enabled {
         tracing::info!("Audit tracing is enabled, registering audit event listener");
         dispatcher.append(Arc::new(AuditEventListener));

@@ -393,6 +393,13 @@ impl valuable::Mappable for TracedResponseError<'_> {
 }
 
 #[cfg(feature = "axum")]
+impl axum::response::IntoResponse for ErrorModel {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        IcebergErrorResponse { error: self }.into_response()
+    }
+}
+
+#[cfg(feature = "axum")]
 impl axum::response::IntoResponse for IcebergErrorResponse {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
         let Self { error } = self;

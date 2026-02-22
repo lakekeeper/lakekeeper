@@ -3,14 +3,14 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use crate::{
     api::RequestMetadata,
     service::{
-        Actor, RoleId, ServerId,
+        Actor, ServerId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
             MustUse, UserOrRole,
         },
         events::{
-            AuthorizationFailureReason, AuthorizationFailureSource,
+            AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,
             delegate_authorization_failure_source,
         },
     },
@@ -57,19 +57,19 @@ impl AuthorizationFailureSource for AuthZServerActionForbidden {
 // --------------------------- Assume Role Errors ---------------------------
 #[derive(Debug, PartialEq, Eq)]
 pub struct AssumeRoleForbidden {
-    pub(crate) role_id: RoleId,
+    pub(crate) role: UserProvidedRole,
 }
 impl AssumeRoleForbidden {
     #[must_use]
-    pub fn new(role_id: RoleId) -> Self {
-        Self { role_id }
+    pub fn new(role: UserProvidedRole) -> Self {
+        Self { role }
     }
 }
 impl AuthorizationFailureSource for AssumeRoleForbidden {
     fn into_error_model(self) -> ErrorModel {
-        let AssumeRoleForbidden { role_id } = self;
+        let AssumeRoleForbidden { role } = self;
         ErrorModel::forbidden(
-            format!("Assume role `{role_id}` forbidden",),
+            format!("Assume {role} forbidden",),
             "AssumeRoleForbidden",
             None,
         )
@@ -214,13 +214,17 @@ pub trait AuthZServerOps: Authorizer {
                 assumed_role,
             } => {
                 let assume_role_allowed = self
-                    .check_assume_role_impl(principal, *assumed_role, request_metadata)
+                    .check_assume_role_impl(principal, assumed_role, request_metadata)
                     .await?;
 
                 if assume_role_allowed {
                     Ok(())
                 } else {
-                    Err(AssumeRoleForbidden::new(*assumed_role).into())
+                    Err(AssumeRoleForbidden::new(UserProvidedRole::Ident {
+                        project_id: assumed_role.project_id().clone(),
+                        ident: assumed_role.ident_arc(),
+                    })
+                    .into())
                 }
             }
         }

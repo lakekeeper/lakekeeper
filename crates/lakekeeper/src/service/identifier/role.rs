@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::service::RoleId;
 
-pub type RoleIdentRef = Arc<RoleIdent>;
+pub type ArcRoleIdent = Arc<RoleIdent>;
 
-const ROLE_ID_SEPARATOR: char = '~';
+pub const ROLE_PROVIDER_SEPARATOR: char = '~';
 /// Provider ID used for all server-managed (Lakekeeper-generated) roles.
 pub(crate) const LAKEKEEPER_ROLE_PROVIDER_ID: &str = "lakekeeper";
 
@@ -21,7 +21,9 @@ pub enum RoleProviderIdError {
     Empty,
     #[error("role provider ID must be lowercase, got: {0}")]
     NotLowercase(String),
-    #[error("role provider ID must not contain the separator '{ROLE_ID_SEPARATOR}', got: {0}")]
+    #[error(
+        "role provider ID must not contain the separator '{ROLE_PROVIDER_SEPARATOR}', got: {0}"
+    )]
     ContainsSeparator(String),
     #[error("role provider ID must not contain control characters, got: {0}")]
     ContainsControlChars(String),
@@ -47,7 +49,7 @@ pub enum RoleIdentifierError {
     InvalidProvider(#[from] RoleProviderIdError),
     #[error("{0}")]
     InvalidSourceId(#[from] RoleSourceIdError),
-    #[error("Role Identifier must be in format 'provider{ROLE_ID_SEPARATOR}id', got: `{0}`")]
+    #[error("Role Identifier must be in format 'provider{ROLE_PROVIDER_SEPARATOR}id', got: `{0}`")]
     MissingFormatSeparator(String),
 }
 
@@ -356,7 +358,11 @@ impl RoleIdent {
 
 impl std::fmt::Display for RoleIdent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{ROLE_ID_SEPARATOR}{}", self.provider, self.source_id)
+        write!(
+            f,
+            "{}{ROLE_PROVIDER_SEPARATOR}{}",
+            self.provider, self.source_id
+        )
     }
 }
 
@@ -373,7 +379,7 @@ impl TryFrom<&str> for RoleIdent {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (provider, source_id) = s
-            .split_once(ROLE_ID_SEPARATOR)
+            .split_once(ROLE_PROVIDER_SEPARATOR)
             .ok_or_else(|| RoleIdentifierError::MissingFormatSeparator(s.to_string()))?;
         Self::try_new_from_strs(provider, source_id)
     }
@@ -789,5 +795,14 @@ mod tests {
 
         let out = serde_json::to_value(&r).unwrap();
         assert_eq!(out, serde_json::json!("oidc~admin"));
+    }
+
+    #[test]
+    fn provider_id_cannot_contain_slash() {
+        // Used by Authorizers to separate project-id from role identifier (provider~source_id), so slash is not allowed in provider ID
+        assert!(matches!(
+            RoleProviderId::try_new("oidc/ext").unwrap_err(),
+            RoleProviderIdError::InvalidCharacters(_)
+        ));
     }
 }

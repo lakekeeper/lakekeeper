@@ -5,7 +5,7 @@ use lakekeeper::{
     ProjectId, WarehouseId,
     api::{
         ApiContext, RequestMetadata,
-        management::v1::check::{NamespaceIdentOrUuid, TabularIdentOrUuid},
+        management::v1::check::{NamespaceIdentOrUuid, TabularIdentOrUuid, UserOrRole},
     },
     axum::{Extension, Json, extract::State as AxumState},
     iceberg::TableIdent,
@@ -15,7 +15,7 @@ use lakekeeper::{
         TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
         authz::{
             AuthZError, AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
-            RequireTableActionError, RequireViewActionError, UserOrRole,
+            RequireTableActionError, RequireViewActionError,
         },
         events::{APIEventContext, EventDispatcher, context::authz_to_error_no_audit},
     },
@@ -71,7 +71,7 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
         operation: action_request,
     } = request;
     // Set for_principal to None if the user is checking their own access
-    let user_or_role = metadata.actor().to_user_or_role();
+    let user_or_role = metadata.actor().api_user_or_role();
     if let Some(user_or_role) = &user_or_role {
         for_principal = for_principal.filter(|p| p != user_or_role);
     }
@@ -723,10 +723,7 @@ mod tests {
             },
             implementations::postgres::{PostgresBackend, SecretsState},
             server::{CatalogServer, NAMESPACE_ID_PROPERTY},
-            service::{
-                CreateNamespaceResponse, NamespaceId, NamespaceIdent, authn::UserId,
-                authz::RoleAssignee,
-            },
+            service::{CreateNamespaceResponse, NamespaceId, NamespaceIdent, authn::UserId},
             sqlx,
             tests::{SetupTestCatalog, TestWarehouseResponse},
         };
@@ -788,7 +785,7 @@ mod tests {
             .await
             .unwrap()
             .id;
-            let role = UserOrRole::Role(RoleAssignee::from_role(role_id));
+            let role = UserOrRole::Role(role_id.into_api_assignee());
 
             // User cannot check access for role without beeing a member
             let request = CheckRequest {
