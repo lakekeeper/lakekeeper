@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, name, description, project_id, provider_id, source_id, created_at, updated_at\n        FROM role\n        WHERE project_id = $2\n        ORDER BY \n            CASE \n                WHEN id::text = $1 THEN 1\n                WHEN source_id = $1 THEN 2\n                ELSE 3\n            END,\n            name <-> $1 ASC\n        LIMIT 10\n        ",
+  "query": "\n        UPDATE role\n        SET source_id = $3, provider_id = $4\n        WHERE id = $1 AND project_id = $2\n        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version\n        ",
   "describe": {
     "columns": [
       {
@@ -42,10 +42,17 @@
         "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Text",
         "Text",
         "Text"
       ]
@@ -58,8 +65,9 @@
       false,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "e93382bd863d78639c33978cf8bd7eedd7c62c33eb14d67bb693c27aa1f43535"
+  "hash": "6b784d53e21df29bcfba893706b19cd31fcac2def0a8059dc1f509c16820a1b6"
 }
