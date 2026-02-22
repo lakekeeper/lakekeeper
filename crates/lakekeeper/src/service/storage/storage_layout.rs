@@ -1,12 +1,12 @@
 use std::{borrow::Cow, slice::Iter, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
-use strum::Display;
 use urlencoding;
 use uuid::Uuid;
 
-#[derive(Debug, Display, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum StorageLayoutError {
+    #[error("Invalid Template: {0}")]
     InvalidTemplate(String),
 }
 

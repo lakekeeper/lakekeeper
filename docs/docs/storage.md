@@ -52,13 +52,13 @@ The default layout emits one directory for the **direct parent namespace** and o
 
 For a table `orders` in namespace `europe` / `production` the path is:
 
-```
+```text
 <base>/<production-namespace>/<orders-table>
 ```
 
 With the default `{uuid}`-only templates this looks like:
 
-```
+```text
 s3://my-bucket/warehouse/<uuid-of-production-namespace>/<uuid-of-table>/
 ```
 
@@ -83,13 +83,13 @@ The full hierarchy layout creates one path segment for **every namespace level**
 
 For a table `orders` in namespace `europe` / `production` the path is:
 
-```
+```text
 <base>/<europe-namespace>/<production-namespace>/<orders-table>
 ```
 
 With `{name}-{uuid}` templates:
 
-```
+```text
 s3://my-bucket/warehouse/europe-<namespace-uuid>/production-<namespace-uuid>/orders-<table-uuid>/
 ```
 
@@ -114,7 +114,7 @@ The flat layout places all tables directly under the warehouse base location wit
 
 For a table `orders` in any namespace the path is:
 
-```
+```text
 <base>/<orders-table>
 ```
 
@@ -148,6 +148,14 @@ Both placeholders can be combined with each other and with literal text, e.g. `{
 
 !!! warning "Always include `{uuid}` in templates"
     **We strongly recommend including `{uuid}` in every namespace and table template.** Storage paths are assigned once at creation time and are never updated when a table or namespace is renamed. If a template relies solely on `{name}` and a table or namespace is later renamed and re-created with the same name, Lakekeeper will reject the creation because the path is already in use by the old (now-renamed) object. Because UUIDs are unique and stable for the lifetime of an object, using `{uuid}` (alone or combined with `{name}`) guarantees that each object always has a distinct, collision-free storage path. This is the reason Lakekeeper defaults to pure `{uuid}` templates.
+
+### Namespace Location Property
+
+Namespaces have a `location` property that determines where their tables are stored:
+
+- **With location property**: New tables always use the namespace's persisted location, regardless of storage layout changes.
+- **Without location property**: These namespaces compute locations from the current storage layout. Layout changes affect new table placement.
+
 
 ## S3
 
