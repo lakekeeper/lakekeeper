@@ -17,8 +17,8 @@ use crate::{
     api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
     request_metadata::RequestMetadata,
     service::{
-        Actor, ArcRole, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
-        ResolvedWarehouse, Role, ServerId, TableInfo,
+        Actor, ArcProjectId, ArcRole, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
+        NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
     },
 };
 
@@ -825,7 +825,7 @@ where
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     async fn are_allowed_warehouse_actions_impl(
@@ -891,7 +891,7 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectId,
+        parent_project_id: ArcProjectId,
     ) -> Result<()>;
 
     /// Hook that is called when a role is deleted.
@@ -1406,7 +1406,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
-            projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+            projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
             let results: Vec<bool> = projects_with_actions
                 .iter()
@@ -1516,7 +1516,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _role_id: RoleId,
-            _parent_project_id: ProjectId,
+            _parent_project_id: ArcProjectId,
         ) -> Result<()> {
             Ok(())
         }
@@ -1646,7 +1646,7 @@ pub(crate) mod tests {
     test_block_action!(
         project,
         CatalogProjectAction::Rename,
-        &ProjectId::new_random()
+        &Arc::new(ProjectId::new_random())
     );
     test_block_action!(
         warehouse,

@@ -24,7 +24,7 @@ fn request_metadata_with_project(project_id: &ProjectId) -> RequestMetadata {
         None,
         None,
         Actor::Anonymous,
-        Some(project_id.clone()),
+        Some(project_id.clone().into()),
         None,
         http::Method::default(),
     )
@@ -92,7 +92,7 @@ async fn test_create_role(pool: PgPool) {
     let role = db_create_role(&ctx, &warehouse_resp.project_id, "my-role", "src-create").await;
 
     assert_eq!(role.name(), "my-role");
-    assert_eq!(*role.project_id(), warehouse_resp.project_id);
+    assert_eq!(*role.project_id(), *warehouse_resp.project_id);
     assert_eq!(*role.version, 0);
 }
 
@@ -109,7 +109,7 @@ async fn test_list_roles(pool: PgPool) {
         .await;
 
     let role = db_create_role(&ctx, &warehouse_resp.project_id, "list-role", "src-list").await;
-    let project_id = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id = warehouse_resp.project_id.clone();
 
     let result = PostgresBackend::list_roles(
         project_id.clone(),
@@ -275,7 +275,7 @@ async fn test_role_cache_populated_by_get_ident(pool: PgPool) {
     ROLE_CACHE.invalidate(&role_id).await;
     assert!(ROLE_CACHE.get(&role_id).await.is_none());
 
-    let project_id: ArcProjectId = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id: ArcProjectId = warehouse_resp.project_id.clone();
 
     // get_role_by_ident should populate ROLE_CACHE (and IDENT_TO_ID_CACHE internally)
     let fetched = PostgresBackend::get_role_by_ident(
@@ -312,7 +312,7 @@ async fn test_get_role_by_ident_uses_cache(pool: PgPool) {
         "src-ident-cache",
     )
     .await;
-    let project_id: ArcProjectId = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id: ArcProjectId = warehouse_resp.project_id.clone();
 
     // Populate cache via get_role_by_ident
     let v1 = PostgresBackend::get_role_by_ident(
@@ -513,7 +513,7 @@ async fn test_list_roles_with_role_ids_served_from_cache(pool: PgPool) {
     let role2 = db_create_role(&ctx, &warehouse_resp.project_id, "list-cache-2", "src-lc2").await;
     let role_ids = [role1.id(), role2.id()];
 
-    let project_id: ArcProjectId = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id: ArcProjectId = warehouse_resp.project_id.clone();
 
     // Clear cache entries
     ROLE_CACHE.invalidate(&role1.id()).await;
@@ -620,7 +620,7 @@ async fn test_cache_updated_on_api_update(pool: PgPool) {
         CreateRoleRequest {
             name: "api-upd-role".to_string(),
             description: None,
-            project_id: Some(warehouse_resp.project_id.clone()),
+            project_id: Some((*warehouse_resp.project_id).clone()),
             provider_id: None,
             source_id: None,
         },
@@ -681,7 +681,7 @@ async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
         CreateRoleRequest {
             name: "api-del-role".to_string(),
             description: None,
-            project_id: Some(warehouse_resp.project_id.clone()),
+            project_id: Some((*warehouse_resp.project_id).clone()),
             provider_id: None,
             source_id: None,
         },
@@ -700,7 +700,7 @@ async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
     assert!(ROLE_CACHE.get(&role_id).await.is_some());
 
     // Also populate IDENT_TO_ID_CACHE by doing a get_role_by_ident
-    let project_id: ArcProjectId = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id: ArcProjectId = warehouse_resp.project_id.clone();
     let ident = ROLE_CACHE.get(&role_id).await.unwrap().ident_arc();
     PostgresBackend::get_role_by_ident(
         project_id.clone(),
@@ -746,7 +746,7 @@ async fn test_cache_eviction_invalidates_ident_lookup(pool: PgPool) {
         .await;
 
     let role = db_create_role(&ctx, &warehouse_resp.project_id, "evict-role", "src-evict").await;
-    let project_id: ArcProjectId = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id: ArcProjectId = warehouse_resp.project_id.clone();
     let ident = role.ident_arc();
 
     // Populate both caches via get_role_by_ident
@@ -858,7 +858,7 @@ async fn test_list_roles_cache_source_id_filter(pool: PgPool) {
     )
     .await;
     let role_ids = [role_a.id(), role_b.id()];
-    let project_id: ArcProjectId = std::sync::Arc::new(warehouse_resp.project_id.clone());
+    let project_id: ArcProjectId = warehouse_resp.project_id.clone();
 
     // Populate cache via first list call
     PostgresBackend::list_roles(

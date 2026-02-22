@@ -9,13 +9,14 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{CatalogStore, Transaction};
 use crate::{
-    ProjectId, WarehouseId,
+    WarehouseId,
     api::management::v1::{
         task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
         tasks::{ListTasksRequest, TaskAttempt},
     },
     service::{
-        CatalogBackendError, DatabaseIntegrityError, Result, define_transparent_error,
+        ArcProjectId, CatalogBackendError, DatabaseIntegrityError, Result,
+        define_transparent_error,
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
         impl_error_stack_methods, impl_from_with_detail,
         task_configs::TaskQueueConfigFilter,
@@ -45,7 +46,7 @@ static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, Arc<ResolvedTask>>> =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTask {
     pub task_id: TaskId,
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub entity: ResolvedTaskEntity,
     pub queue_name: TaskQueueName,
 }
@@ -330,7 +331,7 @@ where
     }
 
     async fn set_task_queue_config(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: &SetTaskQueueConfigRequest,

@@ -159,7 +159,7 @@ pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     match role {
         Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFoundInProject::new(
             role_id,
-            project_id.clone(),
+            Arc::new(project_id.clone()),
         ))),
         Err(e) => match &e {
             sqlx::Error::Database(db_error) => {
@@ -214,7 +214,7 @@ pub(crate) async fn update_role_source_system<
     match role {
         Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFoundInProject::new(
             role_id,
-            project_id.clone(),
+            Arc::new(project_id.clone()),
         ))),
         Err(e) => match &e {
             sqlx::Error::Database(db_error) => {

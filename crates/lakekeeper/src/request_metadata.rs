@@ -18,7 +18,7 @@ use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
     service::{
-        TabularId,
+        ArcProjectId, TabularId,
         authn::{Actor, InternalActor},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
@@ -63,7 +63,7 @@ impl UserAgent {
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     request_id: Uuid,
-    project_id: Option<ProjectId>,
+    project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
     base_url: String,
     actor: InternalActor,
@@ -177,7 +177,7 @@ impl RequestMetadata {
     }
 
     #[must_use]
-    pub fn preferred_project_id(&self) -> Option<ProjectId> {
+    pub fn preferred_project_id(&self) -> Option<ArcProjectId> {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
@@ -244,7 +244,7 @@ impl RequestMetadata {
         authentication: Option<Authentication>,
         base_url: Option<String>,
         actor: Actor,
-        project_id: Option<ProjectId>,
+        project_id: Option<ArcProjectId>,
         matched_path: Option<Arc<str>>,
         request_method: Method,
     ) -> Self {
@@ -300,8 +300,9 @@ impl RequestMetadata {
     pub fn require_project_id(
         &self,
         user_project: Option<ProjectId>,
-    ) -> Result<ProjectId, ProjectIdMissing> {
+    ) -> Result<ArcProjectId, ProjectIdMissing> {
         user_project
+            .map(Arc::new)
             .or(self.preferred_project_id())
             .ok_or(ProjectIdMissing)
     }
@@ -421,7 +422,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         authentication: None,
         base_url: base_uri,
         actor: Actor::Anonymous.into(),
-        project_id,
+        project_id: project_id.map(Arc::new),
         matched_path,
         request_method,
         user_agent,

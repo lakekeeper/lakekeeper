@@ -3,11 +3,11 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ProjectId, WarehouseId,
+    WarehouseId,
     api::{ApiContext, Result},
     service::{
-        CatalogStore, CatalogTaskOps, SecretStore, State, Transaction, authz::Authorizer,
-        task_configs::TaskQueueConfigFilter, tasks::TaskQueueName,
+        ArcProjectId, CatalogStore, CatalogTaskOps, SecretStore, State, Transaction,
+        authz::Authorizer, task_configs::TaskQueueConfigFilter, tasks::TaskQueueName,
     },
 };
 
@@ -49,7 +49,7 @@ impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
 }
 
 pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: SecretStore>(
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     warehouse_id: Option<WarehouseId>,
     queue_name: &TaskQueueName,
     request: &SetTaskQueueConfigRequest,

@@ -302,11 +302,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(request.project_id.clone())?;
 
         // -------------------- AUTHZ --------------------
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.into(),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::CreateRole,
+            Arc::new(CatalogProjectAction::CreateRole),
         );
         let catalog_state = context.v1_state.catalog;
         let authz_result =
@@ -327,11 +327,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(query.project_id.clone())?;
 
         // -------------------- AUTHZ --------------------
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.into(),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::ListRoles,
+            Arc::new(CatalogProjectAction::ListRoles),
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
@@ -401,11 +401,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(request.project_id.clone())?;
 
         // -------------------- AUTHZ --------------------
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.into(),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::SearchRoles,
+            Arc::new(CatalogProjectAction::SearchRoles),
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
@@ -520,7 +520,7 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     request: CreateRoleRequest,
 ) -> Result<ArcRole, AuthZError> {
-    let project_id = event_ctx.user_provided_entity();
+    let project_id = event_ctx.user_provided_entity_arc_ref();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
     authorizer
@@ -630,7 +630,7 @@ async fn authorize_search_role<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     request: SearchRoleRequest,
 ) -> Result<crate::service::SearchRoleResponse, AuthZError> {
-    let project_id = event_ctx.user_provided_entity();
+    let project_id = event_ctx.user_provided_entity_arc_ref();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
     authorizer
@@ -650,7 +650,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
-    project_id: ProjectId,
+    project_id: ArcProjectId,
 ) -> Result<ArcRole, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
@@ -686,7 +686,7 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     request: UpdateRoleRequest,
 ) -> Result<ArcRole, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
@@ -729,7 +729,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     request: UpdateRoleSourceSystemRequest,
 ) -> Result<ArcRole, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();

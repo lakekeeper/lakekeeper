@@ -3,11 +3,10 @@ use std::sync::Arc;
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
-    ProjectId,
     api::RequestMetadata,
     service::{
-        CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, Role, RoleId,
-        RoleIdNotFoundInProject,
+        ArcProjectId, CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, Role,
+        RoleId, RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
@@ -32,7 +31,7 @@ impl RoleAction for CatalogRoleAction {}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZCannotSeeRole {
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     role_id: RoleId,
     /// Whether the resource was confirmed not to exist (for audit logging)
     /// HTTP response is deliberately ambiguous, but audit log should be concrete
@@ -42,7 +41,7 @@ pub struct AuthZCannotSeeRole {
 impl AuthZCannotSeeRole {
     #[must_use]
     pub fn new(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         role_id: RoleId,
         resource_not_found: bool,
         error_stack: Vec<String>,

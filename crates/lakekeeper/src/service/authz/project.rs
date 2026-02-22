@@ -6,6 +6,7 @@ use crate::{
     ProjectId,
     api::RequestMetadata,
     service::{
+        ArcProjectId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
@@ -39,12 +40,12 @@ pub enum ListProjectsResponse {
 // --------------------------- Errors ---------------------------
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZProjectActionForbidden {
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     action: String,
 }
 impl AuthZProjectActionForbidden {
     #[must_use]
-    pub fn new(project_id: ProjectId, action: impl ProjectAction) -> Self {
+    pub fn new(project_id: ArcProjectId, action: impl ProjectAction) -> Self {
         Self {
             project_id,
             action: action.to_string(),
@@ -117,7 +118,7 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, A)],
+        projects_with_actions: &[(&ArcProjectId, A)],
     ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
@@ -127,7 +128,7 @@ pub trait AuthZProjectOps: Authorizer {
             if metadata.has_admin_privileges() && for_user.is_none() {
                 vec![true; projects_with_actions.len()]
             } else {
-                let converted: Vec<(&ProjectId, Self::ProjectAction)> = projects_with_actions
+                let converted: Vec<(&ArcProjectId, Self::ProjectAction)> = projects_with_actions
                     .iter()
                     .map(|(id, action)| (*id, (*action).into()))
                     .collect();
@@ -156,7 +157,7 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, A); N],
+        projects_with_actions: &[(&ArcProjectId, A); N],
     ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_project_actions_vec(metadata, for_user, projects_with_actions)
@@ -173,7 +174,7 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         action: impl Into<Self::ProjectAction> + Send + Sync + Copy,
     ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
@@ -186,7 +187,7 @@ pub trait AuthZProjectOps: Authorizer {
     async fn require_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         action: CatalogProjectAction,
     ) -> Result<(), RequireProjectActionError> {
         if self

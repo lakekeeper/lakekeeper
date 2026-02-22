@@ -128,7 +128,7 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        ProjectId, WarehouseId,
+        WarehouseId,
         api::{
             ApiContext, RequestMetadata,
             iceberg::v1::{DropParams, PaginationQuery, ViewParameters, views::ViewService},
@@ -143,8 +143,8 @@ mod test {
             views::validate_view_properties,
         },
         service::{
-            CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State, TabularListFlags,
-            ViewId,
+            ArcProjectId, CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State,
+            TabularListFlags, ViewId,
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
         },
@@ -157,7 +157,7 @@ mod test {
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceIdent,
         WarehouseId,
-        ProjectId,
+        ArcProjectId,
     ) {
         let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
         let state = api_context.v1_state.catalog.clone();

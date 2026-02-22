@@ -639,11 +639,11 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
         .ok_or(OpenFGAError::NoProjectId)
         .map_err(authz_to_error_no_audit)?;
 
-    let event_ctx = APIEventContext::for_project(
+    let event_ctx = APIEventContext::for_project_arc(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id.clone(),
-        IntrospectPermissions {},
+        Arc::new(IntrospectPermissions {}),
     );
 
     let relations = get_allowed_actions(
@@ -688,11 +688,11 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
         .ok_or(OpenFGAError::NoProjectId)
         .map_err(authz_to_error_no_audit)?;
 
-    let event_ctx = APIEventContext::for_project(
+    let event_ctx = APIEventContext::for_project_arc(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id.clone(),
-        IntrospectPermissions {},
+        Arc::new(IntrospectPermissions {}),
     );
 
     let relations = get_allowed_actions(
@@ -1493,11 +1493,11 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
         .ok_or(OpenFGAError::NoProjectId)
         .map_err(authz_to_error_no_audit)?;
 
-    let event_ctx = APIEventContext::for_project(
+    let event_ctx = APIEventContext::for_project_arc(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id,
-        AllProjectRelations::CanReadAssignments,
+        Arc::new(AllProjectRelations::CanReadAssignments),
     );
     let project_id_openfga = event_ctx.user_provided_entity().to_openfga();
 
@@ -1824,11 +1824,11 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
         .ok_or(OpenFGAError::NoProjectId)
         .map_err(authz_to_error_no_audit)?;
 
-    let event_ctx = APIEventContext::for_project(
+    let event_ctx = APIEventContext::for_project_arc(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id,
-        request.clone(),
+        Arc::new(request.clone()),
     );
     let authz_result = checked_write(
         authorizer,
@@ -2542,7 +2542,7 @@ mod tests {
 
         use lakekeeper::{
             service::{
-                ResolvedWarehouse, Role,
+                ArcProjectId, ResolvedWarehouse, Role,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
             },
@@ -3172,8 +3172,9 @@ mod tests {
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
 
             // Create 4 projects
-            let project_ids: Vec<ProjectId> =
-                (0..4).map(|_| ProjectId::from(Uuid::now_v7())).collect();
+            let project_ids: Vec<ArcProjectId> = (0..4)
+                .map(|_| Arc::new(ProjectId::from(Uuid::now_v7())))
+                .collect();
 
             // Grant Describe to projects 0 and 2
             for idx in [0, 2] {

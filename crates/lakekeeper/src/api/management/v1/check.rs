@@ -14,7 +14,7 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
+        ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
         CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, GetRoleAcrossProjectsError, NamespaceId,
         NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId, RoleIdNotFound,
@@ -250,7 +250,7 @@ pub struct CatalogActionsBatchCheckResult {
 // Type aliases for complex grouped check types
 type ServerChecksMap = HashMap<Option<UserOrRole>, Vec<(usize, CatalogServerAction)>>;
 type ProjectChecksMap =
-    HashMap<ProjectId, HashMap<Option<UserOrRole>, Vec<(usize, CatalogProjectAction)>>>;
+    HashMap<ArcProjectId, HashMap<Option<UserOrRole>, Vec<(usize, CatalogProjectAction)>>>;
 type WarehouseChecksMap =
     HashMap<(WarehouseId, Option<UserOrRole>), Vec<(usize, CatalogWarehouseAction)>>;
 type NamespaceChecksByIdMap = HashMap<

@@ -10,9 +10,9 @@ use lakekeeper::{
     async_trait,
     axum::Router,
     service::{
-        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel,
-        NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId,
-        State, TableId, UserId, ViewId,
+        Actor, ArcProjectId, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore,
+        ErrorModel, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore,
+        ServerId, State, TableId, UserId, ViewId,
         authz::{
             AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
             CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
@@ -374,7 +374,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
         let user = for_user.map_or_else(
             || metadata.actor().to_openfga(),
@@ -607,7 +607,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectId,
+        parent_project_id: ArcProjectId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
 
@@ -1707,7 +1707,7 @@ pub(crate) mod tests {
         async fn test_are_allowed_project_actions_without_for_user() {
             let authorizer = new_authorizer_in_empty_store().await;
             let user_id: UserId = UserId::new_unchecked("oidc", "test_user");
-            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let project_id = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
 
             let metadata = RequestMetadata::test_user(user_id.clone());
 
@@ -1765,7 +1765,7 @@ pub(crate) mod tests {
             let target_user_id = UserId::new_unchecked("oidc", "target_user");
             let target_user = UserOrRole::User(target_user_id.clone());
 
-            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let project_id = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
             let metadata = RequestMetadata::test_user(admin_user_id.clone());
 
             // Grant target user some permissions on the project
@@ -1850,7 +1850,7 @@ pub(crate) mod tests {
             let target_user_id = UserId::new_unchecked("oidc", "target_user");
             let target_user = UserOrRole::User(target_user_id.clone());
 
-            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let project_id = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
             let metadata = RequestMetadata::test_user(admin_user_id.clone());
 
             // Grant admin user permissions on the project

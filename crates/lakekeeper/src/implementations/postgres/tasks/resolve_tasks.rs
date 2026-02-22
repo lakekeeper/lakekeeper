@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::TaskEntityTypeDB;
 use crate::{
     ProjectId,
@@ -117,7 +119,7 @@ where
                 record.entity_name,
             )?;
 
-            let project_id = ProjectId::from_db_unchecked(record.project_id);
+            let project_id = Arc::new(ProjectId::from_db_unchecked(record.project_id));
             let task_id = TaskId::from(record.task_id);
 
             let resolved_entity = match entity {
@@ -173,14 +175,17 @@ mod tests {
 
     use super::*;
     use crate::{
-        ProjectId, WarehouseId,
+        WarehouseId,
         implementations::postgres::tasks::{
             pick_task, queue_task_batch, record_failure, record_success,
             test::{setup_two_warehouses, setup_warehouse},
         },
-        service::tasks::{
-            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ResolvedTaskEntity, ScheduleTaskMetadata,
-            TaskEntity, TaskInput, TaskQueueName, WarehouseTaskEntityId,
+        service::{
+            ArcProjectId,
+            tasks::{
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ResolvedTaskEntity, ScheduleTaskMetadata,
+                TaskEntity, TaskInput, TaskQueueName, WarehouseTaskEntityId,
+            },
         },
     };
 
@@ -190,7 +195,7 @@ mod tests {
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
         entity_id: WarehouseTaskEntityId,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         payload: Option<serde_json::Value>,
