@@ -10,8 +10,8 @@ use crate::{
         RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogRoleAction,
-            MustUse, UserOrRole,
+            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -127,6 +127,7 @@ pub enum RequireRoleActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizerValidationFailed(AuthorizerValidationFailed),
     // Hide the existence of the role
     AuthZCannotSeeRole(AuthZCannotSeeRole),
     // Propagated directly
@@ -137,7 +138,6 @@ impl From<BackendUnavailableOrCountMismatch> for RequireRoleActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
         }
     }
@@ -151,6 +151,16 @@ impl From<GetRoleInProjectError> for RequireRoleActionError {
         }
     }
 }
+impl From<IsAllowedActionError> for RequireRoleActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
+        }
+    }
+}
 delegate_authorization_failure_source!(RequireRoleActionError => {
     AuthZRoleActionForbidden,
     AuthorizationBackendUnavailable,
@@ -159,6 +169,7 @@ delegate_authorization_failure_source!(RequireRoleActionError => {
     AuthZCannotSeeRole,
     CatalogBackendError,
     InvalidPaginationToken,
+    AuthorizerValidationFailed
 });
 
 #[async_trait::async_trait]
@@ -177,7 +188,7 @@ pub trait AuthZRoleOps: Authorizer {
         for_user: Option<&UserOrRole>,
         role: &Role,
         action: impl Into<Self::RoleAction> + Send + Copy + Sync,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_role_actions_arr(metadata, for_user, &[(role, action)])
             .await?
@@ -190,7 +201,7 @@ pub trait AuthZRoleOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
@@ -223,7 +234,7 @@ pub trait AuthZRoleOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, A); N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_role_actions_vec(metadata, for_user, roles_with_actions)
             .await?

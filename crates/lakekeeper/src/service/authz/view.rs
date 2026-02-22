@@ -12,8 +12,9 @@ use crate::{
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
             AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogViewAction, MustUse, UserOrRole,
+            AuthorizerValidationFailed, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -135,6 +136,7 @@ pub enum RequireViewActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizerValidationFailed(AuthorizerValidationFailed),
     // Hide the existence of the view
     AuthZCannotSeeView(AuthZCannotSeeView),
     // Propagated directly
@@ -150,7 +152,16 @@ impl From<BackendUnavailableOrCountMismatch> for RequireViewActionError {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireViewActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -176,6 +187,7 @@ delegate_authorization_failure_source!(RequireViewActionError => {
     SerializationError,
     UnexpectedTabularInResponse,
     InternalParseLocationError,
+    AuthorizerValidationFailed
 });
 
 #[async_trait::async_trait]
@@ -378,7 +390,7 @@ pub trait AuthZViewOps: Authorizer {
         namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: impl Into<Self::ViewAction> + Send,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_view_actions_arr(
                 metadata,
@@ -404,7 +416,7 @@ pub trait AuthZViewOps: Authorizer {
         namespace_hierarchy: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         actions: &[A; N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let actions = actions
             .iter()
             .map(|a| (&namespace_hierarchy.namespace, view, a.clone().into()))
@@ -437,7 +449,7 @@ pub trait AuthZViewOps: Authorizer {
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
             let namespaces: Vec<&NamespaceWithParent> =

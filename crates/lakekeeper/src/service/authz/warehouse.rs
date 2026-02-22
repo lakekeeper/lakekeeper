@@ -10,8 +10,9 @@ use crate::{
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogWarehouseAction, MustUse, UserOrRole,
+            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogAction, CatalogWarehouseAction, IsAllowedActionError,
+            MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -154,6 +155,7 @@ pub enum RequireWarehouseActionError {
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthZCannotListAllTasks(AuthZCannotListAllTasks),
+    AuthorizerValidationFailed(AuthorizerValidationFailed),
     // Hide the existence of the namespace
     AuthZCannotUseWarehouseId(AuthZCannotUseWarehouseId),
     // Propagated directly
@@ -166,7 +168,16 @@ impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireWarehouseActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -178,7 +189,8 @@ delegate_authorization_failure_source!(RequireWarehouseActionError => {
     AuthZCannotUseWarehouseId,
     CatalogBackendError,
     DatabaseIntegrityError,
-    AuthZCannotListAllTasks
+    AuthZCannotListAllTasks,
+    AuthorizerValidationFailed
 });
 
 impl From<CatalogGetWarehouseByIdError> for RequireWarehouseActionError {
@@ -252,7 +264,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         action: impl Into<Self::WarehouseAction> + Clone + Send + Sync,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_warehouse_actions_arr(metadata, for_user, &[(warehouse, action)])
             .await?
@@ -268,7 +280,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A); N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_warehouse_actions_vec(metadata, for_user, warehouses_with_actions)
             .await?
@@ -287,7 +299,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }

@@ -6,8 +6,9 @@ use crate::{
         Actor, ServerId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
-            MustUse, UserOrRole,
+            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogServerAction, IsAllowedActionError, MustUse,
+            UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,
@@ -97,13 +98,23 @@ pub enum RequireServerActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizerValidationFailed(AuthorizerValidationFailed),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireServerActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireServerActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -112,6 +123,7 @@ delegate_authorization_failure_source!(RequireServerActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizerValidationFailed
 });
 
 // --------------------------- Server Ops ---------------------------
@@ -123,7 +135,7 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         action: impl Into<Self::ServerAction> + Send + Sync + Copy,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_server_actions_arr(metadata, for_user, &[action])
             .await?
@@ -136,7 +148,7 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         actions: &[A],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
@@ -171,7 +183,7 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         actions: &[A; N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_server_actions_vec(metadata, for_user, actions)
             .await?

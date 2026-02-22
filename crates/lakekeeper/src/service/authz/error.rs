@@ -33,20 +33,10 @@ use crate::{
 pub enum BackendUnavailableOrCountMismatch {
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
-    CannotInspectPermissions(CannotInspectPermissions),
-}
-impl From<IsAllowedActionError> for BackendUnavailableOrCountMismatch {
-    fn from(err: IsAllowedActionError) -> Self {
-        match err {
-            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-        }
-    }
 }
 delegate_authorization_failure_source!(BackendUnavailableOrCountMismatch => {
     AuthorizationCountMismatch,
     AuthorizationBackendUnavailable,
-    CannotInspectPermissions,
 });
 
 #[derive(Debug, PartialEq)]
@@ -114,15 +104,54 @@ impl AuthorizationFailureSource for CannotInspectPermissions {
     }
 }
 
+#[derive(Debug, PartialEq, thiserror::Error)]
+#[error("Authorizer validation failed. {reason}")]
+pub struct AuthorizerValidationFailed {
+    reason: String,
+}
+impl AuthorizerValidationFailed {
+    #[must_use]
+    pub fn new(reason: &impl ToString) -> Self {
+        Self {
+            reason: reason.to_string(),
+        }
+    }
+}
+impl AuthorizationFailureSource for AuthorizerValidationFailed {
+    fn into_error_model(self) -> ErrorModel {
+        ErrorModel::forbidden(self.to_string(), "AuthorizerValidationFailed", None)
+    }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InvalidRequestData
+    }
+}
+
 #[derive(Debug, derive_more::From)]
 pub enum IsAllowedActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    CountMismatch(AuthorizationCountMismatch),
 }
 delegate_authorization_failure_source!(IsAllowedActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
+    AuthorizerValidationFailed,
+    CountMismatch
 });
+
+impl From<BackendUnavailableOrCountMismatch> for IsAllowedActionError {
+    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
+        match err {
+            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => {
+                IsAllowedActionError::AuthorizationBackendUnavailable(e)
+            }
+            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => {
+                IsAllowedActionError::CountMismatch(e)
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct AuthorizationBackendUnavailable {
@@ -214,6 +243,8 @@ pub enum AuthZError {
     SearchRolesError(SearchRolesError),
     AuthZUserActionForbidden(AuthZUserActionForbidden),
     BackendUnavailableOrCountMismatch(BackendUnavailableOrCountMismatch),
+    ValidationFailed(AuthorizerValidationFailed),
+    IsAllowedActionError(IsAllowedActionError),
 }
 impl From<ResolveTasksError> for AuthZError {
     fn from(err: ResolveTasksError) -> Self {
@@ -279,6 +310,9 @@ impl From<RequireTabularActionsError> for AuthZError {
             RequireTabularActionsError::CannotInspectPermissions(e) => {
                 RequireWarehouseActionError::CannotInspectPermissions(e).into()
             }
+            RequireTabularActionsError::AuthorizerValidationFailed(e) => {
+                RequireTableActionError::AuthorizerValidationFailed(e).into()
+            }
         }
     }
 }
@@ -312,5 +346,7 @@ delegate_authorization_failure_source!(AuthZError => {
     UpdateRoleError,
     SearchRolesError,
     AuthZUserActionForbidden,
-    BackendUnavailableOrCountMismatch
+    BackendUnavailableOrCountMismatch,
+    ValidationFailed,
+    IsAllowedActionError
 });
