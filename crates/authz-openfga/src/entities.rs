@@ -143,7 +143,7 @@ impl OpenFgaEntity for Actor {
             Actor::Role {
                 principal: _,
                 assumed_role,
-            } => format!("{fga_type}:{}#assignee", assumed_role.id().to_openfga()),
+            } => format!("{}#assignee", assumed_role.id().to_openfga()),
         }
     }
 
