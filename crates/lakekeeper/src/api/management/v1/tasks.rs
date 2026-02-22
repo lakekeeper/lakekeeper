@@ -6,16 +6,16 @@ use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ProjectId, WarehouseId,
+    WarehouseId,
     api::{
         ApiContext,
         management::v1::{ApiServer, impl_arc_into_response},
     },
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse, Result,
-        SecretStore, State, TableId, TabularId, TabularListFlags, TaskDetails, TaskList,
+        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogTaskOps, CatalogWarehouseOps, NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse,
+        Result, SecretStore, State, TableId, TabularId, TabularListFlags, TaskDetails, TaskList,
         TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeTable, AuthZCannotSeeView,
@@ -59,7 +59,7 @@ pub struct WarehouseTaskInfo {
     pub task_id: TaskId,
     /// Project ID associated with the task
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Warehouse ID associated with the task
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub warehouse_id: WarehouseId,
@@ -167,7 +167,7 @@ pub struct ProjectTaskInfo {
     pub task_id: TaskId,
     /// Project ID associated with the task
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Name of the queue processing this task
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub queue_name: TaskQueueName,
@@ -814,11 +814,11 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.clone().into(),
             context.v1_state.events,
             project_id.clone(),
-            CatalogProjectAction::GetProjectTasks,
+            Arc::new(CatalogProjectAction::GetProjectTasks),
         );
 
         let authz_result = authorizer
@@ -828,7 +828,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let project_id = event_ctx.user_provided_entity().clone();
+        let project_id = event_ctx.user_provided_entity_arc();
         let filter = TaskFilter::ProjectId {
             project_id,
             include_sub_tasks: false, // Not yet implemented, so hardcoded here
@@ -850,11 +850,11 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
 
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.clone().into(),
             context.v1_state.events,
             project_id.clone(),
-            CatalogProjectAction::GetProjectTasks,
+            Arc::new(CatalogProjectAction::GetProjectTasks),
         );
 
         let authz_result = authorizer
@@ -863,7 +863,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let project_id = event_ctx.user_provided_entity().clone();
+        let project_id = event_ctx.user_provided_entity_arc();
         let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
         let r = C::get_task_details(
             task_id,
@@ -916,11 +916,11 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let project_id = request_metadata.require_project_id(None)?;
 
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.clone().into(),
             context.v1_state.events,
             project_id.clone(),
-            CatalogProjectAction::ControlProjectTasks,
+            Arc::new(CatalogProjectAction::ControlProjectTasks),
         );
 
         let authorizer = context.v1_state.authz;
@@ -931,7 +931,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
-        let project_id = event_ctx.user_provided_entity().clone();
+        let project_id = event_ctx.user_provided_entity_arc();
 
         // If some tasks are not part of this project, this will return an error.
         C::resolve_required_tasks(

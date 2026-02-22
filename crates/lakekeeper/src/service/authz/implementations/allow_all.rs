@@ -11,7 +11,7 @@ use crate::{
     api::{ApiContext, iceberg::v1::Result},
     request_metadata::RequestMetadata,
     service::{
-        AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
+        ArcProjectId, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
         NamespaceWithParent, ProjectId, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId,
         State, TableId, ViewId, WarehouseId,
         authn::UserId,
@@ -144,7 +144,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; projects_with_actions.len()])
     }
@@ -203,7 +203,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
-        _parent_project_id: ProjectId,
+        _parent_project_id: ArcProjectId,
     ) -> Result<()> {
         Ok(())
     }

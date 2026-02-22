@@ -409,7 +409,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use crate::{
-        ProjectId, WarehouseId,
+        WarehouseId,
         api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             CatalogState, PostgresBackend,
@@ -418,8 +418,8 @@ pub(crate) mod tests {
             warehouse::test::initialize_warehouse,
         },
         service::{
-            CreateViewError, DropTabularError, LoadViewError, TabularId, TabularIdentBorrowed,
-            TabularListFlags, ViewId,
+            ArcProjectId, CreateViewError, DropTabularError, LoadViewError, TabularId,
+            TabularIdentBorrowed, TabularListFlags, ViewId,
             tasks::{
                 ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -841,7 +841,7 @@ pub(crate) mod tests {
         NamespaceIdent,
         String,
         Location,
-        ProjectId,
+        ArcProjectId,
     ) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =

@@ -43,11 +43,11 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
             let project_id = request_metadata_arc.require_project_id(project_from_arg)?;
 
             let action = CatalogProjectAction::ListWarehouses;
-            let event_ctx = APIEventContext::for_project(
+            let event_ctx = APIEventContext::for_project_arc(
                 request_metadata_arc.clone(),
                 api_context.v1_state.events.clone(),
                 project_id.clone(),
-                action,
+                Arc::new(action),
             );
 
             let authz_result = authorizer

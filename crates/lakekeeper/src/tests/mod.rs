@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     ProjectId,
     api::{
@@ -13,7 +15,7 @@ use crate::{
         postgres::{PostgresBackend, SecretsState, migrations::migrate},
     },
     service::{
-        UserId,
+        ArcProjectId, UserId,
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
         namespace_cache::NamespaceCacheEventListener,
@@ -62,9 +64,9 @@ pub fn memory_io_profile() -> StorageProfile {
 #[derive(Debug)]
 pub struct TestWarehouseResponse {
     pub warehouse_id: WarehouseId,
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub warehouse_name: String,
-    pub additional_warehouses: Vec<(ProjectId, WarehouseId, String)>,
+    pub additional_warehouses: Vec<(ArcProjectId, WarehouseId, String)>,
 }
 
 pub async fn spawn_build_in_queues<T: Authorizer>(
@@ -99,7 +101,7 @@ pub struct SetupTestCatalog<T: Authorizer> {
     #[builder(default = 1)]
     number_of_warehouses: usize,
     #[builder(default)]
-    project_id: Option<ProjectId>,
+    project_id: Option<ArcProjectId>,
 }
 
 impl<T: Authorizer> SetupTestCatalog<T> {
@@ -117,7 +119,7 @@ impl<T: Authorizer> SetupTestCatalog<T> {
             self.delete_profile,
             self.user_id,
             self.number_of_warehouses,
-            self.project_id,
+            self.project_id.map(Arc::unwrap_or_clone),
         )
         .await
     }
@@ -182,7 +184,7 @@ pub(crate) async fn setup<T: Authorizer>(
         let create_wh_response = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
-                project_id: Some(warehouse.project_id()),
+                project_id: Some(Arc::unwrap_or_clone(warehouse.project_id())),
                 storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,

@@ -13,8 +13,8 @@ use crate::{
     ProjectId,
     api::management::v1::tasks::TaskStatus,
     service::{
-        CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId, ViewNamed,
-        task_configs::TaskQueueConfigFilter,
+        ArcProjectId, CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId,
+        ViewNamed, task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -216,11 +216,11 @@ impl AsRef<TaskAttemptId> for TaskAttemptId {
 pub enum TaskFilter {
     WarehouseId {
         warehouse_id: WarehouseId,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
     },
     TaskIds(Vec<TaskId>),
     ProjectId {
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         include_sub_tasks: bool,
     },
     All,
@@ -241,17 +241,17 @@ pub enum CancelTasksFilter {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskResolveScope {
     Warehouse {
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
     },
     Project {
-        project_id: ProjectId,
+        project_id: ArcProjectId,
     },
 }
 
 impl TaskResolveScope {
     #[must_use]
-    pub fn project_id(&self) -> ProjectId {
+    pub fn project_id(&self) -> ArcProjectId {
         match self {
             TaskResolveScope::Warehouse { project_id, .. }
             | TaskResolveScope::Project { project_id } => project_id.clone(),
@@ -262,17 +262,17 @@ impl TaskResolveScope {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskDetailsScope {
     Warehouse {
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
     },
     Project {
-        project_id: ProjectId,
+        project_id: ArcProjectId,
     },
 }
 
 impl TaskDetailsScope {
     #[must_use]
-    pub fn project_id(&self) -> ProjectId {
+    pub fn project_id(&self) -> ArcProjectId {
         match self {
             TaskDetailsScope::Warehouse { project_id, .. }
             | TaskDetailsScope::Project { project_id } => project_id.clone(),
@@ -312,14 +312,14 @@ pub enum TaskEntity {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskMetadata {
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub parent_task_id: Option<TaskId>,
     pub scheduled_for: chrono::DateTime<Utc>,
     pub entity: TaskEntity,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScheduleTaskMetadata {
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub parent_task_id: Option<TaskId>,
     pub scheduled_for: Option<chrono::DateTime<Utc>>,
     pub entity: TaskEntity,
@@ -327,7 +327,7 @@ pub struct ScheduleTaskMetadata {
 
 impl TaskMetadata {
     #[must_use]
-    pub fn project_id(&self) -> &ProjectId {
+    pub fn project_id(&self) -> &ArcProjectId {
         &self.project_id
     }
 

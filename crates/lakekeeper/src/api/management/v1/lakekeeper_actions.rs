@@ -6,12 +6,12 @@ use strum::VariantArray;
 
 use super::check::UserOrRole as APIUserOrRole;
 use crate::{
-    ProjectId, WarehouseId,
+    WarehouseId,
     api::{ApiContext, RequestMetadata},
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogWarehouseOps,
-        NamespaceId, Result, RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewId,
-        WarehouseStatus,
+        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
+        CatalogWarehouseOps, NamespaceId, Result, RoleId, SecretStore, State, TableId,
+        TabularListFlags, UserId, ViewId, WarehouseStatus,
         authn::UserIdRef,
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeView,
@@ -299,7 +299,7 @@ async fn authorize_get_role_actions<C: CatalogStore>(
     request_metadata: &RequestMetadata,
     authorizer: impl Authorizer,
     for_user_api: Option<APIUserOrRole>,
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     role_id: RoleId,
     catalog_state: C::State,
 ) -> Result<Vec<CatalogRoleAction>, AuthZError> {
@@ -351,15 +351,15 @@ pub(super) async fn get_allowed_project_actions<C: CatalogStore, A: Authorizer, 
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     query: GetAccessQuery,
-    object: &ProjectId,
+    object: &ArcProjectId,
 ) -> Result<Vec<CatalogProjectAction>> {
     let for_user_api = query.try_parse()?.principal;
 
-    let mut event_ctx = APIEventContext::for_project(
+    let mut event_ctx = APIEventContext::for_project_arc(
         Arc::new(request_metadata),
         state.v1_state.events,
         object.clone(),
-        IntrospectPermissions {},
+        Arc::new(IntrospectPermissions {}),
     );
     push_for_user_context(&mut event_ctx, for_user_api.as_ref());
 
@@ -380,7 +380,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
     request_metadata: &RequestMetadata,
     authorizer: impl Authorizer,
     for_user_api: Option<APIUserOrRole>,
-    object: &ProjectId,
+    object: &ArcProjectId,
     catalog_state: C::State,
 ) -> Result<Vec<CatalogProjectAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;

@@ -5,7 +5,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    ProjectId,
     api::{
         endpoints::{Endpoint, EndpointFlat},
         management::v1::project::{
@@ -16,12 +15,13 @@ use crate::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
     },
+    service::ArcProjectId,
     utils::time_conversion::iso_8601_duration_to_chrono,
 };
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn list_statistics(
-    project: ProjectId,
+    project: ArcProjectId,
     warehouse_filter: WarehouseFilter,
     status_codes: Option<&[u16]>,
     range_specifier: TimeWindowSelector,

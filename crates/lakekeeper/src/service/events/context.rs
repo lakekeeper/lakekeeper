@@ -679,6 +679,16 @@ impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
     ) -> Self {
         Self::new(request_metadata, dispatcher, project_id, action)
     }
+
+    #[must_use]
+    pub fn for_project_arc(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        project_id: Arc<ProjectId>,
+        action: Arc<A>,
+    ) -> Self {
+        Self::new_arc(request_metadata, dispatcher, project_id, action)
+    }
 }
 
 impl<A: APIEventActions> APIEventContext<UserId, Unresolved, A> {
@@ -900,6 +910,10 @@ where
 
     #[must_use]
     pub fn user_provided_entity(&self) -> &P {
+        &self.user_provided_entity
+    }
+    #[must_use]
+    pub fn user_provided_entity_arc_ref(&self) -> &Arc<P> {
         &self.user_provided_entity
     }
 

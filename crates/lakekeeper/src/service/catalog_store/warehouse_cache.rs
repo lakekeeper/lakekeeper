@@ -9,7 +9,10 @@ use unicase::UniCase;
 
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
-use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
+use crate::{
+    CONFIG, WarehouseId,
+    service::{ArcProjectId, ResolvedWarehouse},
+};
 
 const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
 const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
@@ -88,7 +91,7 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
 
 // Secondary index: (project_id, name) → warehouse_id
 // Uses UniCase for case-insensitive warehouse name lookups
-static NAME_TO_ID_CACHE: LazyLock<Cache<(ProjectId, UniCase<String>), WarehouseId>> =
+static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), WarehouseId>> =
     LazyLock::new(|| {
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
@@ -167,7 +170,7 @@ pub(super) async fn warehouse_cache_get_by_id(
 
 pub(super) async fn warehouse_cache_get_by_name(
     name: &str,
-    project_id: &ProjectId,
+    project_id: &ArcProjectId,
 ) -> Option<Arc<ResolvedWarehouse>> {
     update_cache_size_metric();
     let Some(warehouse_id) = NAME_TO_ID_CACHE
@@ -293,6 +296,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        ProjectId,
         api::management::v1::warehouse::TabularDeleteProfile,
         service::{catalog_store::warehouse::WarehouseStatus, storage::MemoryProfile},
     };
@@ -301,7 +305,7 @@ mod tests {
     fn test_warehouse(
         warehouse_id: WarehouseId,
         name: String,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         updated_at: Option<chrono::DateTime<chrono::Utc>>,
         version: i64,
     ) -> Arc<ResolvedWarehouse> {
@@ -322,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_and_get_by_id() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -347,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_get_by_name() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-by-name".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -372,8 +376,8 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_get_by_name_different_project() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
-        let different_project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        let different_project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-project".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -394,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_invalidate() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-invalidate".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -426,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_miss() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "nonexistent-warehouse".to_string();
 
         // Try to get a warehouse that was never cached
@@ -440,7 +444,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_newer_timestamp() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-timestamp".to_string();
 
         let old_time = Utc::now();
@@ -480,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_older_timestamp_ignored() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-old-timestamp".to_string();
 
         let new_time = Utc::now();
@@ -520,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_same_timestamp_ignored() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-same-timestamp".to_string();
 
         let timestamp = Utc::now();
@@ -554,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_rename_updates_name_to_id_cache() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let old_name = "old-warehouse-name".to_string();
         let new_name = "new-warehouse-name".to_string();
 
@@ -601,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_none_timestamp() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-none-timestamp".to_string();
 
         // Insert warehouse without timestamp
@@ -632,7 +636,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_warehouse_cache_multiple_warehouses() {
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
 
         // Create multiple warehouses
         let warehouse1_id = WarehouseId::new_random();
@@ -692,8 +696,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_warehouse_cache_same_name_different_projects() {
-        let project_id1 = ProjectId::new_random();
-        let project_id2 = ProjectId::new_random();
+        let project_id1 = Arc::new(ProjectId::new_random());
+        let project_id2 = Arc::new(ProjectId::new_random());
         let name = "same-warehouse-name".to_string();
 
         let warehouse1_id = WarehouseId::new_random();
@@ -731,7 +735,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_case_insensitive_lookup() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "Test-Warehouse".to_string();
         let warehouse = test_warehouse(
             warehouse_id,

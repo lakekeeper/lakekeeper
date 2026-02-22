@@ -27,7 +27,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        CatalogStore, CatalogWarehouseOps, State, Transaction,
+        ArcProjectId, CatalogStore, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction,
@@ -52,7 +52,7 @@ use crate::{
 pub struct GetProjectResponse {
     /// ID of the project.
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Name of the project
     pub project_name: String,
 }
@@ -91,7 +91,7 @@ pub struct CreateProjectRequest {
 pub struct CreateProjectResponse {
     /// ID of the created project.
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
 }
 
 impl axum::response::IntoResponse for CreateProjectResponse {
@@ -139,7 +139,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         } = request;
         validate_project_name(&project_name)?;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let project_id = project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7()));
+        let project_id = Arc::new(project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7())));
         C::create_project(&project_id, project_name.clone(), t.transaction()).await?;
         authorizer
             .create_project(event_ctx.request_metadata(), &project_id)
@@ -179,11 +179,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata.clone()),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::Rename,
+            Arc::new(CatalogProjectAction::Rename),
         );
 
         let authorizer = context.v1_state.authz;
@@ -212,11 +212,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<GetProjectResponse> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata.clone()),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::GetMetadata,
+            Arc::new(CatalogProjectAction::GetMetadata),
         );
 
         let authorizer = context.v1_state.authz;
@@ -254,11 +254,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata.clone()),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::Delete,
+            Arc::new(CatalogProjectAction::Delete),
         );
 
         let authorizer = context.v1_state.authz;
@@ -384,11 +384,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
             }
             WarehouseFilter::All | WarehouseFilter::Unmapped => {
-                let event_ctx = APIEventContext::for_project(
+                let event_ctx = APIEventContext::for_project_arc(
                     Arc::new(request_metadata),
                     context.v1_state.events,
                     project_id.clone(),
-                    CatalogProjectAction::GetEndpointStatistics,
+                    Arc::new(CatalogProjectAction::GetEndpointStatistics),
                 );
 
                 let authz_result = authorizer
@@ -428,17 +428,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
 
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::ModifyTaskQueueConfig,
+            Arc::new(CatalogProjectAction::ModifyTaskQueueConfig),
         );
 
         let authz_result = authorizer
             .require_project_action(
                 event_ctx.request_metadata(),
-                event_ctx.user_provided_entity(),
+                event_ctx.user_provided_entity_arc_ref(),
                 *event_ctx.action(),
             )
             .await;
@@ -458,17 +458,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
 
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id.clone(),
-            CatalogProjectAction::GetTaskQueueConfig,
+            Arc::new(CatalogProjectAction::GetTaskQueueConfig),
         );
 
         let authz_result = authorizer
             .require_project_action(
                 event_ctx.request_metadata(),
-                event_ctx.user_provided_entity(),
+                event_ctx.user_provided_entity_arc_ref(),
                 *event_ctx.action(),
             )
             .await;

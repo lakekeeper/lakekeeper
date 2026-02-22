@@ -196,7 +196,7 @@ async fn check_project(
     event_dispatcher: EventDispatcher,
 ) -> Result<(String, String)> {
     let project_id = project_id
-        .or(metadata.preferred_project_id())
+        .or_else(|| metadata.preferred_project_id().map(|p| (*p).clone()))
         .ok_or(OpenFGAError::NoProjectId)
         .map_err(authz_to_error_no_audit)?;
     let project_id_openfga = project_id.to_openfga();

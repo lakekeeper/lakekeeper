@@ -141,12 +141,12 @@ pub struct SearchRoleResponse {
 #[error("A role with id '{role_id}' does not exist in project with id '{project_id}'")]
 pub struct RoleIdNotFoundInProject {
     pub role_id: RoleId,
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub stack: Vec<String>,
 }
 impl RoleIdNotFoundInProject {
     #[must_use]
-    pub fn new(role_id: RoleId, project_id: ProjectId) -> Self {
+    pub fn new(role_id: RoleId, project_id: ArcProjectId) -> Self {
         Self {
             role_id,
             project_id,
@@ -508,7 +508,7 @@ where
     }
 
     async fn delete_role<'a>(
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), DeleteRoleError> {
@@ -612,13 +612,13 @@ where
     }
 
     async fn get_role_by_id(
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleInProjectError> {
         if let Some(role) = role_cache_get_by_id(role_id).await {
             // Verify the cached role belongs to the requested project
-            if role.project_id.as_ref() == project_id {
+            if role.project_id.as_ref() == &**project_id {
                 return Ok(role);
             }
             // Cache hit for wrong project - treat as cache miss
@@ -691,7 +691,7 @@ where
     }
 
     async fn get_role_by_id_cache_aware(
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         role_id: RoleId,
         cache_policy: CachePolicy,
         catalog_state: Self::State,
@@ -718,7 +718,7 @@ where
             }
             CachePolicy::RequireMinimumVersion(min_version) => {
                 if let Some(role) = role_cache_get_by_id(role_id).await
-                    && role.project_id.as_ref() == project_id
+                    && role.project_id.as_ref() == &**project_id
                     && *role.version >= min_version
                 {
                     return Ok(role);

@@ -32,7 +32,7 @@ use crate::{
         },
     },
     service::{
-        RoleProviderId, RoleSourceId, TabularId, TabularIdentBorrowed,
+        ArcProjectId, RoleProviderId, RoleSourceId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -580,7 +580,7 @@ where
     /// We'll return statistics for the time-frame end - interval until end.
     /// If `status_codes` is None, return all status codes.
     async fn get_endpoint_statistics(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseFilter,
         range_specifier: TimeWindowSelector,
         status_codes: Option<&[u16]>,
@@ -679,7 +679,7 @@ where
     ) -> Result<()>;
 
     async fn set_task_queue_config_impl(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: &SetTaskQueueConfigRequest,
