@@ -59,7 +59,7 @@ use crate::{
         CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
         CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError,
+        CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
         CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse,
         CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
@@ -331,7 +331,7 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError> {

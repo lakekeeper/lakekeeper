@@ -3,7 +3,7 @@ use std::{ops::Deref, str::FromStr, sync::Arc};
 use iceberg_ext::catalog::rest::ErrorModel;
 
 /// Reference to [`ProjectId`] that can be cheaply cloned and shared.
-pub type ProjectIdArc = Arc<ProjectId>;
+pub type ArcProjectId = Arc<ProjectId>;
 
 #[derive(Debug, serde::Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
@@ -105,5 +105,17 @@ impl FromStr for ProjectId {
 impl From<uuid::Uuid> for ProjectId {
     fn from(uuid: uuid::Uuid) -> Self {
         Self::new(uuid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::ROLE_PROVIDER_SEPARATOR;
+
+    #[test]
+    fn test_project_id_cant_contain_role_separator() {
+        let id = format!("invalid{ROLE_PROVIDER_SEPARATOR}id");
+        assert!(ProjectId::try_new(id).is_err());
     }
 }

@@ -13,10 +13,10 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        ArcRole, ArcRoleIdent, CatalogBackendError, CatalogCreateRoleRequest,
-        CatalogListRolesFilter, CatalogRoleOps, CatalogStore, CreateRoleError, DeleteRoleError,
-        Result, RoleId, RoleProviderId, RoleSourceId, SecretStore, State, Transaction,
-        UpdateRoleError,
+        ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogBackendError,
+        CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore,
+        CreateRoleError, DeleteRoleError, Result, RoleId, RoleProviderId, RoleSourceId,
+        SecretStore, State, Transaction, UpdateRoleError,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
             CatalogRoleAction,
@@ -78,7 +78,7 @@ pub struct Role {
     pub description: Option<String>,
     /// Project ID in which the role is created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the role was last updated
@@ -123,7 +123,7 @@ pub struct RoleMetadata {
     pub name: String,
     /// Project ID in which the role is created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
 }
 
 impl_arc_into_response!(RoleMetadata);
@@ -354,9 +354,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
 
-        let role = C::get_role_by_id(
+        let role = C::get_role_by_id_cache_aware(
             &event_ctx.request_metadata().require_project_id(None)?,
             role_id,
+            CachePolicy::Skip,
             context.v1_state.catalog,
         )
         .await;
@@ -563,11 +564,11 @@ async fn authorize_list_roles<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     query: ListRolesQuery,
 ) -> Result<crate::service::ListRolesResponse, AuthZError> {
-    let project_id = event_ctx.user_provided_entity();
+    let project_id = event_ctx.user_provided_entity_arc();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
     authorizer
-        .require_project_action(request_metadata, project_id, *action)
+        .require_project_action(request_metadata, &project_id, *action)
         .await?;
 
     // -------------------- Business Logic --------------------
@@ -582,7 +583,7 @@ async fn authorize_list_roles<A: Authorizer, C: CatalogStore>(
         .map(|v| v.iter().collect::<Vec<_>>());
     let roles = C::list_roles(
         project_id,
-        CatalogListRolesFilter::builder()
+        CatalogListRolesByIdFilter::builder()
             .role_ids(query.role_ids.as_deref())
             .source_ids(source_ids.as_deref())
             .provider_ids(provider_ids.as_deref())
@@ -603,7 +604,9 @@ async fn authorize_get_role_metadata<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
 
-    let role = C::get_role_by_id_across_projects(role_id, catalog_state).await?;
+    let role =
+        C::get_role_by_id_across_projects_cache_aware(role_id, CachePolicy::Use, catalog_state)
+            .await?;
 
     let role = authorizer
         .require_role_action(request_metadata, Ok(role), *action)
@@ -652,7 +655,13 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
 
-    let role = C::get_role_by_id(&project_id, role_id, catalog_state.clone()).await;
+    let role = C::get_role_by_id_cache_aware(
+        &project_id,
+        role_id,
+        CachePolicy::Skip,
+        catalog_state.clone(),
+    )
+    .await;
     let action = event_ctx.action();
 
     let role = authorizer
@@ -684,7 +693,13 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
 
-    let role = C::get_role_by_id(&project_id, role_id, catalog_state.clone()).await;
+    let role = C::get_role_by_id_cache_aware(
+        &project_id,
+        role_id,
+        CachePolicy::Skip,
+        catalog_state.clone(),
+    )
+    .await;
 
     authorizer
         .require_role_action(request_metadata, role, *action)
@@ -721,7 +736,13 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
 
-    let role = C::get_role_by_id(&project_id, role_id, catalog_state.clone()).await;
+    let role = C::get_role_by_id_cache_aware(
+        &project_id,
+        role_id,
+        CachePolicy::Skip,
+        catalog_state.clone(),
+    )
+    .await;
 
     authorizer
         .require_role_action(request_metadata, role, *action)

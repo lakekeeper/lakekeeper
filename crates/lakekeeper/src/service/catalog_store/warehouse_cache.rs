@@ -42,28 +42,44 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
             ))
             .async_eviction_listener(|key, value: CachedWarehouse, cause| {
                 Box::pin(async move {
-                    // Evictions:
-                    // - Replaced: only invalidate old-name mapping if the current entry
-                    //   either does not exist or has a different (project_id, name).
-                    // - Other causes: primary entry is gone; invalidate mapping.
-                    let should_invalidate = match cause {
+                    // On Replaced: invalidate the old secondary index mapping immediately,
+                    // then spawn a task to re-insert the new mapping (avoids re-entrant
+                    // WAREHOUSE_CACHE.get() calls which can deadlock).
+                    // On all other causes (expired, explicit): always invalidate.
+                    match cause {
                         RemovalCause::Replaced => {
-                            if let Some(curr) = WAREHOUSE_CACHE.get(&*key).await {
-                                curr.warehouse.project_id != value.warehouse.project_id
-                                    || curr.warehouse.name != value.warehouse.name
-                            } else {
-                                true
-                            }
+                            let key = *key;
+                            // Immediately invalidate the old (project_id, name) → warehouse_id mapping
+                            NAME_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.warehouse.project_id.clone(),
+                                    UniCase::new(value.warehouse.name.clone()),
+                                ))
+                                .await;
+
+                            // Spawn task to add the new mapping (avoids re-entrant WAREHOUSE_CACHE.get)
+                            tokio::spawn(async move {
+                                if let Some(curr) = WAREHOUSE_CACHE.get(&key).await {
+                                    NAME_TO_ID_CACHE
+                                        .insert(
+                                            (
+                                                curr.warehouse.project_id.clone(),
+                                                UniCase::new(curr.warehouse.name.clone()),
+                                            ),
+                                            key,
+                                        )
+                                        .await;
+                                }
+                            });
                         }
-                        _ => true,
-                    };
-                    if should_invalidate {
-                        NAME_TO_ID_CACHE
-                            .invalidate(&(
-                                value.warehouse.project_id.clone(),
-                                UniCase::new(value.warehouse.name.clone()),
-                            ))
-                            .await;
+                        _ => {
+                            NAME_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.warehouse.project_id.clone(),
+                                    UniCase::new(value.warehouse.name.clone()),
+                                ))
+                                .await;
+                        }
                     }
                 })
             })

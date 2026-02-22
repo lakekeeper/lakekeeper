@@ -47,6 +47,7 @@ pub use namespace::*;
 mod tabular;
 pub use tabular::*;
 pub(crate) mod namespace_cache;
+pub(crate) mod role_cache;
 mod warehouse;
 pub(crate) mod warehouse_cache;
 pub use warehouse::*;
@@ -518,7 +519,7 @@ where
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;

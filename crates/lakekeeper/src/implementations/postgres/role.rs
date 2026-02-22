@@ -11,7 +11,7 @@ use crate::{
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{
-        CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CreateRoleError,
+        CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CreateRoleError,
         ListRolesError, ListRolesResponse, ProjectIdNotFoundError, Result, Role, RoleId,
         RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleSourceIdConflict,
         RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
@@ -49,7 +49,7 @@ impl From<RoleRow> for Role {
             id: RoleId::new(id),
             name,
             description,
-            project_id: ProjectId::from_db_unchecked(project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(project_id)),
             ident: Arc::new(RoleIdent::from_db_unchecked(provider_id, source_id)),
             created_at,
             updated_at,
@@ -270,7 +270,7 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 
 pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     project_id: Option<&ProjectId>,
-    filter: CatalogListRolesFilter<'_>,
+    filter: CatalogListRolesByIdFilter<'_>,
     PaginationQuery {
         page_size,
         page_token,
@@ -279,7 +279,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 ) -> Result<ListRolesResponse, ListRolesError> {
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
 
-    let CatalogListRolesFilter {
+    let CatalogListRolesByIdFilter {
         role_ids,
         source_ids,
         provider_ids,
@@ -494,7 +494,7 @@ mod test {
 
         assert_eq!(role.name, "Role 1");
         assert_eq!(role.description, Some("Role 1 description".to_string()));
-        assert_eq!(role.project_id, project_id);
+        assert_eq!(&*role.project_id, &project_id);
         assert_eq!(role.source_id(), &source_id);
 
         // Duplicate name yields conflict (case-insensitive) (409)
@@ -559,7 +559,7 @@ mod test {
 
         assert_eq!(role.name, "Role 1");
         assert_eq!(role.description, Some("Role 1 description".to_string()));
-        assert_eq!(role.project_id, project_id);
+        assert_eq!(&*role.project_id, &project_id);
         assert_eq!(role.source_id().as_str(), role_id.to_string());
 
         let updated_role = update_role(
@@ -576,7 +576,7 @@ mod test {
             updated_role.description,
             Some("Role 2 description".to_string())
         );
-        assert_eq!(updated_role.project_id, project_id);
+        assert_eq!(&*updated_role.project_id, &project_id);
     }
 
     #[sqlx::test]
@@ -638,7 +638,7 @@ mod test {
 
         assert_eq!(role.name, "Role 2");
         assert_eq!(role.description, Some("Role 2 description".to_string()));
-        assert_eq!(role.project_id, project_id);
+        assert_eq!(&*role.project_id, &project_id);
 
         let err = update_role(
             &project_id,
@@ -693,7 +693,7 @@ mod test {
 
         assert_eq!(role.name, "Role 1");
         assert_eq!(role.description, Some("Role 1 description".to_string()));
-        assert_eq!(role.project_id, project_id);
+        assert_eq!(&*role.project_id, &project_id);
         assert_eq!(role.source_id().as_str(), role_id.to_string());
 
         let external_source_id: RoleSourceId = "external-2".parse().unwrap();
@@ -714,7 +714,7 @@ mod test {
             updated_role.description,
             Some("Role 1 description".to_string())
         );
-        assert_eq!(updated_role.project_id, project_id);
+        assert_eq!(&*updated_role.project_id, &project_id);
         assert_eq!(updated_role.source_id(), &external_source_id);
 
         // Create new role with same external id yields conflict
@@ -836,7 +836,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project1_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -849,7 +849,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project2_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -960,7 +960,7 @@ mod test {
         // List all roles across all projects with project_id = None
         let roles = list_roles(
             None,
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -980,7 +980,7 @@ mod test {
         // Verify that filtering by role_ids works across projects
         let roles = list_roles(
             None,
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .role_ids(Some(&[role1_id, role3_id]))
                 .build(),
             PaginationQuery {
@@ -1041,7 +1041,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project1_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -1054,7 +1054,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project1_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(5),
                 page_token: PageToken::Empty,
@@ -1072,7 +1072,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project1_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(5),
                 page_token: roles.next_page_token.into(),
@@ -1089,7 +1089,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project1_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(5),
                 page_token: roles.next_page_token.into(),
@@ -1146,7 +1146,7 @@ mod test {
 
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -1213,7 +1213,7 @@ mod test {
         // Verify only role 2 remains
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -1282,7 +1282,7 @@ mod test {
         // Verify role 2 remains
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -1367,7 +1367,7 @@ mod test {
         // Verify project 2 role still exists
         let roles = list_roles(
             Some(&project2_id),
-            CatalogListRolesFilter::builder().build(),
+            CatalogListRolesByIdFilter::builder().build(),
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -1433,7 +1433,7 @@ mod test {
         // Filter by specific source IDs
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .source_ids(Some(&[&ext_source_1, &ext_source_3]))
                 .build(),
             PaginationQuery {
@@ -1462,7 +1462,7 @@ mod test {
         // Filter by single source ID
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .source_ids(Some(&[&ext_source_2]))
                 .build(),
             PaginationQuery {
@@ -1534,7 +1534,7 @@ mod test {
         // Filter by role_ids and source_system (both must match)
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .source_ids(Some(&[&source_1, &source_2]))
                 .build(),
             PaginationQuery {
@@ -1553,7 +1553,7 @@ mod test {
         // Filter by role_ids and source_ids
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .role_ids(Some(&[role1_id, role3_id]))
                 .source_ids(Some(&[&source_1]))
                 .build(),
@@ -1572,7 +1572,7 @@ mod test {
         // Filter with all three filters
         let roles = list_roles(
             Some(&project_id),
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .role_ids(Some(&[role1_id, role2_id, role3_id]))
                 .source_ids(Some(&[&source_2]))
                 .build(),
@@ -1780,7 +1780,7 @@ mod test {
         for (i, role) in roles.iter().enumerate() {
             assert_eq!(role.name, format!("MinimalRole{}", i + 1));
             assert_eq!(role.description, None);
-            assert_eq!(role.project_id, project_id);
+            assert_eq!(&*role.project_id, &project_id);
         }
     }
 
