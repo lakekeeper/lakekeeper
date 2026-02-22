@@ -131,7 +131,12 @@ async fn resolve_principal<C: CatalogStore>(
         None => Ok(None),
         Some(APIUserOrRole::User(id)) => Ok(Some(UserOrRole::User(id))),
         Some(APIUserOrRole::Role(assignee)) => {
-            let role = C::get_role_by_id_across_projects(assignee.role_id(), catalog_state).await?;
+            let role = C::get_role_by_id_across_projects_cache_aware(
+                assignee.role_id(),
+                CachePolicy::Use,
+                catalog_state,
+            )
+            .await?;
             Ok(Some(UserOrRole::Role(RoleAssignee::from_role(role))))
         }
     }
@@ -301,7 +306,8 @@ async fn authorize_get_role_actions<C: CatalogStore>(
     let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
     let actions = CatalogRoleAction::VARIANTS;
     let can_see_permission = CatalogRoleAction::Read;
-    let role = C::get_role_by_id(&project_id, role_id, catalog_state).await;
+    let role =
+        C::get_role_by_id_cache_aware(&project_id, role_id, CachePolicy::Use, catalog_state).await;
     let role = authorizer.require_role_presence(role)?;
 
     let results = authorizer

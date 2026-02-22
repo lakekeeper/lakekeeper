@@ -904,6 +904,11 @@ where
     }
 
     #[must_use]
+    pub fn user_provided_entity_arc(&self) -> Arc<P> {
+        self.user_provided_entity.clone()
+    }
+
+    #[must_use]
     pub fn request_metadata(&self) -> &RequestMetadata {
         &self.request_metadata
     }

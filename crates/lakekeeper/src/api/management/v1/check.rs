@@ -14,12 +14,12 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError, CatalogListRolesFilter,
-        CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        GetRoleAcrossProjectsError, NamespaceId, NamespaceVersion, NamespaceWithParent,
-        ResolvedWarehouse, RoleId, RoleIdNotFound, SecretStore, State, TableInfo, TabularId,
-        TabularIdentOwned, TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus,
-        WarehouseVersion,
+        ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
+        CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, GetRoleAcrossProjectsError, NamespaceId,
+        NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId, RoleIdNotFound,
+        SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId,
+        ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
@@ -897,7 +897,7 @@ async fn fetch_identity_roles<C: CatalogStore>(
         return Ok(HashMap::new());
     }
 
-    let filter = CatalogListRolesFilter::builder()
+    let filter = CatalogListRolesByIdFilter::builder()
         .role_ids(Some(&role_ids))
         .build();
     let response = C::list_roles_across_projects(

@@ -246,7 +246,12 @@ pub(crate) async fn auth_middleware_fn<
         Some(role_id) => Actor::Role {
             principal: user_id,
             assumed_role: {
-                let role = C::get_role_by_id_across_projects(role_id, catalog_state).await;
+                let role = C::get_role_by_id_across_projects_cache_aware(
+                    role_id,
+                    crate::service::CachePolicy::Use,
+                    catalog_state,
+                )
+                .await;
                 match role {
                     Ok(role) => role,
                     Err(e) => {

@@ -663,27 +663,6 @@ where
         Ok(warehouse)
     }
 
-    // /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
-    // async fn require_warehouse_by_id<'a>(
-    //     warehouse_id: WarehouseId,
-    //     state: Self::State,
-    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-    //     Self::get_warehouse_by_id(warehouse_id, state)
-    //         .await?
-    //         .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
-    // }
-
-    // async fn require_warehouse_by_id_cache_aware(
-    //     warehouse_id: WarehouseId,
-    //     status_filter: &[WarehouseStatus],
-    //     cache_policy: CachePolicy,
-    //     state: Self::State,
-    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-    //     Self::get_warehouse_by_id_cache_aware(warehouse_id, status_filter, cache_policy, state)
-    //         .await?
-    //         .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
-    // }
-
     async fn get_warehouse_by_name(
         warehouse_name: &str,
         project_id: &ProjectId,

@@ -1,16 +1,25 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
-    ProjectId,
-    api::{iceberg::v1::PaginationQuery, management::v1::role::UpdateRoleSourceSystemRequest},
+    CONFIG, ProjectId,
+    api::{
+        iceberg::{types::PageToken, v1::PaginationQuery},
+        management::v1::role::UpdateRoleSourceSystemRequest,
+    },
     service::{
-        CatalogBackendError, CatalogCreateRoleRequest, CatalogStore, InvalidPaginationToken,
-        ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleIdent, RoleProviderId,
-        RoleSourceId, Transaction, catalog_store::define_version_newtype, define_transparent_error,
-        identifier::role::ArcRoleIdent, impl_error_stack_methods, impl_from_with_detail,
+        ArcProjectId, CachePolicy, CatalogBackendError, CatalogCreateRoleRequest, CatalogStore,
+        InvalidPaginationToken, ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleIdent,
+        RoleProviderId, RoleSourceId, Transaction,
+        catalog_store::{
+            define_version_newtype,
+            role_cache::{role_cache_get_by_id, role_cache_get_by_ident, role_cache_insert},
+        },
+        define_transparent_error,
+        identifier::role::ArcRoleIdent,
+        impl_error_stack_methods, impl_from_with_detail,
     },
 };
 
@@ -29,7 +38,7 @@ pub struct Role {
     /// Description of the role
     pub description: Option<String>,
     /// Project ID in which the role is created.
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the role was last updated
@@ -68,6 +77,11 @@ impl Role {
     }
 
     #[must_use]
+    pub fn project_id_arc(&self) -> ArcProjectId {
+        self.project_id.clone()
+    }
+
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -103,7 +117,7 @@ impl Role {
             id,
             ident,
             description: Some("A randomly generated role".to_string()),
-            project_id: ProjectId::new_random(),
+            project_id: Arc::new(ProjectId::new_random()),
             created_at: chrono::Utc::now(),
             updated_at: None,
             version: RoleVersion::new(0),
@@ -296,13 +310,13 @@ impl From<ListRolesError> for GetRoleAcrossProjectsError {
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("A role with ident '{ident}' does not exist in project '{project_id}'")]
 pub struct RoleIdentNotFoundInProject {
-    pub ident: RoleIdent,
-    pub project_id: ProjectId,
+    pub ident: ArcRoleIdent,
+    pub project_id: ArcProjectId,
     pub stack: Vec<String>,
 }
 impl RoleIdentNotFoundInProject {
     #[must_use]
-    pub fn new(ident: RoleIdent, project_id: ProjectId) -> Self {
+    pub fn new(ident: ArcRoleIdent, project_id: ArcProjectId) -> Self {
         Self {
             ident,
             project_id,
@@ -364,13 +378,101 @@ define_transparent_error! {
 }
 
 #[derive(Debug, PartialEq, typed_builder::TypedBuilder)]
-pub struct CatalogListRolesFilter<'a> {
+pub struct CatalogListRolesByIdFilter<'a> {
     #[builder(default)]
     pub role_ids: Option<&'a [RoleId]>,
     #[builder(default)]
     pub source_ids: Option<&'a [&'a RoleSourceId]>,
     #[builder(default)]
     pub provider_ids: Option<&'a [&'a RoleProviderId]>,
+}
+
+/// Try to serve a `role_ids` list query entirely from cache.
+///
+/// Returns `Some(ListRolesResponse)` if every requested ID was found in cache.
+/// Cached roles that do not match the `project_id`, `source_ids`, or `provider_ids`
+/// filters are excluded from the result but do not cause a fallback to DB.
+/// Returns `None` on any cache miss or when a continuation token is present or more
+/// IDs are requested than fit on a single page.
+async fn try_list_roles_from_cache(
+    filter: &CatalogListRolesByIdFilter<'_>,
+    pagination: &PaginationQuery,
+    project_id: Option<&ArcProjectId>,
+) -> Option<ListRolesResponse> {
+    // Decompose filter fields explicitly so new fields are not accidentally overlooked.
+    let CatalogListRolesByIdFilter {
+        role_ids,
+        source_ids,
+        provider_ids,
+    } = filter;
+
+    let role_ids = (*role_ids)?;
+
+    // Can't reconstruct a paginated result from cache.
+    if matches!(pagination.page_token, PageToken::Present(_)) {
+        return None;
+    }
+    if role_ids.len()
+        > CONFIG
+            .page_size_or_pagination_default(pagination.page_size)
+            .try_into()
+            .unwrap_or(usize::MAX)
+    {
+        return None;
+    }
+
+    // Build filter sets once for O(1) membership checks.
+    let source_id_set: Option<HashSet<&RoleSourceId>> =
+        source_ids.map(|sids| sids.iter().copied().collect());
+    let provider_id_set: Option<HashSet<&RoleProviderId>> =
+        provider_ids.map(|pids| pids.iter().copied().collect());
+
+    // Fetch all IDs from cache in parallel; abort early on first None.
+    let mut join_set = tokio::task::JoinSet::new();
+    for &role_id in role_ids {
+        join_set.spawn(role_cache_get_by_id(role_id));
+    }
+
+    let mut cached = Vec::with_capacity(role_ids.len());
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Some(role)) => cached.push(role),
+            Ok(None) => {
+                join_set.abort_all();
+                return None;
+            }
+            Err(_) => {
+                // JoinError shouldn't happen for these tasks
+                join_set.abort_all();
+                return None;
+            }
+        }
+    }
+
+    let mut roles = Vec::with_capacity(role_ids.len());
+    for role in cached {
+        // Apply filters: roles that don't match are simply excluded.
+        if let Some(pid) = project_id
+            && role.project_id != *pid
+        {
+            continue;
+        }
+        if let Some(ref sids) = source_id_set
+            && !sids.contains(role.source_id())
+        {
+            continue;
+        }
+        if let Some(ref pids) = provider_id_set
+            && !pids.contains(role.provider_id())
+        {
+            continue;
+        }
+        roles.push(role);
+    }
+    Some(ListRolesResponse {
+        roles,
+        next_page_token: None,
+    })
 }
 
 #[async_trait::async_trait]
@@ -445,41 +547,68 @@ where
     }
 
     async fn list_roles(
-        project_id: &ProjectId,
-        filter: CatalogListRolesFilter<'_>,
+        project_id: ArcProjectId,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError> {
-        Self::list_roles_impl(Some(project_id), filter, pagination, catalog_state).await
+        if let Some(cached) =
+            try_list_roles_from_cache(&filter, &pagination, Some(&project_id)).await
+        {
+            return Ok(cached);
+        }
+        let populate_cache = filter.role_ids.is_some();
+        let result =
+            Self::list_roles_impl(Some(&*project_id), filter, pagination, catalog_state).await?;
+        if populate_cache {
+            for role in &result.roles {
+                role_cache_insert(role.clone()).await;
+            }
+        }
+        Ok(result)
     }
 
     async fn list_roles_across_projects(
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError> {
-        Self::list_roles_impl(None, filter, pagination, catalog_state).await
+        if let Some(cached) = try_list_roles_from_cache(&filter, &pagination, None).await {
+            return Ok(cached);
+        }
+        let populate_cache = filter.role_ids.is_some();
+        let result = Self::list_roles_impl(None, filter, pagination, catalog_state).await?;
+        if populate_cache {
+            for role in &result.roles {
+                role_cache_insert(role.clone()).await;
+            }
+        }
+        Ok(result)
     }
 
     async fn get_role_by_id_across_projects(
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
+        if let Some(role) = role_cache_get_by_id(role_id).await {
+            return Ok(role);
+        }
         let roles = Self::list_roles_impl(
             None,
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .role_ids(Some(&[role_id]))
                 .build(),
             PaginationQuery::new_with_page_size(1),
             catalog_state,
         )
         .await?;
-
-        if let Some(role) = roles.roles.into_iter().next() {
-            Ok(role)
-        } else {
-            Err(RoleIdNotFound::new(role_id).into())
-        }
+        let role = roles
+            .roles
+            .into_iter()
+            .next()
+            .ok_or_else(|| RoleIdNotFound::new(role_id))?;
+        role_cache_insert(role.clone()).await;
+        Ok(role)
     }
 
     async fn get_role_by_id(
@@ -487,21 +616,25 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleInProjectError> {
+        if let Some(role) = role_cache_get_by_id(role_id).await {
+            return Ok(role);
+        }
         let roles = Self::list_roles_impl(
             Some(project_id),
-            CatalogListRolesFilter::builder()
+            CatalogListRolesByIdFilter::builder()
                 .role_ids(Some(&[role_id]))
                 .build(),
             PaginationQuery::new_with_page_size(1),
             catalog_state,
         )
         .await?;
-
-        if let Some(role) = roles.roles.into_iter().next() {
-            Ok(role)
-        } else {
-            Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
-        }
+        let role = roles
+            .roles
+            .into_iter()
+            .next()
+            .ok_or_else(|| RoleIdNotFoundInProject::new(role_id, project_id.clone()))?;
+        role_cache_insert(role.clone()).await;
+        Ok(role)
     }
 
     async fn search_role(
@@ -530,14 +663,164 @@ where
 
     /// Returns the single role in `project_id` with the given `ident`, or an error if not found.
     async fn get_role_by_ident(
-        project_id: &ProjectId,
-        ident: &RoleIdent,
+        arc_project_id: ArcProjectId,
+        arc_ident: ArcRoleIdent,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleByIdentError> {
-        let roles = Self::list_roles_by_idents_impl(project_id, &[ident], catalog_state).await?;
-        roles.into_iter().next().map(Arc::new).ok_or_else(|| {
-            RoleIdentNotFoundInProject::new(ident.clone(), project_id.clone()).into()
-        })
+        if let Some(role) = role_cache_get_by_ident(arc_project_id.clone(), arc_ident.clone()).await
+        {
+            return Ok(role);
+        }
+        let roles =
+            Self::list_roles_by_idents_impl(&arc_project_id, &[&*arc_ident], catalog_state).await?;
+        let role = roles
+            .into_iter()
+            .next()
+            .map(Arc::new)
+            .ok_or_else(|| RoleIdentNotFoundInProject::new(arc_ident, arc_project_id))?;
+        role_cache_insert(role.clone()).await;
+        Ok(role)
+    }
+
+    async fn get_role_by_id_cache_aware(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        cache_policy: CachePolicy,
+        catalog_state: Self::State,
+    ) -> Result<Arc<Role>, GetRoleInProjectError> {
+        match cache_policy {
+            CachePolicy::Use => Self::get_role_by_id(project_id, role_id, catalog_state).await,
+            CachePolicy::Skip => {
+                let roles = Self::list_roles_impl(
+                    Some(project_id),
+                    CatalogListRolesByIdFilter::builder()
+                        .role_ids(Some(&[role_id]))
+                        .build(),
+                    PaginationQuery::new_with_page_size(1),
+                    catalog_state,
+                )
+                .await?;
+                let role = roles
+                    .roles
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| RoleIdNotFoundInProject::new(role_id, project_id.clone()))?;
+                role_cache_insert(role.clone()).await;
+                Ok(role)
+            }
+            CachePolicy::RequireMinimumVersion(min_version) => {
+                if let Some(role) = role_cache_get_by_id(role_id).await
+                    && *role.version >= min_version
+                {
+                    return Ok(role);
+                }
+                let roles = Self::list_roles_impl(
+                    Some(project_id),
+                    CatalogListRolesByIdFilter::builder()
+                        .role_ids(Some(&[role_id]))
+                        .build(),
+                    PaginationQuery::new_with_page_size(1),
+                    catalog_state,
+                )
+                .await?;
+                let role = roles
+                    .roles
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| RoleIdNotFoundInProject::new(role_id, project_id.clone()))?;
+                role_cache_insert(role.clone()).await;
+                Ok(role)
+            }
+        }
+    }
+
+    async fn get_role_by_id_across_projects_cache_aware(
+        role_id: RoleId,
+        cache_policy: CachePolicy,
+        catalog_state: Self::State,
+    ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
+        match cache_policy {
+            CachePolicy::Use => Self::get_role_by_id_across_projects(role_id, catalog_state).await,
+            CachePolicy::Skip => {
+                let roles = Self::list_roles_impl(
+                    None,
+                    CatalogListRolesByIdFilter::builder()
+                        .role_ids(Some(&[role_id]))
+                        .build(),
+                    PaginationQuery::new_with_page_size(1),
+                    catalog_state,
+                )
+                .await?;
+                let role = roles
+                    .roles
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| RoleIdNotFound::new(role_id))?;
+                role_cache_insert(role.clone()).await;
+                Ok(role)
+            }
+            CachePolicy::RequireMinimumVersion(min_version) => {
+                if let Some(role) = role_cache_get_by_id(role_id).await
+                    && *role.version >= min_version
+                {
+                    return Ok(role);
+                }
+                let roles = Self::list_roles_impl(
+                    None,
+                    CatalogListRolesByIdFilter::builder()
+                        .role_ids(Some(&[role_id]))
+                        .build(),
+                    PaginationQuery::new_with_page_size(1),
+                    catalog_state,
+                )
+                .await?;
+                let role = roles
+                    .roles
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| RoleIdNotFound::new(role_id))?;
+                role_cache_insert(role.clone()).await;
+                Ok(role)
+            }
+        }
+    }
+
+    async fn get_role_by_ident_cache_aware(
+        project_id: ArcProjectId,
+        ident: ArcRoleIdent,
+        cache_policy: CachePolicy,
+        catalog_state: Self::State,
+    ) -> Result<Arc<Role>, GetRoleByIdentError> {
+        match cache_policy {
+            CachePolicy::Use => Self::get_role_by_ident(project_id, ident, catalog_state).await,
+            CachePolicy::Skip => {
+                let roles =
+                    Self::list_roles_by_idents_impl(&project_id, &[&ident], catalog_state).await?;
+                let role = roles
+                    .into_iter()
+                    .next()
+                    .map(Arc::new)
+                    .ok_or_else(|| RoleIdentNotFoundInProject::new(ident, project_id))?;
+                role_cache_insert(role.clone()).await;
+                Ok(role)
+            }
+            CachePolicy::RequireMinimumVersion(min_version) => {
+                if let Some(role) = role_cache_get_by_ident(project_id.clone(), ident.clone()).await
+                    && *role.version >= min_version
+                {
+                    return Ok(role);
+                }
+                let roles =
+                    Self::list_roles_by_idents_impl(&project_id, &[&ident], catalog_state).await?;
+                let role = roles
+                    .into_iter()
+                    .next()
+                    .map(Arc::new)
+                    .ok_or_else(|| RoleIdentNotFoundInProject::new(ident, project_id))?;
+                role_cache_insert(role.clone()).await;
+                Ok(role)
+            }
+        }
     }
 }
 

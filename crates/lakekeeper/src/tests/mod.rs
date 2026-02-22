@@ -17,6 +17,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
         namespace_cache::NamespaceCacheEventListener,
+        role_cache::RoleCacheEventListener,
         storage::{StorageCredential, StorageProfile},
         warehouse_cache::WarehouseCacheEventListener,
     },
@@ -30,6 +31,8 @@ mod drop_warehouse;
 mod endpoint_stats;
 #[cfg(test)]
 mod namespace_ops;
+#[cfg(test)]
+mod role_ops;
 #[cfg(test)]
 mod soft_deletion;
 #[cfg(test)]
@@ -232,6 +235,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             events: EventDispatcher::new(vec![
                 std::sync::Arc::new(WarehouseCacheEventListener {}),
                 std::sync::Arc::new(NamespaceCacheEventListener {}),
+                std::sync::Arc::new(RoleCacheEventListener {}),
             ]),
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
