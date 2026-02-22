@@ -107,3 +107,15 @@ impl From<uuid::Uuid> for ProjectId {
         Self::new(uuid)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::ROLE_PROVIDER_SEPARATOR;
+
+    #[test]
+    fn test_project_id_cant_contain_role_separator() {
+        let id = format!("invalid{}id", ROLE_PROVIDER_SEPARATOR);
+        assert!(ProjectId::try_new(id).is_err());
+    }
+}
