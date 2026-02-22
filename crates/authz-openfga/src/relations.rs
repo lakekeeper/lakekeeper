@@ -1,10 +1,13 @@
-use lakekeeper::service::{
-    authn::UserId,
-    authz::{
-        ActionDescriptor, CatalogAction, CatalogNamespaceAction, CatalogProjectAction,
-        CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-        CatalogWarehouseAction, NamespaceAction, ProjectAction, RoleAction, RoleAssignee,
-        ServerAction, TableAction, UserOrRole, ViewAction, WarehouseAction,
+use lakekeeper::{
+    api::management::v1::check::{RoleAssignee, UserOrRole},
+    service::{
+        authn::UserId,
+        authz::{
+            ActionDescriptor, CatalogAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, NamespaceAction, ProjectAction, RoleAction, ServerAction,
+            TableAction, ViewAction, WarehouseAction,
+        },
     },
 };
 use serde::{Deserialize, Serialize};

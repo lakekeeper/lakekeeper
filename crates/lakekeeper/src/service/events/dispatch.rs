@@ -184,6 +184,20 @@ impl EventDispatcher {
         dispatch_event!(self, authorization_succeeded, event);
     }
 
+    // ===== Role Events =====
+
+    pub(crate) async fn role_created(&self, event: types::CreateRoleEvent) {
+        dispatch_event!(self, role_created, event);
+    }
+
+    pub(crate) async fn role_deleted(&self, event: types::DeleteRoleEvent) {
+        dispatch_event!(self, role_deleted, event);
+    }
+
+    pub(crate) async fn role_updated(&self, event: types::UpdateRoleEvent) {
+        dispatch_event!(self, role_updated, event);
+    }
+
     pub(crate) async fn namespace_metadata_loaded(
         &self,
         event: types::NamespaceMetadataLoadedEvent,
@@ -425,6 +439,23 @@ pub trait EventListener: Send + Sync + Debug + Display {
         &self,
         _event: types::authorization::AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Role Events =====
+
+    /// Invoked after a role has been successfully created
+    async fn role_created(&self, _event: types::CreateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a role has been successfully deleted
+    async fn role_deleted(&self, _event: types::DeleteRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a role has been successfully updated
+    async fn role_updated(&self, _event: types::UpdateRoleEvent) -> anyhow::Result<()> {
         Ok(())
     }
 }

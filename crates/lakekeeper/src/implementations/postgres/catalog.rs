@@ -9,7 +9,7 @@ use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data},
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
-    role::{create_roles, delete_roles, list_roles, update_role},
+    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -69,7 +69,7 @@ use crate::{
         ListRolesResponse, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
         MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
         RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
-        RoleId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
+        RoleId, RoleIdent, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
         SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
         SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
         TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList,
@@ -352,6 +352,14 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError> {
         search_role(project_id, search_term, &catalog_state.read_pool()).await
+    }
+
+    async fn list_roles_by_idents_impl(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Role>, CatalogBackendError> {
+        list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
     }
 
     // ---------------- User Management API ----------------

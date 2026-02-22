@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::service::RoleId;
 
-pub type RoleIdentRef = Arc<RoleIdent>;
+pub type ArcRoleIdent = Arc<RoleIdent>;
 
 const ROLE_ID_SEPARATOR: char = '~';
 /// Provider ID used for all server-managed (Lakekeeper-generated) roles.

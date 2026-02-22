@@ -213,6 +213,7 @@ pub enum AuthZError {
     UpdateRoleError(UpdateRoleError),
     SearchRolesError(SearchRolesError),
     AuthZUserActionForbidden(AuthZUserActionForbidden),
+    BackendUnavailableOrCountMismatch(BackendUnavailableOrCountMismatch),
 }
 impl From<ResolveTasksError> for AuthZError {
     fn from(err: ResolveTasksError) -> Self {
@@ -291,21 +292,6 @@ impl From<AuthZCannotSeeAnonymousNamespace> for AuthZError {
         Self::RequireNamespaceActionError(err.into())
     }
 }
-impl From<BackendUnavailableOrCountMismatch> for AuthZError {
-    fn from(err: BackendUnavailableOrCountMismatch) -> Self {
-        match err {
-            BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => {
-                RequireWarehouseActionError::AuthorizationBackendUnavailable(e).into()
-            }
-            BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => {
-                RequireWarehouseActionError::AuthorizationCountMismatch(e).into()
-            }
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => {
-                RequireWarehouseActionError::CannotInspectPermissions(e).into()
-            }
-        }
-    }
-}
 delegate_authorization_failure_source!(AuthZError => {
     RequireWarehouseActionError,
     RequireTableActionError,
@@ -326,4 +312,5 @@ delegate_authorization_failure_source!(AuthZError => {
     UpdateRoleError,
     SearchRolesError,
     AuthZUserActionForbidden,
+    BackendUnavailableOrCountMismatch
 });

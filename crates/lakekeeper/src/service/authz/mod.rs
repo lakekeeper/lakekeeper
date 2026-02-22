@@ -14,10 +14,10 @@ use super::{
     health::HealthExt,
 };
 use crate::{
-    api::iceberg::v1::Result,
+    api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
     request_metadata::RequestMetadata,
     service::{
-        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
+        Actor, ArcRole, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
         ResolvedWarehouse, Role, ServerId, TableInfo,
     },
 };
@@ -69,27 +69,19 @@ where
     Ok(Arc::new(string_map))
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Assignees to a role
-pub struct RoleAssignee(RoleId);
+pub struct RoleAssignee(ArcRole);
 
 impl RoleAssignee {
     #[must_use]
-    pub fn from_role(role: RoleId) -> Self {
+    pub fn from_role(role: ArcRole) -> Self {
         RoleAssignee(role)
     }
 
     #[must_use]
-    pub fn role(&self) -> RoleId {
-        self.0
-    }
-}
-
-impl RoleId {
-    #[must_use]
-    pub fn into_assignees(self) -> RoleAssignee {
-        RoleAssignee::from_role(self)
+    pub fn role(&self) -> &Role {
+        &self.0
     }
 }
 
@@ -101,34 +93,33 @@ impl Actor {
             Actor::Role {
                 assumed_role,
                 principal: _,
-            } => Some(UserOrRole::Role(RoleAssignee::from_role(*assumed_role))),
+            } => Some(UserOrRole::Role(RoleAssignee::from_role(
+                assumed_role.clone(),
+            ))),
+            Actor::Anonymous => None,
+        }
+    }
+
+    #[must_use]
+    pub fn api_user_or_role(&self) -> Option<AuthzUserOrRole> {
+        match self {
+            Actor::Principal(user) => Some(AuthzUserOrRole::User(user.clone())),
+            Actor::Role {
+                assumed_role,
+                principal: _,
+            } => Some(AuthzUserOrRole::Role(assumed_role.id().into_api_assignee())),
             Actor::Anonymous => None,
         }
     }
 }
 
-#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
+#[derive(Eq, Debug, Clone, PartialEq, derive_more::From)]
 /// Identifies a user or a role
 pub enum UserOrRole {
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
     /// Id of the user
     User(UserId),
-    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleRole"))]
-    /// Id of the role
+    /// User acting in a role.
     Role(RoleAssignee),
-}
-
-impl std::fmt::Display for UserOrRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UserOrRole::User(user_id) => write!(f, "user:{user_id}"),
-            UserOrRole::Role(role_assignee) => write!(f, "role:{}", role_assignee.role()),
-        }
-    }
 }
 
 pub trait CatalogAction
@@ -783,7 +774,7 @@ where
     async fn check_assume_role_impl(
         &self,
         principal: &UserId,
-        assumed_role: RoleId,
+        assumed_role: &Role,
         request_metadata: &RequestMetadata,
     ) -> Result<bool, AuthorizationBackendUnavailable>;
 
@@ -1347,7 +1338,7 @@ pub(crate) mod tests {
         async fn check_assume_role_impl(
             &self,
             _principal: &UserId,
-            _assumed_role: RoleId,
+            _assumed_role: &Role,
             _request_metadata: &RequestMetadata,
         ) -> Result<bool, AuthorizationBackendUnavailable> {
             Ok(true)

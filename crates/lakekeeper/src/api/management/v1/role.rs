@@ -13,9 +13,10 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CatalogRoleOps,
-        CatalogStore, CreateRoleError, DeleteRoleError, Result, RoleId, RoleIdentRef,
-        RoleProviderId, RoleRef, RoleSourceId, SecretStore, State, Transaction, UpdateRoleError,
+        ArcRole, ArcRoleIdent, CatalogBackendError, CatalogCreateRoleRequest,
+        CatalogListRolesFilter, CatalogRoleOps, CatalogStore, CreateRoleError, DeleteRoleError,
+        Result, RoleId, RoleProviderId, RoleSourceId, SecretStore, State, Transaction,
+        UpdateRoleError,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
             CatalogRoleAction,
@@ -64,7 +65,7 @@ pub struct Role {
     /// Composite project-scoped identifier (`provider~source_id`).
     /// Unique within a project.
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub ident: RoleIdentRef,
+    pub ident: ArcRoleIdent,
     /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub provider_id: RoleProviderId,
@@ -111,7 +112,7 @@ pub struct RoleMetadata {
     pub id: RoleId,
     /// Composite project-scoped identifier (`provider~source_id`).
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub ident: RoleIdentRef,
+    pub ident: ArcRoleIdent,
     /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub provider_id: RoleProviderId,
@@ -311,8 +312,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result =
             authorize_create_role::<A, C>(authorizer, catalog_state, &event_ctx, request).await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
-        let event_ctx = Arc::new(event_ctx.resolve(role));
-        Ok((**event_ctx.resolved()).clone().into())
+        let event_ctx = event_ctx.resolve(role);
+        let result = (**event_ctx.resolved()).clone().into();
+        event_ctx.emit_role_created();
+        Ok(result)
     }
 
     async fn list_roles(
@@ -429,7 +432,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result =
             authorized_delete_role::<A, C>(authorizer, catalog_state, &event_ctx, project_id).await;
-        event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(role);
+        event_ctx.emit_role_deleted();
         Ok(())
     }
 
@@ -470,7 +475,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = event_ctx.resolve(role);
-        Ok((**event_ctx.resolved()).clone().into())
+        let result = (**event_ctx.resolved()).clone().into();
+        event_ctx.emit_role_updated();
+        Ok(result)
     }
 
     async fn update_role_source_system(
@@ -500,7 +507,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
         let event_ctx = event_ctx.resolve(role);
-        Ok((**event_ctx.resolved()).clone().into())
+        let result = (**event_ctx.resolved()).clone().into();
+        event_ctx.emit_role_updated();
+        Ok(result)
     }
 }
 
@@ -509,7 +518,7 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     request: CreateRoleRequest,
-) -> Result<RoleRef, AuthZError> {
+) -> Result<ArcRole, AuthZError> {
     let project_id = event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -639,14 +648,14 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
     project_id: ProjectId,
-) -> Result<(), AuthZError> {
+) -> Result<ArcRole, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
 
     let role = C::get_role_by_id(&project_id, role_id, catalog_state.clone()).await;
     let action = event_ctx.action();
 
-    authorizer
+    let role = authorizer
         .require_role_action(request_metadata, role, *action)
         .await?;
 
@@ -661,7 +670,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     t.commit()
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-    Ok(())
+    Ok(role)
 }
 
 async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
@@ -670,7 +679,7 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
     project_id: ProjectId,
     request: UpdateRoleRequest,
-) -> Result<RoleRef, AuthZError> {
+) -> Result<ArcRole, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -707,7 +716,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
     project_id: ProjectId,
     request: UpdateRoleSourceSystemRequest,
-) -> Result<RoleRef, AuthZError> {
+) -> Result<ArcRole, AuthZError> {
     let role_id = *event_ctx.user_provided_entity();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();

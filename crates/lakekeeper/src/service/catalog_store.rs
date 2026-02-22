@@ -7,7 +7,8 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    NamespaceId, ProjectId, RoleId, TableId, ViewId, WarehouseId, storage::StorageProfile,
+    NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
+    storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -534,6 +535,14 @@ where
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
+
+    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
+    /// the provided idents. Ordering is unspecified. No pagination.
+    async fn list_roles_by_idents_impl(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Role>, CatalogBackendError>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(

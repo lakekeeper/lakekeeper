@@ -14,7 +14,9 @@ use crate::{
     CONFIG,
     api::RequestMetadata,
     server::tables::maybe_body_to_json,
-    service::{AuthZTableInfo, AuthZViewInfo, TableId, TabularId, WarehouseId},
+    service::{
+        Actor, AuthZTableInfo, AuthZViewInfo, RoleId, TableId, TabularId, UserId, WarehouseId,
+    },
 };
 
 /// Cached hostname for CloudEvents source URI. Resolved once at first access.
@@ -25,13 +27,71 @@ static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+enum CloudEventActor {
+    Anonymous,
+    #[serde(with = "principal_serde")]
+    Principal(UserId),
+    #[serde(rename_all = "kebab-case")]
+    Role {
+        principal: UserId,
+        assumed_role: RoleId,
+    },
+}
+
+impl From<&Actor> for CloudEventActor {
+    fn from(actor: &Actor) -> Self {
+        match actor {
+            Actor::Anonymous => CloudEventActor::Anonymous,
+            Actor::Principal(user_id) => CloudEventActor::Principal(user_id.clone()),
+            Actor::Role {
+                principal,
+                assumed_role,
+            } => CloudEventActor::Role {
+                principal: principal.clone(),
+                assumed_role: assumed_role.id,
+            },
+        }
+    }
+}
+
 /// Serializes the actor from request metadata to a JSON string.
 ///
 /// # Errors
 /// Returns an error if the actor cannot be serialized.
 fn serialize_actor(request_metadata: &RequestMetadata) -> anyhow::Result<String> {
-    serde_json::to_string(request_metadata.actor())
+    let cloud_event_actor = CloudEventActor::from(request_metadata.actor());
+    serde_json::to_string(&cloud_event_actor)
         .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))
+}
+
+mod principal_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::UserId;
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct PrincipalWrapper {
+        principal: UserId,
+    }
+
+    pub(super) fn serialize<S>(user_id: &UserId, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wrapper = PrincipalWrapper {
+            principal: user_id.clone(),
+        };
+        wrapper.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<UserId, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wrapper = PrincipalWrapper::deserialize(deserializer)?;
+        Ok(wrapper.principal)
+    }
 }
 
 /// Builds the default cloud event backends from the configuration.
@@ -580,5 +640,33 @@ impl CloudEventBackend for TracingPublisher {
 
     fn name(&self) -> &'static str {
         "tracing-publisher"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CloudEventActor as Actor, *};
+
+    #[test]
+    fn test_actor_serde_principal() {
+        let actor = Actor::Principal(UserId::try_from("oidc~123").unwrap());
+        let expected_json = serde_json::json!({
+            "type": "principal",
+            "principal": "oidc~123"
+        });
+
+        let actor_json = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, expected_json);
+        let actor_from_json: Actor = serde_json::from_value(actor_json).unwrap();
+        assert_eq!(actor_from_json, actor);
+    }
+
+    #[test]
+    fn test_actor_serde_anonymous() {
+        let actor_json = serde_json::json!({"type": "anonymous"});
+        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(actor, Actor::Anonymous);
+        let actor_json_2 = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, actor_json_2);
     }
 }

@@ -14,7 +14,7 @@ use crate::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesFilter, CreateRoleError,
         ListRolesError, ListRolesResponse, ProjectIdNotFoundError, Result, Role, RoleId,
         RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleSourceIdConflict,
-        SearchRoleResponse, SearchRolesError, UpdateRoleError,
+        RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
     },
 };
 
@@ -28,6 +28,7 @@ struct RoleRow {
     pub source_id: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub version: i64,
 }
 
 impl From<RoleRow> for Role {
@@ -41,6 +42,7 @@ impl From<RoleRow> for Role {
             project_id,
             created_at,
             updated_at,
+            version,
         }: RoleRow,
     ) -> Self {
         Self {
@@ -51,6 +53,7 @@ impl From<RoleRow> for Role {
             ident: Arc::new(RoleIdent::from_db_unchecked(provider_id, source_id)),
             created_at,
             updated_at,
+            version: RoleVersion::from(version),
         }
     }
 }
@@ -97,7 +100,7 @@ pub(crate) async fn create_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sq
         r#"
         INSERT INTO role (id, name, description, source_id, provider_id, project_id)
         SELECT u.*, $6 FROM UNNEST($1::UUID[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TEXT[]) u
-        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at
+        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
         "#,
         &role_ids,
         &role_names as &Vec<_>,
@@ -143,7 +146,7 @@ pub(crate) async fn update_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         UPDATE role
         SET name = $2, description = $3
         WHERE id = $1 AND project_id = $4
-        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at
+        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
         "#,
         uuid::Uuid::from(role_id),
         role_name,
@@ -198,7 +201,7 @@ pub(crate) async fn update_role_source_system<
         UPDATE role
         SET source_id = $3, provider_id = $4
         WHERE id = $1 AND project_id = $2
-        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at
+        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
         "#,
         uuid::Uuid::from(role_id),
         project_id,
@@ -240,7 +243,7 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     let roles = sqlx::query_as!(
         RoleRow,
         r#"
-        SELECT id, name, description, project_id, provider_id, source_id, created_at, updated_at
+        SELECT id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
         FROM role
         WHERE project_id = $2
         ORDER BY 
@@ -315,7 +318,8 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             provider_id,
             source_id,
             created_at,
-            updated_at
+            updated_at,
+            version
         FROM role r
         WHERE ($9 or project_id = $1)
             AND ($2 OR id = any($3))
@@ -382,6 +386,43 @@ pub(crate) async fn delete_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sq
     .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
     Ok(deleted_ids.into_iter().map(Into::into).collect())
+}
+
+pub(crate) async fn list_roles_by_idents<
+    'e,
+    'c: 'e,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    idents: &[&RoleIdent],
+    connection: E,
+) -> Result<Vec<Role>, CatalogBackendError> {
+    if idents.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let providers: Vec<&str> = idents.iter().map(|i| i.provider_id().as_str()).collect();
+    let source_ids: Vec<&str> = idents.iter().map(|i| i.source_id().as_str()).collect();
+
+    sqlx::query_as!(
+        RoleRow,
+        r#"
+        SELECT id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
+        FROM role
+        WHERE project_id = $1
+          AND EXISTS (
+              SELECT 1 FROM UNNEST($2::TEXT[], $3::TEXT[]) AS u(p, s)
+              WHERE u.p = provider_id AND u.s = source_id
+          )
+        "#,
+        project_id,
+        &providers as &[&str],
+        &source_ids as &[&str],
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)
+    .map(|rows| rows.into_iter().map(Role::from).collect())
 }
 
 #[cfg(test)]

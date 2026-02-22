@@ -10,7 +10,10 @@ use lakekeeper::{
     ProjectId, WarehouseId,
     api::{
         ApiContext, RequestMetadata,
-        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+        management::v1::{
+            check::UserOrRole,
+            lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+        },
     },
     axum::{
         Extension, Json, Router,
@@ -19,7 +22,7 @@ use lakekeeper::{
     },
     service::{
         Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
-        authz::{ActionDescriptor, UserOrRole},
+        authz::ActionDescriptor,
         events::{
             APIEventContext,
             context::{APIEventActions, IntrospectPermissions, authz_to_error_no_audit},
@@ -2078,7 +2081,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
             let assignee = match assignment {
                 RoleAssignment::Ownership(r) | RoleAssignment::Assignee(r) => r,
             };
-            if assignee == &UserOrRole::Role(role_id.into_assignees()) {
+            if assignee == &UserOrRole::Role(role_id.into_api_assignee()) {
                 break 'authz Err(OpenFGAError::SelfAssignment(role_id.to_string()));
             }
         }
@@ -2510,7 +2513,7 @@ mod tests {
                 RoleAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
                 RoleAssignment::Assignee(UserOrRole::Role(
                     RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
-                        .into_assignees(),
+                        .into_api_assignee(),
                 )),
             ],
         };
@@ -2539,7 +2542,7 @@ mod tests {
 
         use lakekeeper::{
             service::{
-                ResolvedWarehouse,
+                ResolvedWarehouse, Role,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
             },
@@ -2574,7 +2577,7 @@ mod tests {
             let result = checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id.clone()),
-                vec![RoleAssignment::Assignee(role_id.into_assignees().into())],
+                vec![RoleAssignment::Assignee(role_id.into_api_assignee().into())],
                 vec![],
                 &role_id.to_openfga(),
             )
@@ -2767,9 +2770,10 @@ mod tests {
             let openfga_server = authorizer.openfga_server();
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role = Arc::new(Role::new_random_with_id(role_id));
             let actor = Actor::Role {
                 principal: user_id.clone(),
-                assumed_role: role_id,
+                assumed_role: role,
             };
             let access: Vec<ServerAction> =
                 get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
@@ -2780,7 +2784,7 @@ mod tests {
             authorizer
                 .write(
                     Some(vec![TupleKey {
-                        user: role_id.into_assignees().to_openfga(),
+                        user: role_id.into_api_assignee().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: openfga_server.clone(),
                         condition: None,
@@ -2824,7 +2828,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into_assignees().into()),
+                Some(&role_id.into_api_assignee().into()),
             )
             .await
             .unwrap();
@@ -2833,7 +2837,7 @@ mod tests {
             authorizer
                 .write(
                     Some(vec![TupleKey {
-                        user: role_id.into_assignees().to_openfga(),
+                        user: role_id.into_api_assignee().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: openfga_server.clone(),
                         condition: None,
@@ -2847,7 +2851,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into_assignees().into()),
+                Some(&role_id.into_api_assignee().into()),
             )
             .await
             .unwrap();
@@ -2921,7 +2925,7 @@ mod tests {
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     RoleAssignment::Assignee(user_id_owner.into()),
-                    RoleAssignment::Assignee(role_id_2.into_assignees().into()),
+                    RoleAssignment::Assignee(role_id_2.into_api_assignee().into()),
                 ],
                 vec![],
                 &role_id_1.to_openfga(),
@@ -2962,8 +2966,8 @@ mod tests {
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
-                    ProjectAssignment::Describe(UserOrRole::Role(role_id.into_assignees())),
-                    ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_assignees())),
+                    ProjectAssignment::Describe(UserOrRole::Role(role_id.into_api_assignee())),
+                    ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_api_assignee())),
                     ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
                 ],
                 vec![],
@@ -3374,7 +3378,8 @@ mod tests {
 
             // Create two users: user A will be namespace owner, user B will receive grants
             let user_a = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let role_a = RoleId::new(Uuid::now_v7());
+            let role_a_id = RoleId::new(Uuid::now_v7());
+            let role_a = Arc::new(Role::new_random_with_id(role_a_id));
 
             let actor = Actor::Role {
                 principal: user_a.clone(),
@@ -3388,7 +3393,7 @@ mod tests {
             // Setup hierarchy: warehouse -> namespace
             authorizer
                 .create_namespace(
-                    &RequestMetadata::test_user_assumed_role(user_a.clone(), role_a),
+                    &RequestMetadata::test_user_assumed_role(user_a.clone(), role_a_id),
                     namespace_id,
                     NamespaceParent::Warehouse(warehouse_id),
                 )

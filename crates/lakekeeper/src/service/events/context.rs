@@ -12,14 +12,14 @@ use crate::{
         management::v1::{
             check::{
                 CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
-                TabularIdentOrUuid,
+                TabularIdentOrUuid, UserOrRole as APIUserOrRole,
             },
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
     service::{
-        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId,
-        TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
+        ArcRoleIdent, NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse,
+        RoleId, ServerId, TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction},
         events::{
@@ -43,6 +43,8 @@ pub const FIELD_NAME_VIEW: &str = "view";
 pub const FIELD_NAME_VIEW_ID: &str = "view-id";
 pub const FIELD_NAME_TASK_ID: &str = "task-id";
 pub const FIELD_NAME_ROLE_ID: &str = "role-id";
+pub const FIELD_NAME_ROLE_SOURCE_ID: &str = "role-source-id";
+pub const FIELD_NAME_ROLE_PROVIDER_ID: &str = "role-provider-id";
 pub const FIELD_NAME_USER_ID: &str = "user-id";
 pub const FIELD_FOR_USER: &str = "for-user";
 
@@ -204,6 +206,45 @@ impl UserProvidedEntity for UserProvidedNamespace {
         EventEntities::one(match &self.namespace {
             NamespaceIdentOrId::Name(ident) => desc.field(FIELD_NAME_NAMESPACE, ident),
             NamespaceIdentOrId::Id(id) => desc.field(FIELD_NAME_NAMESPACE_ID, id),
+        })
+    }
+}
+
+#[derive(Hash, Clone, Debug, PartialEq, Eq)]
+pub enum UserProvidedRole {
+    Id {
+        role_id: RoleId,
+    },
+    Ident {
+        project_id: ProjectId,
+        ident: ArcRoleIdent,
+    },
+}
+
+impl std::fmt::Display for UserProvidedRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserProvidedRole::Id { role_id } => write!(f, "Role(id={role_id})"),
+            UserProvidedRole::Ident { project_id, ident } => write!(
+                f,
+                "Role(provider_id={}, source_id={}, project_id={})",
+                ident.provider_id(),
+                ident.source_id(),
+                project_id
+            ),
+        }
+    }
+}
+
+impl UserProvidedEntity for UserProvidedRole {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_ROLE);
+        EventEntities::one(match self {
+            UserProvidedRole::Id { role_id } => desc.field(FIELD_NAME_ROLE_ID, role_id),
+            UserProvidedRole::Ident { project_id, ident } => desc
+                .field(FIELD_NAME_PROJECT_ID, project_id)
+                .field(FIELD_NAME_ROLE_PROVIDER_ID, ident.provider_id())
+                .field(FIELD_NAME_ROLE_SOURCE_ID, ident.source_id()),
         })
     }
 }
@@ -381,10 +422,17 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                 },
             };
             if let Some(identity) = &item.identity {
-                desc = desc.field(FIELD_FOR_USER, identity);
+                desc = desc.field(FIELD_FOR_USER, &for_user_or_role_str(identity));
             }
             desc
         }))
+    }
+}
+
+fn for_user_or_role_str(for_user: &APIUserOrRole) -> String {
+    match for_user {
+        APIUserOrRole::User(user_id) => format!("User({user_id})"),
+        APIUserOrRole::Role(assignee) => format!("Role({})", assignee.role_id()),
     }
 }
 
@@ -403,8 +451,8 @@ impl_user_provided_entity!(ServerId, ENTITY_TYPE_SERVER, FIELD_NAME_SERVER_ID);
 impl_user_provided_entity!(ProjectId, ENTITY_TYPE_PROJECT, FIELD_NAME_PROJECT_ID);
 impl_user_provided_entity!(WarehouseId, ENTITY_TYPE_WAREHOUSE, FIELD_NAME_WAREHOUSE_ID);
 impl_user_provided_entity!(NamespaceId, ENTITY_TYPE_NAMESPACE, FIELD_NAME_NAMESPACE_ID);
-impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
 impl_user_provided_entity!(UserId, ENTITY_TYPE_USER, FIELD_NAME_USER_ID);
+impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
 
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]

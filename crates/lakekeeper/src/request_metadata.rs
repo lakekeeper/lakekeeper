@@ -211,6 +211,8 @@ impl RequestMetadata {
         user_id: crate::service::UserId,
         role_id: crate::service::RoleId,
     ) -> Self {
+        use crate::service::Role;
+
         Self {
             request_id: Uuid::now_v7(),
             authentication: Some(
@@ -226,7 +228,7 @@ impl RequestMetadata {
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Role {
                 principal: user_id,
-                assumed_role: role_id,
+                assumed_role: Arc::new(Role::new_random_with_id(role_id)),
             }
             .into(),
             matched_path: None,

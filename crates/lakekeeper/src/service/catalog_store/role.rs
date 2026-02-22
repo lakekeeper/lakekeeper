@@ -8,20 +8,22 @@ use crate::{
     api::{iceberg::v1::PaginationQuery, management::v1::role::UpdateRoleSourceSystemRequest},
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogStore, InvalidPaginationToken,
-        ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleProviderId, RoleSourceId,
-        Transaction, define_transparent_error, identifier::role::RoleIdentRef,
-        impl_error_stack_methods, impl_from_with_detail,
+        ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleIdent, RoleProviderId,
+        RoleSourceId, Transaction, catalog_store::define_version_newtype, define_transparent_error,
+        identifier::role::ArcRoleIdent, impl_error_stack_methods, impl_from_with_detail,
     },
 };
 
-/// Reference to a [`Role`]
-pub type RoleRef = Arc<Role>;
+define_version_newtype!(RoleVersion);
 
-#[derive(Debug, PartialEq, Clone)]
+/// Reference to a [`Role`]
+pub type ArcRole = Arc<Role>;
+
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Role {
     /// Global unique identifier for the role.
     pub id: RoleId,
-    pub ident: RoleIdentRef,
+    pub ident: ArcRoleIdent,
     /// Name of the role
     pub name: String,
     /// Description of the role
@@ -32,6 +34,21 @@ pub struct Role {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the role was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Monotonically increasing version counter, incremented on every update.
+    pub version: RoleVersion,
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Role(name={}, provider_id={}, source_id={}, project_id={})",
+            self.name,
+            self.ident.provider_id(),
+            self.ident.source_id(),
+            self.project_id
+        )
+    }
 }
 
 impl Role {
@@ -45,10 +62,41 @@ impl Role {
         self.ident.provider_id()
     }
 
+    #[must_use]
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn id(&self) -> RoleId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn ident(&self) -> &RoleIdent {
+        &self.ident
+    }
+
+    #[must_use]
+    pub fn ident_arc(&self) -> ArcRoleIdent {
+        self.ident.clone()
+    }
+
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn new_random() -> Self {
         let id = RoleId::new_random();
+        Self::new_random_with_id(id)
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn new_random_with_id(id: RoleId) -> Self {
         let ident = Arc::new(crate::service::RoleIdent::new_internal_with_role_id(id));
         Self {
             name: format!("role-{id}"),
@@ -58,20 +106,21 @@ impl Role {
             project_id: ProjectId::new_random(),
             created_at: chrono::Utc::now(),
             updated_at: None,
+            version: RoleVersion::new(0),
         }
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct ListRolesResponse {
-    pub roles: Vec<RoleRef>,
+    pub roles: Vec<ArcRole>,
     pub next_page_token: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct SearchRoleResponse {
     /// List of roles matching the search criteria
-    pub roles: Vec<RoleRef>,
+    pub roles: Vec<ArcRole>,
 }
 
 #[derive(thiserror::Error, Debug, PartialEq)]
@@ -240,6 +289,47 @@ impl From<ListRolesError> for GetRoleAcrossProjectsError {
             ListRolesError::InvalidPaginationToken(e) => e.into(),
         }
     }
+}
+
+// --------------------------- GET ROLE BY IDENT ERROR ---------------------------
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("A role with ident '{ident}' does not exist in project '{project_id}'")]
+pub struct RoleIdentNotFoundInProject {
+    pub ident: RoleIdent,
+    pub project_id: ProjectId,
+    pub stack: Vec<String>,
+}
+impl RoleIdentNotFoundInProject {
+    #[must_use]
+    pub fn new(ident: RoleIdent, project_id: ProjectId) -> Self {
+        Self {
+            ident,
+            project_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(RoleIdentNotFoundInProject);
+
+impl From<RoleIdentNotFoundInProject> for ErrorModel {
+    fn from(err: RoleIdentNotFoundInProject) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleNotFoundInProject")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+define_transparent_error! {
+    pub enum GetRoleByIdentError,
+    stack_message: "Error getting Role by ident from catalog",
+    variants: [
+        CatalogBackendError,
+        RoleIdentNotFoundInProject,
+    ]
 }
 
 // --------------------------- DELETE ERROR ---------------------------
@@ -421,6 +511,34 @@ where
     ) -> Result<SearchRoleResponse, SearchRolesError> {
         Self::search_role_impl(project_id, search_term, catalog_state).await
     }
+
+    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of the
+    /// provided idents. No pagination — returns all matches at once.
+    async fn list_roles_by_idents(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Arc<Role>>, CatalogBackendError> {
+        Ok(
+            Self::list_roles_by_idents_impl(project_id, idents, catalog_state)
+                .await?
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
+        )
+    }
+
+    /// Returns the single role in `project_id` with the given `ident`, or an error if not found.
+    async fn get_role_by_ident(
+        project_id: &ProjectId,
+        ident: &RoleIdent,
+        catalog_state: Self::State,
+    ) -> Result<Arc<Role>, GetRoleByIdentError> {
+        let roles = Self::list_roles_by_idents_impl(project_id, &[ident], catalog_state).await?;
+        roles.into_iter().next().map(Arc::new).ok_or_else(|| {
+            RoleIdentNotFoundInProject::new(ident.clone(), project_id.clone()).into()
+        })
+    }
 }
 
 impl<T> CatalogRoleOps for T where T: CatalogStore {}
@@ -431,6 +549,7 @@ use crate::service::events::impl_authorization_failure_source;
 impl_authorization_failure_source!(CreateRoleError => InternalCatalogError);
 impl_authorization_failure_source!(ListRolesError => InternalCatalogError);
 impl_authorization_failure_source!(GetRoleAcrossProjectsError => InternalCatalogError);
+impl_authorization_failure_source!(GetRoleByIdentError => InternalCatalogError);
 impl_authorization_failure_source!(DeleteRoleError => InternalCatalogError);
 impl_authorization_failure_source!(UpdateRoleError => InternalCatalogError);
 impl_authorization_failure_source!(SearchRolesError => InternalCatalogError);
