@@ -153,6 +153,30 @@ impl From<BackendUnavailableOrCountMismatch> for IsAllowedActionError {
     }
 }
 
+#[derive(Debug, PartialEq, derive_more::From)]
+pub enum AuthzBackendOrValidationError {
+    BackendUnavailable(AuthorizationBackendUnavailable),
+    ValidationFailed(AuthorizerValidationFailed),
+}
+delegate_authorization_failure_source!(AuthzBackendOrValidationError => {
+    BackendUnavailable,
+    ValidationFailed,
+});
+
+impl From<AuthzBackendOrValidationError> for IsAllowedActionError {
+    fn from(err: AuthzBackendOrValidationError) -> Self {
+        match err {
+            AuthzBackendOrValidationError::BackendUnavailable(e) => e.into(),
+            AuthzBackendOrValidationError::ValidationFailed(e) => e.into(),
+        }
+    }
+}
+impl From<AuthzBackendOrValidationError> for AuthZError {
+    fn from(err: AuthzBackendOrValidationError) -> Self {
+        IsAllowedActionError::from(err).into()
+    }
+}
+
 #[derive(Debug)]
 pub struct AuthorizationBackendUnavailable {
     pub stack: Vec<String>,

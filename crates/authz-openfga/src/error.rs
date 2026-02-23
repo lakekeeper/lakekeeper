@@ -1,7 +1,7 @@
 use lakekeeper::{
     api::ErrorModel,
     service::{
-        authz::{AuthorizationBackendUnavailable, IsAllowedActionError},
+        authz::{AuthorizationBackendUnavailable, AuthzBackendOrValidationError, IsAllowedActionError},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
 };
@@ -24,6 +24,11 @@ pub enum OpenFGABackendUnavailable {
     BatchCheckError(#[from] BatchCheckError),
     #[error(transparent)]
     MissingItemInBatchCheck(#[from] MissingItemInBatchCheck),
+}
+impl From<OpenFGABackendUnavailable> for AuthzBackendOrValidationError {
+    fn from(err: OpenFGABackendUnavailable) -> Self {
+        AuthorizationBackendUnavailable::from(err).into()
+    }
 }
 impl From<OpenFGABackendUnavailable> for IsAllowedActionError {
     fn from(err: OpenFGABackendUnavailable) -> Self {

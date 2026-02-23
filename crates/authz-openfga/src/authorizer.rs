@@ -14,7 +14,7 @@ use lakekeeper::{
         ErrorModel, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore,
         ServerId, State, TableId, UserId, ViewId,
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
+            Authorizer, AuthzBackendOrValidationError, CannotInspectPermissions,
             CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
             NamespaceParent, UserOrRole,
         },
@@ -106,7 +106,7 @@ impl Authorizer for OpenFGAAuthorizer {
         principal: &UserId,
         assumed_role: &Role,
         _request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendOrValidationError> {
         self.check(CheckRequestTupleKey {
             user: Actor::Principal(principal.clone()).to_openfga(),
             relation: relations::RoleRelation::CanAssume.to_string(),
@@ -175,7 +175,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn list_projects_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
         let actor = metadata.actor();
         self.list_projects_internal(actor).await.map_err(Into::into)
     }
@@ -183,7 +183,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn can_search_users_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendOrValidationError> {
         // Currently all authenticated principals can search users
         Ok(metadata.actor().is_authenticated())
     }

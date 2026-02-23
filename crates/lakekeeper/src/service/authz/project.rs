@@ -8,10 +8,7 @@ use crate::{
     service::{
         ArcProjectId,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogProjectAction, IsAllowedActionError, MustUse,
-            UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer, AuthorizerValidationFailed, AuthzBackendOrValidationError, BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -106,7 +103,7 @@ pub trait AuthZProjectOps: Authorizer {
     async fn list_projects(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
         if metadata.has_admin_privileges() {
             Ok(ListProjectsResponse::All)
         } else {
