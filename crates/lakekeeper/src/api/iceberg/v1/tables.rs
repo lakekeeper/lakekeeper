@@ -111,6 +111,12 @@ impl IntoResponse for LoadTableResultOrNotModified {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct LoadTableCredentialsQuery {
+    pub referenced_by: Option<ReferencedByQuery>,
+}
+
 #[async_trait]
 pub trait TablesService<S: crate::api::ThreadSafe>
 where
@@ -362,6 +368,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
+                 Query(_load_table_credentials_query): Query<LoadTableCredentialsQuery>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
                     I::load_table_credentials(
@@ -830,6 +837,29 @@ mod test {
                 panic!("Failed to extract body: {e}");
             }
         }
+    }
+
+    #[test]
+    fn test_load_table_credentials_query_defaults() {
+        let query = super::LoadTableCredentialsQuery::default();
+        assert_eq!(query.referenced_by, None);
+    }
+
+    #[test]
+    fn test_load_table_credentials_query_deserialization_with_referenced_by() {
+        let query = serde_json::json!({
+            "referenced-by": "prod%1Fanalytics%1Fquarterly_view%2Cprod%1Fanalytics%1Fmonthly_view"
+        });
+        let deserialized: LoadTableCredentialsQuery = serde_json::from_value(query).unwrap();
+        assert_eq!(
+            deserialized,
+            LoadTableCredentialsQuery {
+                referenced_by: Some(ReferencedByQuery::from(vec![
+                    TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"]).unwrap(),
+                    TableIdent::from_strs(vec!["prod", "analytics", "monthly_view"]).unwrap(),
+                ]))
+            }
+        );
     }
 
     async fn extract_body_from_response(response: Response) -> Result<String, Box<dyn Error>> {
