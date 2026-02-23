@@ -16,7 +16,7 @@ use crate::{
         State, TableId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
-            Authorizer, AuthzBackendOrValidationError, CatalogNamespaceAction,
+            Authorizer, AuthzBackendErrorOrBadRequest, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
             ListProjectsResponse, NamespaceParent, UserOrRole,
@@ -87,7 +87,7 @@ impl Authorizer for AllowAllAuthorizer {
         _principal: &UserId,
         _assumed_role: &Role,
         _request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthzBackendOrValidationError> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         Ok(true)
     }
 
@@ -102,14 +102,14 @@ impl Authorizer for AllowAllAuthorizer {
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::All)
     }
 
     async fn can_search_users_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<bool, AuthzBackendOrValidationError> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         Ok(true)
     }
 

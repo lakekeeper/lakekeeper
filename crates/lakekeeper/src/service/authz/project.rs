@@ -8,7 +8,10 @@ use crate::{
     service::{
         ArcProjectId,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer, AuthorizerValidationFailed, AuthzBackendOrValidationError, BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogProjectAction, IsAllowedActionError, MustUse,
+            UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -70,7 +73,7 @@ pub enum RequireProjectActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireProjectActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
@@ -85,7 +88,7 @@ impl From<IsAllowedActionError> for RequireProjectActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
@@ -103,7 +106,7 @@ pub trait AuthZProjectOps: Authorizer {
     async fn list_projects(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         if metadata.has_admin_privileges() {
             Ok(ListProjectsResponse::All)
         } else {

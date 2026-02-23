@@ -12,7 +12,7 @@ use crate::{
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
             AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, AuthzNamespaceOps, AuthzWarehouseOps,
+            AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
             CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
@@ -136,7 +136,7 @@ pub enum RequireViewActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the view
     AuthZCannotSeeView(AuthZCannotSeeView),
     // Propagated directly
@@ -160,7 +160,7 @@ impl From<IsAllowedActionError> for RequireViewActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }

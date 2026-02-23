@@ -13,7 +13,7 @@ use crate::{
         NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch,
+            AuthzBadRequest, AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch,
             CannotInspectPermissions, CatalogAction, CatalogNamespaceAction, IsAllowedActionError,
             MustUse, RequireWarehouseActionError, UserOrRole,
         },
@@ -214,7 +214,7 @@ pub enum RequireNamespaceActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the namespace
     AuthZCannotSeeNamespace(AuthZCannotSeeNamespace),
     AuthZCannotSeeAnonymousNamespace(AuthZCannotSeeAnonymousNamespace),
@@ -228,7 +228,7 @@ impl From<IsAllowedActionError> for RequireNamespaceActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }

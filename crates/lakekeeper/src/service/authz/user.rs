@@ -6,8 +6,8 @@ use crate::{
         UserId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -60,7 +60,7 @@ pub enum RequireUserActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireUserActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
@@ -75,7 +75,7 @@ impl From<IsAllowedActionError> for RequireUserActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }

@@ -105,11 +105,11 @@ impl AuthorizationFailureSource for CannotInspectPermissions {
 }
 
 #[derive(Debug, PartialEq, thiserror::Error)]
-#[error("Authorizer validation failed. {reason}")]
-pub struct AuthorizerValidationFailed {
+#[error("{reason}")]
+pub struct AuthzBadRequest {
     reason: String,
 }
-impl AuthorizerValidationFailed {
+impl AuthzBadRequest {
     #[must_use]
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
@@ -117,9 +117,9 @@ impl AuthorizerValidationFailed {
         }
     }
 }
-impl AuthorizationFailureSource for AuthorizerValidationFailed {
+impl AuthorizationFailureSource for AuthzBadRequest {
     fn into_error_model(self) -> ErrorModel {
-        ErrorModel::forbidden(self.to_string(), "AuthorizerValidationFailed", None)
+        ErrorModel::forbidden(self.to_string(), "AuthzBadRequest", None)
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         AuthorizationFailureReason::InvalidRequestData
@@ -130,13 +130,13 @@ impl AuthorizationFailureSource for AuthorizerValidationFailed {
 pub enum IsAllowedActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    BadRequest(AuthzBadRequest),
     CountMismatch(AuthorizationCountMismatch),
 }
 delegate_authorization_failure_source!(IsAllowedActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
-    AuthorizerValidationFailed,
+    BadRequest,
     CountMismatch
 });
 
@@ -154,25 +154,25 @@ impl From<BackendUnavailableOrCountMismatch> for IsAllowedActionError {
 }
 
 #[derive(Debug, PartialEq, derive_more::From)]
-pub enum AuthzBackendOrValidationError {
+pub enum AuthzBackendErrorOrBadRequest {
     BackendUnavailable(AuthorizationBackendUnavailable),
-    ValidationFailed(AuthorizerValidationFailed),
+    BadRequest(AuthzBadRequest),
 }
-delegate_authorization_failure_source!(AuthzBackendOrValidationError => {
+delegate_authorization_failure_source!(AuthzBackendErrorOrBadRequest => {
     BackendUnavailable,
-    ValidationFailed,
+    BadRequest,
 });
 
-impl From<AuthzBackendOrValidationError> for IsAllowedActionError {
-    fn from(err: AuthzBackendOrValidationError) -> Self {
+impl From<AuthzBackendErrorOrBadRequest> for IsAllowedActionError {
+    fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
         match err {
-            AuthzBackendOrValidationError::BackendUnavailable(e) => e.into(),
-            AuthzBackendOrValidationError::ValidationFailed(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
         }
     }
 }
-impl From<AuthzBackendOrValidationError> for AuthZError {
-    fn from(err: AuthzBackendOrValidationError) -> Self {
+impl From<AuthzBackendErrorOrBadRequest> for AuthZError {
+    fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
         IsAllowedActionError::from(err).into()
     }
 }
@@ -267,7 +267,7 @@ pub enum AuthZError {
     SearchRolesError(SearchRolesError),
     AuthZUserActionForbidden(AuthZUserActionForbidden),
     BackendUnavailableOrCountMismatch(BackendUnavailableOrCountMismatch),
-    ValidationFailed(AuthorizerValidationFailed),
+    BadRequest(AuthzBadRequest),
     IsAllowedActionError(IsAllowedActionError),
 }
 impl From<ResolveTasksError> for AuthZError {
@@ -371,6 +371,6 @@ delegate_authorization_failure_source!(AuthZError => {
     SearchRolesError,
     AuthZUserActionForbidden,
     BackendUnavailableOrCountMismatch,
-    ValidationFailed,
+    BadRequest,
     IsAllowedActionError
 });

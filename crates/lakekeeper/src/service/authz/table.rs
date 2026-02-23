@@ -18,7 +18,7 @@ use crate::{
         TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
             AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthorizerValidationFailed, AuthzNamespaceOps,
+            AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
             AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
             CatalogAction, CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -416,7 +416,7 @@ pub enum RequireTableActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the table
     AuthZCannotSeeTable(AuthZCannotSeeTable),
     // Propagated directly
@@ -470,7 +470,7 @@ impl From<IsAllowedActionError> for RequireTableActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
@@ -496,7 +496,7 @@ pub enum RequireTabularActionsError {
     AuthZTableActionForbidden(AuthZTableActionForbidden),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
 }
 delegate_authorization_failure_source!(RequireTabularActionsError => {
     AuthorizationBackendUnavailable,
@@ -519,7 +519,7 @@ impl From<IsAllowedActionError> for RequireTabularActionsError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }

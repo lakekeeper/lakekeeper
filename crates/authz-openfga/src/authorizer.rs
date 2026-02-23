@@ -14,7 +14,7 @@ use lakekeeper::{
         ErrorModel, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore,
         ServerId, State, TableId, UserId, ViewId,
         authz::{
-            Authorizer, AuthzBackendOrValidationError, CannotInspectPermissions,
+            Authorizer, AuthzBackendErrorOrBadRequest, CannotInspectPermissions,
             CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
             NamespaceParent, UserOrRole,
         },
@@ -106,7 +106,7 @@ impl Authorizer for OpenFGAAuthorizer {
         principal: &UserId,
         assumed_role: &Role,
         _request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthzBackendOrValidationError> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         self.check(CheckRequestTupleKey {
             user: Actor::Principal(principal.clone()).to_openfga(),
             relation: relations::RoleRelation::CanAssume.to_string(),
@@ -175,7 +175,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn list_projects_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         let actor = metadata.actor();
         self.list_projects_internal(actor).await.map_err(Into::into)
     }
@@ -183,7 +183,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn can_search_users_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<bool, AuthzBackendOrValidationError> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         // Currently all authenticated principals can search users
         Ok(metadata.actor().is_authenticated())
     }
@@ -1802,7 +1802,7 @@ pub(crate) mod tests {
                     // Expected error
                 }
                 IsAllowedActionError::AuthorizationBackendUnavailable(_)
-                | IsAllowedActionError::AuthorizerValidationFailed(_)
+                | IsAllowedActionError::BadRequest(_)
                 | IsAllowedActionError::CountMismatch(_) => {
                     panic!("Expected CannotInspectPermissions error, got: {err:?}")
                 }

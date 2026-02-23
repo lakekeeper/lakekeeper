@@ -6,9 +6,9 @@ use crate::{
         Actor, ServerId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, AuthzBackendOrValidationError,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
-            IsAllowedActionError, MustUse, UserOrRole,
+            AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogServerAction, IsAllowedActionError, MustUse,
+            UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,
@@ -84,14 +84,14 @@ impl AuthorizationFailureSource for AssumeRoleForbidden {
 pub enum CheckActorError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AssumeRoleForbidden(AssumeRoleForbidden),
-    ValidationFailed(AuthorizerValidationFailed),
+    BadRequest(AuthzBadRequest),
 }
 
-impl From<AuthzBackendOrValidationError> for CheckActorError {
-    fn from(err: AuthzBackendOrValidationError) -> Self {
+impl From<AuthzBackendErrorOrBadRequest> for CheckActorError {
+    fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
         match err {
-            AuthzBackendOrValidationError::BackendUnavailable(e) => e.into(),
-            AuthzBackendOrValidationError::ValidationFailed(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
         }
     }
 }
@@ -99,7 +99,7 @@ impl From<AuthzBackendOrValidationError> for CheckActorError {
 delegate_authorization_failure_source!(CheckActorError => {
     AuthorizationBackendUnavailable,
     AssumeRoleForbidden,
-    ValidationFailed
+    BadRequest
 });
 
 // --------------------------- Return Error types ---------------------------
@@ -109,13 +109,13 @@ pub enum RequireServerActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    BadRequest(AuthzBadRequest),
 }
-impl From<AuthzBackendOrValidationError> for RequireServerActionError {
-    fn from(err: AuthzBackendOrValidationError) -> Self {
+impl From<AuthzBackendErrorOrBadRequest> for RequireServerActionError {
+    fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
         match err {
-            AuthzBackendOrValidationError::BackendUnavailable(e) => e.into(),
-            AuthzBackendOrValidationError::ValidationFailed(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
         }
     }
 }
@@ -132,7 +132,7 @@ impl From<IsAllowedActionError> for RequireServerActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
@@ -142,7 +142,7 @@ delegate_authorization_failure_source!(RequireServerActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
-    AuthorizerValidationFailed
+    BadRequest
 });
 
 // --------------------------- Server Ops ---------------------------
@@ -264,7 +264,7 @@ pub trait AuthZServerOps: Authorizer {
     async fn can_search_users(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<MustUse<bool>, AuthzBackendOrValidationError> {
+    ) -> Result<MustUse<bool>, AuthzBackendErrorOrBadRequest> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {

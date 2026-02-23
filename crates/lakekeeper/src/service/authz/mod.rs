@@ -776,7 +776,7 @@ where
         principal: &UserId,
         assumed_role: &Role,
         request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthzBackendOrValidationError>;
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest>;
 
     /// Check if this server can be bootstrapped by the provided user.
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
@@ -790,7 +790,7 @@ where
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::Unsupported)
     }
 
@@ -798,7 +798,7 @@ where
     async fn can_search_users_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<bool, AuthzBackendOrValidationError>;
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest>;
 
     async fn are_allowed_user_actions_impl(
         &self,
@@ -1340,7 +1340,7 @@ pub(crate) mod tests {
             _principal: &UserId,
             _assumed_role: &Role,
             _request_metadata: &RequestMetadata,
-        ) -> Result<bool, AuthzBackendOrValidationError> {
+        ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
             Ok(true)
         }
 
@@ -1355,14 +1355,14 @@ pub(crate) mod tests {
         async fn list_projects_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<ListProjectsResponse, AuthzBackendOrValidationError> {
+        ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
             Ok(ListProjectsResponse::All)
         }
 
         async fn can_search_users_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<bool, AuthzBackendOrValidationError> {
+        ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
             Ok(true)
         }
 

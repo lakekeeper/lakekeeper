@@ -9,8 +9,8 @@ use crate::{
         RoleId, RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -126,7 +126,7 @@ pub enum RequireRoleActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the role
     AuthZCannotSeeRole(AuthZCannotSeeRole),
     // Propagated directly
@@ -155,7 +155,7 @@ impl From<IsAllowedActionError> for RequireRoleActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }

@@ -10,9 +10,8 @@ use crate::{
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthorizerValidationFailed, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogWarehouseAction, IsAllowedActionError,
-            MustUse, UserOrRole,
+            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogWarehouseAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -155,7 +154,7 @@ pub enum RequireWarehouseActionError {
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthZCannotListAllTasks(AuthZCannotListAllTasks),
-    AuthorizerValidationFailed(AuthorizerValidationFailed),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the namespace
     AuthZCannotUseWarehouseId(AuthZCannotUseWarehouseId),
     // Propagated directly
@@ -176,7 +175,7 @@ impl From<IsAllowedActionError> for RequireWarehouseActionError {
         match err {
             IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
-            IsAllowedActionError::AuthorizerValidationFailed(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
