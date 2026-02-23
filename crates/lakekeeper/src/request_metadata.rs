@@ -80,16 +80,19 @@ pub struct TokenRoles {
 }
 
 impl TokenRoles {
+    #[must_use]
     pub fn new(project_id: ArcProjectId, roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self { project_id, roles }
     }
 }
 
 impl TokenRoles {
+    #[must_use]
     pub fn project_id(&self) -> &ArcProjectId {
         &self.project_id
     }
 
+    #[must_use]
     pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
         &self.roles
     }
