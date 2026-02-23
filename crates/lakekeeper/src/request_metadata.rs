@@ -14,10 +14,8 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
-#[cfg(feature = "router")]
-use crate::XXHashSet;
 use crate::{
-    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
+    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId, XXHashSet,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
     service::{
         ArcProjectId, RoleIdent, TabularId,

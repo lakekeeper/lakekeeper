@@ -213,7 +213,7 @@ pub(crate) async fn auth_middleware_fn<
     mut request: Request,
     next: Next,
 ) -> Response {
-    use crate::service::{CatalogRoleOps, authz::AuthZServerOps};
+    use crate::service::authz::AuthZServerOps;
 
     let authenticator = &state.authenticator;
     let authorizer = &state.authorizer;
@@ -248,30 +248,9 @@ pub(crate) async fn auth_middleware_fn<
         Ok(role_id) => role_id,
         Err(e) => return e.into_response(),
     };
-    let actor = match role_id {
-        Some(role_id) => Actor::Role {
-            principal: user_id,
-            assumed_role: {
-                let role = C::get_role_by_id_across_projects_cache_aware(
-                    role_id,
-                    crate::service::CachePolicy::Use,
-                    catalog_state,
-                )
-                .await;
-                match role {
-                    Ok(role) => role,
-                    Err(e) => {
-                        return ErrorModel::bad_request(
-                            format!("Failed to resolve role with id {role_id} presented in header {ASSUME_ROLE_BY_ID_HEADER}"),
-                            "InvalidAssumeRoleId",
-                            Some(Box::new(e)),
-                        )
-                        .into_response();
-                    }
-                }
-            },
-        },
-        None => Actor::Principal(user_id),
+    let actor = match resolve_actor::<C>(user_id, role_id, catalog_state).await {
+        Ok(actor) => actor,
+        Err(e) => return e,
     };
 
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
@@ -346,6 +325,39 @@ fn extract_role_id(
 }
 
 #[cfg(feature = "router")]
+async fn resolve_actor<C: super::CatalogStore>(
+    user_id: UserId,
+    role_id: Option<super::RoleId>,
+    catalog_state: C::State,
+) -> Result<Actor, Response> {
+    use crate::service::CatalogRoleOps;
+
+    match role_id {
+        Some(role_id) => {
+            match C::get_role_by_id_across_projects_cache_aware(
+                role_id,
+                crate::service::CachePolicy::Use,
+                catalog_state,
+            )
+            .await
+            {
+                Ok(role) => Ok(Actor::Role {
+                    principal: user_id,
+                    assumed_role: role,
+                }),
+                Err(e) => Err(ErrorModel::bad_request(
+                    format!("Failed to resolve role with id {role_id} presented in header {ASSUME_ROLE_BY_ID_HEADER}"),
+                    "InvalidAssumeRoleId",
+                    Some(Box::new(e)),
+                )
+                .into_response()),
+            }
+        }
+        None => Ok(Actor::Principal(user_id)),
+    }
+}
+
+#[cfg(feature = "router")]
 fn extract_and_set_token_roles(
     authentication: &limes::Authentication,
     request_metadata: &RequestMetadata,
@@ -382,7 +394,7 @@ fn extract_and_set_token_roles(
                     None,
                 )
             })?;
-            let provider_id = RoleProviderId::new_unchecked(provider_id.to_string());
+            let provider_id = RoleProviderId::new_unchecked(provider_id.clone());
 
             Ok(Arc::new(RoleIdent::new(provider_id, source_id)))
         })
