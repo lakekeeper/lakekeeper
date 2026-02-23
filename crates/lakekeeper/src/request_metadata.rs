@@ -14,11 +14,13 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
+#[cfg(feature = "router")]
+use crate::XXHashSet;
 use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
     service::{
-        ArcProjectId, TabularId,
+        ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
@@ -65,11 +67,34 @@ pub struct RequestMetadata {
     request_id: Uuid,
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
+    token_roles: Option<TokenRoles>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
     user_agent: Option<UserAgent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenRoles {
+    project_id: ArcProjectId,
+    roles: XXHashSet<Arc<RoleIdent>>,
+}
+
+impl TokenRoles {
+    pub fn new(project_id: ArcProjectId, roles: XXHashSet<Arc<RoleIdent>>) -> Self {
+        Self { project_id, roles }
+    }
+}
+
+impl TokenRoles {
+    pub fn project_id(&self) -> &ArcProjectId {
+        &self.project_id
+    }
+
+    pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
+        &self.roles
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -114,6 +139,11 @@ impl RequestMetadata {
         self
     }
 
+    pub fn set_token_roles(&mut self, token_roles: TokenRoles) -> &mut Self {
+        self.token_roles = Some(token_roles);
+        self
+    }
+
     #[must_use]
     pub fn user_agent(&self) -> Option<&UserAgent> {
         self.user_agent.as_ref()
@@ -141,6 +171,11 @@ impl RequestMetadata {
     }
 
     #[must_use]
+    pub fn token_roles(&self) -> Option<&TokenRoles> {
+        self.token_roles.as_ref()
+    }
+
+    #[must_use]
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
             request_id,
@@ -151,6 +186,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -173,6 +209,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -202,6 +239,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -235,6 +273,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -257,6 +296,7 @@ impl RequestMetadata {
             matched_path,
             request_method,
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -401,7 +441,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => {
-            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
+            return err.into_response();
         }
     };
 
@@ -420,6 +460,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
+        token_roles: None,
         base_url: base_uri,
         actor: Actor::Anonymous.into(),
         project_id: project_id.map(Arc::new),
