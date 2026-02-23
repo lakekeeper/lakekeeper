@@ -14,7 +14,7 @@ use crate::{
         shutdown_signal,
     },
     service::{
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
+        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
         endpoint_statistics::{
@@ -167,6 +167,12 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
     let cancellation_token = CancellationToken::new();
+
+    // Validate Authenticators
+    if let Some(authenticator) = &config.authenticator {
+        validate_authenticator_idp_ids(authenticator)?;
+    }
+
     // Strings are name of the service, used for logging
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
@@ -562,5 +568,27 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
         );
     }
 
+    Ok(())
+}
+
+fn validate_authenticator_idp_ids(authenticator: &impl Authenticator) -> anyhow::Result<()> {
+    let idp_ids = authenticator.idp_ids();
+    if idp_ids.is_empty() {
+        tracing::warn!(
+            "No IdP IDs found in the authenticator configuration. This may be intentional if authentication is not required."
+        );
+    }
+    for idp_id in idp_ids {
+        let Some(idp_id) = idp_id else {
+            return Err(anyhow!(
+                "Authenticator returned an empty IdP ID. All IdP IDs must be non-empty strings."
+            ));
+        };
+        let _role_provider_id = RoleProviderId::try_new(idp_id).map_err(|e| {
+            anyhow!(
+                "Invalid IdP ID '{idp_id}' in authenticator configuration: {e}. All IdP IDs must consist of lowercase letters, numbers, hyphens or underscores, and be between 1 and 64 characters long."
+            )
+        })?;
+    }
     Ok(())
 }

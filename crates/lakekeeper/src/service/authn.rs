@@ -350,8 +350,7 @@ fn extract_and_set_token_roles(
     authentication: &limes::Authentication,
     request_metadata: &RequestMetadata,
 ) -> Result<Option<TokenRoles>, ErrorModel> {
-    use crate::service::RoleProviderId;
-    use crate::service::RoleSourceId;
+    use crate::service::{RoleProviderId, RoleSourceId};
 
     let Some(roles) = authentication.roles() else {
         return Ok(None);
