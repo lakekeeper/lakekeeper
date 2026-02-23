@@ -370,7 +370,7 @@ fn extract_and_set_token_roles(
 
     let Some(project_id) = request_metadata.preferred_project_id() else {
         return Err(ErrorModel::bad_request(
-            "Default project must be set or X-Project-ID header must be provided if groups are extracted from tokens",
+            "Default project must be set or X-Project-ID header must be provided if roles are extracted from tokens",
             "MissingProjectId",
             None,
         ));

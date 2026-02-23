@@ -4096,8 +4096,9 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.3.1"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=459634f#459634fda5a11dd403e32021aa78589e1f6c0428"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3175a153762862c72195a0cc3366a318abeed85c6e94ebea33844a2c74b9031"
 dependencies = [
  "axum",
  "axum-extra",
