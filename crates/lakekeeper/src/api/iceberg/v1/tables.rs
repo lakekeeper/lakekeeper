@@ -17,7 +17,7 @@ use crate::{
         CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
         RenameTableRequest, Result,
         iceberg::{
-            types::{DropParams, Prefix},
+            types::{DropParams, Prefix, ReferencedByQuery},
             v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
         },
     },
@@ -61,7 +61,7 @@ pub enum SnapshotsQuery {
 #[serde(rename_all = "kebab-case")]
 pub struct LoadTableQuery {
     pub snapshots: Option<SnapshotsQuery>,
-    pub referenced_by: Option<String>, // TODO: Consider serialization into a structured type which also contains validation logic like separator and splitting. This way, we can centralize this. 
+    pub referenced_by: Option<ReferencedByQuery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -587,17 +587,20 @@ mod test {
 
     #[test]
     fn test_load_table_query_deserialization_with_referenced_by() {
-        let query = "{\"referenced-by\": \"prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view\"}";
-        let deserialized: LoadTableQuery = serde_json::from_str(query).unwrap();
+        let query = serde_json::json!({
+            "referenced-by": "prod%1Fanalytics%1Fquarterly_view%2Cprod%1Fanalytics%1Fmonthly_view"
+        });
+        let deserialized: LoadTableQuery = serde_json::from_value(query).unwrap();
         assert_eq!(
             deserialized,
             LoadTableQuery {
                 snapshots: None,
-                referenced_by: Some(
-                    "prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view".to_string()
-                )
+                referenced_by: Some(ReferencedByQuery::from(vec![
+                    TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"]).unwrap(),
+                    TableIdent::from_strs(vec!["prod", "analytics", "monthly_view"]).unwrap(),
+                ]))
             }
-        )
+        );
     }
 
     #[tokio::test]
