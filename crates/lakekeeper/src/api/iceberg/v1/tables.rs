@@ -58,9 +58,10 @@ pub enum SnapshotsQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub struct LoadTableQuery {
     pub snapshots: Option<SnapshotsQuery>,
+    pub referenced_by: Option<String>, // TODO: Consider serialization into a structured type which also contains validation logic like separator and splitting. This way, we can centralize this. 
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -581,6 +582,22 @@ mod test {
     fn test_load_table_query_defaults() {
         let query = super::LoadTableQuery::default();
         assert_eq!(query.snapshots, None);
+        assert_eq!(query.referenced_by, None);
+    }
+
+    #[test]
+    fn test_load_table_query_deserialization_with_referenced_by() {
+        let query = "{\"referenced-by\": \"prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view\"}";
+        let deserialized: LoadTableQuery = serde_json::from_str(query).unwrap();
+        assert_eq!(
+            deserialized,
+            LoadTableQuery {
+                snapshots: None,
+                referenced_by: Some(
+                    "prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view".to_string()
+                )
+            }
+        )
     }
 
     #[tokio::test]
