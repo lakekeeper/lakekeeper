@@ -586,7 +586,7 @@ fn validate_authenticator_idp_ids(authenticator: &impl Authenticator) -> anyhow:
         };
         let _role_provider_id = RoleProviderId::try_new(idp_id).map_err(|e| {
             anyhow!(
-                "Invalid IdP ID '{idp_id}' in authenticator configuration: {e}. All IdP IDs must consist of lowercase letters, numbers, hyphens or underscores, and be between 1 and 64 characters long."
+                "Invalid IdP ID '{idp_id}' in authenticator configuration: {e}. All IdP IDs must consist of lowercase letters, digits, or hyphens."
             )
         })?;
     }
