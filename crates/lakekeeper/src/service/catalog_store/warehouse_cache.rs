@@ -185,7 +185,9 @@ pub(super) async fn warehouse_cache_get_by_name(
         metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse").increment(1);
         Some(value.warehouse.clone())
     } else {
-        tracing::debug!("Warehouse id {warehouse_id} not found in cache, invalidating stale name mapping for {name}");
+        tracing::debug!(
+            "Warehouse id {warehouse_id} not found in cache, invalidating stale name mapping for {name}"
+        );
         NAME_TO_ID_CACHE.invalidate(&name_key).await;
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         None

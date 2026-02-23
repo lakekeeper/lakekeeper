@@ -200,7 +200,9 @@ pub(super) async fn namespace_cache_get_by_ident(
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
     let result = namespace_cache_get_by_id(namespace_id).await;
     if result.is_none() {
-        tracing::debug!("Namespace id {namespace_id} not found in cache, invalidating stale ident mapping for {namespace_ident}");
+        tracing::debug!(
+            "Namespace id {namespace_id} not found in cache, invalidating stale ident mapping for {namespace_ident}"
+        );
         IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
     }
     result
