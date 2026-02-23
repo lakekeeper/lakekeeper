@@ -173,10 +173,8 @@ pub(super) async fn warehouse_cache_get_by_name(
     project_id: &ArcProjectId,
 ) -> Option<Arc<ResolvedWarehouse>> {
     update_cache_size_metric();
-    let Some(warehouse_id) = NAME_TO_ID_CACHE
-        .get(&(project_id.clone(), UniCase::new(name.to_string())))
-        .await
-    else {
+    let name_key = (project_id.clone(), UniCase::new(name.to_string()));
+    let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         return None;
     };
@@ -187,6 +185,8 @@ pub(super) async fn warehouse_cache_get_by_name(
         metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse").increment(1);
         Some(value.warehouse.clone())
     } else {
+        tracing::debug!("Warehouse id {warehouse_id} not found in cache, invalidating stale name mapping for {name}");
+        NAME_TO_ID_CACHE.invalidate(&name_key).await;
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         None
     }

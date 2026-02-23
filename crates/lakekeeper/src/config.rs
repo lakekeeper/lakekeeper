@@ -1303,6 +1303,32 @@ mod test {
     }
 
     #[test]
+    fn test_role_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.role.enabled);
+            assert_eq!(config.cache.role.capacity, 10_000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.role.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__CAPACITY", "5000");
+            let config = get_config();
+            assert!(config.cache.role.enabled);
+            assert_eq!(config.cache.role.capacity, 5000);
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_audit_tracing_enabled() {
         // Test default value is true
         figment::Jail::expect_with(|_jail| {

@@ -194,11 +194,16 @@ pub(super) async fn namespace_cache_get_by_ident(
     warehouse_id: WarehouseId,
 ) -> Option<NamespaceHierarchy> {
     update_cache_size_metric();
-    let cache_key = namespace_ident_to_cache_key(namespace_ident);
-    let namespace_id = IDENT_TO_ID_CACHE.get(&(warehouse_id, cache_key)).await?;
+    let ident_key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
+    let namespace_id = IDENT_TO_ID_CACHE.get(&ident_key).await?;
 
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
-    namespace_cache_get_by_id(namespace_id).await
+    let result = namespace_cache_get_by_id(namespace_id).await;
+    if result.is_none() {
+        tracing::debug!("Namespace id {namespace_id} not found in cache, invalidating stale ident mapping for {namespace_ident}");
+        IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+    }
+    result
 }
 
 /// Build a `NamespaceHierarchy` by collecting parents from the cache.

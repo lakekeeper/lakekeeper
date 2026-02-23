@@ -141,7 +141,8 @@ pub(super) async fn role_cache_get_by_ident(
     ident: ArcRoleIdent,
 ) -> Option<ArcRole> {
     update_cache_size_metric();
-    let Some(role_id) = IDENT_TO_ID_CACHE.get(&(project_id, ident.clone())).await else {
+    let ident_key = (project_id, ident.clone());
+    let Some(role_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         return None;
     };
@@ -152,6 +153,10 @@ pub(super) async fn role_cache_get_by_ident(
         metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role").increment(1);
         Some(role)
     } else {
+        tracing::debug!(
+            "Role id {role_id} not found in cache, invalidating stale ident mapping for {ident}"
+        );
+        IDENT_TO_ID_CACHE.remove(&ident_key).await;
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         None
     }

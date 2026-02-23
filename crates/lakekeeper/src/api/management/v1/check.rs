@@ -2617,4 +2617,151 @@ mod tests {
             serde_json::from_value(expected).unwrap();
         assert_eq!(request, deserialized);
     }
+
+    #[sqlx::test]
+    async fn test_check_internal_role_based_identity(pool: sqlx::PgPool) {
+        use crate::api::management::v1::{
+            ApiServer,
+            role::{CreateRoleRequest, Service as RoleService},
+        };
+
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create a role in the project so fetch_identity_roles can resolve it.
+        let role = ApiServer::<PostgresBackend, _, _>::create_role(
+            CreateRoleRequest {
+                name: "test-role".to_string(),
+                description: None,
+                project_id: Some((*test_warehouse.project_id).clone()),
+                provider_id: None,
+                source_id: None,
+            },
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+        let role_id = role.id;
+
+        // Test 1: server action with role identity — exercises fetch_identity_roles +
+        // resolve_identity end-to-end.
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("role-server-check".to_string()),
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                operation: CatalogActionCheckOperation::Server {
+                    action: CatalogServerAction::CreateProject,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("role-server-check".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 2: warehouse action with role identity — allowed before hiding.
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("role-warehouse-allow".to_string()),
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("role-warehouse-allow".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 3: hide the warehouse, then recheck with role identity — should be denied.
+        authz.hide(&format!("warehouse:{}", test_warehouse.warehouse_id));
+
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("role-warehouse-deny".to_string()),
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("role-warehouse-deny".to_string())
+        );
+        assert!(!response.results[0].allowed);
+
+        // Test 4: batch mixing role identity with no-identity on the same server action —
+        // both must succeed, confirming prefetch deduplication works.
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: Some("batch-role".to_string()),
+                    identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                    operation: CatalogActionCheckOperation::Server {
+                        action: CatalogServerAction::CreateProject,
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("batch-no-identity".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Server {
+                        action: CatalogServerAction::CreateProject,
+                    },
+                },
+            ],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 2);
+        assert!(response.results.iter().all(|r| r.allowed));
+        assert_eq!(response.results[0].id, Some("batch-role".to_string()));
+        assert_eq!(
+            response.results[1].id,
+            Some("batch-no-identity".to_string())
+        );
+    }
 }
