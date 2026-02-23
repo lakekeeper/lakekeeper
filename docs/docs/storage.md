@@ -62,7 +62,22 @@ With the default `{uuid}`-only templates this looks like:
 s3://my-bucket/warehouse/<uuid-of-production-namespace>/<uuid-of-table>/
 ```
 
-To use this layout explicitly with custom templates:
+To use the default layout explicitly:
+
+```json
+{
+  "storage-profile": {
+    "type": "s3",
+    "storage-layout": {
+      "type": "parent-namespace-and-table",
+      "namespace": "{uuid}",
+      "table": "{uuid}"
+    }
+  }
+}
+```
+
+or for specifying custom templates:
 
 ```json
 {
