@@ -68,7 +68,7 @@ pub struct GcsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sts_enabled: bool,
-    /// Storage layout for namespace and table paths.
+    /// Storage layout for namespace and tabular paths.
     #[serde(default)]
     pub storage_layout: Option<StorageLayout>,
 }

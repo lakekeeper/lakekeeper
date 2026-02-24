@@ -40,7 +40,7 @@ use crate::{
             error::{IcebergFileIoError, UnexpectedStorageType},
             storage_layout::{
                 DEFAULT_LAYOUT, NamespaceNameContext, NamespacePath, StorageLayout,
-                TableNameContext,
+                TabularNameContext,
             },
         },
     },
@@ -88,7 +88,7 @@ enum StorageProfileBorrowed<'a> {
 pub struct MemoryProfile {
     /// Base location for the local profile
     base_location: String,
-    /// Storage layout for namespace and table paths.
+    /// Storage layout for namespace and tabular paths.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub storage_layout: Option<StorageLayout>,
@@ -357,8 +357,8 @@ impl StorageProfile {
             uuid: Uuid::now_v7(),
         }]);
         let ns_location = self.default_namespace_location(&namespace_path)?;
-        let tabular_name_context = TableNameContext {
-            name: "test_table".to_string(),
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
             uuid: Uuid::now_v7(),
         };
         let _ = self.default_tabular_location(&ns_location, &tabular_name_context);
@@ -402,8 +402,8 @@ impl StorageProfile {
             name: "test_namespace".to_string(),
             uuid: Uuid::now_v7(),
         }]);
-        let tabular_name_context = TableNameContext {
-            name: "test_table".to_string(),
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
             uuid: Uuid::now_v7(),
         };
         let ns_location = self.default_namespace_location(&namespace_path)?;
@@ -897,13 +897,13 @@ impl StorageProfile {
     pub fn default_tabular_location(
         &self,
         namespace_location: &Location,
-        table_name_context: &TableNameContext,
+        tabular_name_context: &TabularNameContext,
     ) -> Location {
         let mut location = namespace_location.clone();
 
         let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
 
-        let segment = layout.render_table_segment(table_name_context);
+        let segment = layout.render_tabular_segment(tabular_name_context);
         location.without_trailing_slash().push(&segment);
         location
     }
@@ -1111,7 +1111,7 @@ mod tests {
             TableInfo,
             storage::{
                 s3::S3AccessKeyCredential,
-                storage_layout::{NamespaceNameContext, TableNameContext},
+                storage_layout::{NamespaceNameContext, TabularNameContext},
             },
         },
     };
@@ -1147,32 +1147,32 @@ mod tests {
         );
 
         let ns_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000001");
-        let table_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000002");
-        let table_name = "test-table";
+        let tabular_uuid = uuid::uuid!("00000000-0000-0000-0000-000000000002");
+        let tabular_name = "test-table";
 
         let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
             name: "ns".to_string(),
             uuid: ns_uuid,
         }]);
 
-        let table_name_context = TableNameContext {
-            name: table_name.to_string(),
-            uuid: table_uuid,
+        let tabular_name_context = TabularNameContext {
+            name: tabular_name.to_string(),
+            uuid: tabular_uuid,
         };
 
-        let target_location = format!("s3://my-bucket/subfolder/{ns_uuid}/{table_uuid}");
+        let target_location = format!("s3://my-bucket/subfolder/{ns_uuid}/{tabular_uuid}");
 
         let namespace_location = profile.default_namespace_location(&namespace_path).unwrap();
-        let table_location =
-            profile.default_tabular_location(&namespace_location, &table_name_context);
-        assert_eq!(table_location.to_string(), target_location);
+        let tabular_location =
+            profile.default_tabular_location(&namespace_location, &tabular_name_context);
+        assert_eq!(tabular_location.to_string(), target_location);
 
         let mut namespace_location_without_slash = namespace_location.clone();
         namespace_location_without_slash.without_trailing_slash();
-        let table_location_trailing = profile
-            .default_tabular_location(&namespace_location_without_slash, &table_name_context);
+        let tabular_location_trailing = profile
+            .default_tabular_location(&namespace_location_without_slash, &tabular_name_context);
         assert!(!namespace_location_without_slash.to_string().ends_with('/'));
-        assert_eq!(table_location_trailing.to_string(), target_location);
+        assert_eq!(tabular_location_trailing.to_string(), target_location);
     }
 
     #[test]
