@@ -1,4 +1,6 @@
 use std::fmt::Debug;
+#[cfg(feature = "router")]
+use std::sync::Arc;
 
 #[cfg(feature = "router")]
 use axum::{
@@ -19,7 +21,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CONFIG, api, service::ArcRole};
 #[cfg(feature = "router")]
-use crate::{request_metadata::RequestMetadata, service::events::EventDispatcher};
+use crate::{
+    XXHashSet,
+    request_metadata::{RequestMetadata, TokenRoles},
+    service::{RoleIdent, events::EventDispatcher},
+};
 
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_BY_ID_HEADER: &str = "x-assume-role";
@@ -207,7 +213,7 @@ pub(crate) async fn auth_middleware_fn<
     mut request: Request,
     next: Next,
 ) -> Response {
-    use crate::service::{CatalogRoleOps, authz::AuthZServerOps};
+    use crate::service::authz::AuthZServerOps;
 
     let authenticator = &state.authenticator;
     let authorizer = &state.authorizer;
@@ -242,33 +248,20 @@ pub(crate) async fn auth_middleware_fn<
         Ok(role_id) => role_id,
         Err(e) => return e.into_response(),
     };
-    let actor = match role_id {
-        Some(role_id) => Actor::Role {
-            principal: user_id,
-            assumed_role: {
-                let role = C::get_role_by_id_across_projects_cache_aware(
-                    role_id,
-                    crate::service::CachePolicy::Use,
-                    catalog_state,
-                )
-                .await;
-                match role {
-                    Ok(role) => role,
-                    Err(e) => {
-                        return ErrorModel::bad_request(
-                            format!("Failed to resolve role with id {role_id} presented in header {ASSUME_ROLE_BY_ID_HEADER}"),
-                            "InvalidAssumeRoleId",
-                            Some(Box::new(e)),
-                        )
-                        .into_response();
-                    }
-                }
-            },
-        },
-        None => Actor::Principal(user_id),
+    let actor = match resolve_actor::<C>(user_id, role_id, catalog_state).await {
+        Ok(actor) => actor,
+        Err(e) => return e,
     };
 
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
+        match extract_and_set_token_roles(&authentication, request_metadata) {
+            Ok(Some(token_roles)) => {
+                request_metadata.set_token_roles(token_roles);
+            }
+            Ok(None) => {}
+            Err(e) => return e.into_response(),
+        }
+
         request_metadata.set_authentication(actor.clone(), authentication);
 
         let check_result = if let Some(role_id) = role_id {
@@ -306,7 +299,7 @@ pub(crate) async fn auth_middleware_fn<
 
         // Ensure assume role, if present, is allowed
         if let Err(err) = check_result {
-            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
+            return err.into_response();
         }
     }
 
@@ -329,6 +322,85 @@ fn extract_role_id(
     } else {
         Ok(None)
     }
+}
+
+#[cfg(feature = "router")]
+async fn resolve_actor<C: super::CatalogStore>(
+    user_id: UserId,
+    role_id: Option<super::RoleId>,
+    catalog_state: C::State,
+) -> Result<Actor, Response> {
+    use crate::service::CatalogRoleOps;
+
+    match role_id {
+        Some(role_id) => {
+            match C::get_role_by_id_across_projects_cache_aware(
+                role_id,
+                crate::service::CachePolicy::Use,
+                catalog_state,
+            )
+            .await
+            {
+                Ok(role) => Ok(Actor::Role {
+                    principal: user_id,
+                    assumed_role: role,
+                }),
+                Err(e) => Err(ErrorModel::bad_request(
+                    format!("Failed to resolve role with id {role_id} presented in header {ASSUME_ROLE_BY_ID_HEADER}"),
+                    "InvalidAssumeRoleId",
+                    Some(Box::new(e)),
+                )
+                .into_response()),
+            }
+        }
+        None => Ok(Actor::Principal(user_id)),
+    }
+}
+
+#[cfg(feature = "router")]
+fn extract_and_set_token_roles(
+    authentication: &limes::Authentication,
+    request_metadata: &RequestMetadata,
+) -> Result<Option<TokenRoles>, ErrorModel> {
+    use crate::service::{RoleProviderId, RoleSourceId};
+
+    let Some(roles) = authentication.roles() else {
+        return Ok(None);
+    };
+
+    let Some(project_id) = request_metadata.preferred_project_id() else {
+        return Err(ErrorModel::bad_request(
+            "Default project must be set or X-Project-ID header must be provided if roles are extracted from tokens",
+            "MissingProjectId",
+            None,
+        ));
+    };
+
+    let role_idents = roles
+        .iter()
+        .map(|source_id| {
+            let source_id = RoleSourceId::try_new(source_id).map_err(|e| {
+                ErrorModel::bad_request(
+                    format!("Invalid Role in token: {e}"),
+                    "RoleSourceIdError",
+                    None,
+                )
+                .append_detail("Could not build Request Metadata")
+            })?;
+            let provider_id = authentication.subject().idp_id().ok_or_else(|| {
+                ErrorModel::internal(
+                    "Encountered Authenticator without provider / idp_id",
+                    "AuthenticatorMissingProviderId",
+                    None,
+                )
+            })?;
+            let provider_id = RoleProviderId::new_unchecked(provider_id.clone());
+
+            Ok(Arc::new(RoleIdent::new(provider_id, source_id)))
+        })
+        .collect::<Result<XXHashSet<_>, ErrorModel>>()?;
+
+    Ok(Some(TokenRoles::new(project_id, role_idents)))
 }
 
 impl std::fmt::Display for UserId {

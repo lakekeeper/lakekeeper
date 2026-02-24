@@ -99,8 +99,7 @@ impl RoleProviderId {
         Ok(Self(value))
     }
 
-    /// Constructs a [`RoleProviderId`] without validation. Only for tests.
-    #[cfg(any(test, feature = "test-utils"))]
+    /// Constructs a [`RoleProviderId`] without validation. Use only for pre-validated provider IDs.
     #[must_use]
     pub fn new_unchecked(value: impl Into<String>) -> Self {
         Self(value.into())

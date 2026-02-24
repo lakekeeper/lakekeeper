@@ -1,7 +1,9 @@
 use lakekeeper::{
     api::ErrorModel,
     service::{
-        authz::{AuthorizationBackendUnavailable, AuthzBackendErrorOrBadRequest, IsAllowedActionError},
+        authz::{
+            AuthorizationBackendUnavailable, AuthzBackendErrorOrBadRequest, IsAllowedActionError,
+        },
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
 };
