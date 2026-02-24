@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_deserialization_of_parent_layout() {
+    fn test_storage_layout_deserialization_of_parent_layout_should_fail_as_it_is_internal() {
         let json = r#"
         {
             "type": "parent-namespace-and-tabular",
@@ -810,6 +810,22 @@ mod tests {
         "#;
 
         serde_json::from_str::<StorageLayout>(json).expect_err("Storage Layout should not support deserializing the parent-namespace-and-tabular layout since it's only used internally and skipped in the enum definition");
+    }
+
+    #[test]
+    fn test_storage_layout_deserialization_of_inner_parent_layout() {
+        let json = r#"
+        {
+            "namespace": "{uuid}",
+            "tabular": "{name}"
+        }
+        "#;
+
+        let layout: StorageLayoutParentNamespaceAndTabular =
+            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
+
+        assert_eq!(layout.namespace.0, "{uuid}");
+        assert_eq!(layout.tabular.0, "{name}");
     }
 
     #[test]
