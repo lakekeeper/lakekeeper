@@ -595,7 +595,7 @@ mod test {
     #[test]
     fn test_load_table_query_deserialization_with_referenced_by() {
         let query = serde_json::json!({
-            "referenced-by": "prod%1Fanalytics%1Fquarterly_view%2Cprod%1Fanalytics%1Fmonthly_view"
+            "referenced-by": "prod\u{1f}analytics\u{1f}quarterly_view,prod\u{1f}analytics\u{1f}monthly_view"
         });
         let deserialized: LoadTableQuery = serde_json::from_value(query).unwrap();
         assert_eq!(
@@ -848,7 +848,7 @@ mod test {
     #[test]
     fn test_load_table_credentials_query_deserialization_with_referenced_by() {
         let query = serde_json::json!({
-            "referenced-by": "prod%1Fanalytics%1Fquarterly_view%2Cprod%1Fanalytics%1Fmonthly_view"
+            "referenced-by": "prod\u{1f}analytics\u{1f}quarterly_view,prod\u{1f}analytics\u{1f}monthly_view"
         });
         let deserialized: LoadTableCredentialsQuery = serde_json::from_value(query).unwrap();
         assert_eq!(

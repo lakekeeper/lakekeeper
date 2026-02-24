@@ -99,11 +99,7 @@ impl<'de> Deserialize<'de> for ReferencedByQuery {
             return Ok(ReferencedByQuery(vec![]));
         }
 
-        let referenced_by_decoded = urlencoding::decode(&referenced_by_raw)
-            .map(|s| s.replace('+', " "))
-            .map_err(serde::de::Error::custom)?;
-
-        let referenced_by = referenced_by_decoded
+        let referenced_by = referenced_by_raw
             .split(',')
             .map(|node| {
                 node.parse::<ReferencingView>()
@@ -120,13 +116,12 @@ impl Serialize for ReferencedByQuery {
     where
         S: Serializer,
     {
-        let combined = self
+        let referenced_by = self
             .0
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let referenced_by = urlencoding::encode(&combined);
         serializer.serialize_str(&referenced_by)
     }
 }
@@ -478,7 +473,24 @@ mod tests {
 
     #[test]
     fn test_referenced_by_query_de_ser() {
-        let s = "prod%1Fanalytics%1Fquarterly_view%2Cprod%1Fanalytics%1Fmonthly_view";
+        let s = "prod\u{1f}analytics\u{1f}quarterly_view";
+        let referenced_by: ReferencedByQuery =
+            serde_json::from_value(serde_json::json!(s)).unwrap();
+
+        assert_eq!(referenced_by.len(), 1);
+        assert_eq!(referenced_by[0].name, "quarterly_view");
+        assert_eq!(
+            referenced_by[0].namespace.clone().inner(),
+            vec!["prod", "analytics"]
+        );
+
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s));
+    }
+
+    #[test]
+    fn test_referenced_by_query_with_comma_separated_referencing_views_de_ser() {
+        let s = "prod\u{1f}analytics\u{1f}quarterly_view,prod\u{1f}analytics\u{1f}monthly_view";
         let referenced_by: ReferencedByQuery =
             serde_json::from_value(serde_json::json!(s)).unwrap();
 
@@ -499,30 +511,8 @@ mod tests {
     }
 
     #[test]
-    fn test_referenced_by_query_with_comma_de_ser() {
-        let s = "prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
-        let referenced_by: ReferencedByQuery =
-            serde_json::from_value(serde_json::json!(s)).unwrap();
-
-        assert_eq!(referenced_by.len(), 2);
-        assert_eq!(referenced_by[0].name, "quarterly_view");
-        assert_eq!(
-            referenced_by[0].namespace.clone().inner(),
-            vec!["prod", "analytics"]
-        );
-        assert_eq!(referenced_by[1].name, "monthly_view");
-        assert_eq!(
-            referenced_by[1].namespace.clone().inner(),
-            vec!["prod", "analytics"]
-        );
-
-        let serialized = serde_json::to_value(&referenced_by).unwrap();
-        assert_eq!(serialized, serde_json::json!(s.replace(',', "%2C")));
-    }
-
-    #[test]
     fn test_referenced_by_query_with_space_de_ser() {
-        let s = "prod%1Fanalytics%1Fquarterly%20view";
+        let s = "prod\u{1f}analytics\u{1f}quarterly view";
         let referenced_by: ReferencedByQuery =
             serde_json::from_value(serde_json::json!(s)).unwrap();
 
@@ -535,14 +525,14 @@ mod tests {
 
     #[test]
     fn test_referenced_by_query_with_plus_de_ser() {
-        let s = "prod%1Fanalytics%1Fquarterly+view";
+        let s = "prod\u{1f}analytics\u{1f}quarterly+view";
         let referenced_by: ReferencedByQuery =
             serde_json::from_value(serde_json::json!(s)).unwrap();
 
         assert_eq!(referenced_by.len(), 1);
-        assert_eq!(referenced_by[0].name, "quarterly view");
+        assert_eq!(referenced_by[0].name, "quarterly+view");
 
         let serialized = serde_json::to_value(&referenced_by).unwrap();
-        assert_eq!(serialized, serde_json::json!(s.replace('+', "%20")));
+        assert_eq!(serialized, serde_json::json!(s));
     }
 }
