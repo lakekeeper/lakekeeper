@@ -16,7 +16,9 @@ use crate::{
         iceberg::{
             types::{DropParams, Prefix},
             v1::{
-                ReferencedByQuery, namespace::{NamespaceIdentUrl, NamespaceParameters}, tables::{DataAccessMode, normalize_tabular_name}
+                ReferencedByQuery,
+                namespace::{NamespaceIdentUrl, NamespaceParameters},
+                tables::{DataAccessMode, normalize_tabular_name},
             },
         },
     },
