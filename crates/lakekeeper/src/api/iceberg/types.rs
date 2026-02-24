@@ -11,9 +11,9 @@ pub(crate) const NAMESPACE_DELIMITER: &str = "\u{1f}";
 
 /// A single referenced view within a query.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ReferencedView(TableIdent);
+pub struct ReferencingView(TableIdent);
 
-impl ReferencedView {
+impl ReferencingView {
     #[must_use]
     pub fn new(ident: TableIdent) -> Self {
         Self(ident)
@@ -25,7 +25,7 @@ impl ReferencedView {
     }
 }
 
-impl Deref for ReferencedView {
+impl Deref for ReferencingView {
     type Target = TableIdent;
 
     fn deref(&self) -> &Self::Target {
@@ -33,24 +33,24 @@ impl Deref for ReferencedView {
     }
 }
 
-impl From<TableIdent> for ReferencedView {
+impl From<TableIdent> for ReferencingView {
     fn from(ident: TableIdent) -> Self {
         Self(ident)
     }
 }
 
-impl FromStr for ReferencedView {
+impl FromStr for ReferencingView {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let segments: Vec<_> = s.split(NAMESPACE_DELIMITER).collect();
         TableIdent::from_strs(segments)
-            .map(ReferencedView)
+            .map(ReferencingView)
             .map_err(|e| e.to_string())
     }
 }
 
-impl Display for ReferencedView {
+impl Display for ReferencingView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for segment in self.0.namespace.iter() {
             write!(f, "{segment}{NAMESPACE_DELIMITER}")?;
@@ -60,29 +60,29 @@ impl Display for ReferencedView {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct ReferencedByQuery(Vec<ReferencedView>);
+pub struct ReferencedByQuery(Vec<ReferencingView>);
 
 impl ReferencedByQuery {
     #[must_use]
-    pub fn into_inner(self) -> Vec<ReferencedView> {
+    pub fn into_inner(self) -> Vec<ReferencingView> {
         self.0
     }
 }
 
-impl From<Vec<ReferencedView>> for ReferencedByQuery {
-    fn from(views: Vec<ReferencedView>) -> Self {
+impl From<Vec<ReferencingView>> for ReferencedByQuery {
+    fn from(views: Vec<ReferencingView>) -> Self {
         Self(views)
     }
 }
 
 impl From<Vec<TableIdent>> for ReferencedByQuery {
     fn from(idents: Vec<TableIdent>) -> Self {
-        Self(idents.into_iter().map(ReferencedView::from).collect())
+        Self(idents.into_iter().map(ReferencingView::from).collect())
     }
 }
 
 impl Deref for ReferencedByQuery {
-    type Target = [ReferencedView];
+    type Target = [ReferencingView];
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -106,7 +106,7 @@ impl<'de> Deserialize<'de> for ReferencedByQuery {
         let referenced_by = referenced_by_decoded
             .split(',')
             .map(|node| {
-                node.parse::<ReferencedView>()
+                node.parse::<ReferencingView>()
                     .map_err(serde::de::Error::custom)
             })
             .collect::<Result<Vec<_>, _>>()?;
