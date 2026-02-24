@@ -49,7 +49,7 @@ pub static DEFAULT_NAMESPACE_TEMPLATE: LazyLock<StorageLayoutNamespaceTemplate> 
 ///
 /// For a tabular `my_tabular` (uuid `…002`) in namespace `my_ns` (uuid `…001`) the path is:
 /// `<base>/<namespace-segment>/<tabular-segment>`.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(
     example = json!({"namespace": "{uuid}", "tabular": "{uuid}"})
@@ -59,11 +59,52 @@ pub struct StorageLayoutParentNamespaceAndTabular {
     pub tabular: StorageLayoutTabularTemplate,
 }
 
+impl StorageLayoutParentNamespaceAndTabular {
+    pub fn try_new(
+        namespace_template: String,
+        tabular_template: String,
+    ) -> Result<Self, StorageLayoutError> {
+        if !has_template_parameter(&tabular_template) {
+            return Err(StorageLayoutError::InvalidTemplate(format!(
+                "For the 'parent-namespace-and-tabular' layout, the tabular template '{tabular_template}' must contain at least one placeholder."
+            )));
+        }
+
+        if !has_template_parameter(&namespace_template) {
+            return Err(StorageLayoutError::InvalidTemplate(format!(
+                "For the 'parent-namespace-and-tabular' layout, the namespace template '{namespace_template}' must contain at least one placeholder."
+            )));
+        }
+
+        Ok(Self {
+            namespace: StorageLayoutNamespaceTemplate(namespace_template),
+            tabular: StorageLayoutTabularTemplate(tabular_template),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for StorageLayoutParentNamespaceAndTabular {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StorageLayoutParentNamespaceAndTabularHelper {
+            namespace: StorageLayoutNamespaceTemplate,
+            tabular: StorageLayoutTabularTemplate,
+        }
+
+        let helper = StorageLayoutParentNamespaceAndTabularHelper::deserialize(deserializer)?;
+        StorageLayoutParentNamespaceAndTabular::try_new(helper.namespace.0, helper.tabular.0)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// One directory per namespace level, one per tabular.
 ///
 /// For a tabular `my_tabular` (uuid `…003`) in `grandparent_ns` / `parent_ns` the path is:
 /// `<base>/<grandparent-segment>/<parent-segment>/<tabular-segment>`.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(
     example = json!({"namespace": "{name}-{uuid}", "tabular": "{name}-{uuid}"})
@@ -71,6 +112,47 @@ pub struct StorageLayoutParentNamespaceAndTabular {
 pub struct StorageLayoutFullHierarchy {
     pub namespace: StorageLayoutNamespaceTemplate,
     pub tabular: StorageLayoutTabularTemplate,
+}
+
+impl StorageLayoutFullHierarchy {
+    pub fn try_new(
+        namespace_template: String,
+        tabular_template: String,
+    ) -> Result<Self, StorageLayoutError> {
+        if !has_template_parameter(&tabular_template) {
+            return Err(StorageLayoutError::InvalidTemplate(format!(
+                "For the 'full-hierarchy' layout, the tabular template '{tabular_template}' must contain at least one placeholder."
+            )));
+        }
+
+        if !has_template_parameter(&namespace_template) {
+            return Err(StorageLayoutError::InvalidTemplate(format!(
+                "For the 'full-hierarchy' layout, the namespace template '{namespace_template}' must contain at least one placeholder."
+            )));
+        }
+
+        Ok(Self {
+            namespace: StorageLayoutNamespaceTemplate(namespace_template),
+            tabular: StorageLayoutTabularTemplate(tabular_template),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for StorageLayoutFullHierarchy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StorageLayoutFullHierarchyHelper {
+            namespace: StorageLayoutNamespaceTemplate,
+            tabular: StorageLayoutTabularTemplate,
+        }
+
+        let helper = StorageLayoutFullHierarchyHelper::deserialize(deserializer)?;
+        StorageLayoutFullHierarchy::try_new(helper.namespace.0, helper.tabular.0)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// No namespace directories; all tabulars are placed directly under the base location.
@@ -90,7 +172,7 @@ impl StorageLayoutFlat {
     pub fn try_new(tabular_template: String) -> Result<Self, StorageLayoutError> {
         if !tabular_template.contains("{uuid}") {
             return Err(StorageLayoutError::InvalidTemplate(format!(
-                "For the 'Flat' layout, the tabular template '{tabular_template}' must contain the {{uuid}} placeholder to prevent path collisions."
+                "For the 'tabular-only' layout, the tabular template '{tabular_template}' must contain the {{uuid}} placeholder to prevent path collisions."
             )));
         }
         Ok(Self {
@@ -112,6 +194,14 @@ impl<'de> Deserialize<'de> for StorageLayoutFlat {
         let helper = StorageLayoutFlatHelper::deserialize(deserializer)?;
         StorageLayoutFlat::try_new(helper.tabular.0).map_err(serde::de::Error::custom)
     }
+}
+
+const TEMPLATE_PARAMETERS: [&str; 2] = ["{uuid}", "{name}"];
+
+fn has_template_parameter(template: &str) -> bool {
+    TEMPLATE_PARAMETERS
+        .iter()
+        .any(|param| template.contains(param))
 }
 
 /// Controls how namespace and tabular paths are constructed under the warehouse base location.
@@ -143,20 +233,19 @@ impl StorageLayout {
         StorageLayoutFlat::try_new(tabular_template).map(Self::Flat)
     }
 
-    #[must_use]
-    pub fn new_parent(namespace_template: String, tabular_template: String) -> Self {
-        Self::Parent(StorageLayoutParentNamespaceAndTabular {
-            namespace: StorageLayoutNamespaceTemplate(namespace_template),
-            tabular: StorageLayoutTabularTemplate(tabular_template),
-        })
+    pub fn try_new_parent(
+        namespace_template: String,
+        tabular_template: String,
+    ) -> Result<Self, StorageLayoutError> {
+        StorageLayoutParentNamespaceAndTabular::try_new(namespace_template, tabular_template)
+            .map(Self::Parent)
     }
 
-    #[must_use]
-    pub fn new_full(namespace_template: String, tabular_template: String) -> Self {
-        Self::Full(StorageLayoutFullHierarchy {
-            namespace: StorageLayoutNamespaceTemplate(namespace_template),
-            tabular: StorageLayoutTabularTemplate(tabular_template),
-        })
+    pub fn try_new_full(
+        namespace_template: String,
+        tabular_template: String,
+    ) -> Result<Self, StorageLayoutError> {
+        StorageLayoutFullHierarchy::try_new(namespace_template, tabular_template).map(Self::Full)
     }
 
     #[must_use]
@@ -337,10 +426,11 @@ mod tests {
     fn test_storage_layout_renders_parent_namespace_layout_with_namespace_name_and_uuid_and_tabular_name_and_uuid()
      {
         let tabular_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_parent(
+        let layout = StorageLayout::try_new_parent(
             tabular_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let tabular_context = TabularNameContext {
             name: "my_tabular".to_string(),
             uuid: Uuid::new_v4(),
@@ -368,10 +458,11 @@ mod tests {
     fn test_storage_layout_renders_full_layout_with_namespace_name_and_uuid_and_tabular_name_and_uuid()
      {
         let tabular_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_full(
+        let layout = StorageLayout::try_new_full(
             tabular_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let tabular_context = TabularNameContext {
             name: "my_tabular".to_string(),
             uuid: Uuid::new_v4(),
@@ -422,10 +513,11 @@ mod tests {
     fn test_storage_layout_render_tabular_segment_in_parent_layout() {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_parent(
+        let layout = StorageLayout::try_new_parent(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let context = TabularNameContext {
             name: "my_tabular".to_string(),
             uuid: Uuid::now_v7(),
@@ -441,10 +533,11 @@ mod tests {
     fn test_storage_layout_render_tabular_segment_in_full_layout() {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_full(
+        let layout = StorageLayout::try_new_full(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let context = TabularNameContext {
             name: "my_tabular".to_string(),
             uuid: Uuid::now_v7(),
@@ -497,10 +590,11 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_parent_layout() {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_parent(
+        let layout = StorageLayout::try_new_parent(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let parent_namespace = NamespaceNameContext {
             name: "my_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -520,10 +614,11 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_parent_layout_should_only_render_parent() {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_parent(
+        let layout = StorageLayout::try_new_parent(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let grand_parent_namespace = NamespaceNameContext {
             name: "grand_parent_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -548,10 +643,11 @@ mod tests {
     {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_parent(
+        let layout = StorageLayout::try_new_parent(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let path = NamespacePath::new(vec![]);
 
         assert!(layout.render_namespace_path(&path).is_empty());
@@ -561,10 +657,11 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_full_layout() {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_full(
+        let layout = StorageLayout::try_new_full(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let parent_namespace = NamespaceNameContext {
             name: "parent_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -584,10 +681,11 @@ mod tests {
     fn test_storage_layout_render_namespace_segment_in_full_layout_should_render_empty_namespace() {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_full(
+        let layout = StorageLayout::try_new_full(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let path = NamespacePath::new(vec![]);
 
         assert!(layout.render_namespace_path(&path).is_empty());
@@ -598,10 +696,11 @@ mod tests {
      {
         let tabular_name_template = "{name}-{uuid}";
         let namespace_name_template = "{name}-{uuid}";
-        let layout = StorageLayout::new_full(
+        let layout = StorageLayout::try_new_full(
             namespace_name_template.to_string(),
             tabular_name_template.to_string(),
-        );
+        )
+        .unwrap();
         let grand_parent_namespace = NamespaceNameContext {
             name: "grand_parent_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -714,7 +813,8 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_deserialization_of_flat_layout() {
+    fn test_storage_layout_deserialization_of_flat_layout_should_fail_without_uuid_template_parameter()
+     {
         // A Flat layout without {uuid} in the tabular template must be rejected at
         // deserialization time to prevent path collisions.
         let json = r#"
@@ -865,7 +965,8 @@ mod tests {
     #[test]
     fn test_storage_layout_render_tabular_segment_with_slash() {
         let layout =
-            StorageLayout::new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string());
+            StorageLayout::try_new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string())
+                .unwrap();
         let context = TabularNameContext {
             name: "my_tabular".to_string(),
             uuid: Uuid::now_v7(),
@@ -880,7 +981,8 @@ mod tests {
     #[test]
     fn test_storage_layout_render_namespace_path_with_slash() {
         let layout =
-            StorageLayout::new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string());
+            StorageLayout::try_new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string())
+                .unwrap();
         let namespace = NamespaceNameContext {
             name: "my_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -890,6 +992,128 @@ mod tests {
         assert_eq!(
             *layout.render_namespace_path(&namespace_path),
             vec![format!("{}/{}", namespace.name, namespace.uuid)]
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_tabular_in_parent_layout_needs_at_least_one_template_parameter() {
+        let namespace_template = "{uuid}";
+        let invalid_tabular_template = "invalid";
+        let layout = StorageLayout::try_new_parent(
+            namespace_template.to_string(),
+            invalid_tabular_template.to_string(),
+        );
+        let layout = layout
+            .expect_err("Expected error due to missing template parameter in tabular template.");
+        assert!(matches!(layout, StorageLayoutError::InvalidTemplate(_)));
+    }
+
+    #[test]
+    fn test_storage_layout_namespace_in_parent_layout_needs_at_least_one_template_parameter() {
+        let invalid_namespace_template = "invalid";
+        let tabular_template = "{uuid}";
+        let layout = StorageLayout::try_new_parent(
+            invalid_namespace_template.to_string(),
+            tabular_template.to_string(),
+        );
+        let layout = layout
+            .expect_err("Expected error due to missing template parameter in namespace template.");
+        assert!(matches!(layout, StorageLayoutError::InvalidTemplate(_)));
+    }
+
+    #[test]
+    fn test_storage_layout_deserialization_of_parent_layout_should_fail_without_at_least_one_template_parameter_for_tabular_template()
+     {
+        let json = r#"
+        {
+            "namespace": "{uuid}",
+            "tabular": "invalid"
+        }
+        "#;
+
+        let result: Result<StorageLayoutParentNamespaceAndTabular, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Expected deserialization to fail for parent-namespace-and-tabular layout without at least one template parameter in tabular template"
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_deserialization_of_parent_layout_should_fail_without_at_least_one_template_parameter_for_namespace_template()
+     {
+        let json = r#"
+        {
+            "namespace": "invalid",
+            "tabular": "{uuid}"
+        }
+        "#;
+
+        let result: Result<StorageLayoutParentNamespaceAndTabular, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Expected deserialization to fail for parent-namespace-and-tabular layout without at least one template parameter in namespace template"
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_tabular_in_full_layout_needs_at_least_one_template_parameter() {
+        let namespace_template = "{uuid}";
+        let invalid_tabular_template = "invalid";
+        let layout = StorageLayout::try_new_full(
+            namespace_template.to_string(),
+            invalid_tabular_template.to_string(),
+        );
+        let layout = layout
+            .expect_err("Expected error due to missing template parameter in tabular template.");
+        assert!(matches!(layout, StorageLayoutError::InvalidTemplate(_)));
+    }
+
+    #[test]
+    fn test_storage_layout_namespace_in_full_layout_needs_at_least_one_template_parameter() {
+        let invalid_namespace_template = "invalid";
+        let tabular_template = "{uuid}";
+        let layout = StorageLayout::try_new_full(
+            invalid_namespace_template.to_string(),
+            tabular_template.to_string(),
+        );
+        let layout = layout
+            .expect_err("Expected error due to missing template parameter in namespace template.");
+        assert!(matches!(layout, StorageLayoutError::InvalidTemplate(_)));
+    }
+
+    #[test]
+    fn test_storage_layout_deserialization_of_full_layout_should_fail_without_at_least_one_template_parameter_for_tabular_template()
+     {
+        let json = r#"
+        {
+            "type": "full-hierarchy",
+            "namespace": "{uuid}",
+            "tabular": "invalid"
+        }
+        "#;
+
+        let result: Result<StorageLayout, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Expected deserialization to fail for full-hierarchy layout without at least one template parameter in tabular template"
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_deserialization_of_full_layout_should_fail_without_at_least_one_template_parameter_for_namespace_template()
+     {
+        let json = r#"
+        {
+            "type": "full-hierarchy",
+            "namespace": "invalid",
+            "tabular": "{uuid}"
+        }
+        "#;
+
+        let result: Result<StorageLayout, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Expected deserialization to fail for full-hierarchy layout without at least one template parameter in namespace template"
         );
     }
 }
