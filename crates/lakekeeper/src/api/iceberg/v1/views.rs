@@ -16,13 +16,18 @@ use crate::{
         iceberg::{
             types::{DropParams, Prefix},
             v1::{
-                namespace::{NamespaceIdentUrl, NamespaceParameters},
-                tables::{DataAccessMode, normalize_tabular_name},
+                ReferencedByQuery, namespace::{NamespaceIdentUrl, NamespaceParameters}, tables::{DataAccessMode, normalize_tabular_name}
             },
         },
     },
     request_metadata::RequestMetadata,
 };
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct LoadViewQuery {
+    pub referenced_by: Option<ReferencedByQuery>,
+}
 
 #[async_trait]
 pub trait ViewService<S: crate::api::ThreadSafe>
@@ -139,6 +144,7 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
             get(
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
+                 Query(_load_view_query): Query<LoadViewQuery>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
                     {
