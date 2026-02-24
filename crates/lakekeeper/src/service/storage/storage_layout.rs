@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn test_storage_layout_render_tabular_segment_with_slash() {
         let layout =
-            StorageLayout::try_new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string())
+            StorageLayout::try_new_full("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string())
                 .unwrap();
         let context = TabularNameContext {
             name: "my_tabular".to_string(),
@@ -981,7 +981,7 @@ mod tests {
     #[test]
     fn test_storage_layout_render_namespace_path_with_slash() {
         let layout =
-            StorageLayout::try_new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string())
+            StorageLayout::try_new_full("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string())
                 .unwrap();
         let namespace = NamespaceNameContext {
             name: "my_namespace".to_string(),
