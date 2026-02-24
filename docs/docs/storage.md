@@ -41,12 +41,11 @@ The storage layout controls how namespace and tabular directories are structured
 
 | Type                       | JSON `"type"` value            | Description    |
 |----------------------------|--------------------------------|----------------|
-| Default                    | `"default"`                    | Equivalent to `parent-namespace-and-tabular` with `{uuid}` templates. Used when `storage-layout` is omitted. |
-| Parent namespace and tabular | `"parent-namespace-and-tabular"` | One directory for the direct parent namespace, one for the tabular. |
+| Default                    | `"default"`                    | One directory for the direct parent namespace, one for the tabular, both with `{uuid}` templates. Used when `storage-layout` is omitted. |
 | Full hierarchy             | `"full-hierarchy"`             | One directory per namespace level in the full ancestry, one for the tabular. |
 | Tabular-only (flat)          | `"tabular-only"`                 | No namespace directories; all tabulars are placed directly under the base location. |
 
-### Default / Parent-Namespace-and-Tabular
+### Default
 
 The default layout emits one directory for the **direct parent namespace** and one for the tabular. Ancestor namespaces beyond the immediate parent are not reflected in the path.
 
@@ -69,24 +68,7 @@ To use the default layout explicitly:
   "storage-profile": {
     "type": "s3",
     "storage-layout": {
-      "type": "parent-namespace-and-tabular",
-      "namespace": "{uuid}",
-      "tabular": "{uuid}"
-    }
-  }
-}
-```
-
-or for specifying custom templates:
-
-```json
-{
-  "storage-profile": {
-    "type": "s3",
-    "storage-layout": {
-      "type": "parent-namespace-and-tabular",
-      "namespace": "{name}-{uuid}",
-      "tabular": "{name}-{uuid}"
+      "type": "default"
     }
   }
 }

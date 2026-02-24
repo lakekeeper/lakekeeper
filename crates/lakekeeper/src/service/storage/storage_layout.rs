@@ -116,8 +116,7 @@ impl<'de> Deserialize<'de> for StorageLayoutFlat {
 
 /// Controls how namespace and tabular paths are constructed under the warehouse base location.
 ///
-/// - `default` / omitted: same as `parent-namespace-and-tabular` with `"{uuid}"` segments.
-/// - `parent-namespace-and-tabular`: one directory per direct-parent namespace, one per tabular.
+/// - `default` / omitted: one directory per direct-parent namespace, one per tabular, both with `"{uuid}"` segments.
 /// - `full-hierarchy`: one directory per namespace level, one per tabular.
 /// - `tabular-only`: no namespace directories; all tabulars are placed directly under the base location.
 ///
@@ -133,7 +132,7 @@ pub enum StorageLayout {
     Default,
     #[serde(rename = "tabular-only")]
     Flat(StorageLayoutFlat),
-    #[serde(rename = "parent-namespace-and-tabular")]
+    #[serde(skip, rename = "parent-namespace-and-tabular")]
     Parent(StorageLayoutParentNamespaceAndTabular),
     #[serde(rename = "full-hierarchy")]
     Full(StorageLayoutFullHierarchy),
