@@ -78,7 +78,7 @@ pub struct AdlsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sas_enabled: bool,
-    /// Storage layout for namespace and table paths.
+    /// Storage layout for namespace and tabular paths.
     #[serde(default)]
     pub storage_layout: Option<StorageLayout>,
 }
@@ -729,7 +729,7 @@ pub(crate) mod test {
     use crate::service::storage::{
         AdlsProfile, StorageProfile,
         az::DEFAULT_AUTHORITY_HOST,
-        storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
+        storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
 
     #[test]
@@ -863,22 +863,22 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.clone().into();
 
         let namespace_uuid = uuid::Uuid::now_v7();
-        let table_uuid = uuid::Uuid::now_v7();
+        let tabular_uuid = uuid::Uuid::now_v7();
         let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
             name: "test_ns".to_string(),
             uuid: namespace_uuid,
         }]);
-        let table_name_context = TableNameContext {
-            name: "test_table".to_string(),
-            uuid: table_uuid,
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
+            uuid: tabular_uuid,
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
             format!(
-                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_uuid}/{table_uuid}"
+                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_uuid}/{tabular_uuid}"
             )
         );
 
@@ -888,10 +888,10 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{table_uuid}")
+            format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")
         );
     }
 

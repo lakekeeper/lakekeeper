@@ -164,7 +164,7 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub legacy_md5_behavior: Option<bool>,
-    /// Storage layout for namespace and table paths.
+    /// Storage layout for namespace and tabular paths.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub storage_layout: Option<StorageLayout>,
@@ -1259,7 +1259,7 @@ pub(crate) mod test {
     use super::*;
     use crate::service::storage::{
         StorageProfile,
-        storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
+        storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
 
     #[test]
@@ -1416,21 +1416,21 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.clone().into();
 
         let namespace_uuid = uuid::Uuid::now_v7();
-        let table_uuid = uuid::Uuid::now_v7();
+        let tabular_uuid = uuid::Uuid::now_v7();
         let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
             name: "test_ns".to_string(),
             uuid: namespace_uuid,
         }]);
-        let table_name_context = TableNameContext {
-            name: "test_table".to_string(),
-            uuid: table_uuid,
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
+            uuid: tabular_uuid,
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/test_prefix/{namespace_uuid}/{table_uuid}")
+            format!("s3://test-bucket/test_prefix/{namespace_uuid}/{tabular_uuid}")
         );
 
         let mut profile = profile.clone();
@@ -1438,10 +1438,10 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/{namespace_uuid}/{table_uuid}")
+            format!("s3://test-bucket/{namespace_uuid}/{tabular_uuid}")
         );
     }
 
@@ -1472,21 +1472,21 @@ pub(crate) mod test {
         let profile = StorageProfile::from(profile);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
-        let table_uuid = uuid::Uuid::now_v7();
-        let table_name_context = TableNameContext {
-            name: "test_table".to_string(),
-            uuid: table_uuid,
+        let tabular_uuid = uuid::Uuid::now_v7();
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
+            uuid: tabular_uuid,
         };
         // Prefix should be ignored as we specify the namespace_location explicitly.
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
-        let expected = format!("s3://test-bucket/foo/{table_uuid}");
+        let expected = format!("s3://test-bucket/foo/{tabular_uuid}");
 
-        let location = profile.default_tabular_location(&namespace_location, &table_name_context);
+        let location = profile.default_tabular_location(&namespace_location, &tabular_name_context);
 
         assert_eq!(location.to_string(), expected);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo").unwrap();
-        let location = profile.default_tabular_location(&namespace_location, &table_name_context);
+        let location = profile.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(location.to_string(), expected);
     }
 

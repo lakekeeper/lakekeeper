@@ -4,7 +4,7 @@ use crate::{
         NamespaceHierarchy, TabularId,
         storage::{
             StorageProfile,
-            storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
+            storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
         },
     },
 };
@@ -49,7 +49,7 @@ pub(super) fn determine_tabular_location(
                 })?
         };
 
-        let table_name_context = TableNameContext {
+        let table_name_context = TabularNameContext {
             name: table_ident.name.clone(),
             uuid: *table_id,
         };

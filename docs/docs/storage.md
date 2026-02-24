@@ -35,31 +35,31 @@ For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additio
 
 ## Storage Layout
 
-The storage layout controls how namespace and table directories are structured under the warehouse base location. It is configured via the `storage-layout` field inside the `storage-profile` when creating or updating a warehouse. The layout applies to all new tables created in the warehouse; existing table locations are not changed.
+The storage layout controls how namespace and tabular directories are structured under the warehouse base location. It is configured via the `storage-layout` field inside the `storage-profile` when creating or updating a warehouse. The layout applies to all new tabulars created in the warehouse; existing tabular locations are not changed.
 
 ### Layout Types
 
 | Type                       | JSON `"type"` value            | Description    |
 |----------------------------|--------------------------------|----------------|
-| Default                    | `"default"`                    | Equivalent to `parent-namespace-and-table` with `{uuid}` templates. Used when `storage-layout` is omitted. |
-| Parent namespace and table | `"parent-namespace-and-table"` | One directory for the direct parent namespace, one for the table. |
-| Full hierarchy             | `"full-hierarchy"`             | One directory per namespace level in the full ancestry, one for the table. |
-| Table-only (flat)          | `"table-only"`                 | No namespace directories; all tables are placed directly under the base location. |
+| Default                    | `"default"`                    | Equivalent to `parent-namespace-and-tabular` with `{uuid}` templates. Used when `storage-layout` is omitted. |
+| Parent namespace and tabular | `"parent-namespace-and-tabular"` | One directory for the direct parent namespace, one for the tabular. |
+| Full hierarchy             | `"full-hierarchy"`             | One directory per namespace level in the full ancestry, one for the tabular. |
+| Tabular-only (flat)          | `"tabular-only"`                 | No namespace directories; all tabulars are placed directly under the base location. |
 
-### Default / Parent-Namespace-and-Table
+### Default / Parent-Namespace-and-Tabular
 
-The default layout emits one directory for the **direct parent namespace** and one for the table. Ancestor namespaces beyond the immediate parent are not reflected in the path.
+The default layout emits one directory for the **direct parent namespace** and one for the tabular. Ancestor namespaces beyond the immediate parent are not reflected in the path.
 
-For a table `orders` in namespace `europe` / `production` the path is:
+For a tabular `orders` in namespace `europe` / `production` the path is:
 
 ```text
-<base>/<production-namespace>/<orders-table>
+<base>/<production-namespace>/<orders-tabular>
 ```
 
 With the default `{uuid}`-only templates this looks like:
 
 ```text
-s3://my-bucket/warehouse/<uuid-of-production-namespace>/<uuid-of-table>/
+s3://my-bucket/warehouse/<uuid-of-production-namespace>/<uuid-of-tabular>/
 ```
 
 To use the default layout explicitly:
@@ -69,9 +69,9 @@ To use the default layout explicitly:
   "storage-profile": {
     "type": "s3",
     "storage-layout": {
-      "type": "parent-namespace-and-table",
+      "type": "parent-namespace-and-tabular",
       "namespace": "{uuid}",
-      "table": "{uuid}"
+      "tabular": "{uuid}"
     }
   }
 }
@@ -84,9 +84,9 @@ or for specifying custom templates:
   "storage-profile": {
     "type": "s3",
     "storage-layout": {
-      "type": "parent-namespace-and-table",
+      "type": "parent-namespace-and-tabular",
       "namespace": "{name}-{uuid}",
-      "table": "{name}-{uuid}"
+      "tabular": "{name}-{uuid}"
     }
   }
 }
@@ -94,18 +94,18 @@ or for specifying custom templates:
 
 ### Full Hierarchy
 
-The full hierarchy layout creates one path segment for **every namespace level** in the ancestry, followed by the table segment.
+The full hierarchy layout creates one path segment for **every namespace level** in the ancestry, followed by the tabular segment.
 
-For a table `orders` in namespace `europe` / `production` the path is:
+For a tabular `orders` in namespace `europe` / `production` the path is:
 
 ```text
-<base>/<europe-namespace>/<production-namespace>/<orders-table>
+<base>/<europe-namespace>/<production-namespace>/<orders-tabular>
 ```
 
 With `{name}-{uuid}` templates:
 
 ```text
-s3://my-bucket/warehouse/europe-<namespace-uuid>/production-<namespace-uuid>/orders-<table-uuid>/
+s3://my-bucket/warehouse/europe-<namespace-uuid>/production-<namespace-uuid>/orders-<tabular-uuid>/
 ```
 
 Configuration:
@@ -117,24 +117,24 @@ Configuration:
     "storage-layout": {
       "type": "full-hierarchy",
       "namespace": "{name}-{uuid}",
-      "table": "{name}-{uuid}"
+      "tabular": "{name}-{uuid}"
     }
   }
 }
 ```
 
-### Table-Only (Flat)
+### Tabular-Only (Flat)
 
-The flat layout places all tables directly under the warehouse base location with no namespace directories.
+The flat layout places all tabulars directly under the warehouse base location with no namespace directories.
 
-For a table `orders` in any namespace the path is:
+For a tabular `orders` in any namespace the path is:
 
 ```text
-<base>/<orders-table>
+<base>/<orders-tabular>
 ```
 
 !!! note
-    The `table` template **must** contain `{uuid}` in the flat layout. Without it, tables with the same name in different namespaces would map to the same storage path, causing data corruption.
+    The `tabular` template **must** contain `{uuid}` in the flat layout. Without it, tabulars with the same name in different namespaces would map to the same storage path, causing data corruption.
 
 Configuration:
 
@@ -143,8 +143,8 @@ Configuration:
   "storage-profile": {
     "type": "s3",
     "storage-layout": {
-      "type": "table-only",
-      "table": "{name}-{uuid}"
+      "type": "tabular-only",
+      "tabular": "{name}-{uuid}"
     }
   }
 }
@@ -152,24 +152,24 @@ Configuration:
 
 ### Template Placeholders
 
-Namespace and table templates support two placeholders:
+Namespace and tabular templates support two placeholders:
 
 | Placeholder | Description                                                    |
 |-------------|----------------------------------------------------------------|
-| `{uuid}`    | UUID of the namespace or table, inserted without any encoding. |
-| `{name}`    | Name of the namespace or table, URL percent-encoded. For example, `my table` becomes `my%20table` and `中文` becomes `%E4%B8%AD%E6%96%87`. |
+| `{uuid}`    | UUID of the namespace or tabular, inserted without any encoding. |
+| `{name}`    | Name of the namespace or tabular, URL percent-encoded. For example, `my tabular` becomes `my%20tabular` and `中文` becomes `%E4%B8%AD%E6%96%87`. |
 
 Both placeholders can be combined with each other and with literal text, e.g. `{name}-{uuid}`. When `storage-layout` is omitted from the storage profile, the `default` layout is used.
 
 !!! warning "Always include `{uuid}` in templates"
-    **We strongly recommend including `{uuid}` in every namespace and table template.** Storage paths are assigned once at creation time and are never updated when a table or namespace is renamed. If a template relies solely on `{name}` and a table or namespace is later renamed and re-created with the same name, Lakekeeper will reject the creation because the path is already in use by the old (now-renamed) object. Because UUIDs are unique and stable for the lifetime of an object, using `{uuid}` (alone or combined with `{name}`) guarantees that each object always has a distinct, collision-free storage path. This is the reason Lakekeeper defaults to pure `{uuid}` templates.
+    **We strongly recommend including `{uuid}` in every namespace and tabular template.** Storage paths are assigned once at creation time and are never updated when a tabular or namespace is renamed. If a template relies solely on `{name}` and a tabular or namespace is later renamed and re-created with the same name, Lakekeeper will reject the creation because the path is already in use by the old (now-renamed) object. Because UUIDs are unique and stable for the lifetime of an object, using `{uuid}` (alone or combined with `{name}`) guarantees that each object always has a distinct, collision-free storage path. This is the reason Lakekeeper defaults to pure `{uuid}` templates.
 
 ### Namespace Location Property
 
-Namespaces have a `location` property that determines where their tables are stored:
+Namespaces have a `location` property that determines where their tabulars are stored:
 
-- **With location property**: New tables always use the namespace's persisted location, regardless of storage layout changes.
-- **Without location property**: These namespaces compute locations from the current storage layout. Layout changes affect new table placement.
+- **With location property**: New tabulars always use the namespace's persisted location, regardless of storage layout changes.
+- **Without location property**: These namespaces compute locations from the current storage layout. Layout changes affect new tabular placement.
 
 
 ## S3
@@ -215,7 +215,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | `push-s3-delete-disabled`     | Boolean | No       | `true`                     | Controls whether the `s3.delete-enabled=false` flag is sent to clients. Only has an effect if "soft-deletion" is enabled for this Warehouse. This prevents clients like Spark from directly deleting files during operations like `DROP TABLE xxx PURGE`, ensuring soft-deletion works properly. However, it also affects operations like `expire_snapshots` that require file deletion. For more information, please check the [Soft Deletion Documentation](./concepts.md#soft-deletion). |
 | `aws-kms-key-arn`             | String  | No       | None                       | ARN of the AWS KMS Key that is used to encrypt the bucket. Vended Credentials is granted `kms:Decrypt` and `kms:GenerateDataKey` on the key. |
 | `legacy-md5-behavior`         | Boolean | No       | `false`                    | A flag to enable the legacy behavior of using MD5 checksums for operations that require checksums. |
-| `storage-layout`              | Object  | No       | `{"type": "default"}`      | Controls how namespace and table directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
+| `storage-layout`              | Object  | No       | `{"type": "default"}`      | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
 
 ### AWS
@@ -612,7 +612,7 @@ The following table describes all configuration parameters for an ADLS storage p
 | `host`                        | String  | No       | `dfs.core.windows.net`              | The host to use for the storage account. |
 | `authority-host`              | URL     | No       | `https://login.microsoftonline.com` | The authority host to use for authentication. |
 | `sas-token-validity-seconds`  | Integer | No       | `3600`                              | The validity period of the SAS token in seconds. |
-| `storage-layout`              | Object  | No       | `{"type": "default"}`               | Controls how namespace and table directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
+| `storage-layout`              | Object  | No       | `{"type": "default"}`               | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
 
 Lets start by creating a new "App Registration":
@@ -686,7 +686,7 @@ The following table describes all configuration parameters for a GCS storage pro
 | `bucket`         | String  | Yes      | -                     | Name of the GCS bucket. |
 | `key-prefix`     | String  | No       | None                  | Subpath in the bucket to use for this warehouse. |
 | `sts-enabled`    | Boolean | No       | `true`                | Whether to enable STS (Security Token Service) downscoped token generation for GCS. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
-| `storage-layout` | Object  | No       | `{"type": "default"}` | Controls how namespace and table directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
+| `storage-layout` | Object  | No       | `{"type": "default"}` | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
 The service account should have appropriate permissions (such as Storage Admin role) on the bucket. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
 
