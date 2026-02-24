@@ -30,7 +30,7 @@ use crate::{
         contract_verification::ContractVerification,
         events::{APIEventContext, ViewEventTransition, context::ResolvedView},
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions, StorageProfile},
+        storage::{StoragePermissions, StorageProfile},
     },
 };
 

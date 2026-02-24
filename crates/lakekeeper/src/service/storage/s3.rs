@@ -51,6 +51,7 @@ use crate::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
             },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -163,6 +164,10 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub legacy_md5_behavior: Option<bool>,
+    /// Storage layout for namespace and table paths.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub storage_layout: Option<StorageLayout>,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -370,6 +375,10 @@ impl S3Profile {
         if self.allow_alternate_schemes() && other.allow_alternative_protocols.is_none() {
             // Keep previous true value if not specified explicitly in update
             other.allow_alternative_protocols = Some(true);
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)
@@ -946,8 +955,7 @@ impl S3Profile {
         "#,
             Self::permission_to_actions(storage_permissions),
         )
-        .replace('\n', "")
-        .replace(' ', "");
+        .replace('\n', "");
 
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
             statements = format!(
@@ -973,8 +981,7 @@ impl S3Profile {
         ]
         }}"#
         )
-        .replace('\n', "")
-        .replace(' ', ""))
+        .replace('\n', ""))
     }
 
     fn validate_session_tags(&self) -> Result<(), ValidationError> {
@@ -1250,9 +1257,9 @@ pub(crate) mod test {
     use std::str::FromStr as _;
 
     use super::*;
-    use crate::service::{
-        NamespaceId, TabularId,
-        storage::{StorageLocations as _, StorageProfile},
+    use crate::service::storage::{
+        StorageProfile,
+        storage_layout::{NamespaceNameContext, NamespacePath, TableNameContext},
     };
 
     #[test]
@@ -1404,28 +1411,37 @@ pub(crate) mod test {
             push_s3_delete_disabled: false,
             aws_kms_key_arn: None,
             legacy_md5_behavior: Some(false),
+            storage_layout: None,
         };
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
+        let namespace_uuid = uuid::Uuid::now_v7();
+        let table_uuid = uuid::Uuid::now_v7();
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_ns".to_string(),
+            uuid: namespace_uuid,
+        }]);
+        let table_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: table_uuid,
+        };
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/test_prefix/{namespace_id}/{table_id}")
+            format!("s3://test-bucket/test_prefix/{namespace_uuid}/{table_uuid}")
         );
 
         let mut profile = profile.clone();
         profile.key_prefix = None;
         let sp: StorageProfile = profile.into();
 
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/{namespace_id}/{table_id}")
+            format!("s3://test-bucket/{namespace_uuid}/{table_uuid}")
         );
     }
 
@@ -1451,20 +1467,26 @@ pub(crate) mod test {
             push_s3_delete_disabled: false,
             aws_kms_key_arn: None,
             legacy_md5_behavior: Some(false),
+            storage_layout: None,
         };
+        let profile = StorageProfile::from(profile);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
+        let table_uuid = uuid::Uuid::now_v7();
+        let table_name_context = TableNameContext {
+            name: "test_table".to_string(),
+            uuid: table_uuid,
+        };
         // Prefix should be ignored as we specify the namespace_location explicitly.
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
-        let expected = format!("s3://test-bucket/foo/{table_id}");
+        let expected = format!("s3://test-bucket/foo/{table_uuid}");
 
-        let location = profile.default_tabular_location(&namespace_location, table_id);
+        let location = profile.default_tabular_location(&namespace_location, &table_name_context);
 
         assert_eq!(location.to_string(), expected);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo").unwrap();
-        let location = profile.default_tabular_location(&namespace_location, table_id);
+        let location = profile.default_tabular_location(&namespace_location, &table_name_context);
         assert_eq!(location.to_string(), expected);
     }
 
@@ -1510,6 +1532,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
+                storage_layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1571,6 +1594,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
+                storage_layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1668,6 +1692,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: Some(std::env::var("AWS_S3_KMS_ARN").unwrap()),
                 legacy_md5_behavior: Some(false),
+                storage_layout: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1733,6 +1758,7 @@ pub(crate) mod test {
                 push_s3_delete_disabled: false,
                 aws_kms_key_arn: None,
                 legacy_md5_behavior: Some(false),
+                storage_layout: None,
             };
             let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),
@@ -1818,6 +1844,7 @@ mod is_overlapping_location_tests {
             push_s3_delete_disabled: true,
             aws_kms_key_arn: None,
             legacy_md5_behavior: Some(false),
+            storage_layout: None,
         }
     }
 

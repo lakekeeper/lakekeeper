@@ -111,8 +111,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             body: request_body,
         } = request.clone();
 
+        let decoded_url = urldecode_uri_path_segments(&request_url)?;
         let (parsed_url, operation) = s3_utils::parse_s3_url(
-            &request_url,
+            &decoded_url,
             s3_url_style_detection(&warehouse)?,
             &request_method,
             request_body.as_deref(),
@@ -327,10 +328,9 @@ async fn sign(
         }
     }
 
-    let encoded_uri = urldecode_uri_path_segments(request_url)?;
     let signable_request = SignableRequest::new(
         request_method.as_str(),
-        encoded_uri.to_string(),
+        request_url.to_string(),
         headers_vec.iter().map(|(k, v)| (k.as_str(), v.as_str())),
         signable_body,
     )
@@ -354,7 +354,7 @@ async fn sign(
         })?
         .into_parts();
 
-    let mut output_uri = encoded_uri.clone();
+    let mut output_uri = request_url.clone();
     for (key, value) in signing_instructions.params() {
         output_uri.query_pairs_mut().append_pair(key, value);
     }
@@ -391,22 +391,13 @@ fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
 
     let mut new_path_segments = Vec::new();
     for segment in path_segments {
-        new_path_segments.push(
-            urlencoding::decode(segment)
-                .map(|s| {
-                    aws_smithy_http::label::fmt_string(
-                        s,
-                        aws_smithy_http::label::EncodingStrategy::Greedy,
-                    )
-                })
-                .map_err(|e| {
-                    ErrorModel::bad_request(
-                        "Failed to decode URI segment",
-                        "FailedToDecodeURISegment",
-                        Some(Box::new(e)),
-                    )
-                })?,
-        );
+        new_path_segments.push(urlencoding::decode(segment).map_err(|e| {
+            ErrorModel::bad_request(
+                "Failed to decode URI segment",
+                "FailedToDecodeURISegment",
+                Some(Box::new(e)),
+            )
+        })?);
     }
 
     new_uri.set_path(&new_path_segments.join("/"));
