@@ -9,9 +9,8 @@ import pyiceberg.catalog.rest
 import pyiceberg.typedef
 import pytest
 import requests
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Secret(SecretStr, str):
@@ -138,6 +137,12 @@ def storage_config(request) -> dict:
 
     test_id = uuid.uuid4().hex
 
+    layout = {
+        "type": "full-hierarchy",
+        "namespace": "{name}-{uuid}",
+        "table": "{name}-{uuid}",
+    }
+
     if request.param["type"] == "s3":
         if settings.s3_bucket is None or settings.s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__S3_BUCKET is not set")
@@ -160,6 +165,7 @@ def storage_config(request) -> dict:
                 "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
                 "legacy-md5-behavior": legacy_md5_behavior,
+                "layout": layout,
                 **extra_config,
             },
             "storage-credential": {
@@ -194,6 +200,7 @@ def storage_config(request) -> dict:
             "sts-role-arn": (
                 aws_s3_sts_role_arn if request.param["sts-enabled"] else None
             ),
+            "layout": layout,
         }
 
         if settings.aws_s3_use_system_identity:
@@ -239,6 +246,7 @@ def storage_config(request) -> dict:
                 **extra_config,
                 "key-prefix": test_id,
                 "sas-token-validity-seconds": 60,
+                "layout": layout,
             },
             "storage-credential": {
                 "type": "az",
@@ -257,6 +265,7 @@ def storage_config(request) -> dict:
                 "type": "gcs",
                 "bucket": settings.gcs_bucket,
                 "key-prefix": test_id,
+                "layout": layout,
             },
             "storage-credential": {
                 "type": "gcs",
@@ -603,8 +612,8 @@ def trino(warehouse: Warehouse, storage_config, trino_token):
     if settings.trino_uri is None:
         pytest.skip("LAKEKEEPER_TEST__TRINO_URI is not set")
 
-    from trino.dbapi import connect
     from trino.auth import JWTAuthentication
+    from trino.dbapi import connect
 
     if settings.trino_auth_enabled == "true":
         conn = connect(
