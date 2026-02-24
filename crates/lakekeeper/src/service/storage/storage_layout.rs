@@ -861,4 +861,35 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(special_tabulars, expected_tabular_names);
     }
+
+    #[test]
+    fn test_storage_layout_render_tabular_segment_with_slash() {
+        let layout =
+            StorageLayout::new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string());
+        let context = TabularNameContext {
+            name: "my_tabular".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+
+        assert_eq!(
+            layout.render_tabular_segment(&context),
+            format!("{}/{}", context.name, context.uuid)
+        );
+    }
+
+    #[test]
+    fn test_storage_layout_render_namespace_path_with_slash() {
+        let layout =
+            StorageLayout::new_parent("{name}/{uuid}".to_string(), "{name}/{uuid}".to_string());
+        let namespace = NamespaceNameContext {
+            name: "my_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let namespace_path = NamespacePath::new(vec![namespace.clone()]);
+
+        assert_eq!(
+            *layout.render_namespace_path(&namespace_path),
+            vec![format!("{}/{}", namespace.name, namespace.uuid)]
+        );
+    }
 }
