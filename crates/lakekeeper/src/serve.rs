@@ -574,8 +574,8 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
 fn validate_authenticator_idp_ids(authenticator: &impl Authenticator) -> anyhow::Result<()> {
     let idp_ids = authenticator.idp_ids();
     if idp_ids.is_empty() {
-        tracing::warn!(
-            "No IdP IDs found in the authenticator configuration. This may be intentional if authentication is not required."
+        anyhow::bail!(
+            "Authenticator returned an empty list of IdP IDs. At least one IdP ID is required if authentication is enabled. All IdP IDs must be non-empty strings."
         );
     }
     for idp_id in idp_ids {
