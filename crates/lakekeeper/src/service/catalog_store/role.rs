@@ -412,7 +412,16 @@ async fn try_list_roles_from_cache(
     if matches!(pagination.page_token, PageToken::Present(_)) {
         return None;
     }
-    if role_ids.len()
+
+    // Deduplicate role_ids, preserving order.
+    let mut seen = HashSet::with_capacity(role_ids.len());
+    let unique_role_ids: Vec<RoleId> = role_ids
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .collect();
+
+    if unique_role_ids.len()
         > CONFIG
             .page_size_or_pagination_default(pagination.page_size)
             .try_into()
@@ -429,11 +438,11 @@ async fn try_list_roles_from_cache(
 
     // Fetch all IDs from cache in parallel; abort early on first None.
     let mut join_set = tokio::task::JoinSet::new();
-    for &role_id in role_ids {
+    for role_id in unique_role_ids {
         join_set.spawn(role_cache_get_by_id(role_id));
     }
 
-    let mut cached = Vec::with_capacity(role_ids.len());
+    let mut cached = Vec::with_capacity(join_set.len());
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Some(role)) => cached.push(role),
@@ -449,7 +458,7 @@ async fn try_list_roles_from_cache(
         }
     }
 
-    let mut roles = Vec::with_capacity(role_ids.len());
+    let mut roles = Vec::with_capacity(cached.len());
     for role in cached {
         // Apply filters: roles that don't match are simply excluded.
         if let Some(pid) = project_id

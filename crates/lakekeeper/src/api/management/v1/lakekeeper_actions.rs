@@ -306,9 +306,21 @@ async fn authorize_get_role_actions<C: CatalogStore>(
     let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
     let actions = CatalogRoleAction::VARIANTS;
     let can_see_permission = CatalogRoleAction::Read;
-    let role =
-        C::get_role_by_id_cache_aware(&project_id, role_id, CachePolicy::Use, catalog_state).await;
-    let role = authorizer.require_role_presence(role)?;
+
+    // Short-circuit: if resolve_principal already fetched the target role (i.e.
+    // for_user_api was APIUserOrRole::Role with the same id and project), reuse
+    // that role instead of calling C::get_role_by_id_cache_aware again.
+    let role = if let Some(UserOrRole::Role(assignee)) = &for_user
+        && assignee.role().id() == role_id
+        && assignee.role().project_id_arc() == project_id
+    {
+        assignee.role_arc()
+    } else {
+        let fetched =
+            C::get_role_by_id_cache_aware(&project_id, role_id, CachePolicy::Use, catalog_state)
+                .await;
+        authorizer.require_role_presence(fetched)?
+    };
 
     let results = authorizer
         .are_allowed_role_actions_vec(

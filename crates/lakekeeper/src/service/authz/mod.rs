@@ -83,6 +83,11 @@ impl RoleAssignee {
     pub fn role(&self) -> &Role {
         &self.0
     }
+
+    #[must_use]
+    pub fn role_arc(&self) -> ArcRole {
+        self.0.clone()
+    }
 }
 
 impl Actor {
