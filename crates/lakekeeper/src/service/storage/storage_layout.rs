@@ -710,42 +710,7 @@ mod tests {
         }
         "#;
 
-        let layout: StorageLayout =
-            serde_json::from_str(json).expect("Failed to deserialize StorageLayout");
-
-        let StorageLayout::Parent(parent_layout) = &layout else {
-            panic!("Expected parent storage layout");
-        };
-
-        assert_eq!(parent_layout.namespace.0, "{uuid}");
-        assert_eq!(parent_layout.tabular.0, "{name}");
-
-        let grand_parent_namespace = NamespaceNameContext {
-            name: "grand_parent_namespace".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-        let parent_namespace = NamespaceNameContext {
-            name: "parent_namespace".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-        let namespace_path = NamespacePath::new(vec![
-            grand_parent_namespace.clone(),
-            parent_namespace.clone(),
-        ]);
-        let tabular = TabularNameContext {
-            name: "my_tabular".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-
-        let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
-
-        assert_eq!(
-            namespace_path_rendered,
-            vec![format!("{}", parent_namespace.uuid),]
-        );
-
-        let tabular_name_rendered = layout.render_tabular_segment(&tabular);
-        assert_eq!(tabular_name_rendered, format!("{}", tabular.name));
+        serde_json::from_str::<StorageLayout>(json).expect_err("Storage Layout should not support deserializing the parent-namespace-and-tabular layout since it's only used internally and skipped in the enum definition");
     }
 
     #[test]
