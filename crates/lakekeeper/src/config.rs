@@ -3,7 +3,7 @@
 
 use core::result::Result::Ok;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::Infallible,
     net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
@@ -79,6 +79,52 @@ fn get_config() -> DynAppConfig {
     }
 
     config
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrinoEngineConfig {
+    pub idp_id: String,
+    pub security_model_property: String,
+}
+
+impl TrinoEngineConfig {
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        if properties.contains_key(&self.security_model_property) {
+            SecurityModel::Definer
+        } else {
+            SecurityModel::Invoker
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TrustedEngine {
+    Trino(TrinoEngineConfig),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityModel {
+    Invoker,
+    Definer,
+}
+
+impl TrustedEngine {
+    #[must_use]
+    pub fn idp_id(&self) -> &str {
+        match self {
+            TrustedEngine::Trino(c) => &c.idp_id,
+        }
+    }
+
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        match self {
+            TrustedEngine::Trino(c) => c.determine_security_model(properties),
+        }
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -218,6 +264,9 @@ pub struct DynAppConfig {
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
     pub authz_backend: AuthZBackend,
+    // ------------- TRUSTED ENGINES -------------
+    #[serde(default)]
+    pub trusted_engines: HashMap<String, TrustedEngine>,
     // ------------- Health -------------
     pub health_check_frequency_seconds: u64,
 
@@ -593,6 +642,7 @@ impl Default for DynAppConfig {
             kafka_topic: None,
             log_cloudevents: None,
             authz_backend: AuthZBackend::default(),
+            trusted_engines: HashMap::new(),
             openid_provider_uri: None,
             openid_audience: None,
             openid_additional_issuers: None,
@@ -1303,6 +1353,58 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "true");
             let config = get_config();
             assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_trusted_engine_configuration() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.trusted_engines.is_empty());
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__TYPE",
+                "trino",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__IDP_ID",
+                "keycloak-dev",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__SECURITY_MODEL_PROPERTY",
+                "trino.dev.run-as-owner",
+            );
+
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__TYPE",
+                "trino",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__IDP_ID",
+                "keycloak-prod",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__SECURITY_MODEL_PROPERTY",
+                "trino.run-as-owner",
+            );
+
+            let config = get_config();
+            let trusted_engines = &config.trusted_engines;
+
+            let trino_dev_engine = trusted_engines.get("trino_dev_client").unwrap();
+            let TrustedEngine::Trino(dev_config) = trino_dev_engine;
+            assert_eq!(dev_config.idp_id, "keycloak-dev");
+            assert_eq!(dev_config.security_model_property, "trino.dev.run-as-owner");
+
+            let trino_prod_engine = trusted_engines.get("trino-prod-client").unwrap();
+            let TrustedEngine::Trino(prod_config) = trino_prod_engine;
+            assert_eq!(prod_config.idp_id, "keycloak-prod");
+            assert_eq!(prod_config.security_model_property, "trino.run-as-owner");
+
             Ok(())
         });
     }
