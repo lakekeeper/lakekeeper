@@ -969,7 +969,7 @@ mod test {
 
         // Test 2: With referenced_by parameter
         let mut req = http::Request::builder()
-            .uri("/test/namespaces/test-namespace/tables/test-table?referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view")
+            .uri("/test/namespaces/test-namespace/tables/test-table?referenced-by=prod%1Fanalytics%20ns%1Fquarterly+view,prod%1Fanalytics+ns%1Fmonthly%20view")
             .body(axum::body::Body::empty())
             .unwrap();
         req.extensions_mut()
@@ -987,10 +987,10 @@ mod test {
         assert_eq!(
             referenced_view,
             Some(vec![
-                TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"])
+                TableIdent::from_strs(vec!["prod", "analytics ns", "quarterly view"])
                     .unwrap()
                     .into(),
-                TableIdent::from_strs(vec!["prod", "analytics", "monthly_view"])
+                TableIdent::from_strs(vec!["prod", "analytics ns", "monthly view"])
                     .unwrap()
                     .into(),
             ])
