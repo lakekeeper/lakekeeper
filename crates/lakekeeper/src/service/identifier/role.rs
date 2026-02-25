@@ -76,6 +76,12 @@ impl std::default::Default for RoleProviderId {
     }
 }
 
+impl std::borrow::Borrow<str> for RoleProviderId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl RoleProviderId {
     /// Constructs a validated [`RoleProviderId`].
     ///
