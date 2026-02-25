@@ -10,8 +10,8 @@ use strum_macros::{EnumString, IntoStaticStr};
 use valuable::Valuable;
 
 use super::{
-    CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId, WarehouseId,
-    health::HealthExt,
+    CatalogStore, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore, State, TableId,
+    ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
     api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
@@ -766,6 +766,12 @@ where
     /// The server ID that was passed to the authorizer during initialization.
     /// Must remain stable for the lifetime of the running process (typically generated at startup).
     fn server_id(&self) -> ServerId;
+
+    /// Called once during server startup to provide the IDP IDs of all registered authenticators.
+    ///
+    /// Authorizer implementations that need this information should override this method and store
+    /// the IDs internally. The default implementation is a no-op.
+    fn set_registered_idp_ids(&mut self, _idp_ids: Arc<[RoleProviderId]>) {}
 
     /// API Doc
     #[cfg(feature = "open-api")]
