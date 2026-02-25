@@ -18,7 +18,10 @@ use crate::{
         RenameTableRequest, Result,
         iceberg::{
             types::{DropParams, Prefix, ReferencedByQuery},
-            v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
+            v1::{
+                ReferencingView,
+                namespace::{NamespaceIdentUrl, NamespaceParameters},
+            },
         },
     },
     request_metadata::RequestMetadata,
@@ -67,6 +70,18 @@ pub struct LoadTableQuery {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LoadTableFilters {
     pub snapshots: SnapshotsQuery,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, typed_builder::TypedBuilder)]
+pub struct LoadTableRequest {
+    #[builder(default)]
+    pub data_access: DataAccessMode,
+    #[builder(default)]
+    pub filters: LoadTableFilters,
+    #[builder(default)]
+    pub etags: Vec<ETag>,
+    #[builder(default)]
+    pub referenced_by: Option<Vec<ReferencingView>>,
 }
 
 impl From<ListTablesQuery> for PaginationQuery {
@@ -150,11 +165,9 @@ where
     /// Load a table from the catalog
     async fn load_table(
         parameters: TableParameters,
-        data_access: impl Into<DataAccessMode> + Send,
-        filters: LoadTableFilters,
+        request: LoadTableRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified>;
 
     /// Load a table from the catalog
@@ -279,9 +292,6 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                  State(api_context): State<ApiContext<S>>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
-                    let filters = LoadTableFilters {
-                        snapshots: load_table_query.snapshots.unwrap_or_default(),
-                    };
                     I::load_table(
                         TableParameters {
                             prefix: Some(prefix),
@@ -290,11 +300,18 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                                 name: normalize_tabular_name(&table),
                             },
                         },
-                        parse_data_access(&headers),
-                        filters,
+                        LoadTableRequest {
+                            data_access: parse_data_access(&headers),
+                            filters: LoadTableFilters {
+                                snapshots: load_table_query.snapshots.unwrap_or_default(),
+                            },
+                            etags: parse_if_none_match(&headers),
+                            referenced_by: load_table_query
+                                .referenced_by
+                                .map(ReferencedByQuery::into_inner),
+                        },
                         api_context,
                         metadata,
-                        parse_if_none_match(&headers),
                     )
                 },
             )
@@ -451,6 +468,12 @@ pub enum DataAccessMode {
     // and thus doesn't need any form of data access delegation.
     ClientManaged,
     ServerDelegated(DataAccess),
+}
+
+impl std::default::Default for DataAccessMode {
+    fn default() -> Self {
+        DataAccessMode::ServerDelegated(DataAccess::not_specified())
+    }
 }
 
 impl DataAccessMode {
@@ -662,14 +685,12 @@ mod test {
 
             async fn load_table(
                 _parameters: super::TableParameters,
-                _data_access: impl Into<super::DataAccessMode> + Send,
-                filters: super::LoadTableFilters,
+                request: super::LoadTableRequest,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-                _etags: Vec<ETag>,
             ) -> crate::api::Result<LoadTableResultOrNotModified> {
                 // Return the snapshots filter in the error message for testing
-                let snapshots_str = match filters.snapshots {
+                let snapshots_str = match request.filters.snapshots {
                     super::SnapshotsQuery::All => "all",
                     super::SnapshotsQuery::Refs => "refs",
                 };
@@ -797,6 +818,183 @@ mod test {
         let response_str = String::from_utf8(bytes.to_vec()).unwrap();
         let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
         assert_eq!(error.error.message, "snapshots=refs");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn test_referenced_by_deserialization() {
+        use async_trait::async_trait;
+        use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+        use tower::ServiceExt;
+
+        use crate::{
+            api::{ApiContext, LoadTableResult},
+            request_metadata::RequestMetadata,
+        };
+
+        #[derive(Debug, Clone)]
+        struct TestService;
+
+        #[derive(Debug, Clone)]
+        struct ThisState;
+
+        impl crate::api::ThreadSafe for ThisState {}
+
+        #[async_trait]
+        impl super::TablesService<ThisState> for TestService {
+            async fn list_tables(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _query: super::ListTablesQuery,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::ListTablesResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn create_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::CreateTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn register_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::RegisterTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn load_table(
+                _parameters: super::TableParameters,
+                request: super::LoadTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResultOrNotModified> {
+                let referencing_view_str = serde_json::to_string(&request.referenced_by).unwrap();
+
+                Err(ErrorModel::builder()
+                    .message(referencing_view_str)
+                    .r#type("UnsupportedOperationException".to_string())
+                    .code(406)
+                    .build()
+                    .into())
+            }
+
+            async fn load_table_credentials(
+                _parameters: super::TableParameters,
+                _data_access: super::DataAccess,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<iceberg_ext::catalog::rest::LoadCredentialsResponse>
+            {
+                panic!("Should not be called");
+            }
+
+            async fn commit_table(
+                _parameters: super::TableParameters,
+                _request: crate::api::CommitTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::CommitTableResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn drop_table(
+                _parameters: super::TableParameters,
+                _drop_params: crate::api::iceberg::types::DropParams,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn table_exists(
+                _parameters: super::TableParameters,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn rename_table(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::RenameTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn commit_transaction(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::CommitTransactionRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+        }
+
+        let api_context = ApiContext {
+            v1_state: ThisState,
+        };
+
+        let app = super::router::<TestService, ThisState>();
+        let router = axum::Router::new().merge(app).with_state(api_context);
+
+        // Test 1: Default - no referenced_by parameter
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        let referenced_view: Option<Vec<ReferencingView>> =
+            serde_json::from_str(&error.error.message).unwrap();
+        assert_eq!(referenced_view, None);
+
+        // Test 2: With referenced_by parameter
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table?referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        let referenced_view: Option<Vec<ReferencingView>> =
+            serde_json::from_str(&error.error.message).unwrap();
+        assert_eq!(
+            referenced_view,
+            Some(vec![
+                TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"])
+                    .unwrap()
+                    .into(),
+                TableIdent::from_strs(vec!["prod", "analytics", "monthly_view"])
+                    .unwrap()
+                    .into(),
+            ])
+        );
     }
 
     #[test]

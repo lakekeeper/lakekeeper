@@ -8,7 +8,7 @@ use crate::{
     api::iceberg::v1::{
         ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
         TableParameters,
-        tables::{DataAccessMode, LoadTableFilters},
+        tables::{LoadTableFilters, LoadTableRequest},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -44,12 +44,17 @@ fn etag_already_present(etags: &[ETag], etag: &ETag) -> bool {
 #[allow(clippy::too_many_lines)]
 pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
-    data_access: impl Into<DataAccessMode> + Send,
-    filters: LoadTableFilters,
+    request: LoadTableRequest,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-    etags: Vec<ETag>,
 ) -> Result<LoadTableResultOrNotModified> {
+    let LoadTableRequest {
+        data_access,
+        filters,
+        etags,
+        referenced_by: _,
+    } = request;
+
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -152,7 +157,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             warehouse
                 .storage_profile
                 .generate_table_config(
-                    data_access.into(),
+                    data_access,
                     storage_secret_ref,
                     &table_location,
                     storage_permissions,
@@ -269,8 +274,8 @@ mod tests {
                 NamespaceParameters, TableParameters,
                 namespace::NamespaceService as _,
                 tables::{
-                    DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery,
-                    TablesService as _,
+                    DataAccess, LoadTableFilters, LoadTableRequest, LoadTableResultOrNotModified,
+                    SnapshotsQuery, TablesService as _,
                 },
             },
             management::v1::warehouse::TabularDeleteProfile,
@@ -571,11 +576,9 @@ mod tests {
 
         let result = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().filters(filters).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -627,11 +630,9 @@ mod tests {
 
         let result = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().filters(filters).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -676,15 +677,11 @@ mod tests {
         };
 
         // Test with default LoadTableFilters (should use SnapshotsQuery::All by default)
-        let filters = LoadTableFilters::default();
-
         let result = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -800,11 +797,9 @@ mod tests {
 
         let result = CatalogServer::load_table(
             table_params.clone(),
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().filters(filters).build(),
             ctx.clone(),
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -829,11 +824,9 @@ mod tests {
 
         let result_all = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters_all,
+            LoadTableRequest::builder().filters(filters_all).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -873,11 +866,9 @@ mod tests {
 
         let result_all = CatalogServer::load_table(
             table_params.clone(),
-            DataAccess::not_specified(),
-            filters_all,
+            LoadTableRequest::builder().filters(filters_all).build(),
             ctx.clone(),
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -888,11 +879,9 @@ mod tests {
 
         let result_refs = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters_refs,
+            LoadTableRequest::builder().filters(filters_refs).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -944,20 +933,15 @@ mod tests {
             table: table_identifier.clone(),
         };
 
-        let data_access = DataAccess::not_specified();
-        let filters = LoadTableFilters::default();
-
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec![etag.as_str().trim_matches('"').into()];
         let load_table_result = load_table(
             parameters,
-            data_access,
-            filters,
+            LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-            etags,
         )
         .await;
         let Ok(result) = load_table_result else {
@@ -980,9 +964,6 @@ mod tests {
             table: table_identifier.clone(),
         };
 
-        let data_access = DataAccess::not_specified();
-        let filters = LoadTableFilters::default();
-
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
@@ -993,11 +974,9 @@ mod tests {
         ];
         let load_table_result = load_table(
             parameters,
-            data_access,
-            filters,
+            LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-            etags,
         )
         .await;
         let Ok(result) = load_table_result else {
@@ -1018,20 +997,15 @@ mod tests {
             table: table_identifier.clone(),
         };
 
-        let data_access = DataAccess::not_specified();
-        let filters = LoadTableFilters::default();
-
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec!["*".into()];
         let load_table_result = load_table(
             parameters,
-            data_access,
-            filters,
+            LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-            etags,
         )
         .await;
         let Ok(result) = load_table_result else {

@@ -11,6 +11,7 @@ pub(crate) const NAMESPACE_DELIMITER: &str = "\u{1f}";
 
 /// A single referenced view within a query.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 pub struct ReferencingView(TableIdent);
 
 impl ReferencingView {
