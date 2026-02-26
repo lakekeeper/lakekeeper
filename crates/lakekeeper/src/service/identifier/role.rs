@@ -83,6 +83,27 @@ impl std::borrow::Borrow<str> for RoleProviderId {
 }
 
 impl RoleProviderId {
+    /// Validates a provider ID string slice without allocating.
+    ///
+    /// Identical rules to [`Self::try_new`]: non-empty, only lowercase ASCII letters,
+    /// digits, and hyphens.  On the error path the offending string is cloned into the
+    /// error value; on the happy path no allocation occurs.
+    ///
+    /// # Errors
+    /// Returns [`RoleProviderIdError`] if `s` is empty or contains disallowed characters.
+    pub fn validate(s: &str) -> Result<(), RoleProviderIdError> {
+        if s.is_empty() {
+            return Err(RoleProviderIdError::Empty);
+        }
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(RoleProviderIdError::InvalidCharacters(s.to_string()));
+        }
+        Ok(())
+    }
+
     /// Constructs a validated [`RoleProviderId`].
     ///
     /// # Errors
@@ -90,18 +111,7 @@ impl RoleProviderId {
     /// or does not match the allowed character set (lowercase ASCII letters, digits, hyphens).
     pub fn try_new(value: impl Into<String>) -> Result<Self, RoleProviderIdError> {
         let value = value.into();
-        if value.is_empty() {
-            return Err(RoleProviderIdError::Empty);
-        }
-
-        // Check that all characters are lowercase ASCII letters, digits, or hyphens
-        if !value
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        {
-            return Err(RoleProviderIdError::InvalidCharacters(value));
-        }
-
+        Self::validate(&value)?;
         Ok(Self(value))
     }
 
@@ -170,18 +180,31 @@ impl FromStr for RoleProviderId {
 pub struct RoleSourceId(String);
 
 impl RoleSourceId {
+    /// Validates a source ID string slice without allocating.
+    ///
+    /// Identical rules to [`Self::try_new`]: non-empty and no control characters.
+    /// On the error path the offending string is cloned into the error value;
+    /// on the happy path no allocation occurs.
+    ///
+    /// # Errors
+    /// Returns [`RoleSourceIdError`] if `s` is empty or contains control characters.
+    pub fn validate(s: &str) -> Result<(), RoleSourceIdError> {
+        if s.is_empty() {
+            return Err(RoleSourceIdError::Empty);
+        }
+        if s.contains(|c: char| c.is_control()) {
+            return Err(RoleSourceIdError::ContainsControlChars(s.to_string()));
+        }
+        Ok(())
+    }
+
     /// Constructs a validated [`RoleSourceId`].
     ///
     /// # Errors
     /// Returns [`RoleSourceIdError`] if the value is empty or contains control characters.
     pub fn try_new(value: impl Into<String>) -> Result<Self, RoleSourceIdError> {
         let value = value.into();
-        if value.is_empty() {
-            return Err(RoleSourceIdError::Empty);
-        }
-        if value.contains(|c: char| c.is_control()) {
-            return Err(RoleSourceIdError::ContainsControlChars(value));
-        }
+        Self::validate(&value)?;
         Ok(Self(value))
     }
 
