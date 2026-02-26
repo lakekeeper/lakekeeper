@@ -969,7 +969,7 @@ mod test {
 
         // Test 2: With referenced_by parameter
         let mut req = http::Request::builder()
-            .uri("/test/namespaces/test-namespace/tables/test-table?referenced-by=prod%1Fanalytics%20ns%1Fquarterly+view,prod%1Fanalytics+ns%1Fmonthly%20view")
+            .uri("/test/namespaces/test-namespace/tables/test-table?referenced-by=prod%1Fanalytics%20ns%1Fquarterly+view,prod%1Fanalytics+ns%1Fmonthly%20view%2Cwith%2Ccommas")
             .body(axum::body::Body::empty())
             .unwrap();
         req.extensions_mut()
@@ -990,7 +990,7 @@ mod test {
                 TableIdent::from_strs(vec!["prod", "analytics ns", "quarterly view"])
                     .unwrap()
                     .into(),
-                TableIdent::from_strs(vec!["prod", "analytics ns", "monthly view"])
+                TableIdent::from_strs(vec!["prod", "analytics ns", "monthly view,wtih,commas"])
                     .unwrap()
                     .into(),
             ])
