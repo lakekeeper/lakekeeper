@@ -24,6 +24,42 @@ impl ReferencingView {
     pub fn into_inner(self) -> TableIdent {
         self.0
     }
+
+    /// Converts this ReferencingView to its encoded string representation
+    /// Used for serialization without going through the full Serialize machinery
+    #[must_use]
+    fn to_encoded_string(&self) -> String {
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+
+        // Define what characters need to be percent-encoded
+        // We encode everything except unreserved characters (alphanumeric, -, _, ., ~)
+        // Plus we need to encode our special separators: space, comma, and delimiter
+        const FRAGMENT: &AsciiSet = &CONTROLS
+            .add(b' ')   // space
+            .add(b',')   // comma (our separator)
+            .add(b'"')   // quote
+            .add(b'<')   // less than
+            .add(b'>')   // greater than
+            .add(b'`')   // backtick
+            .add(b'#')   // hash
+            .add(b'?')   // question mark
+            .add(b'{')   // left brace
+            .add(b'}')   // right brace
+            .add(b'/')   // slash
+            .add(b'\\')  // backslash
+            .add(b'%')   // percent (to avoid double encoding)
+            .add(b'+');  // plus
+
+        let namespace_data = self.0.namespace().to_url_string();
+        let name = self.0.name();
+
+        // Encode namespace and name separately
+        let encoded_namespace = utf8_percent_encode(&namespace_data, FRAGMENT).to_string();
+        let encoded_name = utf8_percent_encode(name, FRAGMENT).to_string();
+
+        // Join with encoded delimiter
+        format!("{}%1F{}", encoded_namespace, encoded_name)
+    }
 }
 
 impl Deref for ReferencingView {
@@ -68,14 +104,7 @@ impl Serialize for ReferencingView {
     where
         S: Serializer,
     {
-        let namespace_data = self.0.namespace().to_url_string();
-        let name = self.0.name();
-
-        let referenced_by = format!("{}{}{}", namespace_data, NAMESPACE_DELIMITER, name)
-            .replace(" ", "%20")
-            .replace(",", "%2C")
-            .replace(NAMESPACE_DELIMITER, "%1F");
-        serializer.serialize_str(&referenced_by)
+        serializer.serialize_str(&self.to_encoded_string())
     }
 }
 
@@ -148,13 +177,7 @@ impl Serialize for ReferencedByQuery {
         let referenced_by = self
             .0
             .iter()
-            .map(|view| {
-                serde_json::to_value(view)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_string()
-            })
+            .map(ReferencingView::to_encoded_string)
             .collect::<Vec<_>>()
             .join(",");
         serializer.serialize_str(&referenced_by)
@@ -564,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_referenced_by_query_with_plus_in_referencing_view_de_ser() {
-        let s = "prod%1Fanalytics%1Fquarterly+view";
+        let s = "prod%1Fanalytics%1Fquarterly%2Bview";
         let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
         let referenced_by: ReferencedByQuery =
             ReferencedByQuery::deserialize(deserializer).unwrap();
@@ -615,5 +638,82 @@ mod tests {
 
         let serialized = serde_json::to_value(&referenced_by).unwrap();
         assert_eq!(serialized, serde_json::json!(s.replace("%1f", "%1F")));
+    }
+
+    #[test]
+    fn test_referenced_by_query_with_japanese_characters_de_ser() {
+        use serde::de::value::{Error, StrDeserializer};
+        // "テスト" means "test" in Japanese
+        let s = "prod%1Fanalytics%1F%E3%83%86%E3%82%B9%E3%83%88";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        let referenced_by: ReferencedByQuery =
+            ReferencedByQuery::deserialize(deserializer).unwrap();
+
+        assert_eq!(referenced_by.len(), 1);
+        assert_eq!(referenced_by[0].name, "テスト");
+        assert_eq!(
+            referenced_by[0].namespace.clone().inner(),
+            vec!["prod", "analytics"]
+        );
+
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s));
+    }
+
+    #[test]
+    fn test_referenced_by_query_with_emoji_de_ser() {
+        use serde::de::value::{Error, StrDeserializer};
+        // Emoji: 🎉
+        let s = "prod%1Fanalytics%1Fcelebrate%F0%9F%8E%89";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        let referenced_by: ReferencedByQuery =
+            ReferencedByQuery::deserialize(deserializer).unwrap();
+
+        assert_eq!(referenced_by.len(), 1);
+        assert_eq!(referenced_by[0].name, "celebrate🎉");
+        assert_eq!(
+            referenced_by[0].namespace.clone().inner(),
+            vec!["prod", "analytics"]
+        );
+
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s));
+    }
+
+    #[test]
+    fn test_referenced_by_query_with_umlauts_de_ser() {
+        use serde::de::value::{Error, StrDeserializer};
+        // German umlauts: ä, ö, ü
+        let s = "prod%1F%C3%A4nalytics%1Fsch%C3%B6n";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        let referenced_by: ReferencedByQuery =
+            ReferencedByQuery::deserialize(deserializer).unwrap();
+
+        assert_eq!(referenced_by.len(), 1);
+        assert_eq!(referenced_by[0].name, "schön");
+        assert_eq!(
+            referenced_by[0].namespace.clone().inner(),
+            vec!["prod", "änalytics"]
+        );
+
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s));
+    }
+
+    #[test]
+    fn test_referenced_by_query_with_special_chars_mixed_de_ser() {
+        use serde::de::value::{Error, StrDeserializer};
+        // Mix: space, plus, comma, emoji, japanese
+        let s = "prod%1Fanalytics%1Ftest%20%2B%20%E3%83%86%E3%82%B9%E3%83%88%20%F0%9F%8E%89,prod%1Fanalytics%1Fother%2Cname";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        let referenced_by: ReferencedByQuery =
+            ReferencedByQuery::deserialize(deserializer).unwrap();
+
+        assert_eq!(referenced_by.len(), 2);
+        assert_eq!(referenced_by[0].name, "test + テスト 🎉");
+        assert_eq!(referenced_by[1].name, "other,name");
+
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s));
     }
 }
