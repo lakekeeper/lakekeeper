@@ -10,7 +10,6 @@ use typed_builder::TypedBuilder;
 
 pub(crate) const NAMESPACE_DELIMITER: &str = "\u{1f}";
 
-/// A single referenced view within a query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReferencingView(TableIdent);
 
@@ -25,40 +24,33 @@ impl ReferencingView {
         self.0
     }
 
-    /// Converts this ReferencingView to its encoded string representation
-    /// Used for serialization without going through the full Serialize machinery
     #[must_use]
     fn to_encoded_string(&self) -> String {
         use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
-        // Define what characters need to be percent-encoded
-        // We encode everything except unreserved characters (alphanumeric, -, _, ., ~)
-        // Plus we need to encode our special separators: space, comma, and delimiter
         const FRAGMENT: &AsciiSet = &CONTROLS
-            .add(b' ')   // space
-            .add(b',')   // comma (our separator)
-            .add(b'"')   // quote
-            .add(b'<')   // less than
-            .add(b'>')   // greater than
-            .add(b'`')   // backtick
-            .add(b'#')   // hash
-            .add(b'?')   // question mark
-            .add(b'{')   // left brace
-            .add(b'}')   // right brace
-            .add(b'/')   // slash
-            .add(b'\\')  // backslash
-            .add(b'%')   // percent (to avoid double encoding)
-            .add(b'+');  // plus
+            .add(b' ') // space
+            .add(b',') // comma (our separator)
+            .add(b'"') // quote
+            .add(b'<') // less than
+            .add(b'>') // greater than
+            .add(b'`') // backtick
+            .add(b'#') // hash
+            .add(b'?') // question mark
+            .add(b'{') // left brace
+            .add(b'}') // right brace
+            .add(b'/') // slash
+            .add(b'\\') // backslash
+            .add(b'%') // percent (to avoid double encoding)
+            .add(b'+'); // plus
 
         let namespace_data = self.0.namespace().to_url_string();
         let name = self.0.name();
 
-        // Encode namespace and name separately
         let encoded_namespace = utf8_percent_encode(&namespace_data, FRAGMENT).to_string();
         let encoded_name = utf8_percent_encode(name, FRAGMENT).to_string();
 
-        // Join with encoded delimiter
-        format!("{}%1F{}", encoded_namespace, encoded_name)
+        format!("{encoded_namespace}%1F{encoded_name}")
     }
 }
 
@@ -87,14 +79,16 @@ impl<'de> Deserialize<'de> for ReferencingView {
                 TableIdent::from_strs(Vec::<String>::new()).map_err(serde::de::Error::custom)?,
             ));
         }
-        let decoded = percent_decode_str(&data)
+        // Convert + to space (application/x-www-form-urlencoded convention)
+        let data_with_spaces = data.replace('+', " ");
+        let decoded = percent_decode_str(&data_with_spaces)
             .decode_utf8()
-            .map_err(|e| serde::de::Error::custom(format!("Failed to URL-decode: {}", e)))?;
+            .map_err(|e| serde::de::Error::custom(format!("Failed to URL-decode: {e}")))?;
 
         let segments: Vec<_> = decoded.split(NAMESPACE_DELIMITER).collect();
 
         Ok(ReferencingView(
-            TableIdent::from_strs(segments).map_err(|e| serde::de::Error::custom(e))?,
+            TableIdent::from_strs(segments).map_err(serde::de::Error::custom)?,
         ))
     }
 }
@@ -139,7 +133,7 @@ impl<'de> Deserialize<'de> for ReferencedByQuery {
     {
         struct ReferencedByQueryVisitor;
 
-        impl<'de> serde::de::Visitor<'de> for ReferencedByQueryVisitor {
+        impl serde::de::Visitor<'_> for ReferencedByQueryVisitor {
             type Value = ReferencedByQuery;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -600,6 +594,21 @@ mod tests {
     }
 
     #[test]
+    fn test_referenced_by_query_with_plus_as_space_de_ser() {
+        let s = "prod%1Fanalytics%1Fquarterly+view";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        let referenced_by: ReferencedByQuery =
+            ReferencedByQuery::deserialize(deserializer).unwrap();
+
+        assert_eq!(referenced_by.len(), 1);
+        assert_eq!(referenced_by[0].name, "quarterly view");
+
+        // When serializing back, spaces are encoded as %20, not +
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s.replace('+', "%20")));
+    }
+
+    #[test]
     fn test_referenced_by_query_with_comma_in_referencing_view_de_ser() {
         let s = "prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly%2Cview";
         let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
@@ -643,7 +652,6 @@ mod tests {
     #[test]
     fn test_referenced_by_query_with_japanese_characters_de_ser() {
         use serde::de::value::{Error, StrDeserializer};
-        // "テスト" means "test" in Japanese
         let s = "prod%1Fanalytics%1F%E3%83%86%E3%82%B9%E3%83%88";
         let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
         let referenced_by: ReferencedByQuery =
@@ -663,7 +671,6 @@ mod tests {
     #[test]
     fn test_referenced_by_query_with_emoji_de_ser() {
         use serde::de::value::{Error, StrDeserializer};
-        // Emoji: 🎉
         let s = "prod%1Fanalytics%1Fcelebrate%F0%9F%8E%89";
         let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
         let referenced_by: ReferencedByQuery =
@@ -683,7 +690,6 @@ mod tests {
     #[test]
     fn test_referenced_by_query_with_umlauts_de_ser() {
         use serde::de::value::{Error, StrDeserializer};
-        // German umlauts: ä, ö, ü
         let s = "prod%1F%C3%A4nalytics%1Fsch%C3%B6n";
         let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
         let referenced_by: ReferencedByQuery =
@@ -703,7 +709,6 @@ mod tests {
     #[test]
     fn test_referenced_by_query_with_special_chars_mixed_de_ser() {
         use serde::de::value::{Error, StrDeserializer};
-        // Mix: space, plus, comma, emoji, japanese
         let s = "prod%1Fanalytics%1Ftest%20%2B%20%E3%83%86%E3%82%B9%E3%83%88%20%F0%9F%8E%89,prod%1Fanalytics%1Fother%2Cname";
         let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
         let referenced_by: ReferencedByQuery =

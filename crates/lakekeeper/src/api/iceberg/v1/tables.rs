@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, RawQuery, State},
     http::header,
     response::IntoResponse,
     routing::{get, post},
@@ -9,6 +9,7 @@ use axum::{
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::{ETag, LoadCredentialsResponse};
+use serde::Deserialize;
 
 use super::{PageToken, PaginationQuery};
 use crate::{
@@ -31,6 +32,23 @@ use crate::{
 /// This is needed because `+` in URLs is decoded to space by some clients.
 pub(super) fn normalize_tabular_name(table: &str) -> String {
     table.replace('+', " ")
+}
+
+/// Parse `referenced-by` query parameter with special encoding handling.
+pub(crate) fn parse_referenced_by_param(query_str: &str) -> Option<ReferencedByQuery> {
+    use serde::de::IntoDeserializer;
+
+    query_str
+        .split('&')
+        .find(|param| param.starts_with("referenced-by="))
+        .and_then(|param| param.strip_prefix("referenced-by="))
+        .and_then(|value| {
+            let referenced_by_deserializer: serde::de::value::StrDeserializer<
+                '_,
+                serde::de::value::Error,
+            > = value.into_deserializer();
+            ReferencedByQuery::deserialize(referenced_by_deserializer).ok()
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
@@ -60,11 +78,65 @@ pub enum SnapshotsQuery {
     Refs,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoadTableQuery {
     pub snapshots: Option<SnapshotsQuery>,
     pub referenced_by: Option<ReferencedByQuery>,
+}
+
+impl<'de> serde::Deserialize<'de> for LoadTableQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct LoadTableQueryVisitor;
+
+        impl Visitor<'_> for LoadTableQueryVisitor {
+            type Value = LoadTableQuery;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string containing query parameters")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let mut snapshots = None;
+
+                for param in s.split('&') {
+                    if param.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(value) = param.strip_prefix("snapshots=") {
+                        let decoded = urlencoding::decode(value).map_err(E::custom)?;
+                        snapshots = match decoded.as_ref() {
+                            "all" => Some(SnapshotsQuery::All),
+                            "refs" => Some(SnapshotsQuery::Refs),
+                            _ => {
+                                return Err(E::custom(format!(
+                                    "Invalid snapshots value: {decoded}"
+                                )));
+                            }
+                        };
+                    }
+                }
+
+                let referenced_by = parse_referenced_by_param(s);
+
+                Ok(LoadTableQuery {
+                    snapshots,
+                    referenced_by,
+                })
+            }
+        }
+
+        deserializer.deserialize_str(LoadTableQueryVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -126,10 +198,40 @@ impl IntoResponse for LoadTableResultOrNotModified {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoadTableCredentialsQuery {
     pub referenced_by: Option<ReferencedByQuery>,
+}
+
+impl<'de> serde::Deserialize<'de> for LoadTableCredentialsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct LoadTableCredentialsQueryVisitor;
+
+        impl Visitor<'_> for LoadTableCredentialsQueryVisitor {
+            type Value = LoadTableCredentialsQuery;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string containing query parameters")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let referenced_by = parse_referenced_by_param(s);
+
+                Ok(LoadTableCredentialsQuery { referenced_by })
+            }
+        }
+
+        deserializer.deserialize_str(LoadTableCredentialsQueryVisitor)
+    }
 }
 
 #[async_trait]
@@ -288,10 +390,28 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
-                 Query(load_table_query): Query<LoadTableQuery>,
+                 RawQuery(load_table_query): RawQuery,
                  State(api_context): State<ApiContext<S>>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
+                    tracing::debug!(
+                        "Received load table request with raw query: {load_table_query:#?}"
+                    );
+
+                    let load_table_query = load_table_query
+                        .as_deref()
+                        .and_then(|q| {
+                            use serde::de::{IntoDeserializer, value::StrDeserializer};
+                            let deserializer: StrDeserializer<'_, serde::de::value::Error> =
+                                q.into_deserializer();
+                            LoadTableQuery::deserialize(deserializer)
+                                .map_err(|e| {
+                                    tracing::warn!("Failed to parse load table query: {}", e);
+                                    e
+                                })
+                                .ok()
+                        })
+                        .unwrap_or_default();
                     I::load_table(
                         TableParameters {
                             prefix: Some(prefix),
@@ -385,9 +505,27 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
-                 Query(_load_table_credentials_query): Query<LoadTableCredentialsQuery>,
+                 RawQuery(load_table_credentials_query): RawQuery,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
+                    let _load_table_credentials_query = load_table_credentials_query
+                        .as_deref()
+                        .and_then(|q| {
+                            use serde::de::{IntoDeserializer, value::StrDeserializer};
+                            let deserializer: StrDeserializer<'_, serde::de::value::Error> =
+                                q.into_deserializer();
+                            LoadTableCredentialsQuery::deserialize(deserializer)
+                                .map_err(|e| {
+                                    tracing::warn!(
+                                        "Failed to parse load table credentials query: {}",
+                                        e
+                                    );
+                                    e
+                                })
+                                .ok()
+                        })
+                        .unwrap_or_default();
+
                     I::load_table_credentials(
                         TableParameters {
                             prefix: Some(prefix),
@@ -553,6 +691,7 @@ mod test {
     use iceberg::spec::{
         FormatVersion, Schema, SortOrder, TableMetadata, TableMetadataBuilder, UnboundPartitionSpec,
     };
+    use serde::de::{IntoDeserializer, value::StrDeserializer};
 
     use super::*;
 
@@ -617,10 +756,14 @@ mod test {
 
     #[test]
     fn test_load_table_query_deserialization_with_referenced_by() {
-        let query = "referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
-        let deserialized: LoadTableQuery = serde_urlencoded::from_str(query).unwrap();
+        let query =
+            "referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
+        let query_deserializer: StrDeserializer<'_, serde::de::value::Error> =
+            query.into_deserializer();
+        let deserialized_query: LoadTableQuery =
+            LoadTableQuery::deserialize(query_deserializer).unwrap();
         assert_eq!(
-            deserialized,
+            deserialized_query,
             LoadTableQuery {
                 snapshots: None,
                 referenced_by: Some(ReferencedByQuery::from(vec![
@@ -988,7 +1131,7 @@ mod test {
                 TableIdent::from_strs(vec!["prod", "analytics ns", "quarterly view"])
                     .unwrap()
                     .into(),
-                TableIdent::from_strs(vec!["prod", "analytics ns", "monthly view,wtih,commas"])
+                TableIdent::from_strs(vec!["prod", "analytics ns", "monthly view,with,commas"])
                     .unwrap()
                     .into(),
             ])
@@ -1043,10 +1186,14 @@ mod test {
 
     #[test]
     fn test_load_table_credentials_query_deserialization_with_referenced_by() {
-        let query = "referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
-        let deserialized: LoadTableCredentialsQuery = serde_urlencoded::from_str(query).unwrap();
+        let query =
+            "referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
+        let query_deserializer: StrDeserializer<'_, serde::de::value::Error> =
+            query.into_deserializer();
+        let deserialized_query: LoadTableCredentialsQuery =
+            LoadTableCredentialsQuery::deserialize(query_deserializer).unwrap();
         assert_eq!(
-            deserialized,
+            deserialized_query,
             LoadTableCredentialsQuery {
                 referenced_by: Some(ReferencedByQuery::from(vec![
                     TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"]).unwrap(),

@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, RawQuery, State},
     response::IntoResponse,
     routing::{get, post},
 };
 use http::{HeaderMap, StatusCode};
 use iceberg::TableIdent;
+use serde::Deserialize;
 
 use super::ListTablesQuery;
 use crate::{
@@ -25,10 +26,40 @@ use crate::{
     request_metadata::RequestMetadata,
 };
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoadViewQuery {
     pub referenced_by: Option<ReferencedByQuery>,
+}
+
+impl<'de> serde::Deserialize<'de> for LoadViewQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct LoadViewQueryVisitor;
+
+        impl Visitor<'_> for LoadViewQueryVisitor {
+            type Value = LoadViewQuery;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string containing query parameters")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let referenced_by = super::tables::parse_referenced_by_param(s);
+
+                Ok(LoadViewQuery { referenced_by })
+            }
+        }
+
+        deserializer.deserialize_str(LoadViewQueryVisitor)
+    }
 }
 
 #[async_trait]
@@ -146,23 +177,36 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
             get(
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
-                 Query(_load_view_query): Query<LoadViewQuery>,
+                 RawQuery(load_view_query): RawQuery,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
-                    {
-                        I::load_view(
-                            ViewParameters {
-                                prefix: Some(prefix),
-                                view: TableIdent {
-                                    namespace: namespace.into(),
-                                    name: normalize_tabular_name(&view),
-                                },
+                    let _load_view_query = load_view_query
+                        .as_deref()
+                        .and_then(|q| {
+                            use serde::de::{IntoDeserializer, value::StrDeserializer};
+                            let deserializer: StrDeserializer<'_, serde::de::value::Error> =
+                                q.into_deserializer();
+                            LoadViewQuery::deserialize(deserializer)
+                                .map_err(|e| {
+                                    tracing::warn!("Failed to parse load view query: {}", e);
+                                    e
+                                })
+                                .ok()
+                        })
+                        .unwrap_or_default();
+
+                    I::load_view(
+                        ViewParameters {
+                            prefix: Some(prefix),
+                            view: TableIdent {
+                                namespace: namespace.into(),
+                                name: normalize_tabular_name(&view),
                             },
-                            api_context,
-                            crate::api::iceberg::v1::tables::parse_data_access(&headers),
-                            metadata,
-                        )
-                    }
+                        },
+                        api_context,
+                        crate::api::iceberg::v1::tables::parse_data_access(&headers),
+                        metadata,
+                    )
                 },
             )
             .post(
