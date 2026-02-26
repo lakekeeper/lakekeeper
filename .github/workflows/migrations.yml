@@ -64,7 +64,7 @@ jobs:
       - uses: extractions/setup-just@v3
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: lakekeeper-image
           path: artifacts
