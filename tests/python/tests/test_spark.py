@@ -1,12 +1,12 @@
+import time
 import uuid
 
 import conftest
+import fsspec
 import pandas as pd
+import pyiceberg.io as io
 import pytest
 import requests
-import pyiceberg.io as io
-import time
-import fsspec
 
 
 def test_create_namespace(spark, warehouse: conftest.Warehouse):
@@ -1006,6 +1006,7 @@ def test_special_characters_in_names(
         "namespace%with%percent",
         "namespace&with&ampersands",
         "namespace=with=equals",
+        "namespace,with,commas",
     ]
 
     special_table_names = [
@@ -1020,6 +1021,7 @@ def test_special_characters_in_names(
         "table_🚀_emoji_✨",
         "table-Mix!_OF_everything_中文_ä_🎉",
         "table%with%percent",
+        "table,with,commas",
     ]
 
     # Test creating nested namespaces with special characters
@@ -1074,7 +1076,7 @@ def test_special_characters_in_names(
     # Test deeply nested namespaces with special characters
     nested_special = [
         namespace.spark_name,
-        "`specialns-1_ä`",
+        "`specialns,-1_ä`",
         "`nest_中文_2`",
         "`lëvel_3_🚀`",
     ]
