@@ -257,7 +257,20 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
     };
 
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
-        request_metadata.set_authentication(actor.clone(), authentication);
+        request_metadata.set_authentication(actor.clone(), authentication.clone());
+
+        // Identify engine based on audience (aud) and IdP ID
+        if let Some(engine_config) = authentication.audiences().iter().find_map(|aud| {
+            CONFIG.trusted_engines.get(aud).filter(|cfg| {
+                authentication
+                    .subject()
+                    .idp_id()
+                    .is_some_and(|idp| idp == cfg.idp_id())
+            })
+        }) {
+            tracing::debug!("Identified trusted engine from audience and IdP ID");
+            request_metadata.set_engine(engine_config.clone());
+        }
 
         let check_result = if let Some(role_id) = role_id {
             use crate::service::{
