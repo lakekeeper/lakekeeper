@@ -1025,9 +1025,7 @@ def test_special_characters_in_names(
     ]
 
     # Test creating nested namespaces with special characters
-    for i, special_name in enumerate(
-        special_namespace_names
-    ):  # Test first 5 to keep test time reasonable
+    for i, special_name in enumerate(special_namespace_names):
         full_namespace = f"{namespace.spark_name}.`{special_name}`"
 
         # Create namespace with special characters
@@ -1053,7 +1051,7 @@ def test_special_characters_in_names(
         assert df["value"].tolist() == [f"test_{i}"]
 
     # Test creating tables with special character names
-    for i, special_table_name in enumerate(special_table_names[:7]):  # Test first 7
+    for i, special_table_name in enumerate(special_table_names):
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.`{special_table_name}` (id INT, value STRING) USING iceberg"
         )
