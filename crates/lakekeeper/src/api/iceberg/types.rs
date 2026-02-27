@@ -74,11 +74,7 @@ impl<'de> Deserialize<'de> for ReferencingView {
         D: Deserializer<'de>,
     {
         let data = String::deserialize(deserializer)?;
-        if data.is_empty() {
-            return Ok(ReferencingView(
-                TableIdent::from_strs(Vec::<String>::new()).map_err(serde::de::Error::custom)?,
-            ));
-        }
+
         // Convert + to space (application/x-www-form-urlencoded convention)
         let data_with_spaces = data.replace('+', " ");
         let decoded = percent_decode_str(&data_with_spaces)
@@ -541,6 +537,18 @@ mod tests {
         let serialized = serde_json::to_value(&referenced_by).unwrap();
         assert_eq!(serialized, serde_json::json!(s));
     }
+    #[test]
+    fn test_referenced_by_query_with_empty_referenced_by_de_ser() {
+        let s = "";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        let referenced_by: ReferencedByQuery =
+            ReferencedByQuery::deserialize(deserializer).unwrap();
+
+        assert!(referenced_by.is_empty());
+
+        let serialized = serde_json::to_value(&referenced_by).unwrap();
+        assert_eq!(serialized, serde_json::json!(s));
+    }
 
     #[test]
     fn test_referenced_by_query_with_comma_separated_referencing_views_de_ser() {
@@ -563,6 +571,14 @@ mod tests {
 
         let serialized = serde_json::to_value(&referenced_by).unwrap();
         assert_eq!(serialized, serde_json::json!(s));
+    }
+
+    #[test]
+    fn test_referenced_by_query_with_empty_view_identifier_de_ser() {
+        let s = "prod%1Fanalytics%1Fquarterly_view,,prod%1Fanalytics%1Fmonthly_view";
+        let deserializer: StrDeserializer<'_, Error> = s.into_deserializer();
+        ReferencedByQuery::deserialize(deserializer)
+            .expect_err("Deserialization should fail with invalid view identifier.");
     }
 
     #[test]
