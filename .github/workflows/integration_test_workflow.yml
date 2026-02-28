@@ -40,25 +40,10 @@ jobs:
         with:
           max_attempts: 2
           timeout_minutes: 25
-          command: |
-            cd tests &&
-            if [[ "${{ inputs.test_name }}" == *"openfga"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"kv2"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-vault-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"opa"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml -f docker-compose-trino-opa-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"starrocks"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-starrocks-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"aws_system_identity"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-s3-system-identity-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"legacy_md5"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-legacy-md5-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            else
-              docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            fi
+          # run.sh auto-selects the Spark image and docker-compose overlays
+          # based on the test name / Iceberg version suffix.
+          command: cd tests && bash run.sh ${current_test}
         env:
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.6-java17-python3
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}

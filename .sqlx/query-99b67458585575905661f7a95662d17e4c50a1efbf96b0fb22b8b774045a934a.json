@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, name, description, project_id, source_id, created_at, updated_at\n        FROM role\n        WHERE project_id = $2\n        ORDER BY \n            CASE \n                WHEN id::text = $1 THEN 1\n                WHEN source_id = $1 THEN 2\n                ELSE 3\n            END,\n            name <-> $1 ASC\n        LIMIT 10\n        ",
+  "query": "\n        SELECT id, name, description, project_id, provider_id, source_id, created_at, updated_at, version\n        FROM role\n        WHERE project_id = $2\n        ORDER BY \n            CASE \n                WHEN id::text = $1 THEN 1\n                WHEN source_id = $1 THEN 2\n                ELSE 3\n            END,\n            name <-> $1 ASC\n        LIMIT 10\n        ",
   "describe": {
     "columns": [
       {
@@ -25,18 +25,28 @@
       },
       {
         "ordinal": 4,
-        "name": "source_id",
+        "name": "provider_id",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -50,10 +60,12 @@
       false,
       true,
       false,
-      true,
       false,
-      true
+      false,
+      false,
+      true,
+      false
     ]
   },
-  "hash": "ba70ad40782d61b1ddccb8346447b18a1159b7ce51b72addd630df8d2ca090d9"
+  "hash": "99b67458585575905661f7a95662d17e4c50a1efbf96b0fb22b8b774045a934a"
 }

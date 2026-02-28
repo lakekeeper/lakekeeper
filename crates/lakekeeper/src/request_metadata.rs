@@ -15,10 +15,10 @@ use limes::Authentication;
 use uuid::Uuid;
 
 use crate::{
-    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
+    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId, XXHashSet,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
     service::{
-        TabularId,
+        ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
@@ -63,13 +63,39 @@ impl UserAgent {
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     request_id: Uuid,
-    project_id: Option<ProjectId>,
+    project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
+    token_roles: Option<TokenRoles>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
     user_agent: Option<UserAgent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenRoles {
+    project_id: ArcProjectId,
+    roles: XXHashSet<Arc<RoleIdent>>,
+}
+
+impl TokenRoles {
+    #[must_use]
+    pub fn new(project_id: ArcProjectId, roles: XXHashSet<Arc<RoleIdent>>) -> Self {
+        Self { project_id, roles }
+    }
+}
+
+impl TokenRoles {
+    #[must_use]
+    pub fn project_id(&self) -> &ArcProjectId {
+        &self.project_id
+    }
+
+    #[must_use]
+    pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
+        &self.roles
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -114,6 +140,11 @@ impl RequestMetadata {
         self
     }
 
+    pub fn set_token_roles(&mut self, token_roles: TokenRoles) -> &mut Self {
+        self.token_roles = Some(token_roles);
+        self
+    }
+
     #[must_use]
     pub fn user_agent(&self) -> Option<&UserAgent> {
         self.user_agent.as_ref()
@@ -141,6 +172,11 @@ impl RequestMetadata {
     }
 
     #[must_use]
+    pub fn token_roles(&self) -> Option<&TokenRoles> {
+        self.token_roles.as_ref()
+    }
+
+    #[must_use]
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
             request_id,
@@ -151,6 +187,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -173,11 +210,12 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            token_roles: None,
         }
     }
 
     #[must_use]
-    pub fn preferred_project_id(&self) -> Option<ProjectId> {
+    pub fn preferred_project_id(&self) -> Option<ArcProjectId> {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
@@ -202,6 +240,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -211,6 +250,8 @@ impl RequestMetadata {
         user_id: crate::service::UserId,
         role_id: crate::service::RoleId,
     ) -> Self {
+        use crate::service::Role;
+
         Self {
             request_id: Uuid::now_v7(),
             authentication: Some(
@@ -226,13 +267,14 @@ impl RequestMetadata {
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Role {
                 principal: user_id,
-                assumed_role: role_id,
+                assumed_role: Arc::new(Role::new_random_with_id(role_id)),
             }
             .into(),
             matched_path: None,
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -242,7 +284,7 @@ impl RequestMetadata {
         authentication: Option<Authentication>,
         base_url: Option<String>,
         actor: Actor,
-        project_id: Option<ProjectId>,
+        project_id: Option<ArcProjectId>,
         matched_path: Option<Arc<str>>,
         request_method: Method,
     ) -> Self {
@@ -255,6 +297,7 @@ impl RequestMetadata {
             matched_path,
             request_method,
             user_agent: None,
+            token_roles: None,
         }
     }
 
@@ -298,8 +341,9 @@ impl RequestMetadata {
     pub fn require_project_id(
         &self,
         user_project: Option<ProjectId>,
-    ) -> Result<ProjectId, ProjectIdMissing> {
+    ) -> Result<ArcProjectId, ProjectIdMissing> {
         user_project
+            .map(Arc::new)
             .or(self.preferred_project_id())
             .ok_or(ProjectIdMissing)
     }
@@ -398,7 +442,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => {
-            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
+            return err.into_response();
         }
     };
 
@@ -417,9 +461,10 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
+        token_roles: None,
         base_url: base_uri,
         actor: Actor::Anonymous.into(),
-        project_id,
+        project_id: project_id.map(Arc::new),
         matched_path,
         request_method,
         user_agent,

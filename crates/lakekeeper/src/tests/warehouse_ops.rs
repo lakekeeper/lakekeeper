@@ -55,7 +55,7 @@ async fn test_create_warehouse(pool: PgPool) {
     transaction.commit().await.unwrap();
 
     // Verify warehouse was created
-    assert_eq!(warehouse.project_id, project_id);
+    assert_eq!(*warehouse.project_id, project_id);
     assert_eq!(warehouse.status, WarehouseStatus::Active);
     assert!(matches!(
         warehouse.tabular_delete_profile,
@@ -248,7 +248,7 @@ async fn test_get_warehouse_by_name(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     // Get warehouse by name
     let warehouse = PostgresBackend::get_warehouse_by_name(
@@ -278,7 +278,7 @@ async fn test_get_warehouse_by_name_not_found(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     // Get warehouse by non-existent name
     let warehouse = PostgresBackend::get_warehouse_by_name(
@@ -318,7 +318,7 @@ async fn test_list_warehouses(pool: PgPool) {
     // Verify all warehouses are active
     for warehouse in &warehouses {
         assert_eq!(warehouse.status, WarehouseStatus::Active);
-        assert_eq!(warehouse.project_id, project_id);
+        assert_eq!(*warehouse.project_id, project_id);
     }
 
     // Verify main warehouse is in the list
@@ -1017,7 +1017,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     let warehouse1 = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,

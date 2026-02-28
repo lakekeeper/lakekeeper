@@ -1,4 +1,6 @@
 use std::fmt::Debug;
+#[cfg(feature = "router")]
+use std::sync::Arc;
 
 #[cfg(feature = "router")]
 use axum::{
@@ -12,59 +14,51 @@ use axum_extra::{
     headers::{Authorization, authorization::Bearer},
 };
 #[cfg(feature = "router")]
-use http::{HeaderMap, StatusCode};
+use http::HeaderMap;
 use iceberg_ext::catalog::rest::ErrorModel;
 use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
 use serde::{Deserialize, Serialize};
 
-use super::RoleId;
-use crate::{CONFIG, api};
+use crate::{CONFIG, api, service::ArcRole};
 #[cfg(feature = "router")]
-use crate::{request_metadata::RequestMetadata, service::events::EventDispatcher};
+use crate::{
+    XXHashSet,
+    request_metadata::{RequestMetadata, TokenRoles},
+    service::{RoleIdent, events::EventDispatcher},
+};
 
 pub const IDP_SEPARATOR: char = '~';
-pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
+pub const ASSUME_ROLE_BY_ID_HEADER: &str = "x-assume-role";
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum_macros::Display,
-)]
-#[serde(rename_all = "kebab-case", tag = "type")]
+#[derive(Debug, Clone, PartialEq, Eq, strum_macros::Display)]
 pub enum Actor {
     Anonymous,
     #[strum(to_string = "Principal({0})")]
-    #[serde(with = "principal_serde")]
     Principal(UserId),
     #[strum(to_string = "AssumedRole({assumed_role}) by Principal({principal})")]
-    #[serde(rename_all = "kebab-case")]
     Role {
         principal: UserId,
-        assumed_role: RoleId,
+        assumed_role: ArcRole,
     },
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    derive_more::From,
-    serde::Serialize,
-    serde::Deserialize,
-    strum_macros::Display,
-)]
-#[serde(rename_all = "kebab-case", tag = "type")]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::From, strum_macros::Display)]
 pub(crate) enum InternalActor {
     LakekeeperInternal,
-    #[serde(untagged)]
     External(Actor),
 }
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authorizer> {
+pub(crate) struct AuthMiddlewareState<
+    C: super::CatalogStore,
+    T: limes::Authenticator,
+    A: super::Authorizer,
+> {
     pub authenticator: T,
     pub authorizer: A,
     pub events: EventDispatcher,
+    pub catalog_state: C::State,
 }
 
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
@@ -208,8 +202,12 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
 /// Use a limes [`Authenticator`] to Authenticate a request.
 ///
 /// This middleware needs to run after [`create_request_metadata_with_trace_and_project_fn`](crate::request_metadata::create_request_metadata_with_trace_and_project_fn).
-pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz::Authorizer>(
-    State(state): State<AuthMiddlewareState<T, A>>,
+pub(crate) async fn auth_middleware_fn<
+    C: super::CatalogStore,
+    T: limes::Authenticator,
+    A: super::authz::Authorizer,
+>(
+    State(state): State<AuthMiddlewareState<C, T, A>>,
     authorization: Option<TypedHeader<Authorization<Bearer>>>,
     headers: HeaderMap,
     mut request: Request,
@@ -219,44 +217,51 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
 
     let authenticator = &state.authenticator;
     let authorizer = &state.authorizer;
+    let catalog_state = state.catalog_state;
     let Some(authorization) = authorization else {
-        tracing::debug!("Missing authorization header");
-        return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
+        return ErrorModel::unauthorized(
+            "Missing Authorization Header",
+            "MissingAuthorizationHeader",
+            None,
+        )
+        .into_response();
     };
 
     let authentication = match authenticator.authenticate(authorization.token()).await {
         Ok(principal) => principal,
         Err(e) => {
-            tracing::debug!("Failed to authenticate: {}", e);
-            return (StatusCode::UNAUTHORIZED, "Failed to authenticate").into_response();
+            return ErrorModel::unauthorized(
+                "Authentication failed",
+                "AuthenticationFailed",
+                Some(Box::new(e)),
+            )
+            .into_response();
         }
     };
     let user_id = match UserId::try_new(authentication.subject().clone()) {
         Ok(user_id) => user_id,
         Err(e) => {
-            tracing::error!(
-                "Unexpected subject id in token - failed to create UserID from Subject: {e}",
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unexpected subject id format",
-            )
-                .into_response();
+            return e.into_response();
         }
     };
     let role_id = match extract_role_id(&headers) {
         Ok(role_id) => role_id,
         Err(e) => return e.into_response(),
     };
-    let actor = match role_id {
-        Some(role_id) => Actor::Role {
-            principal: user_id,
-            assumed_role: role_id,
-        },
-        None => Actor::Principal(user_id),
+    let actor = match resolve_actor::<C>(user_id, role_id, catalog_state).await {
+        Ok(actor) => actor,
+        Err(e) => return e,
     };
 
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
+        match extract_and_set_token_roles(&authentication, request_metadata) {
+            Ok(Some(token_roles)) => {
+                request_metadata.set_token_roles(token_roles);
+            }
+            Ok(None) => {}
+            Err(e) => return e.into_response(),
+        }
+
         request_metadata.set_authentication(actor.clone(), authentication);
 
         let check_result = if let Some(role_id) = role_id {
@@ -294,7 +299,7 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
 
         // Ensure assume role, if present, is allowed
         if let Err(err) = check_result {
-            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
+            return err.into_response();
         }
     }
 
@@ -304,8 +309,8 @@ pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz:
 #[cfg(feature = "router")]
 fn extract_role_id(
     headers: &HeaderMap,
-) -> Result<Option<RoleId>, iceberg_ext::catalog::rest::IcebergErrorResponse> {
-    if let Some(role_id) = headers.get(ASSUME_ROLE_HEADER) {
+) -> Result<Option<super::RoleId>, iceberg_ext::catalog::rest::IcebergErrorResponse> {
+    if let Some(role_id) = headers.get(ASSUME_ROLE_BY_ID_HEADER) {
         let role_id = role_id.to_str().map_err(|e| {
             ErrorModel::bad_request(
                 "Failed to parse Role-ID",
@@ -313,10 +318,89 @@ fn extract_role_id(
                 Some(Box::new(e)),
             )
         })?;
-        Ok(Some(RoleId::from_str_or_bad_request(role_id)?))
+        Ok(Some(super::RoleId::from_str_or_bad_request(role_id)?))
     } else {
         Ok(None)
     }
+}
+
+#[cfg(feature = "router")]
+async fn resolve_actor<C: super::CatalogStore>(
+    user_id: UserId,
+    role_id: Option<super::RoleId>,
+    catalog_state: C::State,
+) -> Result<Actor, Response> {
+    use crate::service::CatalogRoleOps;
+
+    match role_id {
+        Some(role_id) => {
+            match C::get_role_by_id_across_projects_cache_aware(
+                role_id,
+                crate::service::CachePolicy::Use,
+                catalog_state,
+            )
+            .await
+            {
+                Ok(role) => Ok(Actor::Role {
+                    principal: user_id,
+                    assumed_role: role,
+                }),
+                Err(e) => Err(ErrorModel::bad_request(
+                    format!("Failed to resolve role with id {role_id} presented in header {ASSUME_ROLE_BY_ID_HEADER}"),
+                    "InvalidAssumeRoleId",
+                    Some(Box::new(e)),
+                )
+                .into_response()),
+            }
+        }
+        None => Ok(Actor::Principal(user_id)),
+    }
+}
+
+#[cfg(feature = "router")]
+fn extract_and_set_token_roles(
+    authentication: &limes::Authentication,
+    request_metadata: &RequestMetadata,
+) -> Result<Option<TokenRoles>, ErrorModel> {
+    use crate::service::{RoleProviderId, RoleSourceId};
+
+    let Some(roles) = authentication.roles() else {
+        return Ok(None);
+    };
+
+    let Some(project_id) = request_metadata.preferred_project_id() else {
+        return Err(ErrorModel::bad_request(
+            "Default project must be set or X-Project-ID header must be provided if roles are extracted from tokens",
+            "MissingProjectId",
+            None,
+        ));
+    };
+
+    let role_idents = roles
+        .iter()
+        .map(|source_id| {
+            let source_id = RoleSourceId::try_new(source_id).map_err(|e| {
+                ErrorModel::bad_request(
+                    format!("Invalid Role in token: {e}"),
+                    "RoleSourceIdError",
+                    None,
+                )
+                .append_detail("Could not build Request Metadata")
+            })?;
+            let provider_id = authentication.subject().idp_id().ok_or_else(|| {
+                ErrorModel::internal(
+                    "Encountered Authenticator without provider / idp_id",
+                    "AuthenticatorMissingProviderId",
+                    None,
+                )
+            })?;
+            let provider_id = RoleProviderId::new_unchecked(provider_id.clone());
+
+            Ok(Arc::new(RoleIdent::new(provider_id, source_id)))
+        })
+        .collect::<Result<XXHashSet<_>, ErrorModel>>()?;
+
+    Ok(Some(TokenRoles::new(project_id, role_idents)))
 }
 
 impl std::fmt::Display for UserId {
@@ -475,39 +559,12 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
     }
 }
 
-mod principal_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::UserId;
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct PrincipalWrapper {
-        principal: UserId,
-    }
-
-    pub(super) fn serialize<S>(user_id: &UserId, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let wrapper = PrincipalWrapper {
-            principal: user_id.clone(),
-        };
-        wrapper.serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<UserId, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wrapper = PrincipalWrapper::deserialize(deserializer)?;
-        Ok(wrapper.principal)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::service::RoleId;
 
     #[test]
     fn test_user_id() {
@@ -637,86 +694,10 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         headers.insert(
-            ASSUME_ROLE_HEADER,
+            ASSUME_ROLE_BY_ID_HEADER,
             this_role_id.to_string().parse().unwrap(),
         );
         let role_id = extract_role_id(&headers).unwrap().unwrap();
         assert_eq!(role_id, RoleId::new(this_role_id));
-    }
-
-    #[test]
-    fn test_actor_serde_principal() {
-        let actor = Actor::Principal(UserId::try_from("oidc~123").unwrap());
-        let expected_json = serde_json::json!({
-            "type": "principal",
-            "principal": "oidc~123"
-        });
-
-        let actor_json = serde_json::to_value(&actor).unwrap();
-        assert_eq!(actor_json, expected_json);
-        let actor_from_json: Actor = serde_json::from_value(actor_json).unwrap();
-        assert_eq!(actor_from_json, actor);
-
-        // Also test InternalActor with same serialization
-        let internal_actor = InternalActor::External(actor.clone());
-        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
-        assert_eq!(internal_actor_json, expected_json);
-        let internal_actor_from_json: InternalActor =
-            serde_json::from_value(internal_actor_json).unwrap();
-        assert_eq!(internal_actor_from_json, internal_actor);
-    }
-
-    #[test]
-    fn test_actor_serde_role() {
-        let actor_json = serde_json::json!({
-            "type": "role",
-            "principal": "oidc~123",
-            "assumed-role": "00000000-0000-0000-0000-000000000000"
-        });
-        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
-        assert_eq!(
-            actor,
-            Actor::Role {
-                principal: UserId::try_from("oidc~123").unwrap(),
-                assumed_role: RoleId::new(Uuid::nil())
-            }
-        );
-        let actor_json_2 = serde_json::to_value(&actor).unwrap();
-        assert_eq!(actor_json, actor_json_2);
-
-        // Also test InternalActor with same serialization
-        let internal_actor: InternalActor = serde_json::from_value(actor_json.clone()).unwrap();
-        assert_eq!(internal_actor, InternalActor::External(actor));
-        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
-        assert_eq!(actor_json, internal_actor_json);
-    }
-
-    #[test]
-    fn test_actor_serde_anonymous() {
-        let actor_json = serde_json::json!({"type": "anonymous"});
-        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
-        assert_eq!(actor, Actor::Anonymous);
-        let actor_json_2 = serde_json::to_value(&actor).unwrap();
-        assert_eq!(actor_json, actor_json_2);
-
-        // Also test InternalActor with same serialization
-        let internal_actor: InternalActor = serde_json::from_value(actor_json.clone()).unwrap();
-        assert_eq!(internal_actor, InternalActor::External(Actor::Anonymous));
-        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
-        assert_eq!(actor_json, internal_actor_json);
-    }
-
-    #[test]
-    fn test_internal_actor() {
-        let internal_actor = InternalActor::LakekeeperInternal;
-        let expected_json = serde_json::json!({
-            "type": "lakekeeper-internal"
-        });
-
-        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
-        assert_eq!(internal_actor_json, expected_json);
-        let internal_actor_from_json: InternalActor =
-            serde_json::from_value(internal_actor_json).unwrap();
-        assert_eq!(internal_actor_from_json, internal_actor);
     }
 }

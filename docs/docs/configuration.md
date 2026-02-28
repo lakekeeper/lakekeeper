@@ -205,7 +205,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
-| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Currently only has an effect when using the Cedar Authorizer. |
+| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Currently only has an effect when using the Cedar Authorizer. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
@@ -344,6 +344,24 @@ Caches storage secrets to reduce load on the secret store. Since Lakekeeper neve
 - `lakekeeper_secrets_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
 - `lakekeeper_secrets_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
 
+**Role Cache**
+
+Caches role metadata to reduce database queries for role lookups. The role cache uses a two-tier caching mechanism: a primary cache indexed by role ID and a secondary index by project ID and role identifier, enabling efficient lookups from both identifiers. Note that this cache only stores role definitions and does not include any information about role assignments to users or principals.
+
+| Configuration Key                                        | Type    | Default | Description |
+|----------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__ROLE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__ROLE__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles to cache. Default: `10000` |
+| <nobr>`LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
+
+If the cache is enabled, changes to role metadata may take up to the configured TTL (default: 120 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the cache is always up to date. The cache is automatically invalidated when roles are updated or deleted.
+
+*Metrics*: The Role cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_role_cache_size{cache_type="role"}`: Current number of entries in the cache
+- `lakekeeper_role_cache_hits_total{cache_type="role"}`: Total number of cache hits
+- `lakekeeper_role_cache_misses_total{cache_type="role"}`: Total number of cache misses
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
@@ -377,12 +395,13 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 
 Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.
 
-| Variable                                               | Example | Description |
-|--------------------------------------------------------|---------|-----------|
-| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr>   | `true`  | If set to `true`, Lakekeeper will log all incoming and outgoing request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE`</nobr> | `true`  | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__AUTO_SERVE`</nobr>           | `true`  | If set to `true`, Lakekeeper will automatically start the server when no subcommand is provided (i.e., when running the binary without arguments). This is useful for development environments to quickly start the server without explicitly specifying the `serve` command. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__EXTENDED_LOGS`</nobr>        | `false` | Controls whether file names and line numbers are included in JSON log output. When set to `false`, these fields are omitted for cleaner logs. When set to `true`, each log entry includes `filename` and `line_number` fields for easier debugging. Default: `false` |
+| Variable                                                   | Example | Description |
+|------------------------------------------------------------|---------|-------|
+| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr>       | `true`  | If set to `true`, Lakekeeper will log all incoming and outgoing request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE`</nobr>     | `true`  | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__AUTO_SERVE`</nobr>               | `true`  | If set to `true`, Lakekeeper will automatically start the server when no subcommand is provided (i.e., when running the binary without arguments). This is useful for development environments to quickly start the server without explicitly specifying the `serve` command. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__EXTENDED_LOGS`</nobr>            | `false` | Controls whether file names and line numbers are included in JSON log output. When set to `false`, these fields are omitted for cleaner logs. When set to `true`, each log entry includes `filename` and `line_number` fields for easier debugging. Default: `false` |
+| <nobr>`LAKEKEEPER__DEBUG__LOG_AUTHORIZATION_HEADER`</nobr> | `false` | If set to `true`, the `Authorization` header is included in request trace spans for the `/catalog/v1/config` and `/management/v1/info` endpoints. This exposes sensitive credentials (tokens, passwords) and should **never** be enabled in production. Default: `false` |
 
 **Warning**: Debug options can expose sensitive information in logs and should only be used in secure development environments.
 

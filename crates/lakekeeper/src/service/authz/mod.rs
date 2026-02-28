@@ -10,15 +10,15 @@ use strum_macros::{EnumString, IntoStaticStr};
 use valuable::Valuable;
 
 use super::{
-    CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId, WarehouseId,
-    health::HealthExt,
+    CatalogStore, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore, State, TableId,
+    ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
-    api::{iceberg::v1::Result, management::v1::role::Role},
+    api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
     request_metadata::RequestMetadata,
     service::{
-        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
-        ResolvedWarehouse, ServerId, TableInfo,
+        Actor, ArcProjectId, ArcRole, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
+        NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
     },
 };
 
@@ -69,27 +69,24 @@ where
     Ok(Arc::new(string_map))
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Assignees to a role
-pub struct RoleAssignee(RoleId);
+pub struct RoleAssignee(ArcRole);
 
 impl RoleAssignee {
     #[must_use]
-    pub fn from_role(role: RoleId) -> Self {
+    pub fn from_role(role: ArcRole) -> Self {
         RoleAssignee(role)
     }
 
     #[must_use]
-    pub fn role(&self) -> RoleId {
-        self.0
+    pub fn role(&self) -> &Role {
+        &self.0
     }
-}
 
-impl RoleId {
     #[must_use]
-    pub fn into_assignees(self) -> RoleAssignee {
-        RoleAssignee::from_role(self)
+    pub fn role_arc(&self) -> ArcRole {
+        self.0.clone()
     }
 }
 
@@ -101,34 +98,33 @@ impl Actor {
             Actor::Role {
                 assumed_role,
                 principal: _,
-            } => Some(UserOrRole::Role(RoleAssignee::from_role(*assumed_role))),
+            } => Some(UserOrRole::Role(RoleAssignee::from_role(
+                assumed_role.clone(),
+            ))),
+            Actor::Anonymous => None,
+        }
+    }
+
+    #[must_use]
+    pub fn api_user_or_role(&self) -> Option<AuthzUserOrRole> {
+        match self {
+            Actor::Principal(user) => Some(AuthzUserOrRole::User(user.clone())),
+            Actor::Role {
+                assumed_role,
+                principal: _,
+            } => Some(AuthzUserOrRole::Role(assumed_role.id().into_api_assignee())),
             Actor::Anonymous => None,
         }
     }
 }
 
-#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
+#[derive(Eq, Debug, Clone, PartialEq, derive_more::From)]
 /// Identifies a user or a role
 pub enum UserOrRole {
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
     /// Id of the user
     User(UserId),
-    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleRole"))]
-    /// Id of the role
+    /// User acting in a role.
     Role(RoleAssignee),
-}
-
-impl std::fmt::Display for UserOrRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UserOrRole::User(user_id) => write!(f, "user:{user_id}"),
-            UserOrRole::Role(role_assignee) => write!(f, "role:{}", role_assignee.role()),
-        }
-    }
 }
 
 pub trait CatalogAction
@@ -771,6 +767,12 @@ where
     /// Must remain stable for the lifetime of the running process (typically generated at startup).
     fn server_id(&self) -> ServerId;
 
+    /// Called once during server startup to provide the IDP IDs of all registered authenticators.
+    ///
+    /// Authorizer implementations that need this information should override this method and store
+    /// the IDs internally. The default implementation is a no-op.
+    fn set_registered_idp_ids(&mut self, _idp_ids: Arc<[RoleProviderId]>) {}
+
     /// API Doc
     #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi;
@@ -783,9 +785,9 @@ where
     async fn check_assume_role_impl(
         &self,
         principal: &UserId,
-        assumed_role: RoleId,
+        assumed_role: &Role,
         request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest>;
 
     /// Check if this server can be bootstrapped by the provided user.
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
@@ -799,7 +801,7 @@ where
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::Unsupported)
     }
 
@@ -807,7 +809,7 @@ where
     async fn can_search_users_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest>;
 
     async fn are_allowed_user_actions_impl(
         &self,
@@ -834,7 +836,7 @@ where
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     async fn are_allowed_warehouse_actions_impl(
@@ -900,7 +902,7 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectId,
+        parent_project_id: ArcProjectId,
     ) -> Result<()>;
 
     /// Hook that is called when a role is deleted.
@@ -999,10 +1001,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        api::management::v1::role::Role,
-        service::{Namespace, NamespaceHierarchy, health::Health},
-    };
+    use crate::service::{Namespace, NamespaceHierarchy, health::Health};
 
     #[test]
     fn test_warehouse_action_variant_completeness() {
@@ -1350,9 +1349,9 @@ pub(crate) mod tests {
         async fn check_assume_role_impl(
             &self,
             _principal: &UserId,
-            _assumed_role: RoleId,
+            _assumed_role: &Role,
             _request_metadata: &RequestMetadata,
-        ) -> Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
             Ok(true)
         }
 
@@ -1367,14 +1366,14 @@ pub(crate) mod tests {
         async fn list_projects_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+        ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
             Ok(ListProjectsResponse::All)
         }
 
         async fn can_search_users_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
             Ok(true)
         }
 
@@ -1418,7 +1417,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
-            projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+            projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
             let results: Vec<bool> = projects_with_actions
                 .iter()
@@ -1528,7 +1527,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _role_id: RoleId,
-            _parent_project_id: ProjectId,
+            _parent_project_id: ArcProjectId,
         ) -> Result<()> {
             Ok(())
         }
@@ -1658,7 +1657,7 @@ pub(crate) mod tests {
     test_block_action!(
         project,
         CatalogProjectAction::Rename,
-        &ProjectId::new_random()
+        &Arc::new(ProjectId::new_random())
     );
     test_block_action!(
         warehouse,

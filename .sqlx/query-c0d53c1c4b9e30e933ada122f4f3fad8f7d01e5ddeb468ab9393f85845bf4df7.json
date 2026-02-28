@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            id,\n            name,\n            description,\n            project_id,\n            provider_id,\n            source_id,\n            created_at,\n            updated_at,\n            version\n        FROM role r\n        WHERE ($9 or project_id = $1)\n            AND ($2 OR id = any($3))\n            AND ($4 OR source_id = any($5))\n            AND ($10 OR provider_id = any($11))\n            --- PAGINATION\n            AND ((r.created_at > $6 OR $6 IS NULL) OR (r.created_at = $6 AND r.id > $7))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $8\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "project_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "provider_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool",
+        "UuidArray",
+        "Bool",
+        "TextArray",
+        "Timestamptz",
+        "Uuid",
+        "Int8",
+        "Bool",
+        "Bool",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "c0d53c1c4b9e30e933ada122f4f3fad8f7d01e5ddeb468ab9393f85845bf4df7"
+}

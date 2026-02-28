@@ -8,7 +8,7 @@ use crate::{
     ProjectId, SecretId, WarehouseId,
     api::management::v1::{DeleteWarehouseQuery, warehouse::TabularDeleteProfile},
     service::{
-        DatabaseIntegrityError,
+        ArcProjectId, DatabaseIntegrityError,
         catalog_store::{
             CatalogBackendError, define_transparent_error, impl_error_stack_methods,
             impl_from_with_detail,
@@ -77,7 +77,7 @@ pub struct ResolvedWarehouse {
     /// Name of the warehouse.
     pub name: String,
     /// Project ID in which the warehouse is created.
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
     /// Storage secret ID used for the warehouse.
@@ -106,7 +106,7 @@ impl ResolvedWarehouse {
         Self {
             warehouse_id,
             name,
-            project_id: ProjectId::new_random(),
+            project_id: Arc::new(ProjectId::new_random()),
             storage_profile: MemoryProfile::default().into(),
             storage_secret_id: None,
             status: WarehouseStatus::Active,
@@ -126,7 +126,7 @@ impl ResolvedWarehouse {
         Self {
             warehouse_id,
             name,
-            project_id: ProjectId::new_random(),
+            project_id: Arc::new(ProjectId::new_random()),
             storage_profile: MemoryProfile::default().into(),
             storage_secret_id: None,
             status: WarehouseStatus::Active,
@@ -663,30 +663,9 @@ where
         Ok(warehouse)
     }
 
-    // /// Wrapper around `get_warehouse` that returns a not-found error if the warehouse does not exist.
-    // async fn require_warehouse_by_id<'a>(
-    //     warehouse_id: WarehouseId,
-    //     state: Self::State,
-    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-    //     Self::get_warehouse_by_id(warehouse_id, state)
-    //         .await?
-    //         .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
-    // }
-
-    // async fn require_warehouse_by_id_cache_aware(
-    //     warehouse_id: WarehouseId,
-    //     status_filter: &[WarehouseStatus],
-    //     cache_policy: CachePolicy,
-    //     state: Self::State,
-    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByIdError> {
-    //     Self::get_warehouse_by_id_cache_aware(warehouse_id, status_filter, cache_policy, state)
-    //         .await?
-    //         .ok_or(WarehouseIdNotFound::new(warehouse_id).into())
-    // }
-
     async fn get_warehouse_by_name(
         warehouse_name: &str,
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         status_filter: &[WarehouseStatus],
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByNameError> {

@@ -6,10 +6,12 @@ use crate::{
     ProjectId,
     api::RequestMetadata,
     service::{
+        ArcProjectId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogProjectAction,
-            MustUse, UserOrRole,
+            AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogProjectAction, IsAllowedActionError, MustUse,
+            UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -38,12 +40,12 @@ pub enum ListProjectsResponse {
 // --------------------------- Errors ---------------------------
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZProjectActionForbidden {
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     action: String,
 }
 impl AuthZProjectActionForbidden {
     #[must_use]
-    pub fn new(project_id: ProjectId, action: impl ProjectAction) -> Self {
+    pub fn new(project_id: ArcProjectId, action: impl ProjectAction) -> Self {
         Self {
             project_id,
             action: action.to_string(),
@@ -71,13 +73,23 @@ pub enum RequireProjectActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireProjectActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireProjectActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -86,6 +98,7 @@ delegate_authorization_failure_source!(RequireProjectActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizerValidationFailed
 });
 
 #[async_trait::async_trait]
@@ -93,7 +106,7 @@ pub trait AuthZProjectOps: Authorizer {
     async fn list_projects(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         if metadata.has_admin_privileges() {
             Ok(ListProjectsResponse::All)
         } else {
@@ -105,8 +118,8 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        projects_with_actions: &[(&ArcProjectId, A)],
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
@@ -115,7 +128,7 @@ pub trait AuthZProjectOps: Authorizer {
             if metadata.has_admin_privileges() && for_user.is_none() {
                 vec![true; projects_with_actions.len()]
             } else {
-                let converted: Vec<(&ProjectId, Self::ProjectAction)> = projects_with_actions
+                let converted: Vec<(&ArcProjectId, Self::ProjectAction)> = projects_with_actions
                     .iter()
                     .map(|(id, action)| (*id, (*action).into()))
                     .collect();
@@ -144,8 +157,8 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, A); N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+        projects_with_actions: &[(&ArcProjectId, A); N],
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_project_actions_vec(metadata, for_user, projects_with_actions)
             .await?
@@ -161,9 +174,9 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         action: impl Into<Self::ProjectAction> + Send + Sync + Copy,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_project_actions_arr(metadata, for_user, &[(project_id, action)])
             .await?
@@ -174,7 +187,7 @@ pub trait AuthZProjectOps: Authorizer {
     async fn require_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         action: CatalogProjectAction,
     ) -> Result<(), RequireProjectActionError> {
         if self

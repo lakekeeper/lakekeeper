@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM role\n        WHERE project_id = $1\n        AND ($2 OR id = ANY($3::UUID[]))\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3ea1e4d0a2a32c7e5131b3b518f0291e5fe844821e74e3acd4100f312158d400"
+}

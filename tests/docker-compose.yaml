@@ -100,7 +100,7 @@ services:
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - LAKEKEEPER__TASK_POLL_INTERVAL="1"
       - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
-      - RUST_LOG=debug
+      - RUST_LOG=info,lakekeeper=debug
     command: ["serve"]
     healthcheck:
       test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
@@ -243,10 +243,12 @@ services:
       - iceberg_rest_tests
 
   trino:
-    image: trinodb/trino:476
+    image: trinodb/trino:479
     environment:
       - CATALOG_MANAGEMENT=dynamic
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog
+    volumes:
+      - ./trino/log.properties:/etc/trino/log.properties
     healthcheck:
       test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s

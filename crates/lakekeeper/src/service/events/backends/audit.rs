@@ -183,6 +183,34 @@ impl Valuable for ContextValue {
     }
 }
 
+#[allow(clippy::struct_field_names)]
+struct AssumedRoleValue {
+    role_id: String,
+    provider_id: String,
+    source_id: String,
+}
+
+impl Valuable for AssumedRoleValue {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        visit.visit_entry(Value::String("role_id"), Value::String(&self.role_id));
+        visit.visit_entry(
+            Value::String("provider_id"),
+            Value::String(&self.provider_id),
+        );
+        visit.visit_entry(Value::String("source_id"), Value::String(&self.source_id));
+    }
+}
+
+impl Mappable for AssumedRoleValue {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (3, Some(3))
+    }
+}
+
 impl Valuable for Actor {
     fn as_value(&self) -> Value<'_> {
         Value::Mappable(self)
@@ -203,10 +231,14 @@ impl Valuable for Actor {
                 assumed_role,
             } => {
                 let principal = principal.to_string();
-                let assumed_role = assumed_role.to_string();
+                let role_value = AssumedRoleValue {
+                    role_id: assumed_role.id.to_string(),
+                    provider_id: assumed_role.provider_id().to_string(),
+                    source_id: assumed_role.source_id().to_string(),
+                };
                 visit.visit_entry(Value::String("actor_type"), Value::String("assumed-role"));
                 visit.visit_entry(Value::String("principal"), Value::String(&principal));
-                visit.visit_entry(Value::String("assumed_role"), Value::String(&assumed_role));
+                visit.visit_entry(Value::String("assumed_role"), role_value.as_value());
             }
         }
     }

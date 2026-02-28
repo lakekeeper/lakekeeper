@@ -25,7 +25,7 @@ use crate::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
-        storage::{StorageLocations as _, StoragePermissions},
+        storage::StoragePermissions,
     },
 };
 
@@ -99,9 +99,10 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
 
     let view_location = determine_tabular_location(
-        &ns_hierarchy.namespace.namespace,
+        &ns_hierarchy,
         request.location.clone(),
         view_id,
+        &view,
         &warehouse.storage_profile,
     )?;
 

@@ -29,7 +29,7 @@ use crate::{
 
 mod identifier;
 
-pub use identifier::{generic::*, project::ProjectId};
+pub use identifier::{generic::*, project::*, role::*};
 pub use post_migration_hooks::run_post_migration_hooks;
 
 // ---------------- State ----------------

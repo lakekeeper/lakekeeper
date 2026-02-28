@@ -9,7 +9,7 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     str::FromStr,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -20,16 +20,16 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{ProjectId, WarehouseId};
+use crate::{WarehouseId, service::ArcProjectId};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
-pub static DEFAULT_PROJECT_ID: LazyLock<Option<ProjectId>> = LazyLock::new(|| {
+pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> = LazyLock::new(|| {
     CONFIG
         .enable_default_project
-        .then_some(uuid::Uuid::nil().into())
+        .then_some(Arc::new(uuid::Uuid::nil().into()))
 });
 
 fn get_config() -> DynAppConfig {
@@ -438,6 +438,9 @@ pub struct DebugConfig {
     /// If true, log all request bodies to the debug log for debugging purposes.
     /// This is expensive and should only be used for debugging.
     pub log_request_bodies: bool,
+    /// If true, log the Authorization header in request spans for debugging purposes.
+    /// This exposes sensitive credentials and should never be enabled in production.
+    pub log_authorization_header: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Redact)]
@@ -469,6 +472,8 @@ pub(crate) struct Cache {
     pub(crate) namespace: NamespaceCache,
     /// Secrets cache configuration.
     pub(crate) secrets: SecretsCache,
+    /// Role cache configuration.
+    pub(crate) role: RoleCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -540,6 +545,25 @@ impl std::default::Default for SecretsCache {
             enabled: true,
             capacity: 500,
             time_to_live_secs: 600,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 120 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for RoleCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+            time_to_live_secs: 120,
         }
     }
 }
@@ -1175,6 +1199,32 @@ mod test {
     }
 
     #[test]
+    fn test_debug_log_authorization_header() {
+        // Test default value (should be false)
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.debug.log_authorization_header);
+            Ok(())
+        });
+
+        // Test setting to true
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_AUTHORIZATION_HEADER", "true");
+            let config = get_config();
+            assert!(config.debug.log_authorization_header);
+            Ok(())
+        });
+
+        // Test setting to false explicitly
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__DEBUG__LOG_AUTHORIZATION_HEADER", "false");
+            let config = get_config();
+            assert!(!config.debug.log_authorization_header);
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_stc_cache() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
@@ -1248,6 +1298,32 @@ mod test {
             let config = get_config();
             assert!(config.cache.namespace.enabled);
             assert_eq!(config.cache.namespace.capacity, 2000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.role.enabled);
+            assert_eq!(config.cache.role.capacity, 10_000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.role.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__CAPACITY", "5000");
+            let config = get_config();
+            assert!(config.cache.role.enabled);
+            assert_eq!(config.cache.role.capacity, 5000);
             Ok(())
         });
     }

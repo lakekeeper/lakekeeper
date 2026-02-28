@@ -185,7 +185,7 @@ jobs:
 
       - name: Build Docker image (amd64)
         run: |
-          DOCKER_BUILDKIT=1 docker build -t localhost/lakekeeper-local:amd64 \
+          DOCKER_BUILDKIT=1 docker build --provenance=false -t localhost/lakekeeper-local:amd64 \
             -f docker/bin.Dockerfile \
             --build-arg "ARCH=amd64" \
             --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
@@ -194,7 +194,7 @@ jobs:
 
       - name: Build Docker image (arm64)
         run: |
-          DOCKER_BUILDKIT=1 docker build \
+          DOCKER_BUILDKIT=1 docker build --provenance=false \
             --platform linux/arm64 -t localhost/lakekeeper-local:arm64 \
             -f docker/bin.Dockerfile \
             --build-arg "ARCH=arm64" \
@@ -243,10 +243,9 @@ jobs:
       - name: Test Docker
         run: |
           cd tests
-          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
+          bash run_default.sh
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:${{ matrix.arch }}
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.6-java17-python3
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -305,7 +304,6 @@ jobs:
       - build-binary
       - release_please
       - test-docker
-    if: ${{ needs.release_please.outputs.releases_created != 'true' }} && github.ref == 'refs/heads/main'
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v6

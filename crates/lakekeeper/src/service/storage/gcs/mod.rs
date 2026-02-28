@@ -39,6 +39,7 @@ use crate::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
             },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -67,6 +68,9 @@ pub struct GcsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sts_enabled: bool,
+    /// Storage layout for namespace and tabular paths.
+    #[serde(default)]
+    pub storage_layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -226,13 +230,17 @@ impl GcsProfile {
     /// Validate the GCS profile with credentials.
     /// # Errors
     /// - Fails if the bucket or key prefix changed
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.bucket != other.bucket {
             return Err(UpdateError::ImmutableField("bucket".to_string()));
         }
 
         if self.key_prefix != other.key_prefix {
             return Err(UpdateError::ImmutableField("key_prefix".to_string()));
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)
@@ -580,6 +588,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
+                storage_layout: None,
             };
             (profile, cred)
         }
@@ -650,6 +659,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
+                storage_layout: None,
             };
             (profile, cred)
         }
@@ -687,6 +697,7 @@ mod is_overlapping_location_tests {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
             sts_enabled: true,
+            storage_layout: None,
         }
     }
 

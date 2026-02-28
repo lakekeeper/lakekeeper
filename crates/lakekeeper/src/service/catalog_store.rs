@@ -7,7 +7,8 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    NamespaceId, ProjectId, RoleId, TableId, ViewId, WarehouseId, storage::StorageProfile,
+    NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
+    storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -23,7 +24,7 @@ use crate::{
         management::v1::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
             tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
@@ -31,7 +32,7 @@ use crate::{
         },
     },
     service::{
-        TabularId, TabularIdentBorrowed,
+        ArcProjectId, RoleProviderId, RoleSourceId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -46,6 +47,7 @@ pub use namespace::*;
 mod tabular;
 pub use tabular::*;
 pub(crate) mod namespace_cache;
+pub(crate) mod role_cache;
 mod warehouse;
 pub(crate) mod warehouse_cache;
 pub use warehouse::*;
@@ -149,8 +151,8 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub role_name: &'a str,
     #[builder(default)]
     pub description: Option<&'a str>,
-    #[builder(default)]
-    pub source_id: Option<&'a str>,
+    pub source_id: &'a RoleSourceId,
+    pub provider_id: &'a RoleProviderId,
 }
 
 #[async_trait::async_trait]
@@ -517,7 +519,7 @@ where
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;
@@ -526,7 +528,6 @@ where
     async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
         role_id_filter: Option<&[RoleId]>,
-        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
@@ -535,6 +536,14 @@ where
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
+
+    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
+    /// the provided idents. Ordering is unspecified. No pagination.
+    async fn list_roles_by_idents_impl(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Role>, CatalogBackendError>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
@@ -571,7 +580,7 @@ where
     /// We'll return statistics for the time-frame end - interval until end.
     /// If `status_codes` is None, return all status codes.
     async fn get_endpoint_statistics(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseFilter,
         range_specifier: TimeWindowSelector,
         status_codes: Option<&[u16]>,
@@ -670,7 +679,7 @@ where
     ) -> Result<()>;
 
     async fn set_task_queue_config_impl(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: &SetTaskQueueConfigRequest,

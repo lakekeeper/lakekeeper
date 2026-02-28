@@ -1253,3 +1253,307 @@ def test_create_table_v3(spark, namespace):
     assert pdf["my_ints"].tolist() == [1, 3, 4]
     assert pdf["my_floats"].tolist() == [1.2, 3.2, 4.2]
     assert pdf["strings"].tolist() == ["foo", "baz", "qux"]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_create_table(spark, namespace):
+    """Test creating an Iceberg v3 table with a VARIANT column."""
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.variant_table (
+            id BIGINT,
+            properties VARIANT
+        ) USING iceberg
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    table_props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.variant_table")
+        .toPandas()
+        .set_index("key")
+    )
+    assert table_props.loc["format-version"]["value"] == "3"
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_insert_and_read(spark, namespace):
+    """Test inserting and reading JSON data stored in a VARIANT column."""
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.variant_rw (
+            id BIGINT,
+            data VARIANT
+        ) USING iceberg
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.variant_rw (id, data) VALUES
+            (1, parse_json('{{"name":"Alice","age":30}}')),
+            (2, parse_json('{{"name":"Bob","age":25}}')),
+            (3, parse_json('{{"name":"Carol","age":35}}'))
+        """
+    )
+    # Using variant_get in the projection forces Spark to use the non-vectorized
+    # (row-based) Parquet reader. Selecting a plain non-VARIANT column (e.g.
+    # just `id`) can still trigger VectorizedSparkParquetReaders which scans the
+    # full file schema and throws "Not implemented for variant" on Iceberg 1.10.
+    pdf = spark.sql(
+        f"""
+        SELECT id,
+               variant_get(data, '$.name', 'string') AS name,
+               CAST(variant_get(data, '$.age', 'int') AS INT) AS age
+        FROM {namespace.spark_name}.variant_rw
+        ORDER BY id
+        """
+    ).toPandas()
+    assert len(pdf) == 3
+    assert pdf["id"].tolist() == [1, 2, 3]
+    assert pdf["name"].tolist() == ["Alice", "Bob", "Carol"]
+    assert pdf["age"].tolist() == [30, 25, 35]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_get_scalar_fields(spark, namespace):
+    """Test extracting scalar fields from a VARIANT column using variant_get."""
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.variant_scalar (
+            id BIGINT,
+            properties VARIANT
+        ) USING iceberg
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.variant_scalar (id, properties) VALUES
+            (1, parse_json('{{"name":"Alice","address":{{"city":"NYC"}}}}')),
+            (2, parse_json('{{"name":"Bob","address":{{"city":"LA"}}}}')),
+            (3, parse_json('{{"name":"Carol","address":{{"city":"Chicago"}}}}'))
+        """
+    )
+    pdf = spark.sql(
+        f"""
+        SELECT
+            id,
+            variant_get(properties, '$.name', 'string') AS name,
+            variant_get(properties, '$.address.city', 'string') AS city
+        FROM {namespace.spark_name}.variant_scalar
+        ORDER BY id
+        """
+    ).toPandas()
+    assert len(pdf) == 3
+    assert pdf["name"].tolist() == ["Alice", "Bob", "Carol"]
+    assert pdf["city"].tolist() == ["NYC", "LA", "Chicago"]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_join_on_extracted_fields(spark, namespace):
+    """Test joining two Iceberg v3 tables on values extracted from VARIANT columns.
+
+    Mirrors the pattern from:
+    https://medium.com/@shahsoumil519/deep-dive-joining-apache-iceberg-tables-on-variant-columns-with-spark-sql-5c6eca8841de
+    """
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.users (
+            id BIGINT,
+            properties VARIANT,
+            region STRING
+        ) USING iceberg
+        PARTITIONED BY (region)
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.orders (
+            order_id BIGINT,
+            user_info VARIANT,
+            region STRING
+        ) USING iceberg
+        PARTITIONED BY (region)
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.users (id, properties, region) VALUES
+            (1, parse_json('{{"name":"Alice","address":{{"city":"NYC"}}}}'), 'us-east'),
+            (2, parse_json('{{"name":"Bob","address":{{"city":"LA"}}}}'), 'us-west'),
+            (3, parse_json('{{"name":"Carol","address":{{"city":"Chicago"}}}}'), 'us-central')
+        """
+    )
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.orders (order_id, user_info, region) VALUES
+            (100, parse_json('{{"user_id":"1","product":"Laptop","price":"1200"}}'), 'us-east'),
+            (101, parse_json('{{"user_id":"2","product":"Phone","price":"800"}}'), 'us-west'),
+            (102, parse_json('{{"user_id":"1","product":"Tablet","price":"600"}}'), 'us-east')
+        """
+    )
+
+    pdf = spark.sql(
+        f"""
+        WITH users_cte AS (
+            SELECT
+                id AS user_id,
+                region,
+                lower(trim(variant_get(properties, '$.name', 'string'))) AS user_name,
+                lower(trim(variant_get(properties, '$.address.city', 'string'))) AS city
+            FROM {namespace.spark_name}.users
+        ),
+        orders_cte AS (
+            SELECT
+                order_id,
+                region,
+                CAST(trim(variant_get(user_info, '$.user_id', 'string')) AS BIGINT) AS user_id,
+                variant_get(user_info, '$.product', 'string') AS product,
+                CAST(trim(variant_get(user_info, '$.price', 'string')) AS DOUBLE) AS price
+            FROM {namespace.spark_name}.orders
+        )
+        SELECT
+            o.order_id,
+            o.product,
+            o.price,
+            u.user_id,
+            u.user_name,
+            u.city,
+            o.region
+        FROM orders_cte o
+        JOIN users_cte u ON o.user_id = u.user_id AND o.region = u.region
+        ORDER BY o.order_id
+        """
+    ).toPandas()
+
+    assert len(pdf) == 3
+    assert pdf["order_id"].tolist() == [100, 101, 102]
+    assert pdf["product"].tolist() == ["Laptop", "Phone", "Tablet"]
+    assert pdf["price"].tolist() == [1200.0, 800.0, 600.0]
+    assert pdf["user_id"].tolist() == [1, 2, 1]
+    assert pdf["user_name"].tolist() == ["alice", "bob", "alice"]
+    assert pdf["city"].tolist() == ["nyc", "la", "nyc"]
+    assert pdf["region"].tolist() == ["us-east", "us-west", "us-east"]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_nested_objects(spark, namespace):
+    """Test reading deeply nested objects from a VARIANT column."""
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.variant_nested (
+            id BIGINT,
+            payload VARIANT
+        ) USING iceberg
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.variant_nested (id, payload) VALUES
+            (1, parse_json('{{"user":{{"profile":{{"score":42,"active":true}},"tags":["admin","editor"]}}}}')),
+            (2, parse_json('{{"user":{{"profile":{{"score":7,"active":false}},"tags":["viewer"]}}}}'))
+        """
+    )
+    pdf = spark.sql(
+        f"""
+        SELECT
+            id,
+            CAST(variant_get(payload, '$.user.profile.score', 'int') AS INT) AS score,
+            CAST(variant_get(payload, '$.user.profile.active', 'boolean') AS BOOLEAN) AS active
+        FROM {namespace.spark_name}.variant_nested
+        ORDER BY id
+        """
+    ).toPandas()
+
+    assert len(pdf) == 2
+    assert pdf["score"].tolist() == [42, 7]
+    assert pdf["active"].tolist() == [True, False]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_schema_evolution(spark, namespace):
+    """Test that rows with different JSON shapes coexist in the same VARIANT column."""
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.variant_schema_evo (
+            id BIGINT,
+            data VARIANT
+        ) USING iceberg
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    # Insert rows with different "shapes" — no fixed schema required
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.variant_schema_evo (id, data) VALUES
+            (1, parse_json('{{"type":"user","name":"Alice"}}')),
+            (2, parse_json('{{"type":"product","sku":"ABC-123","price":9.99}}')),
+            (3, parse_json('{{"type":"event","timestamp":"2024-01-01T00:00:00Z","severity":"INFO"}}'))
+        """
+    )
+    pdf = spark.sql(
+        f"SELECT id, variant_get(data, '$.type', 'string') AS record_type FROM {namespace.spark_name}.variant_schema_evo ORDER BY id"
+    ).toPandas()
+
+    assert len(pdf) == 3
+    assert pdf["record_type"].tolist() == ["user", "product", "event"]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
+def test_variant_null_and_missing_fields(spark, namespace):
+    """Test that variant_get returns NULL for missing or null JSON paths."""
+    spark.sql(
+        f"""
+        CREATE TABLE {namespace.spark_name}.variant_nulls (
+            id BIGINT,
+            data VARIANT
+        ) USING iceberg
+        TBLPROPERTIES ('format-version' = '3')
+        """
+    )
+    spark.sql(
+        f"""
+        INSERT INTO {namespace.spark_name}.variant_nulls (id, data) VALUES
+            (1, parse_json('{{"name":"Alice","age":30}}')),
+            (2, parse_json('{{"name":"Bob"}}')),
+            (3, parse_json('{{"age":25}}')),
+            (4, parse_json('{{"name":null,"age":null}}'))
+        """
+    )
+    pdf = spark.sql(
+        f"""
+        SELECT
+            id,
+            variant_get(data, '$.name', 'string') AS name,
+            variant_get(data, '$.age', 'int')     AS age
+        FROM {namespace.spark_name}.variant_nulls
+        ORDER BY id
+        """
+    ).toPandas()
+
+    assert len(pdf) == 4
+    assert pdf["name"].tolist()[0] == "Alice"
+    assert pdf["name"].tolist()[1] == "Bob"
+    assert pdf["name"].isna().tolist()[2]  # missing field → NULL
+    assert pdf["age"].isna().tolist()[1]  # missing field → NULL
+    assert int(pdf["age"].tolist()[2]) == 25
+    assert pdf["name"].isna().tolist()[3]  # explicit null → NULL
+    assert pdf["age"].isna().tolist()[3]  # explicit null → NULL

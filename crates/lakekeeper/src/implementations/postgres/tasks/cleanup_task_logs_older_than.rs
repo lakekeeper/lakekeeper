@@ -35,7 +35,7 @@ pub(crate) async fn cleanup_task_logs_older_than(
 
 #[cfg(test)]
 mod test {
-    use std::sync::LazyLock;
+    use std::sync::{Arc, LazyLock};
 
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ mod test {
             },
         },
         service::{
-            CatalogTaskOps,
+            ArcProjectId, CatalogTaskOps,
             storage::{MemoryProfile, StorageProfile},
             tasks::{
                 ScheduleTaskMetadata, SpecializedTask, TaskConfig, TaskData, TaskEntity,
@@ -94,7 +94,7 @@ mod test {
 
     async fn get_remaining_task_log_ids(
         pool: PgPool,
-        project_ids: impl IntoIterator<Item = &ProjectId>,
+        project_ids: impl IntoIterator<Item = &ArcProjectId>,
     ) -> Vec<Uuid> {
         let mut tx = pool.begin().await.unwrap();
 
@@ -129,10 +129,10 @@ mod test {
         task_ids
     }
 
-    async fn setup_project(pool: PgPool) -> ProjectId {
+    async fn setup_project(pool: PgPool) -> ArcProjectId {
         let mut tx = pool.begin().await.unwrap();
 
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         create_project(&project_id, "My Project".to_string(), &mut tx)
             .await
             .unwrap();
@@ -165,7 +165,7 @@ mod test {
 
     async fn schedule_and_finish_task_at(
         pool: PgPool,
-        project_id: &ProjectId,
+        project_id: &ArcProjectId,
         entity: TaskEntity,
         created_at: DateTime<Utc>,
     ) -> Uuid {

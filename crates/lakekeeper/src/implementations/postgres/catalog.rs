@@ -9,7 +9,7 @@ use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data},
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
-    role::{create_roles, delete_roles, list_roles, update_role},
+    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -28,7 +28,7 @@ use crate::{
         management::v1::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
             tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
@@ -56,25 +56,25 @@ use crate::{
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
+        ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
         CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogListRolesFilter, CatalogListWarehousesError,
+        CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
         CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse,
         CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
         CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError,
-        ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
+        ListRolesResponse, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
         MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RoleId,
-        SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
+        RoleId, RoleIdent, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
+        SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
+        SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList,
+        Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -331,7 +331,7 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError> {
@@ -341,16 +341,9 @@ impl CatalogStore for super::PostgresBackend {
     async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
         role_id_filter: Option<&[RoleId]>,
-        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
-        delete_roles(
-            project_id,
-            role_id_filter,
-            source_id_filter,
-            &mut **transaction,
-        )
-        .await
+        delete_roles(project_id, role_id_filter, &mut **transaction).await
     }
 
     async fn search_role_impl(
@@ -359,6 +352,14 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError> {
         search_role(project_id, search_term, &catalog_state.read_pool()).await
+    }
+
+    async fn list_roles_by_idents_impl(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Role>, CatalogBackendError> {
+        list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
     }
 
     // ---------------- User Management API ----------------
@@ -463,7 +464,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn get_endpoint_statistics(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseFilter,
         range_specifier: TimeWindowSelector,
         status_codes: Option<&[u16]>,
@@ -773,7 +774,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn set_task_queue_config_impl(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: &SetTaskQueueConfigRequest,
