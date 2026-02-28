@@ -979,7 +979,7 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | <nobr>`CreateNamespaceInNamespace`</nobr> | `initial_namespace_properties: ResourceProperties` |
 | `CreateTable`                             | `initial_table_properties: ResourceProperties` |
 | `CreateView`                              | `initial_view_properties: ResourceProperties` |
-| `UpdateNamespaceProperties`               | `namespace_properties_updated: ResourceProperties`, `namespace_properties_removed: Set<String>` |
+| `UpdateNamespaceProperties`               | `namespace_properties_updates: ResourceProperties`, `namespace_properties_removal: Set<String>` |
 | `CommitTable`                             | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>` |
 | `CommitView`                              | `view_properties_updates: ResourceProperties`, `view_properties_removal: Set<String>` |
 

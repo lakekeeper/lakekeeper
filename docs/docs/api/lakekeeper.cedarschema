@@ -308,9 +308,9 @@ namespace Lakekeeper {
       resource: [Namespace],
       context: {
         // Property values to be added or updated on this namespace.
-        namespace_properties_updated: ResourceProperties,
+        namespace_properties_updates: ResourceProperties,
         // Property keys to be removed from this namespace.
-        namespace_properties_removed: Set<String>,
+        namespace_properties_removal: Set<String>,
       }
     };
 
