@@ -29,7 +29,59 @@ To evaluate authorization requests, Cedar requires the following information:
 Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` and optionally `LAKEKEEPER__OPENID_ROLES_CLAIM` if role information is available in user tokens.
 
 ## RBAC and ABAC Support
-Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for complete implementations.
+Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
+
+## Token-Based Role Matching with `project_roles`
+
+Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records that represents the role memberships relevant to the project being accessed:
+
+```
+principal.project_roles  →  Set<{provider_id: String, source_id: String}>
+```
+
+Lakekeeper populates this set automatically from the user's token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured) for the project context of the current request. In external entity mode (`EXTERNALLY_MANAGED_USER_AND_ROLES=true`) you populate it yourself in the entity JSON file.
+
+The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attributes identifying the user's own authentication provider and their ID within it:
+
+| Attribute                    | Example value                                  | Description |
+|------------------------------|------------------------------------------------|-----|
+| `provider_id`                | `"oidc"`                                       | Authentication provider of the user |
+| `source_id`                  | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
+| <nobr>`project_roles`</nobr> | `[{provider_id: "oidc", source_id: "admins"}]` | Roles relevant to the current project |
+
+### When to use `project_roles` vs `principal in Role::...`
+
+| Scenario                                                 | Recommended approach |
+|----------------------------------------------------------|-------------------|
+| Roles come from OIDC/token claims                        | `principal.project_roles.contains({provider_id: "oidc", source_id: "my-group"})` |
+| Roles are managed in Lakekeeper (via the management API) | `principal in Lakekeeper::Role::"<project-id>/oidc~my-role"` |
+| Roles come from an external entities file                | Either approach works; `project_roles` is simpler |
+
+`project_roles` simplifies policies especially in single-project setups: to use `principal in Lakekeeper::Role::...` you need to know the project ID, which is an identifier that is inconvenient to embed in policy files. `project_roles` lets you match by provider and role name alone, with no project ID required.
+
+### Policy example
+
+```cedar
+// Grant namespace/table/view access to users whose token contains the
+// "warehouse-1-admins" group from the OIDC provider.
+permit (
+    principal is Lakekeeper::User,
+    action in
+        [Lakekeeper::Action::"NamespaceActions",
+         Lakekeeper::Action::"TableActions",
+         Lakekeeper::Action::"ViewActions"],
+    resource
+)
+when {
+    resource.warehouse.name == "wh-1" &&
+    principal.project_roles.contains(
+        {provider_id: "oidc", source_id: "warehouse-1-admins"}
+    )
+};
+```
+
+!!! note
+    `project_roles` is only populated when the request has a project context (i.e. for warehouse, namespace, table, and view operations). It is an empty set for server-level actions that span multiple projects, so policies using `project_roles` will always deny server level actions. Use the full Role ID or grant direct access to users for server-level policies.
 
 ## Property-Based Access Control
 
@@ -46,6 +98,35 @@ type ResourcePropertyValue = {
     users: Set<User>,     // parsed Lakekeeper::User entity references
 }
 ```
+
+Properties are ordinary Iceberg table/namespace properties — you set them with the same tools you already use. For example, using Spark SQL:
+
+```sql
+-- Set access-control properties when creating a table
+CREATE TABLE my_catalog.finance.transactions (
+    id     BIGINT,
+    amount DOUBLE,
+    ts     TIMESTAMP
+) USING iceberg
+TBLPROPERTIES (
+    'access-owners'  = '["role-full:oidc~data-admins", "user:oidc~alice@example.com"]',
+    'access-readers' = '["role:analysts"]'
+);
+
+-- Or add/update them on an existing table
+ALTER TABLE my_catalog.finance.transactions
+SET TBLPROPERTIES (
+    'access-readers' = '["role:analysts", "role-full:oidc~reporting-team"]'
+);
+
+-- Namespace properties work the same way
+ALTER NAMESPACE my_catalog.finance
+SET PROPERTIES (
+    'access-readers' = '["role-full:oidc~finance-readers"]'
+);
+```
+
+Keys that start with a configured parse prefix (default: `access-`, `access_`) are automatically parsed into `roles` and `users` sets. All other keys (e.g. `write.metadata.metrics.default-mode`) pass through as plain strings in `.raw` with empty `roles` and `users`.
 
 In a Cedar policy, properties are accessed using Cedar's tag syntax:
 
@@ -75,23 +156,14 @@ Properties whose key starts with one of the configured **parse prefixes** are tr
 
 Access-control property values must be a JSON array of typed entity references:
 
-| Format                                            | Description              |
-|---------------------------------------------------|--------------------------|
-| `role:<source-id>`                                | Short form — uses the default identity provider. Requires exactly one Authenticator to be configured. |
-| `role-full:<provider>~<source-id>`                | Full form — provider name is explicit. Works with any configured identity provider. |
-| `role-full:<project-uuid>/<provider>~<source-id>` | Full form with an explicit project scope. Useful in multi-project setups when referencing a role from a different project. |
-| `user:<user-id>`                                  | References a specific user by their identity-provider ID (e.g. `user:oidc~alice@example.com`). |
+| Format                                          | Description                |
+|-------------------------------------------------|----------------------------|
+| `role:<source-id>`                              | Short form — uses the default identity provider. Requires exactly one Authenticator to be configured. |
+| `role-full:<provider>~<source-id>`              | Full form — provider name is explicit. Works with any configured identity provider. |
+| `role-full:<project-id>/<provider>~<source-id>` | Full form with an explicit project scope. Useful in multi-project setups when referencing a role from a different project. |
+| `user:<user-id>`                                | References a specific user by their identity-provider ID (e.g. `user:oidc~alice@example.com`). |
 
 The `provider` in `role-full:` must match one of the configured Authenticator IDs. When there is exactly one OIDC provider, `role:` (short form) automatically resolves to it; when there are multiple, you must use the full form.
-
-**Example property values** (tagged on a Table or Namespace):
-
-```
-access-owners  = ["role-full:oidc~data-admins", "user:oidc~alice@example.com"]
-access-readers = ["role:analysts", "role-full:oidc~reporting-team"]
-```
-
-All other properties (keys that do **not** match any parse prefix) are stored verbatim in `.raw`; their `.roles` and `.users` sets are always empty.
 
 ### Configuration
 
@@ -123,6 +195,27 @@ For each authorization request, Lakekeeper provides Cedar with the complete enti
 - `Lakekeeper::Table::"<table-transactions-id>"` (parent: ns2)
 
 This hierarchy allows policies to reference any level in the path — you can grant access based on warehouse names, namespace hierarchies, or specific table properties.
+
+## Entity ID Formats
+
+The following table documents the ID format used for each Cedar entity type. These IDs appear as the `id` field inside `uid` in entity JSON, and as the string literal in policy rules (e.g. `Lakekeeper::User::"oidc~alice"`).
+
+| Entity type                          | ID format                                   | Example |
+|--------------------------------------|---------------------------------------------|-----|
+| `Lakekeeper::Server`                 | UUIDv7 (auto-assigned, one per deployment)  | `019c192e-cc20-7a13-a1ac-2e3390f81908` |
+| `Lakekeeper::Project`                | String (alphanumeric, hyphens, underscores) | `my-project` or `019c192f-0613-7422-90f1-7dd6b09f033c` |
+| `Lakekeeper::Warehouse`              | UUIDv7 (assigned at warehouse creation)     | `d08dca76-ff69-11f0-9aa6-ab201d553ec5` |
+| <nobr>`Lakekeeper::Namespace`</nobr> | UUIDv7 (assigned at namespace creation)     | `019c192f-18c2-7f93-848f-542d8f32bc3c` |
+| `Lakekeeper::Table`                  | `<warehouse-uuid>/<table-uuid>`             | `d08dca76-.../019c192f-...` |
+| `Lakekeeper::View`                   | `<warehouse-uuid>/<view-uuid>`              | `d08dca76-.../019c192f-...` |
+| `Lakekeeper::User`                   | `<provider_id>~<subject_in_idp>`            | `oidc~alice@example.com` |
+| `Lakekeeper::Role`                   | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins` |
+
+**Notes:**
+
+- User IDs are constructed by Lakekeeper from the token's issuer/provider and the subject claim. For OIDC the format is `oidc~<sub>`.  
+- Role IDs combine the project ID, the provider ID, and the role's source ID within that provider.  
+- All UUIDs shown in entity JSON are the literal string without braces.
 
 ## External Entity Management
 
@@ -162,13 +255,69 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
 ??? example "Allow everything for all users in a role/group"
+
+    **Option 1 — using the full Role entity ID**
+
+    The Role ID has the form `<project-id>/<provider_id>~<source_id>`. You can look it up in the Lakekeeper UI or via the management API.
+
     ```cedar
     permit (
-        principal in Lakekeeper::Role::"<role-id>", // Role id as contained in the user's token
+        principal in Lakekeeper::Role::"my-project/oidc~data-engineers",
         action,
         resource
     );
     ```
+
+    **Option 2 — using `project_roles`**
+    `project_roles` is always an empty set for server-level actions (which carry no project context), so this policy will never permit them. Use Option 1 with the full Role ID when server-level permissions are required, or grant direct access to users.
+
+    ```cedar
+    permit (
+        principal is Lakekeeper::User,
+        action,
+        resource
+    )
+    when {
+        principal.project_roles.contains(
+            {provider_id: "oidc", source_id: "data-engineers"}
+        )
+    };
+    ```
+
+??? example "Grant access based on a token-sourced group (project_roles)"
+
+    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. Note that `project_roles` is always an empty set for server-level actions — use the full Role ID for those.
+
+    ```cedar
+    permit (
+        principal is Lakekeeper::User,
+        action in
+            [Lakekeeper::Action::"NamespaceActions",
+             Lakekeeper::Action::"TableActions",
+             Lakekeeper::Action::"ViewActions"],
+        resource
+    )
+    when {
+        resource.warehouse.name == "my-warehouse" &&
+        principal.project_roles.contains(
+            {provider_id: "oidc", source_id: "data-engineers"}
+        )
+    };
+
+    permit (
+        principal is Lakekeeper::User,
+        action in [Lakekeeper::Action::"WarehouseModifyActions"],
+        resource
+    )
+    when {
+        resource.name == "my-warehouse" &&
+        principal.project_roles.contains(
+            {provider_id: "oidc", source_id: "data-engineers"}
+        )
+    };
+    ```
+
+    The `provider_id` must match the Authenticator ID configured in Lakekeeper (typically `"oidc"`). The `source_id` is the role/group name as it appears in the token claim (without any prefix).
 
 ??? example "Allow everything for multiple specific users"
     ```cedar
@@ -214,9 +363,12 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
 ??? example "Read access to a warehouse and all its contents for a group"
+
+    **Option 1 — full Role ID:
+
     ```cedar
     permit (
-        principal in Lakekeeper::Role::"<role-id>",
+        principal in Lakekeeper::Role::"my-project/oidc~warehouse-readers",
         action in
             [
                 Lakekeeper::Action::"WarehouseDescribeActions",
@@ -231,10 +383,11 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     };
     ```
 
-??? example "Read access to a warehouse and all its contents in multi-project setups"
+    **Option 2 — `project_roles`, no project ID needed:
+
     ```cedar
     permit (
-        principal in Lakekeeper::Role::"<role-id>",
+        principal is Lakekeeper::User,
         action in
             [
                 Lakekeeper::Action::"WarehouseDescribeActions",
@@ -242,7 +395,26 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"TableSelectActions",
                 Lakekeeper::Action::"ViewDescribeActions"
             ],
-        resource in Lakekeeper::Project::"<id of the project>"
+        resource
+    ) when {
+        principal.project_roles.contains({provider_id: "oidc", source_id: "warehouse-readers"}) &&
+        ((resource has warehouse && resource.warehouse.name == "dev") ||
+         (resource is Lakekeeper::Warehouse && resource.name == "dev"))
+    };
+    ```
+
+??? example "Read access to a warehouse and all its contents in multi-project setups"
+    ```cedar
+    permit (
+        principal in Lakekeeper::Role::"my-project/oidc~warehouse-readers",
+        action in
+            [
+                Lakekeeper::Action::"WarehouseDescribeActions",
+                Lakekeeper::Action::"NamespaceDescribeActions",
+                Lakekeeper::Action::"TableSelectActions",
+                Lakekeeper::Action::"ViewDescribeActions"
+            ],
+        resource in Lakekeeper::Project::"my-project"
     ) when {
         (resource has warehouse && resource.warehouse.name == "dev") ||
         (resource is Lakekeeper::Warehouse && resource.name == "dev")
@@ -251,13 +423,13 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ??? example "ABAC: Role-based table access using static role membership"
 
-    This example grants read/write access to tables tagged with an `access-role` property matching the requesting user's role — using traditional RBAC role membership. The `access-role-*` keys use the `access-` prefix so Lakekeeper parses them as entity references; the `.raw` field stores the original string value for backward compatibility.
+    This example grants read/write access to tables tagged with an `access-role` property matching the requesting user's role — using traditional RBAC role membership. The `access-role-*` keys use the `access-` prefix so Lakekeeper parses them as entity references; the `.raw` field always stores the original string.
 
     ```cedar
     @id("abac-role-based-access-marketing-select")
     @description("ABAC: Allow Read access to tables tagged with access-role-select:marketing to the marketing-select role")
     permit (
-        principal in Lakekeeper::Role::"marketing-select",
+        principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-select",
         action in Lakekeeper::Action::"TableSelectActions",
         resource is Lakekeeper::Table
     )
@@ -270,7 +442,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     @id("abac-role-based-access-marketing-modify")
     @description("ABAC: Allow Modify access to tables tagged with access-role-modify:marketing, but prevent removing or changing the tag itself")
     permit (
-        principal in Lakekeeper::Role::"marketing-modify",
+        principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-modify",
         action in Lakekeeper::Action::"TableModifyActions",
         resource is Lakekeeper::Table
     )
@@ -290,7 +462,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     @id("abac-role-based-access-marketing-admin")
     @description("ABAC: Allow full Modify access (including changing access tags) to marketing-admin role")
     permit (
-        principal in Lakekeeper::Role::"marketing-admin",
+        principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-admin",
         action in Lakekeeper::Action::"TableModifyActions",
         resource is Lakekeeper::Table
     )
@@ -548,7 +720,15 @@ Lakekeeper provides the following entities internally to Cedar: Server, Project,
                 "id": "oidc~2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
             "attrs": {
-                "roles": []
+                // Lakekeeper-managed roles the user belongs to (from the management API).
+                "roles": [],
+                // Token-sourced roles flattened for the current project context.
+                // Populated from LAKEKEEPER__OPENID_ROLES_CLAIM when present.
+                "project_roles": [
+                    {"provider_id": "oidc", "source_id": "analysts"}
+                ],
+                "provider_id": "oidc",
+                "source_id": "2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
             "parents": []
         }
@@ -567,13 +747,24 @@ When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, La
             "id": "oidc~90471f73-e338-4032-9a6b-1e021cc3cb1e"
         },
         "attrs": {
-            "display_name": "machine-user-1"
+            // Roles the user is a member of.
+            // Use the `parents` array (not this set) to establish the hierarchy;
+            // keep both in sync.
+            "roles": [
+                { "__entity": { "type": "Lakekeeper::Role", "id": "data-engineering" } }
+            ],
+            // Flat set of role identities relevant to the current project.
+            // Enables principal.project_roles.contains({provider_id, source_id}) checks.
+            // Provide these only in single project setups.
+            "project_roles": [
+                { "provider_id": "oidc", "source_id": "warehouse-1-admins" }
+            ],
+            // Authentication provider and subject ID of this user.
+            "provider_id": "oidc",
+            "source_id": "90471f73-e338-4032-9a6b-1e021cc3cb1e"
         },
         "parents": [
-            {
-                "type": "Lakekeeper::Role",
-                "id": "data-engineering"
-            }
+            { "type": "Lakekeeper::Role", "id": "data-engineering" }
         ]
     },
     {
@@ -582,23 +773,41 @@ When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, La
             "id": "data-engineering"
         },
         "attrs": {
-            "name": "DataEngineering",
             "project": {
                 "__entity": {
                     "type": "Lakekeeper::Project",
-                    "id": "00000000-0000-0000-0000-000000000000"
+                    "id": "<your-project-id>"
                 }
-            }
+            },
+            "provider_id": "entities-file",
+            "source_id": "data-engineering"
         },
         "parents": [
-            {
-                "type": "Lakekeeper::Role",
-                "id": "warehouse-1-admins"
-            }
+            { "type": "Lakekeeper::Role", "id": "warehouse-1-admins" }
         ]
+    },
+    {
+        "uid": {
+            "type": "Lakekeeper::Role",
+            "id": "warehouse-1-admins"
+        },
+        "attrs": {
+            "project": {
+                "__entity": {
+                    "type": "Lakekeeper::Project",
+                    "id": "<your-project-id>"
+                }
+            },
+            "provider_id": "entities-file",
+            "source_id": "warehouse-1-admins"
+        },
+        "parents": []
     }
 ]
 ```
+
+!!! tip "Required User attributes"
+    Every `Lakekeeper::User` entity in an external file **must** include `roles`, `project_roles`, `provider_id`, and `source_id`. Omitting any of these will cause a schema validation error on startup. Set `project_roles` to `[]` in multi-project setups.
 
 ## Policy and Entity Management
 
@@ -764,15 +973,15 @@ Some actions include additional context information in authorization requests. T
 
 All property contexts use the `ResourceProperties` entity type (same structure as `resource.properties`), giving you access to `.raw`, `.roles`, and `.users` on each property entry — including parsed role/user references in access-prefixed keys.
 
-| Action                       | Context fields                                |
-|------------------------------|-----------------------------------------------|
-| `CreateNamespaceInWarehouse` | `initial_namespace_properties: ResourceProperties` |
-| `CreateNamespaceInNamespace` | `initial_namespace_properties: ResourceProperties` |
-| `CreateTable`                | `initial_table_properties: ResourceProperties` |
-| `CreateView`                 | `initial_view_properties: ResourceProperties` |
-| `UpdateNamespaceProperties`  | `namespace_properties_updated: ResourceProperties`, `namespace_properties_removed: Set<String>` |
-| `CommitTable`                | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>` |
-| `CommitView`                 | `view_properties_updates: ResourceProperties`, `view_properties_removal: Set<String>` |
+| Action                                    | Context fields                   |
+|-------------------------------------------|----------------------------------|
+| `CreateNamespaceInWarehouse`              | `initial_namespace_properties: ResourceProperties` |
+| <nobr>`CreateNamespaceInNamespace`</nobr> | `initial_namespace_properties: ResourceProperties` |
+| `CreateTable`                             | `initial_table_properties: ResourceProperties` |
+| `CreateView`                              | `initial_view_properties: ResourceProperties` |
+| `UpdateNamespaceProperties`               | `namespace_properties_updated: ResourceProperties`, `namespace_properties_removed: Set<String>` |
+| `CommitTable`                             | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>` |
+| `CommitView`                              | `view_properties_updates: ResourceProperties`, `view_properties_removal: Set<String>` |
 
 **Example**: Prevent a table from being created with an `access-owners` property that doesn't include at least one owner from the `oidc~data-governance` role:
 

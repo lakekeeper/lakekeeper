@@ -1,9 +1,72 @@
 namespace Lakekeeper {
   // ============================================================================
+  // OVERVIEW
+  // ============================================================================
+  //
+  // This schema defines the Cedar entities, attributes, and actions used by
+  // Lakekeeper's authorization engine.  Cedar policies are evaluated against
+  // this schema to decide whether a principal may perform an action on a
+  // resource.
+  //
+  // Resource hierarchy
+  // ------------------
+  //   Server > Project > Warehouse > Namespace > Table
+  //                                             > View
+  //                    > Role
+  //
+  // ENTITY REFERENCE SYNTAX
+  // -----------------------
+  // In Cedar policy rules entities are written as:
+  //
+  //   <Namespace>::<EntityType>::"<entity-id>"
+  //
+  // or, when already inside the `Lakekeeper` namespace:
+  //
+  //   <EntityType>::"<entity-id>"
+  //
+  // For example:
+  //   Lakekeeper::Project::"my-project"
+  //   Lakekeeper::User::"oidc~alice@example.com"
+  //
+  // ID FORMATS BY ENTITY TYPE
+  // -------------------------
+  // Each entity type uses a specific string format as its Cedar entity ID:
+  //
+  //   Server     UUID
+  //              "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
+  //
+  //   Project    String (alphanumeric, hyphens, underscores)
+  //              "my-project"
+  //
+  //   Warehouse  UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9"
+  //
+  //   Namespace  UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a55c7796d9da"
+  //
+  //   Table      "<warehouse-UUID>/<table-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a66d8807eaeb"
+  //
+  //   View       "<warehouse-UUID>/<view-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
+  //
+  //   User       "<provider_id>~<subject-in-provider>"
+  //              "oidc~alice@example.com"
+  //              "kubernetes~system:serviceaccount:default:my-sa"
+  //
+  //   Role       "<project-id>/<provider_id>~<source_id>"
+  //              "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //              "my-project/oidc~data-engineers"
+  //
+  // ============================================================================
   // ENTITY TYPE DEFINITIONS
   // ============================================================================
 
- entity User in [Role, Server] {
+  // ---------- Principals ----------
+
+  // A user principal, typically derived from an authentication token.
+  // ID: "<provider_id>~<subject-in-provider>"  e.g. "oidc~alice@example.com"
+  entity User in [Role, Server] {
     // Email of the user, extracted from the User's token.
     // Not available for all token types.
     email?: String,
@@ -11,19 +74,45 @@ namespace Lakekeeper {
     // Only available if role extraction from tokens is configured and
     // the token contains the configured claim.
     roles: Set<Role>,
+    // Flattened role memberships relevant to the current project context.
+    // Combines server-level token claims (e.g. OIDC) and project-specific
+    // provider roles (e.g. LDAP) into a single set for policy evaluation.
+    // Only roles applicable to the project being accessed are included;
+    // the set is empty when no project context exists (e.g. role-management
+    // actions that span multiple projects).
+    // Use `.contains({provider_id: "oidc", source_id: "my-role"})` to match.
+    project_roles: Set<{provider_id: String, source_id: String}>,
+    // Authentication provider of the user (e.g. "oidc", "kubernetes", etc.)
+    provider_id: String,
+    // The ID of this user in its authentication provider
+    source_id: String,
   };
 
   // Roles in Lakekeeper are scoped to projects.
+  // ID: "<project-id>/<provider_id>~<source_id>"
+  //     e.g. "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //          "my-project/oidc~data-engineers"
   entity Role in [Role, Project] = {
+    project: Project,
+    // Provider of this role (e.g. "oidc", "lakekeeper", etc.)
+    provider_id: String,
+    // The ID of this role in its provider
+    source_id: String, 
   };
 
-  // Server is the top-level administrative entity
+  // ---------- Resource Hierarchy ----------
+  // Server > Project > Warehouse > Namespace > Table / View
+
+  // Server is the top-level administrative entity.
+  // ID: UUID  e.g. "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
   entity Server {};
 
-  // Project is a container for warehouses
+  // Project is a container for warehouses.
+  // ID: String (alphanumeric, hyphens, underscores)  e.g. "my-project"
   entity Project in [Server];
 
-  // Warehouse is a container for namespaces
+  // Warehouse is a container for namespaces.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9"
   entity Warehouse in [Project] {
     name: String,
     project: Project,
@@ -31,48 +120,85 @@ namespace Lakekeeper {
     protected: Bool,
   };
 
-  // Namespace can be nested within other namespaces or warehouses
-  // This models the hierarchical structure of data organization
+  // Namespace can be nested within other namespaces or directly within a warehouse.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a55c7796d9da"
   entity Namespace in [Namespace, Warehouse] {
     project: Project,
     warehouse: Warehouse,
     // Full name of the namespace including all UTF-8 characters.
-    // Segments are separated by '.'
-    // Lakekeeper enforces that no segment contains '.'
+    // Segments are separated by '.'.
+    // Lakekeeper enforces that no segment contains '.'.
     name: String,
-    protected: Bool,    
-    properties: Set<{key: String, value: String}>,
+    protected: Bool,
+    // Current properties of this namespace, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the UpdateNamespaceProperties action.
+    properties: ResourceProperties,
   };
 
-  // Table entity for Iceberg tables
+  // Table entity for Iceberg tables.
+  // ID: "<warehouse-UUID>/<table-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a66d8807eaeb"
   entity Table in [Namespace] {
     project: Project,
     warehouse: Warehouse,
-    // Direct parent namespace
+    // Direct parent namespace.
     namespace: Namespace,
-    // Name of the table within its namespace
+    // Name of the table within its namespace.
     name: String,
     protected: Bool,
-    properties: Set<{key: String, value: String}>,
+    // Current properties of this table, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the CommitTable action.
+    properties: ResourceProperties,
   };
 
-  // View entity for Iceberg views
+  // View entity for Iceberg views.
+  // ID: "<warehouse-UUID>/<view-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
   entity View in [Namespace] {
     project: Project,
     warehouse: Warehouse,
-    // Direct parent namespace
+    // Direct parent namespace.
     namespace: Namespace,
-    // Name of the view within its namespace
+    // Name of the view within its namespace.
     name: String,
     protected: Bool,
-    properties: Set<{key: String, value: String}>,
+    // Current properties of this view, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the CommitView action.
+    properties: ResourceProperties,
+  };
+
+  // ---------- Resource Properties ----------
+
+  // ResourceProperties is modeled as a Cedar entity with `tags` to represent
+  // the key-value properties of Namespaces, Tables and Views in a dynamic yet
+  // type-safe way. Tags allow key names that are only known at runtime (e.g.,
+  // user-defined property keys like "owner" or "classification") while still
+  // enforcing a typed value schema (ResourcePropertyValue) for each entry.
+  entity ResourceProperties = {} tags ResourcePropertyValue;
+
+  // Value type for each entry in ResourceProperties.
+  type ResourcePropertyValue = {
+      // The original value of the property as a string, as stored in the
+      // Table / View / Namespace properties.
+      raw: String,
+      // Roles parsed from the property value.
+      // Provide roles using Cedar entity syntax:
+      // "[Lakekeeper::Role::\"<role-id>\"]"
+      // Roles and Users can be mixed in a heterogeneous set.
+      roles: Set<Role>,
+      // Users parsed from the property value.
+      // Provide users using Cedar entity syntax:
+      // "[Lakekeeper::User::\"<user-id>\"]"
+      // Roles and Users can be mixed in a heterogeneous set.
+      users: Set<User>,
   };
 
   // ============================================================================
   // ACTION DEFINITIONS
   // ============================================================================
-  // Actions follow Cedar naming conventions (PascalCase)
-  // Mapped from actions.rs enums
 
   // ---------- Server Actions ----------
   action "ServerActions";
@@ -96,7 +222,7 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Project]
     };
-  
+
   // ---------- Role Actions ----------
   action "RoleActions";
   action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata, IntrospectRoleAuthorization in ["RoleActions"]
@@ -129,8 +255,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Warehouse],
       context: {
-        // Requested properties for the namespace being created
-        requested_namespace_properties: Set<{key: String, value: String}>,
+        // Initial property values for the namespace being created.
+        initial_namespace_properties: ResourceProperties,
       }
     };
 
@@ -143,7 +269,7 @@ namespace Lakekeeper {
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
-    };  
+    };
   action IntrospectNamespaceAuthorization, DeleteNamespace, SetNamespaceProtection in ["NamespaceModifyActions"]
     appliesTo {
       principal: [User, Role],
@@ -154,8 +280,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
-        // Requested properties for the table being created
-        requested_table_properties: Set<{key: String, value: String}>,
+        // Initial property values for the table being created.
+        initial_table_properties: ResourceProperties,
       }
     };
   action CreateView in ["NamespaceModifyActions"]
@@ -163,8 +289,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
-        // Requested properties for the view being created
-        requested_view_properties: Set<{key: String, value: String}>,
+        // Initial property values for the view being created.
+        initial_view_properties: ResourceProperties,
       }
     };
   action CreateNamespaceInNamespace in ["NamespaceModifyActions"]
@@ -172,8 +298,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
-        // Requested properties for the namespace being created
-        requested_namespace_properties: Set<{key: String, value: String}>,
+        // Initial property values for the namespace being created.
+        initial_namespace_properties: ResourceProperties,
       }
     };
   action UpdateNamespaceProperties in ["NamespaceModifyActions"]
@@ -181,9 +307,9 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
-        // Properties to be updated on this namespace
-        namespace_properties_updated: Set<{key: String, value: String}>,
-        // Properties to be removed from this namespace
+        // Property values to be added or updated on this namespace.
+        namespace_properties_updated: ResourceProperties,
+        // Property keys to be removed from this namespace.
         namespace_properties_removed: Set<String>,
       }
     };
@@ -198,12 +324,12 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Table]
     };
-  action ReadTableData in ["TableSelectActions"] 
+  action ReadTableData in ["TableSelectActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
     };
-  action IntrospectTableAuthorization, DropTable, WriteTableData, RenameTable, UndropTable, ControlTableTasks, SetTableProtection in ["TableModifyActions"] 
+  action IntrospectTableAuthorization, DropTable, WriteTableData, RenameTable, UndropTable, ControlTableTasks, SetTableProtection in ["TableModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
@@ -213,10 +339,10 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Table],
       context: {
-        // Properties to be updated on this table
-        table_properties_updated: Set<{key: String, value: String}>,
-        // Properties to be removed from this table
-        table_properties_removed: Set<String>,
+        // Property values to be added or updated on this table.
+        table_properties_updates: ResourceProperties,
+        // Property keys to be removed from this table.
+        table_properties_removal: Set<String>,
       }
     };
 
@@ -234,15 +360,15 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [View]
     };
-  action CommitView in ["ViewModifyActions"] 
+  action CommitView in ["ViewModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View],
       context: {
-        // Properties to be updated on this view
-        view_properties_updated: Set<{key: String, value: String}>,
-        // Properties to be removed from this view
-        view_properties_removed: Set<String>,
+        // Property values to be added or updated on this view.
+        view_properties_updates: ResourceProperties,
+        // Property keys to be removed from this view.
+        view_properties_removal: Set<String>,
       }
     };
 }
