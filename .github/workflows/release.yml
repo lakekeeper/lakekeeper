@@ -246,7 +246,7 @@ jobs:
           docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:${{ matrix.arch }}
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.6-java17-python3
+          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:4.0.2-scala2.13-java21-python3-ubuntu
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
