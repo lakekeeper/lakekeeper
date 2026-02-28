@@ -579,7 +579,6 @@ def spark(warehouse: Warehouse, storage_config):
     catalog_name = warehouse.normalized_catalog_name
     configuration = {
         "spark.jars.packages": spark_jars_packages,
-        "spark.repositories.packages": "https://repo1.maven.org/maven2",
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.defaultCatalog": catalog_name,
         f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",

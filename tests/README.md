@@ -17,7 +17,7 @@ export LAKEKEEPER_TEST__SERVER_IMAGE=localhost/lakekeeper-local:latest
 cd tests
 
 # All default-version tests
-bash run_all.sh
+bash run_default.sh
 
 # S3 (STS) — uses Spark 4 image automatically
 bash run.sh spark_minio_sts-1.10.1

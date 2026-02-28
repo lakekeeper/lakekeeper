@@ -60,4 +60,4 @@ fi
 
 exec docker compose "${COMPOSE_ARGS[@]}" run --quiet-pull spark \
 /opt/entrypoint.sh bash -c \
-"cd /opt/tests && LAKEKEEPER_IN_CONTAINER=1 bash run.sh $1"
+'cd /opt/tests && LAKEKEEPER_IN_CONTAINER=1 bash run.sh "$1"' -- "$1"

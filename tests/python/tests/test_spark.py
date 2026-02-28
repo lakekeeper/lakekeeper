@@ -1534,7 +1534,8 @@ def test_variant_null_and_missing_fields(spark, namespace):
         INSERT INTO {namespace.spark_name}.variant_nulls (id, data) VALUES
             (1, parse_json('{{"name":"Alice","age":30}}')),
             (2, parse_json('{{"name":"Bob"}}')),
-            (3, parse_json('{{"age":25}}'))
+            (3, parse_json('{{"age":25}}')),
+            (4, parse_json('{{"name":null,"age":null}}'))
         """
     )
     pdf = spark.sql(
@@ -1548,9 +1549,11 @@ def test_variant_null_and_missing_fields(spark, namespace):
         """
     ).toPandas()
 
-    assert len(pdf) == 3
+    assert len(pdf) == 4
     assert pdf["name"].tolist()[0] == "Alice"
     assert pdf["name"].tolist()[1] == "Bob"
     assert pdf["name"].isna().tolist()[2]  # missing field → NULL
     assert pdf["age"].isna().tolist()[1]  # missing field → NULL
     assert int(pdf["age"].tolist()[2]) == 25
+    assert pdf["name"].isna().tolist()[3]  # explicit null → NULL
+    assert pdf["age"].isna().tolist()[3]  # explicit null → NULL
