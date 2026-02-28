@@ -1,0 +1,7128 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Lakekeeper is a rust native Iceberg REST Catalog">
+      
+      
+        <meta name="author" content="Lakekeeper Team">
+      
+      
+      
+        <link rel="prev" href="../../support/">
+      
+      
+        <link rel="next" href="../license/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.0">
+    
+    
+      
+        <title>Release Notes - Lakekeeper Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.618322db.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="/assets/css/extra.css">
+    
+      <link rel="stylesheet" href="/assets/css/home.css">
+    
+      <link rel="stylesheet" href="/assets/css/bootstrap.min.css">
+    
+      <link rel="stylesheet" href="/assets/css/animate.css">
+    
+      <link rel="stylesheet" href="/assets/css/odometer.css">
+    
+      <link rel="stylesheet" href="/assets/css/fontawesome.min.css">
+    
+      <link rel="stylesheet" href="/assets/css/header.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+
+<!-- Determine title -->
+   
+
+<!-- The image needs to have an absolute URL -->
+
+
+<!-- Open graph meta tags -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Lakekeeper Docs - Release Notes" />
+<meta property="og:description" content="Lakekeeper is a rust native Iceberg REST Catalog" />
+<meta property="og:url" content="None" />
+<meta property="og:image" content="Noneassets/images/illustrations/banner.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1080" />
+<meta property="og:image:height" content="568" />
+
+<!-- Extra stylesheets -->
+<link rel="stylesheet" href="../../assets/css/home.css" />
+<link rel="stylesheet" href="../../assets/css/bootstrap.min.css" />
+<link rel="stylesheet" href=" ../../assets/css/fontawesome.min.css" />
+<link rel="stylesheet" href="../../assets/css/animate.css" />
+<link rel="stylesheet" href="../../assets/css/odometer.css" />
+
+
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="lakekeeper" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#release-notes" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Lakekeeper Docs" class="md-header__button md-logo" aria-label="Lakekeeper Docs" data-md-component="logo">
+      
+  <img src="../../assets/bear.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Lakekeeper Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Release Notes
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/lakekeeper/lakekeeper" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs/nightly/concepts/" class="md-tabs__link">
+          
+  
+  
+  Docs
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../support/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Community
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  About
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="/#learn" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Learn
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Lakekeeper Docs" class="md-nav__button md-logo" aria-label="Lakekeeper Docs" data-md-component="logo">
+      
+  <img src="../../assets/bear.svg" alt="logo">
+
+    </a>
+    Lakekeeper Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lakekeeper/lakekeeper" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1" id="__nav_3_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    nightly
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    nightly
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1_2" id="__nav_3_1_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_1_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management (Core)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/api/management-plus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management <span class="lkp"></span>
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1_4" id="__nav_3_1_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_1_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/authorization-openfga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization (OpenFGA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/authorization-cedar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization (Cedar)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/logging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Logging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/table-maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Table Maintenance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1_6" id="__nav_3_1_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_1_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/nightly/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    latest
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    latest
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2_2" id="__nav_3_2_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_2_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management (Core)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/api/management-plus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management <span class="lkp"></span>
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2_4" id="__nav_3_2_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/table-maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Table Maintenance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2_6" id="__nav_3_2_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/latest/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.11.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.11.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3_2" id="__nav_3_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management (Core)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/api/management-plus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management <span class="lkp"></span>
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3_4" id="__nav_3_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/table-maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Table Maintenance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3_6" id="__nav_3_3_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.11.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.10.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.10.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4_2" id="__nav_3_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4_4" id="__nav_3_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/table-maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Table Maintenance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4_6" id="__nav_3_4_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_4_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.10.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.9.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.9.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5_2" id="__nav_3_5_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_5_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5_4" id="__nav_3_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5_6" id="__nav_3_5_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_5_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.9.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.8.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.8.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6_2" id="__nav_3_6_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_6_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6_4" id="__nav_3_6_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_6_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6_6" id="__nav_3_6_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.8.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.7.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.7.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7_2" id="__nav_3_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_7_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/api/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/api/management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7_4" id="__nav_3_7_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_7_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/gotchas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gotchas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7_6" id="__nav_3_7_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_7_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.7.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_8" id="__nav_3_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.6.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.6.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_8_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_8_2" id="__nav_3_8_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_8_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_8_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/opa/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Open Policy Agent (OPA)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_8_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_8_4" id="__nav_3_8_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_8_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_8_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.6.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_9" id="__nav_3_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release 0.5.x
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Release 0.5.x
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_9_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_9_2" id="__nav_3_9_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_9_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_9_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/bootstrap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bootstrap / Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/authorization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authorization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_9_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_9_4" id="__nav_3_9_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_9_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_9_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/developer-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/0.5.x/customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    About
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../code-of-conduct/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code of Conduct
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../logos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Logos
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="/#learn" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Learn
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="release-notes">Release Notes<a class="headerlink" href="#release-notes" title="Permanent link">&para;</a></h1>
+<p>Please find following changes that affect the core Lakekeeper library crate.
+For more information, please also check our <a href="https://github.com/lakekeeper/lakekeeper/releases">GitHub Releases</a>.</p>
+<h1 id="changelog">Changelog<a class="headerlink" href="#changelog" title="Permanent link">&para;</a></h1>
+<h2 id="0102-2025-10-06"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.10.1...v0.10.2">0.10.2</a> (2025-10-06)<a class="headerlink" href="#0102-2025-10-06" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes">Bug Fixes<a class="headerlink" href="#bug-fixes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Parse empty ProjectID headers as None (<a href="https://github.com/lakekeeper/lakekeeper/issues/1424">#1424</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8f067e725b372b3e09ca3d04409d10a854bf9b8e">8f067e7</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.10.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/8d5171ec9ba7fa5bac2b062af9eb8fffb28bbd42">8d5171e</a>)</li>
+</ul>
+<h2 id="0101-2025-10-05"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.10.0...v0.10.1">0.10.1</a> (2025-10-05)<a class="headerlink" href="#0101-2025-10-05" title="Permanent link">&para;</a></h2>
+<h3 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add create table guard to cleanup location on Failure (<a href="https://github.com/lakekeeper/lakekeeper/issues/1418">#1418</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9fc98d8cdb710de3d6845969a3ae3356e0728aef">9fc98d8</a>)</li>
+<li><strong>debug:</strong> Add LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES configuration (<a href="https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955">192e211</a>)</li>
+<li>Expose client-managed X-Iceberg-Access-Delegation (<a href="https://github.com/lakekeeper/lakekeeper/issues/1407">#1407</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/aa72949409f02ff99e3859778e9bf8a44e583460">aa72949</a>)</li>
+<li>implement <code>OpenFgaEntity</code> for <code>ServerId</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/1394">#1394</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9c2ae429687184ff7dfc3dfd570b9461079490f4">9c2ae42</a>)</li>
+</ul>
+<h3 id="bug-fixes_1">Bug Fixes<a class="headerlink" href="#bug-fixes_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add support for <code>write.metadata.metrics.</code> Table Properties (<a href="https://github.com/lakekeeper/lakekeeper/issues/1422">#1422</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d45f4735242718b1fed54eb6e00e9119d2372942">d45f473</a>)</li>
+<li>Dynamic OpenAPI generation for registered Task Queues (<a href="https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955">192e211</a>)</li>
+<li>Endpoint stats for Project Endpoints (<a href="https://github.com/lakekeeper/lakekeeper/issues/1412">#1412</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5f6e9c9d4269b399620512c968ee293e27cde45d">5f6e9c9</a>)</li>
+<li>Return default initial Task Queue Config (<a href="https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955">192e211</a>)</li>
+<li>Use FnOnce for queue &amp; service registration (<a href="https://github.com/lakekeeper/lakekeeper/commit/192e21152aa6a1ba60545ff400a0fa6ae541c955">192e211</a>)</li>
+<li>Use FnOnce for queue &amp; service registration (<a href="https://github.com/lakekeeper/lakekeeper/commit/47b03a089215950d2d9df3a4c1fa07769c8979dd">47b03a0</a>)</li>
+<li>Use higher consistency for some OpenFGA queries (<a href="https://github.com/lakekeeper/lakekeeper/issues/1408">#1408</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2a9ce244f6c279c203d5ff8ba2e4c4b6bc907e43">2a9ce24</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_1">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Generate ID types with Macro (<a href="https://github.com/lakekeeper/lakekeeper/issues/1419">#1419</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/47cef6a516d6e2aadc7a726fa0a6a39f87da7442">47cef6a</a>)</li>
+<li>release 0.10.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/d58faec18a78f3f518dd9a7af53796008bee6d77">d58faec</a>)</li>
+<li>remove unneded <code>#[allow(dead_code)]</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/1399">#1399</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/dc821f41b9334ea7ef1f1479c7b9fc88ee1eb425">dc821f4</a>)</li>
+</ul>
+<h2 id="0100-2025-09-29"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0">0.10.0</a> (2025-09-29)<a class="headerlink" href="#0100-2025-09-29" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>authz:</strong> extend OpenFGA tabular entities with WarehouseId (<a href="https://github.com/lakekeeper/lakekeeper/issues/1329">#1329</a>)</li>
+<li><strong>authz:</strong> add OpenFGA schema v4 and v3-&gt;v4 migration (<a href="https://github.com/lakekeeper/lakekeeper/issues/1314">#1314</a>)</li>
+<li>add <code>warehouse_id</code> to PKs of all <code>table_*</code> and <code>view_*</code> tables (<a href="https://github.com/lakekeeper/lakekeeper/issues/1254">#1254</a>)</li>
+<li>Require warehouse_id when checking permissions on views or tables via ID (<a href="https://github.com/lakekeeper/lakekeeper/issues/1340">#1340</a>)</li>
+<li>Simplify Task interface, extend SpecializedTask interface (<a href="https://github.com/lakekeeper/lakekeeper/issues/1310">#1310</a>)</li>
+<li>Move to Lakekeeper IO based on hyperscaler SDKs (<a href="https://github.com/lakekeeper/lakekeeper/issues/1285">#1285</a>)</li>
+</ul>
+<h3 id="features_1">Features<a class="headerlink" href="#features_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add <code>RunNow</code> and <code>RunAt</code> to Controls for Tasks (<a href="https://github.com/lakekeeper/lakekeeper/issues/1322">#1322</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/75f771e6b22008ebff1c266db4c308fb77d463eb">75f771e</a>)</li>
+<li>add <code>warehouse_id</code> to PKs of all <code>table_*</code> and <code>view_*</code> tables (<a href="https://github.com/lakekeeper/lakekeeper/issues/1254">#1254</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f345db4c1638887e76c04bbe5350db890eb08853">f345db4</a>)</li>
+<li>add endpoint for fuzzy search of tabulars (<a href="https://github.com/lakekeeper/lakekeeper/issues/1387">#1387</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/6e7cce97e19a9487df7f89a481b981fdaf5d1bd5">6e7cce9</a>)</li>
+<li>Add Entity Names to Tasks (<a href="https://github.com/lakekeeper/lakekeeper/issues/1353">#1353</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/28cb613ca97891b34bb5074e81fc574bd8d2125d">28cb613</a>)</li>
+<li>Add loadTable Snapshots filter (<a href="https://github.com/lakekeeper/lakekeeper/issues/1385">#1385</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/50b7b0fa5c1ea9b8940907adf146018c0c5d0109">50b7b0f</a>)</li>
+<li>Add optional STS session-tags in S3 STS requests for ABAC authorization (<a href="https://github.com/lakekeeper/lakekeeper/issues/1230">#1230</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c84390d4bb5782c0dc05a9724285b24186751013">c84390d</a>)</li>
+<li>Add support for tasks affecting views (<a href="https://github.com/lakekeeper/lakekeeper/issues/1378">#1378</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/62d9f5bbc835e9132dabd57ed5f5ba03320ddc14">62d9f5b</a>)</li>
+<li>Add tasks heartbeat with Catalog state (<a href="https://github.com/lakekeeper/lakekeeper/issues/1324">#1324</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f13bd8ae7781d910cf9e8704780f792c3996d5ce">f13bd8a</a>)</li>
+<li><strong>authz:</strong> add OpenFGA schema v4 and v3-&gt;v4 migration (<a href="https://github.com/lakekeeper/lakekeeper/issues/1314">#1314</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f35c91014d1a04bda229366221356053dca2ae25">f35c910</a>)</li>
+<li><strong>authz:</strong> Add specific Task Actions (<a href="https://github.com/lakekeeper/lakekeeper/issues/1379">#1379</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/34993e47505c0e0463357ba24c90a60624377e80">34993e4</a>)</li>
+<li><strong>authz:</strong> Deprecate Permission Endpoints for Tables without WarehouseIDs (<a href="https://github.com/lakekeeper/lakekeeper/issues/1334">#1334</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/39bea3e84b31193eb272ea5df80fe22be1e9ebc2">39bea3e</a>)</li>
+<li><strong>authz:</strong> extend OpenFGA tabular entities with WarehouseId (<a href="https://github.com/lakekeeper/lakekeeper/issues/1329">#1329</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/880503079d7cd2c47383c4d92e90cb82fce3a422">8805030</a>)</li>
+<li>Enable write.metadata.delete-after-commit.enabled by default (<a href="https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688">8fec31f</a>)</li>
+<li>Enrich task metadata with concrete tabular type (<a href="https://github.com/lakekeeper/lakekeeper/issues/1383">#1383</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e7b4c63053cce82be898980b070d55b1dbdd98f3">e7b4c63</a>)</li>
+<li>Improve authorizer <code>are_allowed_*</code> batch check signature (<a href="https://github.com/lakekeeper/lakekeeper/issues/1315">#1315</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9f901c1592f0d05cacef317f66f5fadad337683d">9f901c1</a>)</li>
+<li>Introduce <code>RequestMetadata</code> for Internal Principals which bypass AuthZ (<a href="https://github.com/lakekeeper/lakekeeper/issues/1306">#1306</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c3c45ce2f6f972e665bdd1f365e51b5f4b0585e4">c3c45ce</a>)</li>
+<li>Make number of workers spawned for Expiration &amp; Purge configurable (<a href="https://github.com/lakekeeper/lakekeeper/issues/1395">#1395</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4a80257cbb499f7f7c8b6e1e035cd244d4107f0c">4a80257</a>)</li>
+<li>Minor namespace join performance improvements (<a href="https://github.com/lakekeeper/lakekeeper/commit/f3bccd8245a9d841794849a11f1bbe5c73fd425a">f3bccd8</a>)</li>
+<li>Move to Lakekeeper IO based on hyperscaler SDKs (<a href="https://github.com/lakekeeper/lakekeeper/issues/1285">#1285</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/1658ae612e0d218431b16fcb160b95fb7da2660c">1658ae6</a>)</li>
+<li>Provide <code>ApiContext</code> to externally registered tasks (<a href="https://github.com/lakekeeper/lakekeeper/issues/1307">#1307</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/7977b454ecb2fef107ce76ad493b29867a0d45d0">7977b45</a>)</li>
+<li>Random Server IDs (<a href="https://github.com/lakekeeper/lakekeeper/issues/1328">#1328</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4a84ce518936494938a3b523ffc2c3e4f7abc304">4a84ce5</a>)</li>
+<li>Remove serde_yaml &amp; serde_yml (<a href="https://github.com/lakekeeper/lakekeeper/issues/1341">#1341</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/be020da7d8b1bbfd862acad22b27f9a7bc928a2d">be020da</a>)</li>
+<li>Require warehouse_id when checking permissions on views or tables via ID (<a href="https://github.com/lakekeeper/lakekeeper/issues/1340">#1340</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d659eea74750c309227d7fa6cf40933c8c104978">d659eea</a>)</li>
+<li>Return Error Stacks for non-internal errors (<a href="https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688">8fec31f</a>)</li>
+<li>Set ServerID during migration (<a href="https://github.com/lakekeeper/lakekeeper/issues/1348">#1348</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/ce3ad5b43172498f23669676bb24fbe74ce6443d">ce3ad5b</a>)</li>
+<li>Simplify Task interface, extend SpecializedTask interface (<a href="https://github.com/lakekeeper/lakekeeper/issues/1310">#1310</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8ffb3f3b1ed54bfab3ac1d14d1145e8461f3a4f5">8ffb3f3</a>)</li>
+<li>Simplify task interface, re-exports (<a href="https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688">8fec31f</a>)</li>
+<li>Task Management APIs (<a href="https://github.com/lakekeeper/lakekeeper/commit/1ee7bf28bfc48df59dff0a13bdffbabfc7799b21">1ee7bf2</a>)</li>
+<li>V3 support (<a href="https://github.com/lakekeeper/lakekeeper/issues/1364">#1364</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0b895c1ddd27d59e6d7ad390cc37949fea6bcc3f">0b895c1</a>)</li>
+</ul>
+<h3 id="bug-fixes_2">Bug Fixes<a class="headerlink" href="#bug-fixes_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>accept "disable" as PG sslmode as documented (<a href="https://github.com/lakekeeper/lakekeeper/issues/1303">#1303</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8cc32a6df597613a5cd055cbdb33894c4cac5cb4">8cc32a6</a>)</li>
+<li>case insensitivity of catalog endpoints (<a href="https://github.com/lakekeeper/lakekeeper/issues/1338">#1338</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/602e61154fba61dbbc742261327b97fa1a0a7ef3">602e611</a>)</li>
+<li>clippy (<a href="https://github.com/lakekeeper/lakekeeper/commit/11bb07b8e90969e0970a290414a143014cf77fae">11bb07b</a>)</li>
+<li>Improve delete_warehouse error message for active tasks (<a href="https://github.com/lakekeeper/lakekeeper/commit/a8e2e9c3bd484e30ebf62d9f24e36e9a016cbcf3">a8e2e9c</a>)</li>
+<li>PgSslMode not supported error string (<a href="https://github.com/lakekeeper/lakekeeper/commit/54604c32bd9e2661806b6e5150206a4a1ee271f1">54604c3</a>)</li>
+<li>Potential Race Condition when undropping Tabulars (<a href="https://github.com/lakekeeper/lakekeeper/issues/1342">#1342</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/71528bd3aa139bcfb41dd75b1b9de40464317163">71528bd</a>)</li>
+<li>table rename authz and error handling (<a href="https://github.com/lakekeeper/lakekeeper/issues/1346">#1346</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/be273cf8a13c4439ca7d97b337b67e7950910480">be273cf</a>)</li>
+<li><strong>tabular-search:</strong> distance and docs for <code>searchterm is uuid</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/1393">#1393</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9d0ef1653861f090ea49cd4971c806ccd005bd91">9d0ef16</a>)</li>
+<li>Tasks endpoints in router (<a href="https://github.com/lakekeeper/lakekeeper/issues/1335">#1335</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8ac5ccf50b3bd36fe1f0e415cfca2b05d79c5093">8ac5ccf</a>)</li>
+<li>Warehouse permissions are directly used for task retrieval &amp; control (<a href="https://github.com/lakekeeper/lakekeeper/issues/1347">#1347</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/97d9853ad46058574b48b7f9a2766e04453f9385">97d9853</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_2">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>authz:</strong> Enforce use of AuthZ decisions with #[must_use] (<a href="https://github.com/lakekeeper/lakekeeper/issues/1317">#1317</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e16f83451e66a17842bfe762b99201bc2feb94e0">e16f834</a>)</li>
+<li>Move to parallel <code>unnests</code> in postgres (<a href="https://github.com/lakekeeper/lakekeeper/commit/1ee7bf28bfc48df59dff0a13bdffbabfc7799b21">1ee7bf2</a>)</li>
+<li>Set Get Task Permission to "CanGetMetadata" (<a href="https://github.com/lakekeeper/lakekeeper/issues/1376">#1376</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4e51f1f240fce01c9d7277fd53ccc3afcd43c5ec">4e51f1f</a>)</li>
+<li><strong>test:</strong> use nextest filterset instead of needs_env_var (<a href="https://github.com/lakekeeper/lakekeeper/issues/1304">#1304</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/51d310dffd4c100afd1a50b28886f0cd7f4942a4">51d310d</a>)</li>
+<li>Use lakekeeper re-exports in bin (<a href="https://github.com/lakekeeper/lakekeeper/issues/1391">#1391</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/93de24161b91f828849e7252cf85c15e07aa3245">93de241</a>)</li>
+</ul>
+<h2 id="095-2025-08-14"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5">0.9.5</a> (2025-08-14)<a class="headerlink" href="#095-2025-08-14" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_3">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.9.5 (<a href="https://github.com/lakekeeper/lakekeeper/commit/247c69f9e5238e3653cb0cc65fc2d7aa67e36d20">247c69f</a>)</li>
+</ul>
+<h2 id="094-2025-08-06"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.9.3...v0.9.4">0.9.4</a> (2025-08-06)<a class="headerlink" href="#094-2025-08-06" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes_3">Bug Fixes<a class="headerlink" href="#bug-fixes_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>partition_statistics</code> deletion (<a href="https://github.com/lakekeeper/lakekeeper/issues/1269">#1269</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f323c58c261593e4ec8983b96a312871abcec8a3">f323c58</a>)</li>
+<li>View Versions default Namespace should be limited to its own Warehouse (<a href="https://github.com/lakekeeper/lakekeeper/issues/1259">#1259</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/10bb9dab6c5c8300f7a06aec47ab978d08d1e141">10bb9da</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_4">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.9.4 (<a href="https://github.com/lakekeeper/lakekeeper/commit/027894835a26569ad47895d5b9e03acb2dd6aacd">0278948</a>)</li>
+</ul>
+<h2 id="093-2025-07-18"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.9.2...v0.9.3">0.9.3</a> (2025-07-18)<a class="headerlink" href="#093-2025-07-18" title="Permanent link">&para;</a></h2>
+<h3 id="features_2">Features<a class="headerlink" href="#features_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add Tracing, Compression and Timeout Layers to UI serving endpoints (<a href="https://github.com/lakekeeper/lakekeeper/issues/1247">#1247</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/3008211f333a4e6a919bd0eac3acaa7372902edf">3008211</a>)</li>
+<li>Enable client side caching for S3 remote signing (<a href="https://github.com/lakekeeper/lakekeeper/issues/1226">#1226</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2004d179a4565edf3480f42688111daa3d1d984f">2004d17</a>)</li>
+<li>Globally disable storage validation (<a href="https://github.com/lakekeeper/lakekeeper/issues/1239">#1239</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/743d5b595f1303b6f75432319fa9e083d30754f1">743d5b5</a>)</li>
+<li><strong>router:</strong> allow 'x-project-id' header in CORS (<a href="https://github.com/lakekeeper/lakekeeper/issues/1245">#1245</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/3ca0e4f4fca4f10440d65e2d3079eb9765262847">3ca0e4f</a>)</li>
+</ul>
+<h3 id="bug-fixes_4">Bug Fixes<a class="headerlink" href="#bug-fixes_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Create Warehouse Endpoint should respect X-Project-ID Header (<a href="https://github.com/lakekeeper/lakekeeper/issues/1238">#1238</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/7fb01dd323e502072d1814650219b19ffb05ccfc">7fb01dd</a>)</li>
+<li>GetAccessQuery should not require nested objects (<a href="https://github.com/lakekeeper/lakekeeper/issues/1242">#1242</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/528ab5e08a89e97bd8ddb2de0946b9ad7f6dd70c">528ab5e</a>)</li>
+<li>Skip port in determine_base_uri if host already contains it (<a href="https://github.com/lakekeeper/lakekeeper/issues/1248">#1248</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4e12628924a262c8167902907103b2c08d4c4305">4e12628</a>)</li>
+<li>Use camelCase for principalUser &amp; Role in GetAccessQuery (<a href="https://github.com/lakekeeper/lakekeeper/issues/1243">#1243</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/83dce04e088d9be891e315cd360c8c4afe2e1577">83dce04</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_5">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.9.3 (<a href="https://github.com/lakekeeper/lakekeeper/commit/44f698692f2dc6e63f31cd0ba94e200410fdf0ca">44f6986</a>)</li>
+</ul>
+<h2 id="092-2025-07-03"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.9.1...v0.9.2">0.9.2</a> (2025-07-03)<a class="headerlink" href="#092-2025-07-03" title="Permanent link">&para;</a></h2>
+<h3 id="features_3">Features<a class="headerlink" href="#features_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add "https://kubernetes.default.svc.cluster.local" to the accepted issuers (<a href="https://github.com/lakekeeper/lakekeeper/issues/1194">#1194</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/cb53dc02716fc077f78c223c6caf8f9e72a4dc94">cb53dc0</a>)</li>
+<li>add params for DEFAULT and MAX page size of paginated queries (<a href="https://github.com/lakekeeper/lakekeeper/issues/1218">#1218</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/a1142716e92845f5b76ce07d67c471f682870e12">a114271</a>)</li>
+<li><strong>authz:</strong> enable batch requests for authz checks (<a href="https://github.com/lakekeeper/lakekeeper/issues/1200">#1200</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bb43cd29b61cd3cee3a98745edbfec47f20edd31">bb43cd2</a>)</li>
+<li>re-export iceberg (<a href="https://github.com/lakekeeper/lakekeeper/issues/1207">#1207</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/89aaba194cd788728b780248f426704c6b2d35d3">89aaba1</a>)</li>
+</ul>
+<h3 id="bug-fixes_5">Bug Fixes<a class="headerlink" href="#bug-fixes_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add 0.9 task migration to changed migration due to 0.9.1 fix (<a href="https://github.com/lakekeeper/lakekeeper/issues/1198">#1198</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c630895f97a5894a6a2162807ee86a11fedb7fbd">c630895</a>)</li>
+<li>return MAX_PAGE_SIZE entries if pageToken is not specified (<a href="https://github.com/lakekeeper/lakekeeper/issues/1221">#1221</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/a48a1566b52eaac31142995061983607951c9e1a">a48a156</a>)</li>
+<li>UI redirect without trailing slash did not respect x-forwarded-prefix header (<a href="https://github.com/lakekeeper/lakekeeper/issues/1205">#1205</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/dd1d0c4d38a8f4f27300224ee469cb5854cccb4d">dd1d0c4</a>)</li>
+<li>Undropped tabulars without expiration tasks (<a href="https://github.com/lakekeeper/lakekeeper/issues/1202">#1202</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bd00a76340e7931ac94d4f71f647159ebc0d0701">bd00a76</a>)</li>
+<li>UserOrRole should have String type for User variant (<a href="https://github.com/lakekeeper/lakekeeper/issues/1204">#1204</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c266f96d037542a454a50f7c3d36685b5fa5848a">c266f96</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_6">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.9.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/4725c4a81b69a0d36a6322d4482b1d1519ee5300">4725c4a</a>)</li>
+</ul>
+<h2 id="091-2025-06-19"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.9.0...v0.9.1">0.9.1</a> (2025-06-19)<a class="headerlink" href="#091-2025-06-19" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes_6">Bug Fixes<a class="headerlink" href="#bug-fixes_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Migration error column "scheduled_for" of relation "task" contains null values (<a href="https://github.com/lakekeeper/lakekeeper/issues/1189">#1189</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/72a16c2cf22f3e848c83ded4c67aeb2976307d90">72a16c2</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_7">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.9.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/0f9fb6c3c6f9b2d3f50cc23074df910dc4d42ea6">0f9fb6c</a>)</li>
+</ul>
+<h2 id="090-2025-06-17"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0">0.9.0</a> (2025-06-17)<a class="headerlink" href="#090-2025-06-17" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes_1">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>rename crate and binary to <code>lakekeeper</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/1146">#1146</a>)</li>
+</ul>
+<h3 id="features_4">Features<a class="headerlink" href="#features_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>add <code>can_list_everything</code> action to <code>warehouse</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/1184">#1184</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8219c8d91fb78f697d199c0a1eca6021dfe26e9d">8219c8d</a>)</li>
+<li>Add actor to CloudEvent Metadata (<a href="https://github.com/lakekeeper/lakekeeper/issues/1171">#1171</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/74143427e87c44c366167a1db829313dd787bc09">7414342</a>)</li>
+<li>add quick check path for authorization in <code>list_...</code> fns (<a href="https://github.com/lakekeeper/lakekeeper/issues/1149">#1149</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2ebbae45286157fcdfeaa77caf9a16d41c1a6677">2ebbae4</a>)</li>
+<li><strong>testing:</strong> add 'test-utils' feature to expose test helpers (<a href="https://github.com/lakekeeper/lakekeeper/issues/1169">#1169</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8c3715684c5c23219bfd78d149206efe223d2b96">8c37156</a>)</li>
+</ul>
+<h3 id="bug-fixes_7">Bug Fixes<a class="headerlink" href="#bug-fixes_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Error code for concurrent updates (<a href="https://github.com/lakekeeper/lakekeeper/issues/1161">#1161</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/45e8cf5d669e0160abce8c566dfd27aefddbb7e2">45e8cf5</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_8">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_8" title="Permanent link">&para;</a></h3>
+<ul>
+<li>rename crate and binary to <code>lakekeeper</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/1146">#1146</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d3cab68cb5d3e6c6b7fd029831897335cf53dfe6">d3cab68</a>)</li>
+</ul>
+<h2 id="085-2025-05-09"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5">0.8.5</a> (2025-05-09)<a class="headerlink" href="#085-2025-05-09" title="Permanent link">&para;</a></h2>
+<h3 id="features_5">Features<a class="headerlink" href="#features_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Optionally disable the use of x-forwarded- headers (<a href="https://github.com/lakekeeper/lakekeeper/commit/2776f8020a3cc39cdc620695f974b85aeb763e30">2776f80</a>)</li>
+</ul>
+<h3 id="bug-fixes_8">Bug Fixes<a class="headerlink" href="#bug-fixes_8" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Do not add standard ports (80, 443) if protocol matches (<a href="https://github.com/lakekeeper/lakekeeper/commit/e5d814766543cf0efa49b6320a8cea319c0d82a3">e5d8147</a>)</li>
+<li>Format / Clippy (<a href="https://github.com/lakekeeper/lakekeeper/commit/a3f9e25a70e6c1e06b3b50489248456d40185c74">a3f9e25</a>)</li>
+<li>migration health check (<a href="https://github.com/lakekeeper/lakekeeper/issues/1083">#1083</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b861920c85abc9665ec33479be00c8afc71d3fa9">b861920</a>)</li>
+<li>pg17 search_path issue (<a href="https://github.com/lakekeeper/lakekeeper/issues/1069">#1069</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/3e531a6a1ab86dfbd65d6131977f11f4e427243d">3e531a6</a>)</li>
+<li>sequence number index cannot use stable function (<a href="https://github.com/lakekeeper/lakekeeper/issues/1072">#1072</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/92b4603be6de1f1c1d0bad284053c3f04f4cf106">92b4603</a>)</li>
+<li>Use X-Forwarded-Host header for response in /config Endpoint (<a href="https://github.com/lakekeeper/lakekeeper/commit/2776f8020a3cc39cdc620695f974b85aeb763e30">2776f80</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_9">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_9" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.8.5 (<a href="https://github.com/lakekeeper/lakekeeper/commit/118dc0b3ab6138213a3a4b4c5cacaab707cd24a2">118dc0b</a>)</li>
+</ul>
+<h2 id="084-2025-05-02"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.8.3...v0.8.4">0.8.4</a> (2025-05-02)<a class="headerlink" href="#084-2025-05-02" title="Permanent link">&para;</a></h2>
+<h3 id="features_6">Features<a class="headerlink" href="#features_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add X-Forwarded- Headers to request trace (<a href="https://github.com/lakekeeper/lakekeeper/issues/1048">#1048</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f3bc2b5ae13e57978d5adbf6f2b44113fc0e624c">f3bc2b5</a>)</li>
+<li>Expand allowed characters for user-id to all UTF-8 except control (<a href="https://github.com/lakekeeper/lakekeeper/issues/1043">#1043</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/15fddf51f241d02d4417bb62f547b3b3c38948d6">15fddf5</a>)</li>
+</ul>
+<h3 id="bug-fixes_9">Bug Fixes<a class="headerlink" href="#bug-fixes_9" title="Permanent link">&para;</a></h3>
+<ul>
+<li>delete warehouse with open tasks should not work with pending/running tasks (<a href="https://github.com/lakekeeper/lakekeeper/issues/1052">#1052</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c327247d6eb6b6b5d51ffbf9013e25bfdc721e2d">c327247</a>)</li>
+<li>Missing prepared query after merge (<a href="https://github.com/lakekeeper/lakekeeper/issues/1065">#1065</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5a1f0c11d6b0ae5db21daa714331c0c241beff86">5a1f0c1</a>)</li>
+<li>staged tables should be dropped with namespaces (<a href="https://github.com/lakekeeper/lakekeeper/issues/1062">#1062</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/02714b5b01d72c3c8bbf9320034dcf62abcd0c92">02714b5</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_10">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_10" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.8.4 (<a href="https://github.com/lakekeeper/lakekeeper/commit/7a0b1c95db682fc8f3b911032632841f3403b412">7a0b1c9</a>)</li>
+</ul>
+<h2 id="083-2025-04-18"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.8.2...v0.8.3">0.8.3</a> (2025-04-18)<a class="headerlink" href="#083-2025-04-18" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_11">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_11" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.8.3 (<a href="https://github.com/lakekeeper/lakekeeper/commit/21612cc2b14a91179890c9b62d10ff32f93f6f4d">21612cc</a>)</li>
+</ul>
+<h2 id="082-2025-04-17"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.8.1...v0.8.2">0.8.2</a> (2025-04-17)<a class="headerlink" href="#082-2025-04-17" title="Permanent link">&para;</a></h2>
+<h3 id="features_7">Features<a class="headerlink" href="#features_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Cloudflare R2 support (<a href="https://github.com/lakekeeper/lakekeeper/issues/1016">#1016</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/6cdd408577394d5a0952292ff0e58767a8cf4cde">6cdd408</a>)</li>
+<li>Make "s3.delete-enabled" option configurable in Warehouses (<a href="https://github.com/lakekeeper/lakekeeper/commit/c449e269eb1d23d769210a7fa7eaf32bd51ec3f6">c449e26</a>)</li>
+<li>Remote signing for delete operations (<a href="https://github.com/lakekeeper/lakekeeper/commit/c449e269eb1d23d769210a7fa7eaf32bd51ec3f6">c449e26</a>)</li>
+<li>Support for AWS S3 Buckets with KMS (<a href="https://github.com/lakekeeper/lakekeeper/issues/1029">#1029</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/922b86dee0b4270fa901d125c461f3ea98f77571">922b86d</a>)</li>
+<li>Support GCS Buckets with Hierarchical Namespaces (<a href="https://github.com/lakekeeper/lakekeeper/issues/1030">#1030</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/ba14495dc37d90d5aa423bf9d7b44c9c13844265">ba14495</a>)</li>
+</ul>
+<h3 id="bug-fixes_10">Bug Fixes<a class="headerlink" href="#bug-fixes_10" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Re-using old ViewVersions fails due to reused timestamps (<a href="https://github.com/lakekeeper/lakekeeper/issues/1019">#1019</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f8d76e99443fe46785a7ed7c041710e2d3c2c7bd">f8d76e9</a>)</li>
+<li>Task Queues should not wait poll-interval after success (<a href="https://github.com/lakekeeper/lakekeeper/issues/1025">#1025</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/beb62d5210236c9476db42a916daf4faa32711a3">beb62d5</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_12">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_12" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.8.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/26572c8be6565f5d349baf348a95dafce5b25885">26572c8</a>)</li>
+</ul>
+<h2 id="081-2025-04-13"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.8.0...v0.8.1">0.8.1</a> (2025-04-13)<a class="headerlink" href="#081-2025-04-13" title="Permanent link">&para;</a></h2>
+<h3 id="features_8">Features<a class="headerlink" href="#features_8" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add Protection for Tables, Views, Namespaces and Warehouses (<a href="https://github.com/lakekeeper/lakekeeper/commit/fa8c67879ead468ba6b9c6808898875965db35de">fa8c678</a>)</li>
+<li>Add recursive &amp; force deletes (<a href="https://github.com/lakekeeper/lakekeeper/commit/fa8c67879ead468ba6b9c6808898875965db35de">fa8c678</a>)</li>
+<li>Azure Managed Identities (<a href="https://github.com/lakekeeper/lakekeeper/issues/999">#999</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/faee35e6282b7ee7a67086c8b5caa6459696d353">faee35e</a>)</li>
+<li>Best-Effort checks on unique Warehouse Locations within Projects (<a href="https://github.com/lakekeeper/lakekeeper/issues/996">#996</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b5719470fb73d0393980e828aae93635c7203c6d">b571947</a>)</li>
+<li>Faster Storage Profile validation (<a href="https://github.com/lakekeeper/lakekeeper/issues/989">#989</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8278c5f7e2998a49747e406dac4a917d5fbd1b35">8278c5f</a>)</li>
+<li>Recursive Deletes and Force Deletes (<a href="https://github.com/lakekeeper/lakekeeper/issues/891">#891</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9762d525758d9fbc5346f09dab4db7dacfc07eec">9762d52</a>)</li>
+<li>Support for GCP Managed Identities (<a href="https://github.com/lakekeeper/lakekeeper/issues/1009">#1009</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9a8d36e545ff09a930ed8e594d68731976739d82">9a8d36e</a>)</li>
+<li>Support WASBS locations for ADLS (<a href="https://github.com/lakekeeper/lakekeeper/issues/1010">#1010</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/008064a1d0c4275c51d6e60e7d40f8b9a2e8337f">008064a</a>)</li>
+</ul>
+<h3 id="bug-fixes_11">Bug Fixes<a class="headerlink" href="#bug-fixes_11" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Missing Endpoints in Endpoint Statistic (<a href="https://github.com/lakekeeper/lakekeeper/commit/76bf004b39484997d562b2910d8cadace0a366e3">76bf004</a>)</li>
+<li>Properly deprecate /default-project endpoints. Use /project instead. (<a href="https://github.com/lakekeeper/lakekeeper/commit/76bf004b39484997d562b2910d8cadace0a366e3">76bf004</a>)</li>
+<li>undercount table counts in statistics / can't drop table (<a href="https://github.com/lakekeeper/lakekeeper/issues/990">#990</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/ba3dda0ea792da479f20cc868c047c9a6ecbf8b9">ba3dda0</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_13">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_13" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.8.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/0c668848152d15c97ddbae4eea23a4ee7ca15cdb">0c66884</a>)</li>
+</ul>
+<h2 id="080-2025-04-08"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0">0.8.0</a> (2025-04-08)<a class="headerlink" href="#080-2025-04-08" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes_2">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>drop duplicate sequence numbers in table snapshots &amp; add index (<a href="https://github.com/lakekeeper/lakekeeper/issues/952">#952</a>)</li>
+<li>Move APIs affecting the default project to /default-project according to OpenAPI spec (<a href="https://github.com/lakekeeper/lakekeeper/issues/878">#878</a>)</li>
+<li>Remove <code>project_id</code> from <code>RenameProjectRequest</code>. Use <code>/v1/project/{project_id}/rename</code> instead.</li>
+<li>Change Project ID type from UUID to String (alphanumeric + hyphen + underscore)</li>
+</ul>
+<h3 id="features_9">Features<a class="headerlink" href="#features_9" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Accept nameless Application Clients for self-provisioning (Missing app_displayname in Entra-ID token) (<a href="https://github.com/lakekeeper/lakekeeper/issues/970">#970</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f880c91e25492841eb14fa69d352885067fd545d">f880c91</a>)</li>
+<li>Add information about AWS System Identities for S3 storage profiles to Server Info (<a href="https://github.com/lakekeeper/lakekeeper/issues/972">#972</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5b6aefc77f5f3f25255eec98860093647b9ab693">5b6aefc</a>)</li>
+<li>add kafka support <a href="https://github.com/lakekeeper/lakekeeper/issues/271">#271</a> (<a href="https://github.com/lakekeeper/lakekeeper/issues/937">#937</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/1fa2f09ce00f906515eeec98338394c2f2bc7b52">1fa2f09</a>)</li>
+<li>Add support for legacy Kubernetes tokens (no audience) (<a href="https://github.com/lakekeeper/lakekeeper/issues/940">#940</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e7daf010a74b53ac2c6fee0833e8ef1308c1d02a">e7daf01</a>)</li>
+<li>AWS / S3 Managed Identities (<a href="https://github.com/lakekeeper/lakekeeper/issues/965">#965</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/7490047972f3abdeb7a84fef6a77f2096486119a">7490047</a>)</li>
+<li>Change Project ID type from UUID to String (alphanumeric + hyphen + underscore) (<a href="https://github.com/lakekeeper/lakekeeper/commit/984381b0925828c20eef6281e883f8226c2cad78">984381b</a>)</li>
+<li>Migrate to OpenFGA Client (<a href="https://github.com/lakekeeper/lakekeeper/issues/876">#876</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/72ebee47526cc4ec2362808d7c65f43c0a89f496">72ebee4</a>)</li>
+<li>Re-add constraints for string project IDs (<a href="https://github.com/lakekeeper/lakekeeper/issues/960">#960</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/44b624882e7115de7bc4b4c432567efca5d1f47d">44b6248</a>)</li>
+<li>Remove <code>project_id</code> from <code>RenameProjectRequest</code>. Use <code>/v1/project/{project_id}/rename</code> instead. (<a href="https://github.com/lakekeeper/lakekeeper/commit/984381b0925828c20eef6281e883f8226c2cad78">984381b</a>)</li>
+<li><strong>s3:</strong> make url-style detection configurable (<a href="https://github.com/lakekeeper/lakekeeper/issues/905">#905</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/69234fe4e340485af9bd52be13adb64de7dbd9f8">69234fe</a>)</li>
+<li>Split OpenFGA Model into components (<a href="https://github.com/lakekeeper/lakekeeper/issues/881">#881</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e3b658bde8abd1e63ce4457027af895e4b6ca5f4">e3b658b</a>)</li>
+<li><strong>stats:</strong> Endpoint call statistics (<a href="https://github.com/lakekeeper/lakekeeper/issues/818">#818</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bf7bcde7e8b475e92a03dc92f53a2a9d1190293a">bf7bcde</a>)</li>
+<li><strong>view:</strong> allow view location updates for trino (<a href="https://github.com/lakekeeper/lakekeeper/issues/944">#944</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0628fa801e34122e262b66a1d84f39b068eff690">0628fa8</a>)</li>
+</ul>
+<h3 id="bug-fixes_12">Bug Fixes<a class="headerlink" href="#bug-fixes_12" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Consistency checks for READ Committed transaction level (<a href="https://github.com/lakekeeper/lakekeeper/issues/975">#975</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/6b852dddd32a0e6165ef9c8eed308169a3477587">6b852dd</a>)</li>
+<li>drop duplicate sequence numbers in table snapshots &amp; add index (<a href="https://github.com/lakekeeper/lakekeeper/issues/952">#952</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/abb4882c2ae1f6701957b1ff51d1afd7d561a525">abb4882</a>)</li>
+<li>Endpoint Statistics API, Consistently use kebab-case in API (<a href="https://github.com/lakekeeper/lakekeeper/issues/968">#968</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5568a9d3ac36bf5356b31230a8ce14f00a5100e1">5568a9d</a>)</li>
+<li>error message if rename target namespace does not exist (<a href="https://github.com/lakekeeper/lakekeeper/commit/8b60142f7b365926a69d496d97cf14b184410d5a">8b60142</a>)</li>
+<li>Move APIs affecting the default project to /default-project according to OpenAPI spec (<a href="https://github.com/lakekeeper/lakekeeper/issues/878">#878</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/fa4b26a0aeac7ba93995e5b24984321114b87a04">fa4b26a</a>)</li>
+<li>set method of endpoint statistics get to post (<a href="https://github.com/lakekeeper/lakekeeper/issues/951">#951</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/329f63d4659afab9d48caa6353fe120167be694c">329f63d</a>)</li>
+<li><strong>stats:</strong> unique constraint violation on warehouse deletion (<a href="https://github.com/lakekeeper/lakekeeper/issues/977">#977</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/af6651034610f3a5ff7de2cb8c92d794458deb7f">af66510</a>)</li>
+<li>Table References not deleted (<a href="https://github.com/lakekeeper/lakekeeper/issues/956">#956</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2ee3ac11118fd460d2bf172cafa311c1e704448e">2ee3ac1</a>)</li>
+<li>table snapshot refs with add+remove+set-current ref in one transaction (<a href="https://github.com/lakekeeper/lakekeeper/issues/945">#945</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/94da715ece3c69703c56fb3e6eebb408261b06aa">94da715</a>)</li>
+<li>use correct image for kube auth test (<a href="https://github.com/lakekeeper/lakekeeper/issues/979">#979</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/a077d2d490c323f6bcfaaa6c599dd47720c5fc7a">a077d2d</a>)</li>
+<li><strong>views:</strong> set 404 instead of 403 on failed view deletion (<a href="https://github.com/lakekeeper/lakekeeper/issues/963">#963</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d5c4cd6c8478896b51d56556602e2d0b543bfa42">d5c4cd6</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_14">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_14" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.8.0 (<a href="https://github.com/lakekeeper/lakekeeper/commit/f1b80837ed6e296c48f2dd4491ded384c3658546">f1b8083</a>)</li>
+</ul>
+<h2 id="074-2025-03-20"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4">0.7.4</a> (2025-03-20)<a class="headerlink" href="#074-2025-03-20" title="Permanent link">&para;</a></h2>
+<h3 id="features_10">Features<a class="headerlink" href="#features_10" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>az:</strong> support azure shared keys (<a href="https://github.com/lakekeeper/lakekeeper/issues/912">#912</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e85bd91c5fc8b64feafc90d01a14cfc8c5233321">e85bd91</a>)</li>
+<li>configurable bind ip address (<a href="https://github.com/lakekeeper/lakekeeper/issues/922">#922</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e545a26503af1458ded9c3875563340da91c165b">e545a26</a>)</li>
+</ul>
+<h3 id="bug-fixes_13">Bug Fixes<a class="headerlink" href="#bug-fixes_13" title="Permanent link">&para;</a></h3>
+<ul>
+<li>add log lines to determine if not found or action forbidden (<a href="https://github.com/lakekeeper/lakekeeper/issues/895">#895</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/66d1d054953b7a688da832068b85440c8c02d91e">66d1d05</a>)</li>
+<li><strong>az:</strong> relax sas token start time (<a href="https://github.com/lakekeeper/lakekeeper/issues/898">#898</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/45eb87821e4ea1bda73838d9f11e6ca1dce171a9">45eb878</a>)</li>
+<li>dropping S3 table does not accidentally delete sibling folders with same prefix anymore (<a href="https://github.com/lakekeeper/lakekeeper/issues/923">#923</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/39f60f4282b26b350313cc9dad8f3292a2e4d1a1">39f60f4</a>)</li>
+<li>forward sts role arn to s3-compatible storages when specified (<a href="https://github.com/lakekeeper/lakekeeper/issues/889">#889</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bd4795a9c3a871e8e4d60e42fe74a29a46c4c41c">bd4795a</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_15">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_15" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.7.4 (<a href="https://github.com/lakekeeper/lakekeeper/commit/e51010a8d3ceefdad118d3424b81259ab02188b5">e51010a</a>)</li>
+</ul>
+<h2 id="073-2025-03-04"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.7.2...v0.7.3">0.7.3</a> (2025-03-04)<a class="headerlink" href="#073-2025-03-04" title="Permanent link">&para;</a></h2>
+<h3 id="features_11">Features<a class="headerlink" href="#features_11" title="Permanent link">&para;</a></h3>
+<ul>
+<li>add EnumString to Catalog{resource}Action (<a href="https://github.com/lakekeeper/lakekeeper/commit/efeb311180d31d463cd8f0f5ca3dc6e882f02fec">efeb311</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_16">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_16" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.7.3 (<a href="https://github.com/lakekeeper/lakekeeper/commit/630ee3adc67533e499e8d656fdb1ba49900b87b3">630ee3a</a>)</li>
+</ul>
+<h2 id="072-2025-02-27"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.7.1...v0.7.2">0.7.2</a> (2025-02-27)<a class="headerlink" href="#072-2025-02-27" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes_14">Bug Fixes<a class="headerlink" href="#bug-fixes_14" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Authenticator order (OIDC before K8s), add K8s Authenticator Audiences (<a href="https://github.com/lakekeeper/lakekeeper/issues/864">#864</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b894ba564b7629bf5ec42e7e7e961cd833bd6de2">b894ba5</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_17">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_17" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.7.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/b4c77ac57ed1b463f4a89a10e380da7b9d7960f3">b4c77ac</a>)</li>
+</ul>
+<h2 id="071-2025-02-26"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.7.0...v0.7.1">0.7.1</a> (2025-02-26)<a class="headerlink" href="#071-2025-02-26" title="Permanent link">&para;</a></h2>
+<h3 id="features_12">Features<a class="headerlink" href="#features_12" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Re-Export RequestMetadata under <code>api</code> (<a href="https://github.com/lakekeeper/lakekeeper/issues/850">#850</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5a22149db3cae055701a3dc0f35f747030e2e605">5a22149</a>)</li>
+</ul>
+<h3 id="bug-fixes_15">Bug Fixes<a class="headerlink" href="#bug-fixes_15" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Client Credential Authentication for OpenFGA, allow to configure Scopes (<a href="https://github.com/lakekeeper/lakekeeper/issues/863">#863</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/720053b35b798f01acbba4be5c99d4e671be13fa">720053b</a>)</li>
+<li>more logging in validate warehouse (<a href="https://github.com/lakekeeper/lakekeeper/issues/860">#860</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/efc9eda9f0bf7f2c3d16f451eb3a0402dcb320a0">efc9eda</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_18">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_18" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.7.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/05938cd499e15ea648c58de05ef1b866d6395036">05938cd</a>)</li>
+</ul>
+<h2 id="070-2025-02-24"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.6.2...v0.7.0">0.7.0</a> (2025-02-24)<a class="headerlink" href="#070-2025-02-24" title="Permanent link">&para;</a></h2>
+<h3 id="features_13">Features<a class="headerlink" href="#features_13" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add Opt-In to S3 Variant prefixes (s3a, s3n) (<a href="https://github.com/lakekeeper/lakekeeper/issues/821">#821</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b85b7245376cedb18d5131e24cff671d18045dff">b85b724</a>)</li>
+<li>collect warehouse statistics (<a href="https://github.com/lakekeeper/lakekeeper/issues/811">#811</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/063066ca9561e3ab01b7599c79a5ae76828f8ef1">063066c</a>)</li>
+<li>emit CloudEvent on undropTabulars <a href="https://github.com/lakekeeper/lakekeeper/issues/572">#572</a> (<a href="https://github.com/lakekeeper/lakekeeper/issues/803">#803</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9dd431ab9713e425e848337adaeb464ddda87321">9dd431a</a>)</li>
+<li>Migrate Authentication to Limes, Support Unlimited Authenticators, Customizable Authentication (<a href="https://github.com/lakekeeper/lakekeeper/commit/b72852de125a23691f75a291ecdf3c452b8e1c14">b72852d</a>)</li>
+<li><strong>tasks:</strong> add unit to poll interval config (<a href="https://github.com/lakekeeper/lakekeeper/issues/829">#829</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c0edafa403f28cf578a7db81fd6ada36774cd749">c0edafa</a>)</li>
+<li>use x-forwarded-for/host headers to generate links (<a href="https://github.com/lakekeeper/lakekeeper/issues/834">#834</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/89c0f8adacc2dc26b30d400563aeed716b5bdf62">89c0f8a</a>)</li>
+</ul>
+<h3 id="bug-fixes_16">Bug Fixes<a class="headerlink" href="#bug-fixes_16" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>deps:</strong> update rust crate rand to 0.9.0 (<a href="https://github.com/lakekeeper/lakekeeper/issues/785">#785</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b9952decd4ecbf959452170b89a5127e4d57cfb9">b9952de</a>)</li>
+<li>HEAD Namespace missing in supported endpoints (<a href="https://github.com/lakekeeper/lakekeeper/issues/847">#847</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f3e43fe206f32402316daf546130ef197a52ca03">f3e43fe</a>)</li>
+<li>parsing of pg sslmode should be case-insensitive (<a href="https://github.com/lakekeeper/lakekeeper/issues/802">#802</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/1e3d00177f952d0431ddcdb516d4f8e1e1413149">1e3d001</a>)</li>
+<li><strong>s3:</strong> set path style access in s3 file_io (<a href="https://github.com/lakekeeper/lakekeeper/issues/796">#796</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/33e690f77737ce3f7def54d4913164161aa60505">33e690f</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_19">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_19" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.7.0 (<a href="https://github.com/lakekeeper/lakekeeper/commit/491940b864dbf564f711adfa58be03f45f06f9e3">491940b</a>)</li>
+</ul>
+<h2 id="062-2025-01-30"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2">0.6.2</a> (2025-01-30)<a class="headerlink" href="#062-2025-01-30" title="Permanent link">&para;</a></h2>
+<h3 id="features_14">Features<a class="headerlink" href="#features_14" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Scope validation (<a href="https://github.com/lakekeeper/lakekeeper/issues/790">#790</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/65e664fb804fc6657dcfab655344d9bfd0224b5a">65e664f</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_20">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_20" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.6.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/0c7e1814eef9c039f6d05dbb3256c70caed1c36f">0c7e181</a>)</li>
+</ul>
+<h2 id="061-2025-01-27"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.6.0...v0.6.1">0.6.1</a> (2025-01-27)<a class="headerlink" href="#061-2025-01-27" title="Permanent link">&para;</a></h2>
+<h3 id="features_15">Features<a class="headerlink" href="#features_15" title="Permanent link">&para;</a></h3>
+<ul>
+<li>expose cloud-events tracing publisher on cli (<a href="https://github.com/lakekeeper/lakekeeper/issues/747">#747</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/798e85d39c034b2351443d7b1f9983160b820ed7">798e85d</a>)</li>
+<li>Register table endpoint (<a href="https://github.com/lakekeeper/lakekeeper/issues/775">#775</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4b88f730f3d54e7d905f66a0b32ca93f88e67f69">4b88f73</a>)</li>
+</ul>
+<h3 id="bug-fixes_17">Bug Fixes<a class="headerlink" href="#bug-fixes_17" title="Permanent link">&para;</a></h3>
+<ul>
+<li>clippy &amp; pin rust version (<a href="https://github.com/lakekeeper/lakekeeper/issues/758">#758</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0899d4cf91a1a056337ee00bcba0827b2e0a9792">0899d4c</a>)</li>
+<li>Table locations with same prefix (<a href="https://github.com/lakekeeper/lakekeeper/issues/780">#780</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/39eb3d2a169ff41c9b644a435fa53dadd449925a">39eb3d2</a>)</li>
+<li><strong>test:</strong> use 0.3.0 for kube-auth test &amp; fix pyiceberg aws tests (<a href="https://github.com/lakekeeper/lakekeeper/issues/767">#767</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e6b7b9ca23d3054c5b95aa09f2bb590ad188d2e2">e6b7b9c</a>)</li>
+</ul>
+<h3 id="performance-improvements">Performance Improvements<a class="headerlink" href="#performance-improvements" title="Permanent link">&para;</a></h3>
+<ul>
+<li>optimize load_table by refine SQL (<a href="https://github.com/lakekeeper/lakekeeper/issues/784">#784</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2b87915b7436ed8ec752046a687140fb18fbdf3e">2b87915</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_21">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_21" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.6.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/a17f5c4919bbe5797099dcbf45cf8a6becf0b3c1">a17f5c4</a>)</li>
+</ul>
+<h2 id="060-2025-01-07"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.5.2...v0.6.0">0.6.0</a> (2025-01-07)<a class="headerlink" href="#060-2025-01-07" title="Permanent link">&para;</a></h2>
+<h3 id="features_16">Features<a class="headerlink" href="#features_16" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Check Endpoint for single permissions (<a href="https://github.com/lakekeeper/lakekeeper/issues/706">#706</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/6a149a64a20728464e1a385a1a788ad9a49bfbe6">6a149a6</a>)</li>
+<li>Lakekeeper Open Policy Agent Bridge with trino support (<a href="https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093">3735742</a>)</li>
+<li><strong>tests:</strong> run integration tests with iceberg versions: 1.5.2, 1.6.1, 1.7.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7">3f3b5ad</a>)</li>
+<li>Update Lakekeeper UI to 0.4.0 (<a href="https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093">3735742</a>)</li>
+</ul>
+<h3 id="bug-fixes_18">Bug Fixes<a class="headerlink" href="#bug-fixes_18" title="Permanent link">&para;</a></h3>
+<ul>
+<li>credentials configs are never empty but are either null or an empty list (<a href="https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7">3f3b5ad</a>)</li>
+<li>Default to purge drop for managed tables (<a href="https://github.com/lakekeeper/lakekeeper/issues/712">#712</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/676d995c559a6ee6b08a6e030cd9eeac60931b93">676d995</a>)</li>
+<li>Enable openfga integration tests (<a href="https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093">3735742</a>)</li>
+<li>files of deleted tables not deleted for ADLS (<a href="https://github.com/lakekeeper/lakekeeper/issues/715">#715</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d81677f32df5aadedd83f439afa845c454f6af9a">d81677f</a>)</li>
+<li>return proper error codes for invalid writes and reads of permission tuples (<a href="https://github.com/lakekeeper/lakekeeper/issues/727">#727</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/96c2d5e0f9a5971610ced65138c5405c1a9702ad">96c2d5e</a>)</li>
+<li>use correct list of supported endpoints (<a href="https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7">3f3b5ad</a>)</li>
+</ul>
+<h2 id="052-2024-12-17"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.5.1...v0.5.2">0.5.2</a> (2024-12-17)<a class="headerlink" href="#052-2024-12-17" title="Permanent link">&para;</a></h2>
+<h3 id="features_17">Features<a class="headerlink" href="#features_17" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Support for Statistic Files (<a href="https://github.com/lakekeeper/lakekeeper/commit/1e4fa3876919bf5b926ea73f370ff62efd9081b9">1e4fa38</a>)</li>
+<li><strong>tables:</strong> load table credentials (<a href="https://github.com/lakekeeper/lakekeeper/issues/675">#675</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9fd272ee831b3347c3d4e790fcaacba6f4ded273">9fd272e</a>)</li>
+</ul>
+<h3 id="bug-fixes_19">Bug Fixes<a class="headerlink" href="#bug-fixes_19" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Make BASE_URI trailing slash insensitive (<a href="https://github.com/lakekeeper/lakekeeper/issues/681">#681</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4799ea78e60e5c908547f0cf1421384da919bfe3">4799ea7</a>)</li>
+<li>Snapshots without schema (<a href="https://github.com/lakekeeper/lakekeeper/commit/1e4fa3876919bf5b926ea73f370ff62efd9081b9">1e4fa38</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_22">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_22" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.5.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/c5774b26183dc41e938af130005e8df9230b3b82">c5774b2</a>)</li>
+</ul>
+<h2 id="051-2024-12-12"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.5.0...v0.5.1">0.5.1</a> (2024-12-12)<a class="headerlink" href="#051-2024-12-12" title="Permanent link">&para;</a></h2>
+<h3 id="features_18">Features<a class="headerlink" href="#features_18" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>openapi:</strong> document error models in openapi (<a href="https://github.com/lakekeeper/lakekeeper/issues/658">#658</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2a67196a9f9844db0f846cb2e9016c4d4620b0b5">2a67196</a>)</li>
+<li>undrop  (<a href="https://github.com/lakekeeper/lakekeeper/issues/517">#517</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/658e757663cd35a87ecccb2173e9e87247239c8e">658e757</a>)</li>
+</ul>
+<h3 id="bug-fixes_20">Bug Fixes<a class="headerlink" href="#bug-fixes_20" title="Permanent link">&para;</a></h3>
+<ul>
+<li>allow mixed-case properties (<a href="https://github.com/lakekeeper/lakekeeper/issues/660">#660</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f4355732583d396822ed7bbb55cc81537153b29e">f435573</a>)</li>
+<li>potential deadlock for views through uncommitted transactions (<a href="https://github.com/lakekeeper/lakekeeper/issues/638">#638</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0dda8e3d9bc7cdb1a36c7fc23d57c0e7e7e1389a">0dda8e3</a>)</li>
+<li>potential deadlock in load-table (<a href="https://github.com/lakekeeper/lakekeeper/issues/636">#636</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c22b0e00ae76ad3458c91ed860c8410446f52173">c22b0e0</a>)</li>
+<li>remove unused relation from openfga schema (<a href="https://github.com/lakekeeper/lakekeeper/issues/659">#659</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/764ca5b2667de591a4c6bc2ba798c41eb6b5c59e">764ca5b</a>)</li>
+<li>tokens of humans are wrongly identified as applications if "appid" claim is present (<a href="https://github.com/lakekeeper/lakekeeper/issues/647">#647</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bc6b475075354a66ae80b771ac7de3287b467841">bc6b475</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_23">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_23" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.5.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/f8aa87ca8b7a8074389cd43a39007b2652a46494">f8aa87c</a>)</li>
+</ul>
+<h2 id="050-2024-12-06"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.4.3...v0.5.0">0.5.0</a> (2024-12-06)<a class="headerlink" href="#050-2024-12-06" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes_3">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Rename S3 minio flavor to s3-compat (<a href="https://github.com/lakekeeper/lakekeeper/issues/630">#630</a>)</li>
+<li>Change default port from 8080 to 8181</li>
+<li>Default to single-tenant / single-project with NIL Project-ID</li>
+</ul>
+<h3 id="features_19">Features<a class="headerlink" href="#features_19" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add iceberg openapi to swagger (<a href="https://github.com/lakekeeper/lakekeeper/issues/431">#431</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bb3d12f2075e704eaab58b5a8292422fee3784fb">bb3d12f</a>)</li>
+<li>Add Iceberg REST Spec to swagger (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>add kafka support <a href="https://github.com/lakekeeper/lakekeeper/issues/271">#271</a> (<a href="https://github.com/lakekeeper/lakekeeper/issues/340">#340</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/7973586282b0f09074f00bf455ea9fc1a9fe1cf3">7973586</a>)</li>
+<li>Add namespace_id filter to list deleted tabulars (<a href="https://github.com/lakekeeper/lakekeeper/issues/443">#443</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/cc82736e9507f69e33f68c54d21bd4638126ef72">cc82736</a>)</li>
+<li>Add operator role (<a href="https://github.com/lakekeeper/lakekeeper/issues/543">#543</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bcddb60e458872f4ae88d0cd8f2ea1cc2d146445">bcddb60</a>)</li>
+<li>Allow configuration of additional Issuer URLs (<a href="https://github.com/lakekeeper/lakekeeper/commit/b712cf062ae6ecfc6904123672f25515304f65b1">b712cf0</a>)</li>
+<li>Allow configuration of multiple Audiences (<a href="https://github.com/lakekeeper/lakekeeper/commit/b712cf062ae6ecfc6904123672f25515304f65b1">b712cf0</a>)</li>
+<li>Change default port from 8080 to 8181 (<a href="https://github.com/lakekeeper/lakekeeper/commit/b712cf062ae6ecfc6904123672f25515304f65b1">b712cf0</a>)</li>
+<li>Create default Project on Bootstrap (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>Default to hard deletion (<a href="https://github.com/lakekeeper/lakekeeper/issues/507">#507</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5d794aa8c620157c8e437a9683f5c508a7659d86">5d794aa</a>)</li>
+<li>Default to single-tenant / single-project with NIL Project-ID (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>docs (<a href="https://github.com/lakekeeper/lakekeeper/issues/605">#605</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c1d23488c40a43af7f303ed78cadef76d9ccc06b">c1d2348</a>)</li>
+<li>Embedded UI (<a href="https://github.com/lakekeeper/lakekeeper/issues/622">#622</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/332f3b87db9ffbc6fdaf1d48855b8e3cdcf3c017">332f3b8</a>)</li>
+<li>Enable K8s Auth explicitly (<a href="https://github.com/lakekeeper/lakekeeper/issues/594">#594</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/3773141690cb2225571f4708509df90103bd3226">3773141</a>)</li>
+<li>Extend user search to email field (<a href="https://github.com/lakekeeper/lakekeeper/issues/477">#477</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9f9f42b5ac3dfb6b978f4db20a698cbc7163dec7">9f9f42b</a>)</li>
+<li>Fine Grained Access Controls with OpenFGA (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>Generated TS Client (<a href="https://github.com/lakekeeper/lakekeeper/issues/453">#453</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/24bfccf80fb1166f5a52f72ac0e8d2effb5b0bc0">24bfccf</a>)</li>
+<li>Hierarchical Namespaces (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>improve latency against aws by reusing http clients (<a href="https://github.com/lakekeeper/lakekeeper/issues/540">#540</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8c384f7aabc6f1ae0445f0c6c7fe4a4bab4ad147">8c384f7</a>)</li>
+<li>OIDC Audience validation (<a href="https://github.com/lakekeeper/lakekeeper/issues/607">#607</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/052bb3f539e9247fb5d4312447b9ab1823f20d8b">052bb3f</a>)</li>
+<li>Optionally return uuids for Iceberg APIs (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>pagination without empty pages (<a href="https://github.com/lakekeeper/lakekeeper/issues/450">#450</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c88a59db4e99a01118a281a51c97aa21f69cdb0f">c88a59d</a>)</li>
+<li>Project Management APIs (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>Provide inherited managed access via API (<a href="https://github.com/lakekeeper/lakekeeper/issues/619">#619</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e7b039488e605bf64e7dca2df137565eda7ed8c2">e7b0394</a>)</li>
+<li>Rename S3 minio flavor to s3-compat (<a href="https://github.com/lakekeeper/lakekeeper/issues/630">#630</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/acb7419f08301fa3e1d84a96dc3da0014ee0bb65">acb7419</a>)</li>
+<li>Server Info Endpoint (<a href="https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5">2eaa10e</a>)</li>
+<li>split table metadata into tables (<a href="https://github.com/lakekeeper/lakekeeper/issues/478">#478</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/942fa97c98049d15a50168ce7d7a9e711d9de3d1">942fa97</a>)</li>
+<li>support kubernetes service-accounts (<a href="https://github.com/lakekeeper/lakekeeper/issues/538">#538</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/298221063ad61b0301c019dee2094aae64dd5447">2982210</a>)</li>
+</ul>
+<h3 id="bug-fixes_21">Bug Fixes<a class="headerlink" href="#bug-fixes_21" title="Permanent link">&para;</a></h3>
+<ul>
+<li>aws s3 signer (<a href="https://github.com/lakekeeper/lakekeeper/issues/493">#493</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b7ad8f44eaba31c6ce181ba0844d2f0f6b8b1e76">b7ad8f4</a>)</li>
+<li><strong>aws:</strong> deal with closed connections via retries (<a href="https://github.com/lakekeeper/lakekeeper/issues/569">#569</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/bbda2c4dc2eb4d3d93443c86b48de6dfa606ad98">bbda2c4</a>)</li>
+<li>azure connection reset (<a href="https://github.com/lakekeeper/lakekeeper/issues/553">#553</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/5d4b0413f79b9ba217bbe079555a0447f982eaa5">5d4b041</a>)</li>
+<li>Bootstrap should return HTTP Code 204 (<a href="https://github.com/lakekeeper/lakekeeper/issues/597">#597</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/25d1d4e64902113173ecab7b86ebe82cefe0b580">25d1d4e</a>)</li>
+<li>Delete Namespaces with children should not be possible (<a href="https://github.com/lakekeeper/lakekeeper/issues/482">#482</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/7ffd8648fd058be72126e76abfedb9d860e7c69d">7ffd864</a>)</li>
+<li>flaky aws tests (<a href="https://github.com/lakekeeper/lakekeeper/issues/545">#545</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f4d46b27770f2d62a41fab283d38098ef009d848">f4d46b2</a>)</li>
+<li>Include Deletion Profile in GetWarehouseResponse (<a href="https://github.com/lakekeeper/lakekeeper/issues/514">#514</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/54a6420580b24e3b7f329b00106b3a98e50da062">54a6420</a>)</li>
+<li>List Namespaces - Top level NS list should only contain top level Namespaces (<a href="https://github.com/lakekeeper/lakekeeper/issues/512">#512</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/795d4f0be4f4432ce7e215b6885db92578ede748">795d4f0</a>)</li>
+<li>list-projects for non admins (<a href="https://github.com/lakekeeper/lakekeeper/issues/546">#546</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d0066b86e0df2f6d5cef75a591906ad6e4d88e23">d0066b8</a>)</li>
+<li><strong>management:</strong> deleted tabulars endpoint should not contain underscore (<a href="https://github.com/lakekeeper/lakekeeper/issues/556">#556</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b15a8fe9fd882c02e2c12691df6de849b80ff8cc">b15a8fe</a>)</li>
+<li>only log table load failed when it actually happened (<a href="https://github.com/lakekeeper/lakekeeper/issues/626">#626</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/be5f58ca5e2f72a4352629304bff641d77f9f85a">be5f58c</a>)</li>
+<li><strong>openapi:</strong> Fix Soft-Deletion expiration seconds type (<a href="https://github.com/lakekeeper/lakekeeper/issues/509">#509</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/322a1a01304f639211f168fa858141d0eb33e3c3">322a1a0</a>)</li>
+<li>pagination (<a href="https://github.com/lakekeeper/lakekeeper/issues/604">#604</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0be19ed14e5eb1b4fb66db19bc242c65d989a5f3">0be19ed</a>)</li>
+<li>permissions API Parameters (<a href="https://github.com/lakekeeper/lakekeeper/issues/516">#516</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/51337524871622bdf4f04c26b7bdf993c152ba45">5133752</a>)</li>
+<li>prepend a version count to metadata files (<a href="https://github.com/lakekeeper/lakekeeper/issues/524">#524</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0d9d06f784f03c2bdb95312873643f00b8b8253a">0d9d06f</a>)</li>
+<li>recreate user (<a href="https://github.com/lakekeeper/lakekeeper/issues/599">#599</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/1194cb05a1b2910f6535ac983a0ce53a69bebd85">1194cb0</a>)</li>
+<li>run metrics router (<a href="https://github.com/lakekeeper/lakekeeper/issues/628">#628</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f6b47e5d9c6ae6d884dcea2dcf4f2a6b9b3baefd">f6b47e5</a>)</li>
+<li>set pool idle timeout to &lt;20 not keepalive timeout (<a href="https://github.com/lakekeeper/lakekeeper/issues/551">#551</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/2ae5b8de9d71d921dc46d53b337aa9f2d9388e17">2ae5b8d</a>)</li>
+<li><strong>tests:</strong> give openfga a bit of time to delete things (<a href="https://github.com/lakekeeper/lakekeeper/issues/557">#557</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/71daf6ffc9a34c9e25b3b8df9c5343ecaa5d3ea7">71daf6f</a>)</li>
+<li><strong>tests:</strong> use a shared runtime for tests that share a static reqwest client (<a href="https://github.com/lakekeeper/lakekeeper/issues/555">#555</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/90c6880ae997bbaededb3c382e74e199088c5654">90c6880</a>)</li>
+<li>Warehouse managed-access in openapi spec (<a href="https://github.com/lakekeeper/lakekeeper/issues/610">#610</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c860506c387fa20860fd2dedd6d2eb91c48c690c">c860506</a>)</li>
+<li>WarehouseAdmin renamed to DataAdmin (<a href="https://github.com/lakekeeper/lakekeeper/issues/515">#515</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/7ec4c01508ee108da30b3fd070e39d309df001ec">7ec4c01</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_24">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_24" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.5.0 (<a href="https://github.com/lakekeeper/lakekeeper/commit/b1b2ee6d0f068adf9a60719c1cfb88201825d389">b1b2ee6</a>)</li>
+</ul>
+<h2 id="043-2024-11-13"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.4.2...v0.4.3">0.4.3</a> (2024-11-13)<a class="headerlink" href="#043-2024-11-13" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes_22">Bug Fixes<a class="headerlink" href="#bug-fixes_22" title="Permanent link">&para;</a></h3>
+<ul>
+<li>aws s3 signer (<a href="https://github.com/lakekeeper/lakekeeper/issues/493">#493</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/dea4a5774f34e92aa510df5a7e628c8e410a7085">dea4a57</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_25">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_25" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.4.3 (<a href="https://github.com/lakekeeper/lakekeeper/commit/e577ab2e4da78d612e87bd4844307c28098e2c31">e577ab2</a>)</li>
+</ul>
+<h2 id="042-2024-10-28"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.4.1...v0.4.2">0.4.2</a> (2024-10-28)<a class="headerlink" href="#042-2024-10-28" title="Permanent link">&para;</a></h2>
+<h3 id="features_20">Features<a class="headerlink" href="#features_20" title="Permanent link">&para;</a></h3>
+<ul>
+<li>enable native-tls-root-certs (<a href="https://github.com/lakekeeper/lakekeeper/commit/af26004c77a5013ad53a4718a1cd2e97654090ad">af26004</a>)</li>
+<li>improve azure latency by reusing http clients (<a href="https://github.com/lakekeeper/lakekeeper/commit/af26004c77a5013ad53a4718a1cd2e97654090ad">af26004</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_26">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_26" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.4.2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/1d8c469cd30121e17455b2c2a13e9f0a46f7f630">1d8c469</a>)</li>
+</ul>
+<h2 id="041-2024-10-15"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.4.0...v0.4.1">0.4.1</a> (2024-10-15)<a class="headerlink" href="#041-2024-10-15" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes_23">Bug Fixes<a class="headerlink" href="#bug-fixes_23" title="Permanent link">&para;</a></h3>
+<ul>
+<li>bug in join for listing view representations (<a href="https://github.com/lakekeeper/lakekeeper/commit/d2f1d7aad9497f8bf4fc04d8347949bf25ffc16a">d2f1d7a</a>)</li>
+<li>gcs integration test are now running in ci (<a href="https://github.com/lakekeeper/lakekeeper/commit/d2f1d7aad9497f8bf4fc04d8347949bf25ffc16a">d2f1d7a</a>)</li>
+<li>increase keycloak timeout in integration tests (<a href="https://github.com/lakekeeper/lakekeeper/commit/d2f1d7aad9497f8bf4fc04d8347949bf25ffc16a">d2f1d7a</a>)</li>
+<li>purge tests are now properly executed in ci (<a href="https://github.com/lakekeeper/lakekeeper/commit/d2f1d7aad9497f8bf4fc04d8347949bf25ffc16a">d2f1d7a</a>)</li>
+</ul>
+<h2 id="040-2024-10-03"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.3.0...v0.4.0">0.4.0</a> (2024-10-03)<a class="headerlink" href="#040-2024-10-03" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes_4">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Rename TIP to Lakekeeper (<a href="https://github.com/lakekeeper/lakekeeper/issues/372">#372</a>)</li>
+</ul>
+<h3 id="features_21">Features<a class="headerlink" href="#features_21" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>cache:</strong> cache metadata location in signer (<a href="https://github.com/lakekeeper/lakekeeper/issues/334">#334</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/fa0863cdbf5df626eec083499d76add4dade4e0b">fa0863c</a>)</li>
+<li><strong>catalog:</strong> expiration queue configuration (<a href="https://github.com/lakekeeper/lakekeeper/issues/330">#330</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/fd96861f6179296a554bacab47144838a0d352ab">fd96861</a>)</li>
+<li><strong>catalog:</strong> Soft-deletions &amp; tabular cleanup queues (<a href="https://github.com/lakekeeper/lakekeeper/issues/310">#310</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/1de63b3886820ea219006fcc2c696328b44dfb0f">1de63b3</a>)</li>
+<li>list soft deletions (<a href="https://github.com/lakekeeper/lakekeeper/issues/302">#302</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0a01eaf87f32e7f393f0d8f0d104594171dccfce">0a01eaf</a>)</li>
+<li>make sure table locations are unique (<a href="https://github.com/lakekeeper/lakekeeper/issues/335">#335</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/543db50319f757cb40f01600d36da2836cf49fb3">543db50</a>)</li>
+<li>New TableMetadataBuilder with: ID Reassignments, Metadata expiry, safe binding... (<a href="https://github.com/lakekeeper/lakekeeper/issues/387">#387</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/e5c1c77fced957cd6703e1ae6ec77e151414a63e">e5c1c77</a>)</li>
+<li>Rename TIP to Lakekeeper (<a href="https://github.com/lakekeeper/lakekeeper/issues/372">#372</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/57df07e69a14fb74aa486cd185ae700c3040fe90">57df07e</a>)</li>
+<li><strong>storage:</strong> support for google cloud storage (gcs) (<a href="https://github.com/lakekeeper/lakekeeper/issues/361">#361</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/ebb4e27f729e20e30f87e5ce4c2d2351c2422ca6">ebb4e27</a>)</li>
+<li><strong>tabular:</strong> soft-delete &amp; drop purge (<a href="https://github.com/lakekeeper/lakekeeper/issues/287">#287</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/475db4438f3bb7f1246fb846d04843d4afe3782a">475db44</a>)</li>
+</ul>
+<h3 id="bug-fixes_24">Bug Fixes<a class="headerlink" href="#bug-fixes_24" title="Permanent link">&para;</a></h3>
+<ul>
+<li>make conditional compilation of tests depend on var content (<a href="https://github.com/lakekeeper/lakekeeper/issues/311">#311</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/79036dba4739cc3a65d2fe706278ac81f64bc5f2">79036db</a>)</li>
+<li>replace pretty debug prints with properly formatted errors (<a href="https://github.com/lakekeeper/lakekeeper/issues/327">#327</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/efe9fe9bd1953d59dc5e48d6901b70fbe8e24895">efe9fe9</a>)</li>
+</ul>
+<h2 id="030-2024-08-26"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.2.1...v0.3.0">0.3.0</a> (2024-08-26)<a class="headerlink" href="#030-2024-08-26" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes_5">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li>dots can no longer be used in namespace names (<a href="https://github.com/lakekeeper/lakekeeper/issues/257">#257</a>)</li>
+</ul>
+<h3 id="features_22">Features<a class="headerlink" href="#features_22" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Add support for custom Locations for Namespaces &amp; Tables (<a href="https://github.com/lakekeeper/lakekeeper/commit/1d2ac6f4b3910bf161c47d0224689b6e611d15ab">1d2ac6f</a>)</li>
+<li><strong>aws:</strong> sts credentials for s3 (<a href="https://github.com/lakekeeper/lakekeeper/issues/236">#236</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/dbf775b6e226a8b8822f2e725ec317b4230aa0c4">dbf775b</a>)</li>
+<li><strong>compression-codec:</strong> Support setting and altering write.metadata.compression-codec (<a href="https://github.com/lakekeeper/lakekeeper/issues/235">#235</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/f4fb4cbb4ce7f357db8d4d37dce8b92173402777">f4fb4cb</a>)</li>
+<li><strong>storage:</strong> add ability to narrow token permissions (<a href="https://github.com/lakekeeper/lakekeeper/issues/249">#249</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/ba9f046cf48a380b7d0b6ce01a7f2045a9e47bea">ba9f046</a>)</li>
+<li><strong>storage:</strong> adls (<a href="https://github.com/lakekeeper/lakekeeper/issues/223">#223</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/fd1142852555d239e8ea8dac2cb9d5db76457ab1">fd11428</a>)</li>
+</ul>
+<h3 id="bug-fixes_25">Bug Fixes<a class="headerlink" href="#bug-fixes_25" title="Permanent link">&para;</a></h3>
+<ul>
+<li>dots can no longer be used in namespace names (<a href="https://github.com/lakekeeper/lakekeeper/issues/257">#257</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/8ac52e0e998c1417f3cb19655aebb4b39f054374">8ac52e0</a>)</li>
+<li><strong>kv2:</strong> extend docs &amp; fix mismatch between docs and expected env values (<a href="https://github.com/lakekeeper/lakekeeper/issues/224">#224</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/be3e3e60181acdb501303b7fb4215d79e65dd79e">be3e3e6</a>)</li>
+</ul>
+<h2 id="021-2024-07-29"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.2.0...v0.2.1">0.2.1</a> (2024-07-29)<a class="headerlink" href="#021-2024-07-29" title="Permanent link">&para;</a></h2>
+<h3 id="features_23">Features<a class="headerlink" href="#features_23" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>db:</strong> Add Encryption Secret for postgres SecretStore to README &amp; warn on startup (<a href="https://github.com/lakekeeper/lakekeeper/issues/217">#217</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/933409da47aefb7b1fb9668386da35adab43477e">933409d</a>)</li>
+<li><strong>secrets:</strong> Secret Backend configuration is now case insensitive (<a href="https://github.com/lakekeeper/lakekeeper/issues/215">#215</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/99b19ab3072fc4d9e2648a81cbca7b87b3b193b0">99b19ab</a>)</li>
+</ul>
+<h3 id="bug-fixes_26">Bug Fixes<a class="headerlink" href="#bug-fixes_26" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>examples:</strong> Fix <code>ICEBERG_REST__BASE_URI</code> (<a href="https://github.com/lakekeeper/lakekeeper/commit/33f213bf2592c958ac299a89ddae1a72e3446ed6">33f213b</a>)</li>
+<li><strong>s3signing:</strong> Add S3 remote signing "content-md5" for pyiceberg compatability (<a href="https://github.com/lakekeeper/lakekeeper/commit/33f213bf2592c958ac299a89ddae1a72e3446ed6">33f213b</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_27">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_27" title="Permanent link">&para;</a></h3>
+<ul>
+<li>release 0.2.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/587ea129780c21a3cd0fa8dd371b6901dede4c20">587ea12</a>)</li>
+</ul>
+<h2 id="020-2024-07-26"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.1.0...v0.2.0">0.2.0</a> (2024-07-26)<a class="headerlink" href="#020-2024-07-26" title="Permanent link">&para;</a></h2>
+<h3 id="breaking-changes_6">⚠ BREAKING CHANGES<a class="headerlink" href="#breaking-changes_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Catalog base URL should not contain /catalog suffix (<a href="https://github.com/lakekeeper/lakekeeper/issues/208">#208</a>)</li>
+<li><strong>views:</strong> split off tabular from table to prepare for views</li>
+</ul>
+<h3 id="features_24">Features<a class="headerlink" href="#features_24" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>health:</strong> Service health checks (<a href="https://github.com/lakekeeper/lakekeeper/issues/181">#181</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/3bf4d4c99e09b3ae90ea1b4a9aba5136300df514">3bf4d4c</a>)</li>
+<li><strong>pagination:</strong> add pagination for namespaces &amp; tables &amp; views (<a href="https://github.com/lakekeeper/lakekeeper/issues/186">#186</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/37b1dbd3fdd16c79e9f981d29c3842d7d7140564">37b1dbd</a>)</li>
+<li><strong>prometheus:</strong> add prometheus axum metrics (<a href="https://github.com/lakekeeper/lakekeeper/issues/185">#185</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/d60d84aebf26052a72e26ff6350d9636d4865009">d60d84a</a>)</li>
+<li><strong>secrets:</strong> add support for kv2 secret storage (<a href="https://github.com/lakekeeper/lakekeeper/issues/192">#192</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/a86b13c5020cd52073608c74dacc86eff7e1bb60">a86b13c</a>)</li>
+<li><strong>server:</strong> make listenport configurable (<a href="https://github.com/lakekeeper/lakekeeper/issues/183">#183</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/9ffe0c2e2c78b178bcb3900ed4d6a246e4eaeacb">9ffe0c2</a>)</li>
+<li><strong>views:</strong> authz interface for views &amp; view-ident resolve (<a href="https://github.com/lakekeeper/lakekeeper/issues/141">#141</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c5e1f99eba7244bdca9c37a42c3fe36f47c117a0">c5e1f99</a>)</li>
+<li><strong>views:</strong> commit views (<a href="https://github.com/lakekeeper/lakekeeper/issues/146">#146</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0f6310b2486cc608af6844c35be7a45ebeb998cd">0f6310b</a>)</li>
+<li><strong>views:</strong> create + load view (<a href="https://github.com/lakekeeper/lakekeeper/issues/142">#142</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/328cf33cf268cdbb7df2f185ed228291e509d6ab">328cf33</a>)</li>
+<li><strong>views:</strong> exists (<a href="https://github.com/lakekeeper/lakekeeper/issues/149">#149</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/fdb501326f72734a7faafc685402ef7d12e1189c">fdb5013</a>)</li>
+<li><strong>views:</strong> list-views (<a href="https://github.com/lakekeeper/lakekeeper/commit/5917a5e853e1a3c03f47cbad9152b74f9b88e9fa">5917a5e</a>)</li>
+<li><strong>views:</strong> rename views (<a href="https://github.com/lakekeeper/lakekeeper/issues/148">#148</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4aaaa7d6f727388c43a8ecc6f307a261b74abbef">4aaaa7d</a>)</li>
+<li><strong>views:</strong> split off tabular from table to prepare for views (<a href="https://github.com/lakekeeper/lakekeeper/commit/f62b3292e5fd9951dd20c6a48432e16c337db7a5">f62b329</a>)</li>
+</ul>
+<h3 id="bug-fixes_27">Bug Fixes<a class="headerlink" href="#bug-fixes_27" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Catalog base URL should not contain /catalog suffix (<a href="https://github.com/lakekeeper/lakekeeper/issues/208">#208</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/6aabaa97b1f8531830dd512c9a61c461c3f05b7f">6aabaa9</a>)</li>
+<li><strong>db:</strong> add wait-for-db command (<a href="https://github.com/lakekeeper/lakekeeper/issues/196">#196</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/c1cd069d773906a4c647dcc007c50b0aa6929c29">c1cd069</a>)</li>
+<li>remove unused cfg-attributes (<a href="https://github.com/lakekeeper/lakekeeper/issues/203">#203</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/b6d17c4bbdef073962fd220faf4a632f4a64e541">b6d17c4</a>)</li>
+<li><strong>tables:</strong> deny "write.metadata" &amp; "write.data.path" table properties  (<a href="https://github.com/lakekeeper/lakekeeper/issues/197">#197</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/4b2191e58439ce99a5420f411a121a2ba89a0698">4b2191e</a>)</li>
+</ul>
+<h2 id="010-2024-06-17"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.1.0-rc3...v0.1.0">0.1.0</a> (2024-06-17)<a class="headerlink" href="#010-2024-06-17" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_28">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_28" title="Permanent link">&para;</a></h3>
+<ul>
+<li>🚀 Release 0.1.0 (<a href="https://github.com/lakekeeper/lakekeeper/commit/a5def9a527aa615779b60fe8fc5a18aaa47f33ee">a5def9a</a>)</li>
+</ul>
+<h2 id="010-rc3-2024-06-17"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.1.0-rc2...v0.1.0-rc3">0.1.0-rc3</a> (2024-06-17)<a class="headerlink" href="#010-rc3-2024-06-17" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_29">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_29" title="Permanent link">&para;</a></h3>
+<ul>
+<li>🚀 Release 0.1.0-rc3 (<a href="https://github.com/lakekeeper/lakekeeper/commit/9b0d219e865dce85803fc93da7233e92d3e8b4b8">9b0d219</a>)</li>
+</ul>
+<h2 id="010-rc2-2024-06-17"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.1.0-rc1...v0.1.0-rc2">0.1.0-rc2</a> (2024-06-17)<a class="headerlink" href="#010-rc2-2024-06-17" title="Permanent link">&para;</a></h2>
+<h3 id="bug-fixes_28">Bug Fixes<a class="headerlink" href="#bug-fixes_28" title="Permanent link">&para;</a></h3>
+<ul>
+<li>add view router (<a href="https://github.com/lakekeeper/lakekeeper/issues/116">#116</a>) (<a href="https://github.com/lakekeeper/lakekeeper/commit/0745cc85e16974c05adc3b158f5cb04c9dd54ac4">0745cc8</a>)</li>
+</ul>
+<h3 id="miscellaneous-chores_30">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_30" title="Permanent link">&para;</a></h3>
+<ul>
+<li>🚀 Release 0.1.0-rc2 (<a href="https://github.com/lakekeeper/lakekeeper/commit/9bc25ef2b44d6c29556a5d0913c076904b1cb010">9bc25ef</a>)</li>
+</ul>
+<h2 id="010-rc1-2024-06-16"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.0.2-rc1...v0.1.0-rc1">0.1.0-rc1</a> (2024-06-16)<a class="headerlink" href="#010-rc1-2024-06-16" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_31">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_31" title="Permanent link">&para;</a></h3>
+<ul>
+<li>🚀 Release 0.1.0-rc1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/ba6e5d5c8a59cb1da5b61dd559c783998559debf">ba6e5d5</a>)</li>
+</ul>
+<h2 id="002-rc1-2024-06-16"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.0.1...v0.0.2-rc1">0.0.2-rc1</a> (2024-06-16)<a class="headerlink" href="#002-rc1-2024-06-16" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_32">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_32" title="Permanent link">&para;</a></h3>
+<ul>
+<li>🚀 Release 0.0.2-rc1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/eb34b9cd613bb2d72d4a9b33b103d36c7649bd57">eb34b9c</a>)</li>
+</ul>
+<h2 id="001-2024-06-15"><a href="https://github.com/lakekeeper/lakekeeper/compare/v0.0.0...v0.0.1">0.0.1</a> (2024-06-15)<a class="headerlink" href="#001-2024-06-15" title="Permanent link">&para;</a></h2>
+<h3 id="miscellaneous-chores_33">Miscellaneous Chores<a class="headerlink" href="#miscellaneous-chores_33" title="Permanent link">&para;</a></h3>
+<ul>
+<li>🚀 Release 0.0.1 (<a href="https://github.com/lakekeeper/lakekeeper/commit/c52ddec7520ec16ed0b6f70c5e3108a7d8a35665">c52ddec</a>)</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../../support/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Community">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Community
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../license/" class="md-footer__link md-footer__link--next" aria-label="Next: License">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                License
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2025 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://discord.gg/jkAGG8p93B" target="_blank" rel="noopener" title="discord.gg" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M492.5 69.8c-.2-.3-.4-.6-.8-.7-38.1-17.5-78.4-30-119.7-37.1-.4-.1-.8 0-1.1.1s-.6.4-.8.8c-5.5 9.9-10.5 20.2-14.9 30.6-44.6-6.8-89.9-6.8-134.4 0-4.5-10.5-9.5-20.7-15.1-30.6-.2-.3-.5-.6-.8-.8s-.7-.2-1.1-.2C162.5 39 122.2 51.5 84.1 69c-.3.1-.6.4-.8.7C7.1 183.5-13.8 294.6-3.6 404.2c0 .3.1.5.2.8s.3.4.5.6c44.4 32.9 94 58 146.8 74.2.4.1.8.1 1.1 0s.7-.4.9-.7c11.3-15.4 21.4-31.8 30-48.8.1-.2.2-.5.2-.8s0-.5-.1-.8-.2-.5-.4-.6-.4-.3-.7-.4c-15.8-6.1-31.2-13.4-45.9-21.9-.3-.2-.5-.4-.7-.6s-.3-.6-.3-.9 0-.6.2-.9.3-.5.6-.7c3.1-2.3 6.2-4.7 9.1-7.1.3-.2.6-.4.9-.4s.7 0 1 .1c96.2 43.9 200.4 43.9 295.5 0 .3-.1.7-.2 1-.2s.7.2.9.4c2.9 2.4 6 4.9 9.1 7.2.2.2.4.4.6.7s.2.6.2.9-.1.6-.3.9-.4.5-.6.6c-14.7 8.6-30 15.9-45.9 21.8-.2.1-.5.2-.7.4s-.3.4-.4.7-.1.5-.1.8.1.5.2.8c8.8 17 18.8 33.3 30 48.8.2.3.6.6.9.7s.8.1 1.1 0c52.9-16.2 102.6-41.3 147.1-74.2.2-.2.4-.4.5-.6s.2-.5.2-.8c12.3-126.8-20.5-236.9-86.9-334.5zm-302 267.7c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.2-52.8 59.2m195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.2 59.2-52.8 59.2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/lakekeeper/lakekeeper" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "navigation.footer", "toc.follow", "offline", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.7a47a382.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.e71a0d61.min.js"></script>
+      
+        <script src="/assets/js/jquery-3.6.0.min.js"></script>
+      
+        <script src="/assets/js/main.js"></script>
+      
+        <script src="/assets/js/odometer.js"></script>
+      
+        <script src="/assets/js/wow.min.js"></script>
+      
+    
+  </body>
+</html>
