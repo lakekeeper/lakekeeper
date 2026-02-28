@@ -25,22 +25,6 @@ use crate::{
     },
 };
 
-/// Provider / source-id pair for a role.
-/// When creating a role, either supply both fields or omit both.
-/// Omitting both lets the server assign `provider-id = "lakekeeper"` and a
-/// fresh UUIDv7 `source-id`.
-#[derive(Debug, Deserialize, typed_builder::TypedBuilder)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct CreateRoleIdent {
-    /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub provider_id: RoleProviderId,
-    /// Identifier of the role within the provider.
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    pub source_id: RoleSourceId,
-}
-
 #[derive(Debug, Deserialize, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -57,13 +41,19 @@ pub struct CreateRoleRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
     pub project_id: Option<ProjectId>,
-    /// Provider/source-id pair. Provide both or omit both.
-    /// When omitted the server assigns `provider-id = "lakekeeper"` and a
-    /// fresh UUIDv7 `source-id`.
-    #[serde(flatten, default)]
+    /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+    /// Must be provided together with `source-id`. Omit both to let the server
+    /// assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
+    #[serde(default)]
     #[builder(default)]
-    #[cfg_attr(feature = "open-api", schema(inline))]
-    pub ident: Option<CreateRoleIdent>,
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
+    pub provider_id: Option<RoleProviderId>,
+    /// Identifier of the role in the provider.
+    /// Must be provided together with `provider-id`.
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
+    pub source_id: Option<RoleSourceId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -296,6 +286,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 None,
             )
             .into());
+        }
+        match (&request.provider_id, &request.source_id) {
+            (None, None) | (Some(_), Some(_)) => {}
+            _ => {
+                return Err(ErrorModel::bad_request(
+                    "provider-id and source-id must be provided together, or both omitted",
+                    "InvalidRoleIdentifier",
+                    None,
+                )
+                .into());
+            }
         }
 
         let authorizer = context.v1_state.authz;
@@ -536,11 +537,10 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
             .map_err(|e| CatalogBackendError::new_unexpected(e.error))
             .map_err(CreateRoleError::from)?;
 
-    let source_id = request.ident.as_ref().map_or_else(
-        || RoleSourceId::new_from_role_id(role_id),
-        |i| i.source_id.clone(),
-    );
-    let provider_id = request.ident.map(|i| i.provider_id).unwrap_or_default();
+    let source_id = request
+        .source_id
+        .unwrap_or_else(|| RoleSourceId::new_from_role_id(role_id));
+    let provider_id = request.provider_id.unwrap_or_default();
     let catalog_create_role_request = CatalogCreateRoleRequest {
         role_id,
         role_name: &request.name,
