@@ -1,0 +1,140 @@
+#!/bin/bash
+
+set -e
+
+# Show usage
+usage() {
+    echo "Usage: $0 [COMMAND] [OPTIONS]"
+    echo ""
+    echo "Commands:"
+    echo "  up      Start the services (default)"
+    echo "  down    Stop and remove the services"
+    echo ""
+    echo "Options for 'up':"
+    echo "  --new-license    Prompt for a new license key"
+    echo "  -d, --detach     Run in detached mode"
+    echo ""
+    echo "Examples:"
+    echo "  $0               # Start services interactively"
+    echo "  $0 up            # Start services interactively"
+    echo "  $0 up -d         # Start services in background"
+    echo "  $0 up --new-license  # Prompt for new license before starting"
+    echo "  $0 down          # Stop and cleanup services"
+}
+
+# Parse command
+COMMAND="up"
+if [ $# -gt 0 ] && [[ ! "$1" =~ ^- ]]; then
+    COMMAND="$1"
+    shift
+fi
+
+# Detect docker or podman early
+if command -v docker &> /dev/null; then
+    DOCKER_CMD="docker"
+elif command -v podman &> /dev/null; then
+    DOCKER_CMD="podman"
+else
+    echo "Error: Neither docker nor podman found. Please install Docker or Podman."
+    exit 1
+fi
+
+case "$COMMAND" in
+    up)
+        # Check for --new-license flag
+        NEW_LICENSE=false
+        REMAINING_ARGS=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --new-license)
+                    NEW_LICENSE=true
+                    ;;
+                *)
+                    REMAINING_ARGS+=("$1")
+                    ;;
+            esac
+            shift
+        done
+
+        # Check if .env file exists or if --new-license flag was passed
+        if [ ! -f .env ] || [ "$NEW_LICENSE" = true ]; then
+            if [ "$NEW_LICENSE" = true ] && [ -f .env ]; then
+                echo "Replacing existing license key..."
+                echo ""
+            fi
+            echo "==================================================================="
+            echo "  Lakekeeper Plus License Key Required"
+            echo "==================================================================="
+            echo ""
+            echo "This example requires a valid Lakekeeper Plus license key."
+            echo ""
+            echo "Get a free 30-day trial license at: https://vakamo.com/trial"
+            echo ""
+            echo "==================================================================="
+            echo ""
+            
+            # Prompt for license key
+            read -p "Enter your license key: " LICENSE_KEY
+            
+            if [ -z "$LICENSE_KEY" ]; then
+                echo "Error: License key cannot be empty"
+                exit 1
+            fi
+            
+            # Create .env file
+            echo "LAKEKEEPER__LICENSE__KEY=$LICENSE_KEY" > .env
+            echo ""
+            echo "✓ License key saved to .env file"
+            echo ""
+        fi
+
+        # Detect host IP address
+        echo "Detecting host IP address..."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS - try common interfaces
+            HOST_IP=$(ifconfig en0 2>/dev/null | grep 'inet ' | awk '{print $2}')
+            if [ -z "$HOST_IP" ]; then
+                HOST_IP=$(ifconfig en1 2>/dev/null | grep 'inet ' | awk '{print $2}')
+            fi
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            # Linux - try to get default route interface
+            DEFAULT_IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+            if [ -n "$DEFAULT_IFACE" ]; then
+                HOST_IP=$(ip addr show "$DEFAULT_IFACE" | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+            fi
+        fi
+        
+        if [ -z "$HOST_IP" ]; then
+            echo "Error: Could not detect host IP address automatically."
+            echo "Please enter your host IP address manually:"
+            read -p "Host IP: " HOST_IP
+            if [ -z "$HOST_IP" ]; then
+                echo "Error: Host IP cannot be empty"
+                exit 1
+            fi
+        fi
+        
+        echo "Using host IP: $HOST_IP"
+        export HOST_IP
+        
+        echo "Starting services with HOST_IP=$HOST_IP..."
+        HOST_IP="$HOST_IP" $DOCKER_CMD compose up "${REMAINING_ARGS[@]}"
+        ;;
+    
+    down)
+        echo "Stopping and removing services..."
+        $DOCKER_CMD compose down "$@"
+        ;;
+    
+    help|--help|-h)
+        usage
+        exit 0
+        ;;
+    
+    *)
+        echo "Error: Unknown command '$COMMAND'"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac
