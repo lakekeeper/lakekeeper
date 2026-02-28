@@ -244,9 +244,11 @@ Please check the [Authorization User Guide](./authorization.md#authorization-wit
 | <nobr>`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`</nobr> | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
 | `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM`         | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
 | `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`               | `5`                                                   | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization.md#authorization-with-cedar) for more information. |
+| `LAKEKEEPER__CEDAR__REFRESH_DISABLED`                    | `false`                                               | When set to `true`, disables periodic reloading of policies and entities entirely. Useful in environments where Cedar configuration is known to be static and the polling overhead is undesirable. Default: `false`. |
 | `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES`   | `false`                                               | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and does not extract `Lakekeeper::Role` or `Lakekeeper::User` entities from the user's token. When set to `false` (default), Lakekeeper automatically provides `Lakekeeper::Role` and `Lakekeeper::User` entities to Cedar based on information extracted from the user's token. When set to `false`, ensure `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured to specify which claim in the token contains role information. |
 | `LAKEKEEPER__CEDAR__SCHEMA_FILE`                         | `/path/to/custom/schema.cedarschema`                  | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
 | `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE`                | `/path/to/schema-fragment.cedarschema`                | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
+| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`             | `["access_", "access-"]`                              | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization.md#property-based-access-control). |
 
 **Debug configurations for Cedar**
 
@@ -366,9 +368,9 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 
 Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Audit Logging Guide](./audit-logging.md).
 
-| Variable                                                 | Example | Description |
-|----------------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr>       | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
+| Variable                                           | Example | Description   |
+|----------------------------------------------------|---------|---------------|
+| <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr> | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
 
 ### Debug
 

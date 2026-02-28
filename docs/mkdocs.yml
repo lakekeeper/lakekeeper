@@ -15,6 +15,8 @@ nav:
           - storage.md
           - authentication.md
           - authorization.md
+          - Authorization (OpenFGA): authorization-openfga.md
+          - Authorization (Cedar): authorization-cedar.md
           - logging.md
           - opa.md
           - table-maintenance.md
