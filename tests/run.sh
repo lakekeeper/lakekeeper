@@ -25,7 +25,7 @@ SPARK_VERSION="${1#*-}"
 # ── Container-side execution ──────────────────────────────────────────────────
 if [ "${LAKEKEEPER_IN_CONTAINER:-0}" = "1" ]; then
     setup_python
-    if [ -n "$SPARK_VERSION" ]; then
+    if [[ "$SPARK_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
         export LAKEKEEPER_TEST__SPARK_ICEBERG_VERSION="$SPARK_VERSION"
     fi
     echo "Running tests: $TOX_NAME  iceberg version: ${LAKEKEEPER_TEST__SPARK_ICEBERG_VERSION:-default}"
