@@ -25,18 +25,19 @@ fn map_role_upsert_error<E>(e: sqlx::Error) -> E
 where
     E: From<RoleNameAlreadyExists> + From<CatalogBackendError>,
 {
-    if let sqlx::Error::Database(ref db) = e {
-        if db.is_unique_violation() && db.constraint() == Some("unique_role_name_in_project") {
-            return RoleNameAlreadyExists::new()
-                .append_detail(db.message())
-                .into();
-        }
+    if let sqlx::Error::Database(ref db) = e
+        && db.is_unique_violation()
+        && db.constraint() == Some("unique_role_name_in_project")
+    {
+        return RoleNameAlreadyExists::new()
+            .append_detail(db.message())
+            .into();
     }
     e.into_catalog_backend_error().into()
 }
 
-fn user_id_from_db(s: String) -> Result<UserId, DatabaseIntegrityError> {
-    UserId::try_from(s.as_str()).map_err(|e| DatabaseIntegrityError::new(e.message))
+fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
+    UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
 }
 
 // ─── Row type shared by the two role-members list queries ─────────────────────
@@ -70,7 +71,7 @@ fn rows_to_list_role_members_result(
         .into_iter()
         .filter_map(|r| r.user_id)
         .map(|id| {
-            user_id_from_db(id).map(|user_id| AssignedUser {
+            user_id_from_db(&id).map(|user_id| AssignedUser {
                 user_id: Arc::new(user_id),
             })
         })
@@ -87,13 +88,13 @@ fn rows_to_list_role_members_result(
 
 // ─── sync_role_members_by_ident ───────────────────────────────────────────────
 //
-// Single CTE round-trip:
+// Single CTE round-trip (PG15-compatible):
 //   1. Upsert role                               (upserted_role)
 //   2. Upsert desired users                      (upserted_users)
-//   3. MERGE role_assignment: insert new, delete stale (member_changes)
-//   4. Record sync time                          (sync_ts)
-//   MERGE RETURNING merge_action() gives added/removed user IDs directly.
-
+//   3. DELETE stale members                      (removed_members)
+//   4. INSERT new members ON CONFLICT DO NOTHING (added_members)
+//   5. Record sync time                          (sync_ts)
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn sync_role_members_by_ident(
     project_id: &ProjectId,
     role: &CatalogRoleForAssignment<'_>,
@@ -131,31 +132,43 @@ pub(crate) async fn sync_role_members_by_ident(
                 AS u(id, name, email, utype)
         ),
         upserted_users AS (
-            MERGE INTO users AS tgt
-            USING user_input AS src ON tgt.id = src.id
-            WHEN NOT MATCHED THEN
-                INSERT (id, name, email, last_updated_with, user_type)
-                VALUES (src.id, src.effective_name, src.effective_email, $10, src.effective_utype)
-            WHEN MATCHED THEN
-                UPDATE SET
-                    name              = COALESCE(src.name, tgt.name),
-                    email             = CASE WHEN src.email IS NULL THEN tgt.email ELSE NULLIF(src.email, '') END,
-                    last_updated_with = $10,
-                    user_type         = COALESCE(src.utype, tgt.user_type),
-                    deleted_at        = null
-            RETURNING tgt.id
+            INSERT INTO users (id, name, email, last_updated_with, user_type)
+            SELECT id, effective_name, effective_email, $10, effective_utype
+            FROM user_input
+            ON CONFLICT (id) DO UPDATE SET
+                name              = COALESCE(
+                                        (SELECT name FROM user_input WHERE id = EXCLUDED.id),
+                                        users.name),
+                email             = CASE
+                                        WHEN (SELECT email FROM user_input WHERE id = EXCLUDED.id) IS NULL
+                                            THEN users.email
+                                        ELSE NULLIF(
+                                                (SELECT email FROM user_input WHERE id = EXCLUDED.id),
+                                                '')
+                                    END,
+                last_updated_with = $10,
+                user_type         = COALESCE(
+                                        (SELECT utype FROM user_input WHERE id = EXCLUDED.id),
+                                        users.user_type),
+                deleted_at        = null
+            RETURNING id
         ),
-        member_changes AS (
-            MERGE INTO role_assignment AS tgt
-            USING (SELECT id FROM upserted_users) AS src
-                ON tgt.role_id = (SELECT id FROM upserted_role) AND tgt.user_id = src.id
-            WHEN NOT MATCHED BY TARGET THEN
-                INSERT (user_id, role_id) VALUES (src.id, (SELECT id FROM upserted_role))
-            WHEN NOT MATCHED BY SOURCE
-                 AND tgt.role_id = (SELECT id FROM upserted_role)
-            THEN DELETE
-            RETURNING merge_action() AS action,
-                      COALESCE(tgt.user_id, src.id) AS user_id
+        -- Remove members no longer in the desired set.
+        -- Executes against the same snapshot as added_members; the two sets
+        -- are disjoint (removed = NOT IN upserted_users, added = IN upserted_users)
+        -- so there is no overlap and no conflict between the two statements.
+        removed_members AS (
+            DELETE FROM role_assignment
+            WHERE role_id = (SELECT id FROM upserted_role)
+              AND user_id NOT IN (SELECT id FROM upserted_users)
+            RETURNING user_id
+        ),
+        added_members AS (
+            INSERT INTO role_assignment (user_id, role_id)
+            SELECT id, (SELECT id FROM upserted_role)
+            FROM upserted_users
+            ON CONFLICT (user_id, role_id) DO NOTHING
+            RETURNING user_id
         ),
         sync_ts AS (
             INSERT INTO role_members_sync (role_id, synced_at)
@@ -164,10 +177,10 @@ pub(crate) async fn sync_role_members_by_ident(
             RETURNING synced_at
         )
         SELECT
-            (SELECT id        FROM upserted_role)                                                                       AS "role_id!: Uuid",
-            (SELECT synced_at FROM sync_ts)                                                                             AS "synced_at!",
-            (SELECT COALESCE(array_agg(user_id) FILTER (WHERE action = 'INSERT'), ARRAY[]::TEXT[]) FROM member_changes) AS "added_ids!: Vec<String>",
-            (SELECT COALESCE(array_agg(user_id) FILTER (WHERE action = 'DELETE'), ARRAY[]::TEXT[]) FROM member_changes) AS "removed_ids!: Vec<String>"
+            (SELECT id        FROM upserted_role)                                                 AS "role_id!: Uuid",
+            (SELECT synced_at FROM sync_ts)                                                       AS "synced_at!",
+            (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM added_members)   AS "added_ids!: Vec<String>",
+            (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM removed_members) AS "removed_ids!: Vec<String>"
         "#,
         role.name as Option<&str>,
         role.description as Option<&str>,
@@ -190,7 +203,7 @@ pub(crate) async fn sync_role_members_by_ident(
         .added_ids
         .into_iter()
         .map(|id| {
-            user_id_from_db(id).map(|uid| AssignedUser {
+            user_id_from_db(&id).map(|uid| AssignedUser {
                 user_id: Arc::new(uid),
             })
         })
@@ -201,7 +214,7 @@ pub(crate) async fn sync_role_members_by_ident(
         .removed_ids
         .into_iter()
         .map(|id| {
-            user_id_from_db(id).map(|uid| AssignedUser {
+            user_id_from_db(&id).map(|uid| AssignedUser {
                 user_id: Arc::new(uid),
             })
         })
@@ -219,15 +232,15 @@ pub(crate) async fn sync_role_members_by_ident(
 // ─── sync_user_role_assignments_by_provider ───────────────────────────────────
 //
 // Two queries, one transaction:
-//   Query 1 – single CTE:
+//   Query 1 – single CTE (PG15-compatible):
 //     1. Upsert the user                          (upserted_user)
 //     2. Bulk upsert desired roles                 (upserted_roles)
-//     3. MERGE role_assignment: insert new, delete stale (assignment_changes)
-//     4. Upsert sync record                        (sync_ts)
-//     MERGE RETURNING merge_action() gives added/removed role IDs directly.
+//     3. DELETE stale assignments                  (removed_assignments)
+//     4. INSERT new assignments ON CONFLICT DO NOTHING (added_assignments)
+//     5. Upsert sync record                        (sync_ts)
 //   Query 2 – plain SELECT via list_role_assignments_for_user:
-//     Reads the committed post-sync state (MERGE + sync_ts writes are visible
-//     to subsequent statements in the same transaction).
+//     Reads the post-sync state (writes from query 1 are visible to subsequent
+//     statements in the same transaction).
 
 pub(crate) async fn sync_user_role_assignments_by_provider(
     user: &CatalogUserRoleAssignmentUser<'_>,
@@ -263,32 +276,36 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
             FROM UNNEST($8::TEXT[], $9::TEXT[], $10::TEXT[]) AS u(name, description, source_id)
         ),
         upserted_roles AS (
-            MERGE INTO "role" AS tgt
-            USING role_input AS src
-                ON tgt.source_id = src.source_id AND tgt.provider_id = $6 AND tgt.project_id = $7
-            WHEN NOT MATCHED THEN
-                INSERT (id, name, description, source_id, provider_id, project_id)
-                VALUES (gen_random_uuid(), src.effective_name, src.effective_description, src.source_id, $6, $7)
-            WHEN MATCHED THEN
-                UPDATE SET
-                    name        = COALESCE(src.name, tgt.name),
-                    description = CASE WHEN src.description IS NULL THEN tgt.description ELSE NULLIF(src.description, '') END
-            RETURNING tgt.id
+            INSERT INTO "role" (id, name, description, source_id, provider_id, project_id)
+            SELECT gen_random_uuid(), effective_name, effective_description, source_id, $6, $7
+            FROM role_input
+            ON CONFLICT ON CONSTRAINT unique_role_provider_source_in_project DO UPDATE SET
+                name        = COALESCE(
+                                  (SELECT name FROM role_input WHERE source_id = EXCLUDED.source_id),
+                                  "role".name),
+                description = CASE
+                                  WHEN (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id) IS NULL
+                                      THEN "role".description
+                                  ELSE NULLIF(
+                                          (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),
+                                          '')
+                              END
+            RETURNING id
         ),
-        assignment_changes AS (
-            MERGE INTO role_assignment AS tgt
-            USING (SELECT id FROM upserted_roles) AS src
-                ON tgt.role_id = src.id AND tgt.user_id = $1
-            WHEN NOT MATCHED BY TARGET THEN
-                INSERT (user_id, role_id) VALUES ($1, src.id)
-            WHEN NOT MATCHED BY SOURCE
-                 AND tgt.user_id = $1
-                 AND tgt.role_id IN (
-                     SELECT id FROM "role" WHERE provider_id = $6 AND project_id = $7
-                 )
-            THEN DELETE
-            RETURNING merge_action() AS action,
-                      COALESCE(tgt.role_id, src.id) AS role_id
+        removed_assignments AS (
+            DELETE FROM role_assignment
+            WHERE user_id = $1
+              AND role_id IN (
+                  SELECT id FROM "role" WHERE provider_id = $6 AND project_id = $7
+              )
+              AND role_id NOT IN (SELECT id FROM upserted_roles)
+            RETURNING role_id
+        ),
+        added_assignments AS (
+            INSERT INTO role_assignment (user_id, role_id)
+            SELECT $1, id FROM upserted_roles
+            ON CONFLICT (user_id, role_id) DO NOTHING
+            RETURNING role_id
         ),
         sync_ts AS (
             INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at)
@@ -297,9 +314,9 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
             RETURNING synced_at
         )
         SELECT
-            (SELECT synced_at FROM sync_ts)                                                                    AS "synced_at!",
-            (SELECT COALESCE(array_agg(role_id) FILTER (WHERE action = 'INSERT'), ARRAY[]::UUID[]) FROM assignment_changes) AS "added_ids!: Vec<Uuid>",
-            (SELECT COALESCE(array_agg(role_id) FILTER (WHERE action = 'DELETE'), ARRAY[]::UUID[]) FROM assignment_changes) AS "removed_ids!: Vec<Uuid>"
+            (SELECT synced_at FROM sync_ts)                                                                AS "synced_at!",
+            (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM added_assignments)   AS "added_ids!: Vec<Uuid>",
+            (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM removed_assignments) AS "removed_ids!: Vec<Uuid>"
         "#,
         user.user_id.to_string(),
         user.name as Option<&str>,
@@ -319,7 +336,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     // Second query within the same transaction: the MERGE + sync_ts writes
     // are now visible, so a plain SELECT gives the authoritative post-sync
     // state without any snapshot-visibility gymnastics.
-    let all_assignments = list_role_assignments_for_user(&**user.user_id, &mut **transaction)
+    let all_assignments = list_role_assignments_for_user(user.user_id, &mut **transaction)
         .await
         .map_err(SyncUserRoleAssignmentsError::from)?;
 
@@ -364,7 +381,7 @@ pub(crate) async fn list_role_assignments_for_user<
     )
     .fetch_all(connection)
     .await
-    .map_err(|e| e.into_catalog_backend_error())?;
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     let mut roles = Vec::with_capacity(rows.len());
     let mut seen_sync = HashSet::new();
@@ -379,14 +396,13 @@ pub(crate) async fn list_role_assignments_for_user<
 
         if let (Some(sp), Some(prov), Some(sat)) =
             (row.sync_project_id, row.sync_provider_id, row.synced_at)
+            && seen_sync.insert((sp.clone(), prov.clone()))
         {
-            if seen_sync.insert((sp.clone(), prov.clone())) {
-                provider_sync_times.push(UserProviderSyncInfo {
-                    project_id: Arc::new(ProjectId::from_db_unchecked(sp)),
-                    provider_id: RoleProviderId::new_unchecked(prov),
-                    synced_at: sat,
-                });
-            }
+            provider_sync_times.push(UserProviderSyncInfo {
+                project_id: Arc::new(ProjectId::from_db_unchecked(sp)),
+                provider_id: RoleProviderId::new_unchecked(prov),
+                synced_at: sat,
+            });
         }
     }
 
@@ -426,7 +442,7 @@ pub(crate) async fn list_role_assignments_for_role<
     )
     .fetch_all(connection)
     .await
-    .map_err(|e| e.into_catalog_backend_error())?;
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     rows_to_list_role_members_result(rows).map_err(CatalogBackendError::new_unexpected)
 }
@@ -466,7 +482,7 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
     )
     .fetch_all(connection)
     .await
-    .map_err(|e| e.into_catalog_backend_error())?;
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     rows_to_list_role_members_result(rows).map_err(CatalogBackendError::new_unexpected)
 }
@@ -1266,8 +1282,7 @@ mod tests {
         assert!(prov_ids.contains(&provider_b));
     }
 
-    /// After clearing provider_a's roles, `all_roles` must still contain
-    /// provider_b's roles — clearing one provider must not affect others.
+    /// Aft`provider_a`g provider_a's roles, `all_roles` must still cont`provider_b`/ provider_b's roles — clearing one provider must not affect others.
     #[sqlx::test]
     async fn user_assignments_all_roles_after_clear_one_provider(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());

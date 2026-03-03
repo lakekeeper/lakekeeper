@@ -360,7 +360,7 @@ where
         catalog_state: Self::State,
         dispatcher: &EventDispatcher,
     ) -> crate::api::Result<Arc<ListUserRoleAssignmentsResult>> {
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+        let mut t = Self::Transaction::begin_write(catalog_state).await?;
         let sync_result = Self::sync_user_role_assignments_by_provider_impl(
             &user,
             project_id,
@@ -371,11 +371,10 @@ where
         .await?;
         t.commit().await?;
 
-        let list_result = Arc::new(
-            Self::list_role_assignments_for_user_impl(user.user_id, catalog_state)
-                .await
-                .map_err(SyncUserRoleAssignmentsError::from)?,
-        );
+        let list_result = Arc::new(ListUserRoleAssignmentsResult {
+            roles: sync_result.all_roles,
+            provider_sync_times: sync_result.provider_sync_times,
+        });
 
         let event = UserRoleAssignmentsSyncedEvent {
             user_id: user.user_id.clone(),
@@ -468,10 +467,9 @@ where
         // A cache hit lets us serve ROLE_MEMBERS_CACHE without touching the DB.
         if let Some(role_id) =
             role_cache::role_ident_to_id(project_id.clone(), role_ident.clone()).await
+            && let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await
         {
-            if let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await {
-                return Ok(cached);
-            }
+            return Ok(cached);
         }
 
         // DB fetch — the result carries role_id, project_id and role_ident so

@@ -32,7 +32,7 @@ pub enum UserLastUpdatedWith {
     ConfigCallCreation,
     /// The user was updated by one of the dedicated update endpoints
     UpdateEndpoint,
-    /// The user was last updated by a RoleProvider
+    /// The user was last updated by a `RoleProvider`
     RoleProvider,
 }
 
