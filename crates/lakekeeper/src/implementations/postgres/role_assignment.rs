@@ -898,7 +898,7 @@ mod tests {
         .await
         .unwrap();
         t.commit().await.unwrap();
-        let added_first: HashSet<RoleId> = first.added.iter().cloned().collect();
+        let added_first: HashSet<RoleId> = first.added.iter().copied().collect();
 
         // Second sync: [r2, r3] — removes r1, adds r3
         let mut t = PostgresTransaction::begin_write(state.clone())
@@ -1282,7 +1282,7 @@ mod tests {
         assert!(prov_ids.contains(&provider_b));
     }
 
-    /// Aft`provider_a`g provider_a's roles, `all_roles` must still cont`provider_b`/ provider_b's roles — clearing one provider must not affect others.
+    /// Aft`provider_a`g `provider_a`'s roles, `all_roles` must still cont`provider_b`/ `provider_b`'s roles — clearing one provider must not affect others.
     #[sqlx::test]
     async fn user_assignments_all_roles_after_clear_one_provider(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
