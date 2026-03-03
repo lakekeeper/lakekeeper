@@ -5,7 +5,7 @@ use std::{
 
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel};
 use lakekeeper_io::Location;
 
 use crate::{

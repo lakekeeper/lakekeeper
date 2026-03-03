@@ -100,7 +100,7 @@ macro_rules! define_transparent_error {
                 }
             }
 
-            impl From<$error_name> for ErrorModel {
+            impl From<$error_name> for iceberg_ext::catalog::rest::ErrorModel {
                 fn from(err: $error_name) -> Self {
                     match err {
                         $(
@@ -110,9 +110,9 @@ macro_rules! define_transparent_error {
                 }
             }
 
-            impl From<$error_name> for IcebergErrorResponse {
+            impl From<$error_name> for iceberg_ext::catalog::rest::IcebergErrorResponse {
                 fn from(err: $error_name) -> Self {
-                    ErrorModel::from(err).into()
+                    iceberg_ext::catalog::rest::ErrorModel::from(err).into()
                 }
             }
         }

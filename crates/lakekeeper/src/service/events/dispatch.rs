@@ -198,6 +198,19 @@ impl EventDispatcher {
         dispatch_event!(self, role_updated, event);
     }
 
+    // ===== Role Assignment Sync Events =====
+
+    pub(crate) async fn role_members_synced(&self, event: types::RoleMembersSyncedEvent) {
+        dispatch_event!(self, role_members_synced, event);
+    }
+
+    pub(crate) async fn user_role_assignments_synced(
+        &self,
+        event: types::UserRoleAssignmentsSyncedEvent,
+    ) {
+        dispatch_event!(self, user_role_assignments_synced, event);
+    }
+
     pub(crate) async fn namespace_metadata_loaded(
         &self,
         event: types::NamespaceMetadataLoadedEvent,
@@ -456,6 +469,30 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a role has been successfully updated
     async fn role_updated(&self, _event: types::UpdateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Role Assignment Sync Events =====
+
+    /// Invoked after a role's member list has been successfully synced by an
+    /// external provider.
+    ///
+    /// Use this hook for cache invalidation, audit trails, and observability.
+    async fn role_members_synced(
+        &self,
+        _event: types::RoleMembersSyncedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a user's role assignments have been successfully synced
+    /// by an external provider for one `(project_id, provider_id)` scope.
+    ///
+    /// Use this hook for cache invalidation, audit trails, and observability.
+    async fn user_role_assignments_synced(
+        &self,
+        _event: types::UserRoleAssignmentsSyncedEvent,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }

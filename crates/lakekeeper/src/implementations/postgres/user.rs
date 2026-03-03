@@ -13,15 +13,16 @@ use crate::{
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
 #[sqlx(rename_all = "kebab-case", type_name = "user_last_updated_with")]
-enum DbUserLastUpdatedWith {
+pub(super) enum DbUserLastUpdatedWith {
     CreateEndpoint,
     ConfigCallCreation,
     UpdateEndpoint,
+    RoleProvider,
 }
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
 #[sqlx(rename_all = "kebab-case", type_name = "user_type")]
-enum DbUserType {
+pub(super) enum DbUserType {
     Application,
     Human,
 }
@@ -80,6 +81,7 @@ impl TryFrom<UserRow> for User {
                     UserLastUpdatedWith::ConfigCallCreation
                 }
                 DbUserLastUpdatedWith::UpdateEndpoint => UserLastUpdatedWith::UpdateEndpoint,
+                DbUserLastUpdatedWith::RoleProvider => UserLastUpdatedWith::RoleProvider,
             },
             created_at,
             updated_at,
@@ -203,6 +205,7 @@ pub(crate) async fn create_or_update_user<
         UserLastUpdatedWith::CreateEndpoint => DbUserLastUpdatedWith::CreateEndpoint,
         UserLastUpdatedWith::ConfigCallCreation => DbUserLastUpdatedWith::ConfigCallCreation,
         UserLastUpdatedWith::UpdateEndpoint => DbUserLastUpdatedWith::UpdateEndpoint,
+        UserLastUpdatedWith::RoleProvider => DbUserLastUpdatedWith::RoleProvider,
     };
 
     // query_as doesn't respect FromRow: https://github.com/launchbadge/sqlx/issues/2584
