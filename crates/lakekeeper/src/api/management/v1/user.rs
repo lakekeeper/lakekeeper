@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// How the user was last updated
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Copy)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum UserLastUpdatedWith {

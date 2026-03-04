@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
+
+use http::StatusCode;
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     ProjectId,
@@ -14,7 +17,7 @@ use crate::{
         define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
         identifier::role::ArcRoleIdent,
-        impl_from_with_detail,
+        impl_error_stack_methods, impl_from_with_detail,
     },
 };
 
@@ -35,7 +38,9 @@ pub struct CatalogUserRoleAssignmentUser<'a> {
     /// User type. When `None` defaults to `Human` for new users and preserves
     /// the existing type for updates.
     pub user_type: Option<UserType>,
-    /// Mechanism that triggered the upsert; forwarded to `create_or_update_user`.
+    /// Mechanism that triggered the upsert; stored in `last_updated_with` on
+    /// the `users` row. Allows distinguishing role-provider syncs from future
+    /// callers such as a SCIM endpoint.
     pub updated_with: UserLastUpdatedWith,
 }
 
@@ -44,7 +49,8 @@ pub struct CatalogUserRoleAssignmentUser<'a> {
 /// The implementation upserts the role (creating it with a fresh [`RoleId`] if
 /// absent, or leaving it unchanged if it already exists) before writing the
 /// `user_role` row.  `ident.provider_id()` must equal the `provider_id`
-/// argument passed to [`CatalogRoleAssignmentOps::sync_user_role_assignments_by_provider`].
+/// argument passed to [`CatalogRoleAssignmentOps::sync_user_role_assignments_by_provider`];
+/// passing a mismatched provider returns [`RoleProviderMismatchError`].
 #[derive(Debug, Clone)]
 pub struct CatalogRoleForAssignment<'a> {
     pub ident: &'a Arc<RoleIdent>,
@@ -170,6 +176,226 @@ pub struct SyncUserRoleAssignmentsResult {
 }
 
 // ============================================================================
+// Validated input wrappers — uniqueness encoded in the type
+// ============================================================================
+
+/// A member with the given `user_id` appears more than once in the input slice.
+#[derive(Debug)]
+pub struct DuplicateMemberError {
+    pub user_id: String,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(DuplicateMemberError);
+impl DuplicateMemberError {
+    fn new(user_id: impl Into<String>) -> Self {
+        Self {
+            user_id: user_id.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for DuplicateMemberError {}
+impl std::fmt::Display for DuplicateMemberError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Duplicate member user_id in sync request: '{}'",
+            self.user_id
+        )
+    }
+}
+impl From<DuplicateMemberError> for ErrorModel {
+    fn from(err: DuplicateMemberError) -> Self {
+        ErrorModel::builder()
+            .r#type("DuplicateMemberError")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(format!(
+                "Duplicate member user_id in sync request: '{}'",
+                err.user_id
+            ))
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A role with the given `source_id` appears more than once in the input slice.
+#[derive(Debug)]
+pub struct DuplicateRoleError {
+    pub source_id: String,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(DuplicateRoleError);
+impl DuplicateRoleError {
+    fn new(source_id: impl Into<String>) -> Self {
+        Self {
+            source_id: source_id.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for DuplicateRoleError {}
+impl std::fmt::Display for DuplicateRoleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Duplicate role source_id in sync request: '{}'",
+            self.source_id
+        )
+    }
+}
+impl From<DuplicateRoleError> for ErrorModel {
+    fn from(err: DuplicateRoleError) -> Self {
+        ErrorModel::builder()
+            .r#type("DuplicateRoleError")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(format!(
+                "Duplicate role source_id in sync request: '{}'",
+                err.source_id
+            ))
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A role in the input slice has a `provider_id` that differs from the
+/// `provider_id` argument supplied to the sync call.
+#[derive(Debug)]
+pub struct RoleProviderMismatchError {
+    pub expected: RoleProviderId,
+    pub found: RoleProviderId,
+    pub source_id: String,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleProviderMismatchError);
+impl RoleProviderMismatchError {
+    fn new(
+        expected: &RoleProviderId,
+        found: &RoleProviderId,
+        source_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            expected: expected.clone(),
+            found: found.clone(),
+            source_id: source_id.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for RoleProviderMismatchError {}
+impl std::fmt::Display for RoleProviderMismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Role '{}' has provider_id '{}' but the sync call targets provider '{}'",
+            self.source_id, self.found, self.expected
+        )
+    }
+}
+impl From<RoleProviderMismatchError> for ErrorModel {
+    fn from(err: RoleProviderMismatchError) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleProviderMismatchError")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(format!(
+                "Role '{}' has provider_id '{}' but the sync call targets provider '{}'",
+                err.source_id, err.found, err.expected
+            ))
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A validated, ordered collection of role members where every `user_id` is unique.
+///
+/// Constructable via [`UniqueMembers::try_from_slice`] (validates, returns an error
+/// on the first duplicate) or [`UniqueMembers::from_unchecked`] (crate-internal,
+/// skips validation when uniqueness is guaranteed by the caller — i.e. after the
+/// catalog-store layer has already validated).
+pub struct UniqueMembers<'slice, 'data> {
+    inner: &'slice [CatalogUserRoleAssignmentUser<'data>],
+}
+impl std::fmt::Debug for UniqueMembers<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("UniqueMembers").field(&self.inner).finish()
+    }
+}
+impl<'slice, 'data> UniqueMembers<'slice, 'data> {
+    /// Validates that every `user_id` in `members` is unique.
+    /// Returns [`DuplicateMemberError`] naming the first duplicate found.
+    pub fn try_from_slice(
+        members: &'slice [CatalogUserRoleAssignmentUser<'data>],
+    ) -> Result<Self, DuplicateMemberError> {
+        let mut seen = HashSet::with_capacity(members.len());
+        for m in members {
+            let key = m.user_id.to_string();
+            if !seen.insert(key.clone()) {
+                return Err(DuplicateMemberError::new(key));
+            }
+        }
+        Ok(Self { inner: members })
+    }
+
+    /// Wraps `members` without validating uniqueness.
+    ///
+    /// # Caller contract
+    /// Every `user_id` in `members` must be unique. Violating this contract
+    /// causes a runtime database error, not memory unsafety.
+    pub(crate) fn from_unchecked(members: &'slice [CatalogUserRoleAssignmentUser<'data>]) -> Self {
+        Self { inner: members }
+    }
+}
+impl<'data> std::ops::Deref for UniqueMembers<'_, 'data> {
+    type Target = [CatalogUserRoleAssignmentUser<'data>];
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+/// A validated, ordered collection of roles where every `source_id` is unique.
+///
+/// Constructable via [`UniqueRoles::try_from_slice`] (validates, returns an error
+/// on the first duplicate) or [`UniqueRoles::from_unchecked`] (crate-internal).
+pub struct UniqueRoles<'slice, 'data> {
+    inner: &'slice [CatalogRoleForAssignment<'data>],
+}
+impl std::fmt::Debug for UniqueRoles<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("UniqueRoles").field(&self.inner).finish()
+    }
+}
+impl<'slice, 'data> UniqueRoles<'slice, 'data> {
+    /// Validates that every `source_id` in `roles` is unique.
+    /// Returns [`DuplicateRoleError`] naming the first duplicate found.
+    pub fn try_from_slice(
+        roles: &'slice [CatalogRoleForAssignment<'data>],
+    ) -> Result<Self, DuplicateRoleError> {
+        let mut seen = HashSet::with_capacity(roles.len());
+        for r in roles {
+            let key = r.ident.source_id().to_string();
+            if !seen.insert(key.clone()) {
+                return Err(DuplicateRoleError::new(key));
+            }
+        }
+        Ok(Self { inner: roles })
+    }
+
+    /// Wraps `roles` without validating uniqueness.
+    ///
+    /// # Caller contract
+    /// Every `source_id` in `roles` must be unique. Violating this contract
+    /// causes a runtime database error, not memory unsafety.
+    pub(crate) fn from_unchecked(roles: &'slice [CatalogRoleForAssignment<'data>]) -> Self {
+        Self { inner: roles }
+    }
+}
+impl<'data> std::ops::Deref for UniqueRoles<'_, 'data> {
+    type Target = [CatalogRoleForAssignment<'data>];
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+// ============================================================================
 // Error types
 // ============================================================================
 
@@ -179,7 +405,8 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         DatabaseIntegrityError,
-        RoleNameAlreadyExists
+        RoleNameAlreadyExists,
+        DuplicateMemberError
     ]
 }
 
@@ -189,6 +416,8 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         RoleNameAlreadyExists,
+        DuplicateRoleError,
+        RoleProviderMismatchError
     ]
 }
 
@@ -233,6 +462,7 @@ where
         members: &[CatalogUserRoleAssignmentUser<'_>],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<SyncRoleMembersResult, SyncRoleMembersError> {
+        UniqueMembers::try_from_slice(members)?;
         Self::sync_role_members_by_ident_impl(project_id, role, members, transaction).await
     }
 
@@ -255,8 +485,8 @@ where
     /// 5. Record the sync timestamp in the user role sync log for
     ///    `(user_id, project_id, provider_id)`.
     ///
-    /// Every [`CatalogRoleForAssignment`] in `roles` must satisfy
-    /// `role.ident.provider_id() == provider_id`.
+    /// Returns [`RoleProviderMismatchError`] if any role's `ident.provider_id()`
+    /// differs from `provider_id`.
     async fn sync_user_role_assignments_by_provider<'a>(
         user: CatalogUserRoleAssignmentUser<'_>,
         project_id: &ProjectId,
@@ -264,6 +494,15 @@ where
         roles: &[CatalogRoleForAssignment<'_>],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
+        UniqueRoles::try_from_slice(roles)?;
+        if let Some(r) = roles.iter().find(|r| r.ident.provider_id() != provider_id) {
+            return Err(RoleProviderMismatchError::new(
+                provider_id,
+                r.ident.provider_id(),
+                r.ident.source_id().to_string(),
+            )
+            .into());
+        }
         Self::sync_user_role_assignments_by_provider_impl(
             &user,
             project_id,
@@ -300,6 +539,7 @@ where
         catalog_state: Self::State,
         dispatcher: &EventDispatcher,
     ) -> crate::api::Result<Arc<ListRoleMembersResult>> {
+        UniqueMembers::try_from_slice(members).map_err(SyncRoleMembersError::from)?;
         let mut t = Self::Transaction::begin_write(catalog_state).await?;
         let sync_result =
             Self::sync_role_members_by_ident_impl(project_id, role, members, t.transaction())
@@ -320,6 +560,20 @@ where
                 .collect(),
             last_synced_at: Some(sync_result.synced_at),
         });
+
+        role_assignments_cache::role_members_cache_insert(
+            sync_result.role_id,
+            Arc::clone(&list_result),
+        )
+        .await;
+        for user_id in sync_result
+            .added
+            .iter()
+            .chain(sync_result.removed.iter())
+            .map(|u| &u.user_id)
+        {
+            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
+        }
 
         let event = RoleMembersSyncedEvent {
             added: sync_result.added.into_iter().map(|u| u.user_id).collect(),
@@ -360,6 +614,17 @@ where
         catalog_state: Self::State,
         dispatcher: &EventDispatcher,
     ) -> crate::api::Result<Arc<ListUserRoleAssignmentsResult>> {
+        UniqueRoles::try_from_slice(roles).map_err(SyncUserRoleAssignmentsError::from)?;
+        if let Some(r) = roles.iter().find(|r| r.ident.provider_id() != provider_id) {
+            return Err(
+                SyncUserRoleAssignmentsError::from(RoleProviderMismatchError::new(
+                    provider_id,
+                    r.ident.provider_id(),
+                    r.ident.source_id().to_string(),
+                ))
+                .into(),
+            );
+        }
         let mut t = Self::Transaction::begin_write(catalog_state).await?;
         let sync_result = Self::sync_user_role_assignments_by_provider_impl(
             &user,
@@ -375,6 +640,22 @@ where
             roles: sync_result.all_roles,
             provider_sync_times: sync_result.provider_sync_times,
         });
+
+        // Update the cache directly after the commit, before dispatching the
+        // event (mirrors the warehouse / namespace cache-on-read pattern).
+        role_assignments_cache::user_assignments_cache_insert(
+            user.user_id,
+            Arc::clone(&list_result),
+        )
+        .await;
+        for role_id in sync_result
+            .added
+            .iter()
+            .chain(sync_result.removed.iter())
+            .copied()
+        {
+            role_assignments_cache::role_members_cache_invalidate(role_id).await;
+        }
 
         let event = UserRoleAssignmentsSyncedEvent {
             user_id: user.user_id.clone(),

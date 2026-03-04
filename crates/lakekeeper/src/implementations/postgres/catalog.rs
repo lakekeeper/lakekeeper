@@ -76,9 +76,9 @@ use crate::{
         SetWarehouseStatusError, StagedTableId, SyncRoleMembersError, SyncRoleMembersResult,
         SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
         TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags,
-        TaskDetails, TaskList, Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
-        WarehouseStatus,
+        TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles, UpdateRoleError,
+        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -373,7 +373,8 @@ impl CatalogStore for super::PostgresBackend {
         members: &[CatalogUserRoleAssignmentUser<'_>],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<SyncRoleMembersResult, SyncRoleMembersError> {
-        super::role_assignment::sync_role_members_by_ident(project_id, role, members, transaction)
+        let unique = UniqueMembers::from_unchecked(members);
+        super::role_assignment::sync_role_members_by_ident(project_id, role, unique, transaction)
             .await
     }
 
@@ -384,11 +385,12 @@ impl CatalogStore for super::PostgresBackend {
         roles: &[CatalogRoleForAssignment<'_>],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
+        let unique = UniqueRoles::from_unchecked(roles);
         super::role_assignment::sync_user_role_assignments_by_provider(
             user,
             project_id,
             provider_id,
-            roles,
+            unique,
             transaction,
         )
         .await

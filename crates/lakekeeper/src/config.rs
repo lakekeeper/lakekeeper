@@ -1461,6 +1461,28 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "user_assignments.time_to_live_secs")]
+    fn test_user_assignments_ttl_exceeds_role_ttl_is_rejected() {
+        // Setting user_assignments TTL (300 s) above the default role TTL
+        // (120 s) must violate the documented invariant and cause get_config()
+        // to panic.  role_members TTL is also set to a small value (60 s) to
+        // represent a misconfigured environment similar to what the request
+        // describes.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "300",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let _config = get_config(); // must panic – user_assignments TTL > role TTL
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_audit_tracing_enabled() {
         // Test default value is true
         figment::Jail::expect_with(|_jail| {

@@ -13,7 +13,8 @@ use crate::{
         CatalogUserRoleAssignmentUser, DatabaseIntegrityError, ListRoleMembersResult,
         ListUserRoleAssignmentsResult, RoleId, RoleIdent, RoleNameAlreadyExists, RoleProviderId,
         SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, UserProviderSyncInfo, authn::UserId,
+        SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles, UserProviderSyncInfo,
+        authn::UserId,
     },
 };
 
@@ -98,7 +99,7 @@ fn rows_to_list_role_members_result(
 pub(crate) async fn sync_role_members_by_ident(
     project_id: &ProjectId,
     role: &CatalogRoleForAssignment<'_>,
-    members: &[CatalogUserRoleAssignmentUser<'_>],
+    members: UniqueMembers<'_, '_>,
     transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> Result<SyncRoleMembersResult, SyncRoleMembersError> {
     let user_ids: Vec<String> = members.iter().map(|m| m.user_id.to_string()).collect();
@@ -108,6 +109,10 @@ pub(crate) async fn sync_role_members_by_ident(
         .iter()
         .map(|m| m.user_type.map(DbUserType::from))
         .collect();
+    let user_updated_withs: Vec<DbUserLastUpdatedWith> = members
+        .iter()
+        .map(|m| DbUserLastUpdatedWith::from(m.updated_with))
+        .collect();
 
     let row = sqlx::query!(
         r#"
@@ -116,9 +121,22 @@ pub(crate) async fn sync_role_members_by_ident(
             INSERT INTO "role" (id, name, description, source_id, provider_id, project_id)
             VALUES (gen_random_uuid(), COALESCE($1, $3 || ' in Provider ' || $4), NULLIF($2, ''), $3, $4, $5)
             ON CONFLICT ON CONSTRAINT unique_role_provider_source_in_project
-            DO UPDATE SET name = COALESCE($1, "role".name),
+            DO UPDATE SET name        = COALESCE($1, "role".name),
                           description = CASE WHEN $2 IS NULL THEN "role".description ELSE NULLIF($2, '') END
+            WHERE "role".name IS DISTINCT FROM COALESCE($1, "role".name)
+               OR "role".description IS DISTINCT FROM
+                  CASE WHEN $2 IS NULL THEN "role".description ELSE NULLIF($2, '') END
             RETURNING id
+        ),
+        -- Fallback: when the upsert WHERE was false (nothing changed) upserted_role
+        -- returns no rows.  Union with a direct lookup so downstream CTEs always
+        -- have exactly one role id regardless of whether the row was written.
+        role_id AS (
+            SELECT id FROM upserted_role
+            UNION ALL
+            SELECT id FROM "role"
+            WHERE source_id = $3 AND provider_id = $4 AND project_id = $5
+              AND NOT EXISTS (SELECT 1 FROM upserted_role)
         ),
         user_input AS (
             SELECT u.id,
@@ -127,13 +145,14 @@ pub(crate) async fn sync_role_members_by_ident(
                    u.email,
                    NULLIF(u.email, '') AS effective_email,
                    u.utype,
-                   COALESCE(u.utype, 'human'::user_type) AS effective_utype
-            FROM UNNEST($6::TEXT[], $7::TEXT[], $8::TEXT[], $9::user_type[])
-                AS u(id, name, email, utype)
+                   COALESCE(u.utype, 'human'::user_type) AS effective_utype,
+                   u.updated_with
+            FROM UNNEST($6::TEXT[], $7::TEXT[], $8::TEXT[], $9::user_type[], $10::user_last_updated_with[])
+                AS u(id, name, email, utype, updated_with)
         ),
         upserted_users AS (
             INSERT INTO users (id, name, email, last_updated_with, user_type)
-            SELECT id, effective_name, effective_email, $10, effective_utype
+            SELECT id, effective_name, effective_email, updated_with, effective_utype
             FROM user_input
             ON CONFLICT (id) DO UPDATE SET
                 name              = COALESCE(
@@ -146,38 +165,49 @@ pub(crate) async fn sync_role_members_by_ident(
                                                 (SELECT email FROM user_input WHERE id = EXCLUDED.id),
                                                 '')
                                     END,
-                last_updated_with = $10,
+                last_updated_with = EXCLUDED.last_updated_with,
                 user_type         = COALESCE(
                                         (SELECT utype FROM user_input WHERE id = EXCLUDED.id),
                                         users.user_type),
                 deleted_at        = null
-            RETURNING id
+            WHERE users.name IS DISTINCT FROM COALESCE(
+                                                 (SELECT name FROM user_input WHERE id = EXCLUDED.id),
+                                                 users.name)
+               OR users.email IS DISTINCT FROM
+                  CASE WHEN (SELECT email FROM user_input WHERE id = EXCLUDED.id) IS NULL
+                           THEN users.email
+                       ELSE NULLIF((SELECT email FROM user_input WHERE id = EXCLUDED.id), '')
+                  END
+               OR users.user_type IS DISTINCT FROM COALESCE(
+                                                        (SELECT utype FROM user_input WHERE id = EXCLUDED.id),
+                                                        users.user_type)
+               OR users.deleted_at IS NOT NULL
         ),
         -- Remove members no longer in the desired set.
-        -- Executes against the same snapshot as added_members; the two sets
-        -- are disjoint (removed = NOT IN upserted_users, added = IN upserted_users)
-        -- so there is no overlap and no conflict between the two statements.
+        -- References user_input (all requested users) rather than upserted_users
+        -- so that unchanged rows skipped by the ON CONFLICT WHERE clause are
+        -- still treated as members-to-keep.
         removed_members AS (
             DELETE FROM role_assignment
-            WHERE role_id = (SELECT id FROM upserted_role)
-              AND user_id NOT IN (SELECT id FROM upserted_users)
+            WHERE role_id = (SELECT id FROM role_id)
+              AND user_id NOT IN (SELECT id FROM user_input)
             RETURNING user_id
         ),
         added_members AS (
             INSERT INTO role_assignment (user_id, role_id)
-            SELECT id, (SELECT id FROM upserted_role)
-            FROM upserted_users
+            SELECT id, (SELECT id FROM role_id)
+            FROM user_input
             ON CONFLICT (user_id, role_id) DO NOTHING
             RETURNING user_id
         ),
         sync_ts AS (
             INSERT INTO role_members_sync (role_id, synced_at)
-            VALUES ((SELECT id FROM upserted_role), now())
+            VALUES ((SELECT id FROM role_id), now())
             ON CONFLICT (role_id) DO UPDATE SET synced_at = now()
             RETURNING synced_at
         )
         SELECT
-            (SELECT id        FROM upserted_role)                                                 AS "role_id!: Uuid",
+            (SELECT id        FROM role_id)                                                       AS "role_id!: Uuid",
             (SELECT synced_at FROM sync_ts)                                                       AS "synced_at!",
             (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM added_members)   AS "added_ids!: Vec<String>",
             (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM removed_members) AS "removed_ids!: Vec<String>"
@@ -191,7 +221,7 @@ pub(crate) async fn sync_role_members_by_ident(
         &user_names as &[Option<&str>],
         &user_emails as &[Option<&str>],
         &user_types as &[Option<DbUserType>],
-        DbUserLastUpdatedWith::RoleProvider as _,
+        &user_updated_withs as &[DbUserLastUpdatedWith],
     )
     .fetch_one(&mut **transaction)
     .await
@@ -241,12 +271,12 @@ pub(crate) async fn sync_role_members_by_ident(
 //   Query 2 – plain SELECT via list_role_assignments_for_user:
 //     Reads the post-sync state (writes from query 1 are visible to subsequent
 //     statements in the same transaction).
-
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn sync_user_role_assignments_by_provider(
     user: &CatalogUserRoleAssignmentUser<'_>,
     project_id: &ProjectId,
     provider_id: &RoleProviderId,
-    roles: &[CatalogRoleForAssignment<'_>],
+    roles: UniqueRoles<'_, '_>,
     transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
     let role_names: Vec<Option<&str>> = roles.iter().map(|r| r.name).collect();
@@ -265,7 +295,11 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
                 last_updated_with = EXCLUDED.last_updated_with,
                 user_type         = COALESCE($5, users.user_type),
                 deleted_at        = null
-            RETURNING id
+            WHERE users.name IS DISTINCT FROM COALESCE($2, users.name)
+               OR users.email IS DISTINCT FROM
+                  CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END
+               OR users.user_type IS DISTINCT FROM COALESCE($5, users.user_type)
+               OR users.deleted_at IS NOT NULL
         ),
         role_input AS (
             SELECT u.name,
@@ -290,7 +324,35 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
                                           (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),
                                           '')
                               END
+            WHERE "role".name IS DISTINCT FROM COALESCE(
+                                                  (SELECT name FROM role_input WHERE source_id = EXCLUDED.source_id),
+                                                  "role".name)
+               OR "role".description IS DISTINCT FROM
+                  CASE WHEN (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id) IS NULL
+                           THEN "role".description
+                       ELSE NULLIF(
+                               (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),
+                               '')
+                  END
             RETURNING id
+        ),
+        -- Fallback: when the upsert WHERE was false (nothing changed) upserted_roles
+        -- returns no rows for those entries.  RETURNING id is available directly
+        -- (unlike reading the "role" table, which uses the pre-statement snapshot
+        -- and cannot see rows inserted by upserted_roles in the same query).
+        -- Arm 1: newly inserted roles and updated roles come from RETURNING.
+        -- Arm 2: roles that existed but were unchanged (WHERE skipped them) are
+        --        found in the old "role" snapshot; they are absent from upserted_roles.
+        role_ids AS (
+            SELECT id FROM upserted_roles
+            UNION ALL
+            SELECT r.id
+            FROM "role" r
+            JOIN role_input ri ON r.source_id = ri.source_id
+              AND r.provider_id = $6 AND r.project_id = $7
+            WHERE NOT EXISTS (
+                SELECT 1 FROM upserted_roles ur WHERE ur.id = r.id
+            )
         ),
         removed_assignments AS (
             DELETE FROM role_assignment
@@ -298,18 +360,18 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
               AND role_id IN (
                   SELECT id FROM "role" WHERE provider_id = $6 AND project_id = $7
               )
-              AND role_id NOT IN (SELECT id FROM upserted_roles)
+              AND role_id NOT IN (SELECT id FROM role_ids)
             RETURNING role_id
         ),
         added_assignments AS (
             INSERT INTO role_assignment (user_id, role_id)
-            SELECT $1, id FROM upserted_roles
+            SELECT $1, id FROM role_ids
             ON CONFLICT (user_id, role_id) DO NOTHING
             RETURNING role_id
         ),
         sync_ts AS (
             INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at)
-            VALUES ((SELECT id FROM upserted_user), $7, $6, now())
+            VALUES ($1, $7, $6, now())
             ON CONFLICT (user_id, project_id, provider_id) DO UPDATE SET synced_at = now()
             RETURNING synced_at
         )
@@ -321,7 +383,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         user.user_id.to_string(),
         user.name as Option<&str>,
         user.email,
-        DbUserLastUpdatedWith::RoleProvider as _,
+        DbUserLastUpdatedWith::from(user.updated_with.clone()) as _,
         user.user_type.map(DbUserType::from) as Option<DbUserType>,
         provider_id.as_str(),
         &**project_id,
@@ -491,8 +553,6 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
 
 #[cfg(test)]
 mod tests {
-    use HashSet;
-
     use super::*;
     use crate::{
         ProjectId,
@@ -500,10 +560,18 @@ mod tests {
         implementations::postgres::{CatalogState, PostgresBackend, PostgresTransaction},
         service::{
             CatalogRoleForAssignment, CatalogStore, CatalogUserRoleAssignmentUser, RoleIdent,
-            RoleProviderId, Transaction,
+            RoleProviderId, Transaction, UniqueMembers, UniqueRoles,
             authn::{UserId, UserIdRef},
         },
     };
+
+    fn um<'s, 'd>(s: &'s [CatalogUserRoleAssignmentUser<'d>]) -> UniqueMembers<'s, 'd> {
+        UniqueMembers::from_unchecked(s)
+    }
+
+    fn ur<'s, 'd>(s: &'s [CatalogRoleForAssignment<'d>]) -> UniqueRoles<'s, 'd> {
+        UniqueRoles::from_unchecked(s)
+    }
 
     // ── helpers ────────────────────────────────────────────────────────────
 
@@ -558,7 +626,7 @@ mod tests {
         let result = sync_role_members_by_ident(
             &project_id,
             &role,
-            &[make_user(&u1, "Alice"), make_user(&u2, "Bob")],
+            um(&[make_user(&u1, "Alice"), make_user(&u2, "Bob")]),
             t.transaction(),
         )
         .await
@@ -602,7 +670,7 @@ mod tests {
         sync_role_members_by_ident(
             &project_id,
             &role,
-            &[make_user(&u1, "Alice"), make_user(&u2, "Bob")],
+            um(&[make_user(&u1, "Alice"), make_user(&u2, "Bob")]),
             t.transaction(),
         )
         .await
@@ -616,7 +684,7 @@ mod tests {
         let result = sync_role_members_by_ident(
             &project_id,
             &role,
-            &[make_user(&u2, "Bob"), make_user(&u3, "Carol")],
+            um(&[make_user(&u2, "Bob"), make_user(&u3, "Carol")]),
             t.transaction(),
         )
         .await
@@ -653,7 +721,7 @@ mod tests {
         sync_role_members_by_ident(
             &project_id,
             &role,
-            &[make_user(&u1, "Alice"), make_user(&u2, "Bob")],
+            um(&[make_user(&u1, "Alice"), make_user(&u2, "Bob")]),
             t.transaction(),
         )
         .await
@@ -663,7 +731,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let result = sync_role_members_by_ident(&project_id, &role, &[], t.transaction())
+        let result = sync_role_members_by_ident(&project_id, &role, um(&[]), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -692,7 +760,7 @@ mod tests {
             let result = sync_role_members_by_ident(
                 &project_id,
                 &make_role(&role_ident, "Stable"),
-                &[make_user(&u1, "Alice")],
+                um(&[make_user(&u1, "Alice")]),
                 t.transaction(),
             )
             .await
@@ -721,7 +789,7 @@ mod tests {
         sync_role_members_by_ident(
             &project_id,
             &make_role(&role_ident, "Old Name"),
-            &[make_user(&u1, "Alice")],
+            um(&[make_user(&u1, "Alice")]),
             t.transaction(),
         )
         .await
@@ -735,7 +803,7 @@ mod tests {
         let result = sync_role_members_by_ident(
             &project_id,
             &make_role(&role_ident, "New Name"),
-            &[make_user(&u1, "Alice")],
+            um(&[make_user(&u1, "Alice")]),
             t.transaction(),
         )
         .await
@@ -744,6 +812,131 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 0);
+    }
+
+    /// When the role's name and description are unchanged, the role row must
+    /// not be written (no `updated_at` bump).  The `updated_at` trigger fires
+    /// only when a row is actually written, so comparing timestamps before and
+    /// after an identical re-sync is the precise observable test.
+    #[sqlx::test]
+    async fn role_members_no_write_when_role_unchanged(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-stable-role"));
+        let u1 = Arc::new(UserId::new_unchecked("oidc", "alice"));
+
+        // Initial sync — creates the role row.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first = sync_role_members_by_ident(
+            &project_id,
+            &make_role(&role_ident, "Stable"),
+            um(&[make_user(&u1, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // Capture version immediately after the first sync.
+        // updated_at is NULL after INSERT (trigger only fires on UPDATE), so we
+        // use version (BIGINT NOT NULL DEFAULT 0) which increments on every
+        // actual write and stays at 0 when the ON CONFLICT WHERE skips the update.
+        let version_after_first: i64 = sqlx::query_scalar!(
+            r#"SELECT version FROM "role" WHERE id = $1"#,
+            *first.role_id,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Identical re-sync — nothing should change.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let second = sync_role_members_by_ident(
+            &project_id,
+            &make_role(&role_ident, "Stable"),
+            um(&[make_user(&u1, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(first.role_id, second.role_id);
+        assert_eq!(second.added.len(), 0);
+        assert_eq!(second.removed.len(), 0);
+
+        let version_after_second: i64 = sqlx::query_scalar!(
+            r#"SELECT version FROM "role" WHERE id = $1"#,
+            *first.role_id,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            version_after_first, version_after_second,
+            "role row must not be written when nothing changed"
+        );
+    }
+
+    /// Counter-test: when the role name changes, `updated_at` MUST advance.
+    #[sqlx::test]
+    async fn role_members_write_when_role_name_changes(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-changing-name"));
+        let u1 = Arc::new(UserId::new_unchecked("oidc", "alice"));
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first = sync_role_members_by_ident(
+            &project_id,
+            &make_role(&role_ident, "Original Name"),
+            um(&[make_user(&u1, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let version_before: i64 = sqlx::query_scalar!(
+            r#"SELECT version FROM "role" WHERE id = $1"#,
+            *first.role_id,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_role_members_by_ident(
+            &project_id,
+            &make_role(&role_ident, "New Name"),
+            um(&[make_user(&u1, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let version_after: i64 = sqlx::query_scalar!(
+            r#"SELECT version FROM "role" WHERE id = $1"#,
+            *first.role_id,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            version_after > version_before,
+            "role row must be written when name changes"
+        );
     }
 
     #[sqlx::test]
@@ -758,7 +951,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let result = sync_role_members_by_ident(&project_id, &role, &[], t.transaction())
+        let result = sync_role_members_by_ident(&project_id, &role, um(&[]), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -789,7 +982,7 @@ mod tests {
         sync_role_members_by_ident(
             &project_id,
             &role,
-            &[make_user(&u1, "Alice")],
+            um(&[make_user(&u1, "Alice")]),
             t.transaction(),
         )
         .await
@@ -800,7 +993,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        sync_role_members_by_ident(&project_id, &role, &[], t.transaction())
+        sync_role_members_by_ident(&project_id, &role, um(&[]), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -809,7 +1002,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let result = sync_role_members_by_ident(&project_id, &role, &[], t.transaction())
+        let result = sync_role_members_by_ident(&project_id, &role, um(&[]), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -837,10 +1030,10 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[
+            ur(&[
                 make_role(&r1_ident, "Admin"),
                 make_role(&r2_ident, "Viewer"),
-            ],
+            ]),
             t.transaction(),
         )
         .await
@@ -889,10 +1082,10 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[
+            ur(&[
                 make_role(&r1_ident, "Admin"),
                 make_role(&r2_ident, "Viewer"),
-            ],
+            ]),
             t.transaction(),
         )
         .await
@@ -908,10 +1101,10 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[
+            ur(&[
                 make_role(&r2_ident, "Viewer"),
                 make_role(&r3_ident, "Editor"),
-            ],
+            ]),
             t.transaction(),
         )
         .await
@@ -965,7 +1158,7 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[make_role(&r1_ident, "Admin")],
+            ur(&[make_role(&r1_ident, "Admin")]),
             t.transaction(),
         )
         .await
@@ -979,7 +1172,7 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[],
+            ur(&[]),
             t.transaction(),
         )
         .await
@@ -1019,7 +1212,7 @@ mod tests {
             &user,
             &project_id,
             &provider_a,
-            &[make_role(&ra_ident, "Group A")],
+            ur(&[make_role(&ra_ident, "Group A")]),
             t.transaction(),
         )
         .await
@@ -1033,7 +1226,7 @@ mod tests {
             &user,
             &project_id,
             &provider_b,
-            &[make_role(&rb_ident, "Group B")],
+            ur(&[make_role(&rb_ident, "Group B")]),
             t.transaction(),
         )
         .await
@@ -1048,7 +1241,7 @@ mod tests {
             &user,
             &project_id,
             &provider_a,
-            &[],
+            ur(&[]),
             t.transaction(),
         )
         .await
@@ -1096,7 +1289,7 @@ mod tests {
                 &user,
                 proj,
                 &provider,
-                &[make_role(role_ident, role_name)],
+                ur(&[make_role(role_ident, role_name)]),
                 t.transaction(),
             )
             .await
@@ -1109,7 +1302,7 @@ mod tests {
             .await
             .unwrap();
         let result =
-            sync_user_role_assignments_by_provider(&user, &p1, &provider, &[], t.transaction())
+            sync_user_role_assignments_by_provider(&user, &p1, &provider, ur(&[]), t.transaction())
                 .await
                 .unwrap();
         t.commit().await.unwrap();
@@ -1140,7 +1333,7 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[],
+            ur(&[]),
             t.transaction(),
         )
         .await
@@ -1182,7 +1375,7 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[make_role(&r1_ident, "Admin")],
+            ur(&[make_role(&r1_ident, "Admin")]),
             t.transaction(),
         )
         .await
@@ -1193,9 +1386,15 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        sync_user_role_assignments_by_provider(&user, &project_id, &provider, &[], t.transaction())
-            .await
-            .unwrap();
+        sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&[]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
         t.commit().await.unwrap();
 
         // Second clear — assignment_changes produces 0 rows
@@ -1206,7 +1405,7 @@ mod tests {
             &user,
             &project_id,
             &provider,
-            &[],
+            ur(&[]),
             t.transaction(),
         )
         .await
@@ -1215,6 +1414,122 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 0);
+    }
+
+    /// When the role's name and description are unchanged, the role row must
+    /// not be written (no `updated_at` bump).
+    #[sqlx::test]
+    async fn user_assignments_no_write_when_role_unchanged(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("oidc");
+        let r1_ident = Arc::new(RoleIdent::new_unchecked("oidc", "stable-role"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let user = make_user(&user_id, "Alice");
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first = sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&[make_role(&r1_ident, "Stable Role")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let role_id = *first.added[0];
+        let version_after_first: i64 =
+            sqlx::query_scalar!(r#"SELECT version FROM "role" WHERE id = $1"#, role_id,)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        // Identical re-sync.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&[make_role(&r1_ident, "Stable Role")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let version_after_second: i64 =
+            sqlx::query_scalar!(r#"SELECT version FROM "role" WHERE id = $1"#, role_id,)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            version_after_first, version_after_second,
+            "role row must not be written when nothing changed"
+        );
+    }
+
+    /// Counter-test: when the role name changes, `updated_at` MUST advance.
+    #[sqlx::test]
+    async fn user_assignments_write_when_role_name_changes(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("oidc");
+        let r1_ident = Arc::new(RoleIdent::new_unchecked("oidc", "changing-role"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let user = make_user(&user_id, "Alice");
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first = sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&[make_role(&r1_ident, "Original Name")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let role_id = *first.added[0];
+        let version_before: i64 =
+            sqlx::query_scalar!(r#"SELECT version FROM "role" WHERE id = $1"#, role_id,)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&[make_role(&r1_ident, "New Name")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let version_after: i64 =
+            sqlx::query_scalar!(r#"SELECT version FROM "role" WHERE id = $1"#, role_id,)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(
+            version_after > version_before,
+            "role row must be written when name changes"
+        );
     }
 
     // ── all_roles / provider_sync_times cross-provider ─────────────────────
@@ -1241,7 +1556,7 @@ mod tests {
             &user,
             &project_id,
             &provider_a,
-            &[make_role(&ra_ident, "Group A")],
+            ur(&[make_role(&ra_ident, "Group A")]),
             t.transaction(),
         )
         .await
@@ -1256,7 +1571,7 @@ mod tests {
             &user,
             &project_id,
             &provider_b,
-            &[make_role(&rb_ident, "Group B")],
+            ur(&[make_role(&rb_ident, "Group B")]),
             t.transaction(),
         )
         .await
@@ -1282,7 +1597,7 @@ mod tests {
         assert!(prov_ids.contains(&provider_b));
     }
 
-    /// Aft`provider_a`g `provider_a`'s roles, `all_roles` must still cont`provider_b`/ `provider_b`'s roles — clearing one provider must not affect others.
+    /// After clearing `provider_a`'s roles, `all_roles` must still contain `provider_b`'s roles — clearing one provider must not affect others.
     #[sqlx::test]
     async fn user_assignments_all_roles_after_clear_one_provider(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -1305,7 +1620,7 @@ mod tests {
                 &user,
                 &project_id,
                 prov,
-                &[make_role(ident, name)],
+                ur(&[make_role(ident, name)]),
                 t.transaction(),
             )
             .await
@@ -1321,7 +1636,7 @@ mod tests {
             &user,
             &project_id,
             &provider_a,
-            &[],
+            ur(&[]),
             t.transaction(),
         )
         .await

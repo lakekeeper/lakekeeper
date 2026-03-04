@@ -45,6 +45,17 @@ impl From<UserType> for DbUserType {
     }
 }
 
+impl From<UserLastUpdatedWith> for DbUserLastUpdatedWith {
+    fn from(u: UserLastUpdatedWith) -> Self {
+        match u {
+            UserLastUpdatedWith::CreateEndpoint => DbUserLastUpdatedWith::CreateEndpoint,
+            UserLastUpdatedWith::ConfigCallCreation => DbUserLastUpdatedWith::ConfigCallCreation,
+            UserLastUpdatedWith::UpdateEndpoint => DbUserLastUpdatedWith::UpdateEndpoint,
+            UserLastUpdatedWith::RoleProvider => DbUserLastUpdatedWith::RoleProvider,
+        }
+    }
+}
+
 #[derive(sqlx::FromRow, Debug)]
 struct UserRow {
     id: String,

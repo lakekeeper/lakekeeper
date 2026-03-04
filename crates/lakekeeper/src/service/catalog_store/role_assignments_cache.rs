@@ -3,8 +3,6 @@ use std::{sync::Arc, time::Duration};
 use axum_prometheus::metrics;
 use moka::future::Cache;
 
-#[cfg(feature = "router")]
-use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG,
     service::{
@@ -164,94 +162,6 @@ pub(crate) async fn role_members_cache_invalidate(role_id: RoleId) {
 fn update_rm_size_metric() {
     let () = &*RM_METRICS_INITIALIZED;
     metrics::gauge!(METRIC_RM_SIZE).set(ROLE_MEMBERS_CACHE.entry_count() as f64);
-}
-
-// ============================================================================
-// Event listener
-// ============================================================================
-
-/// Hooks into entity-lifecycle events that write paths cannot predict.
-///
-/// The sync write paths (`sync_role_members_by_ident`,
-/// `sync_user_role_assignments_by_provider`) call the invalidation functions
-/// directly — no event roundtrip needed for same-process invalidation.
-#[cfg(feature = "router")]
-#[derive(Debug, Clone)]
-pub(crate) struct RoleAssignmentsCacheEventListener;
-
-#[cfg(feature = "router")]
-impl std::fmt::Display for RoleAssignmentsCacheEventListener {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RoleAssignmentsCacheEventListener")
-    }
-}
-
-#[cfg(feature = "router")]
-#[async_trait::async_trait]
-impl EventListener for RoleAssignmentsCacheEventListener {
-    /// Invalidate the role-members cache entry when the role is deleted.
-    ///
-    /// `USER_ASSIGNMENTS_CACHE` entries that reference this `role_id` expire
-    /// naturally within `user_assignments.time_to_live_secs` (which must be
-    /// ≤ `role.time_to_live_secs`, bounding the stale window).
-    async fn role_deleted(&self, event: events::DeleteRoleEvent) -> anyhow::Result<()> {
-        role_members_cache_invalidate(event.role.id()).await;
-        Ok(())
-    }
-
-    /// Invalidate the role-members cache entry when role metadata changes.
-    ///
-    /// A metadata update can change `role_ident`, which is embedded in
-    /// `AssignedRole` values inside `USER_ASSIGNMENTS_CACHE`. Those user
-    /// entries can only be expired via TTL (scanning all users is not feasible
-    /// without a reverse index).
-    async fn role_updated(&self, event: events::UpdateRoleEvent) -> anyhow::Result<()> {
-        role_members_cache_invalidate(event.role.id()).await;
-        Ok(())
-    }
-
-    /// Populate the role-members cache and invalidate stale user-assignment
-    /// entries after a role's member list has been synced.
-    ///
-    /// The event carries the complete, authoritative post-sync member list so
-    /// this listener can **insert** into `ROLE_MEMBERS_CACHE` rather than just
-    /// invalidating it — benefiting both the syncing instance and any other
-    /// instance that receives this event via an event bus.
-    ///
-    /// Every user whose assignment changed now has a stale
-    /// `USER_ASSIGNMENTS_CACHE` entry, so we invalidate those eagerly.
-    async fn role_members_synced(
-        &self,
-        event: events::RoleMembersSyncedEvent,
-    ) -> anyhow::Result<()> {
-        role_members_cache_insert(event.result.role_id, event.result).await;
-        for user_id in event.added.iter().chain(event.removed.iter()) {
-            user_assignments_cache_invalidate(user_id).await;
-        }
-        Ok(())
-    }
-
-    /// Populate the user-assignments cache and invalidate stale role-member
-    /// entries after a user's role assignments have been synced.
-    ///
-    /// The event carries the complete, authoritative post-sync assignment list
-    /// (all providers merged) so this listener can **insert** into
-    /// `USER_ASSIGNMENTS_CACHE` rather than just invalidating it — benefiting
-    /// both the syncing instance and any other instance that receives this
-    /// event via an event bus.
-    ///
-    /// Every role whose membership changed now has a stale `ROLE_MEMBERS_CACHE`
-    /// entry, so we invalidate those eagerly.
-    async fn user_role_assignments_synced(
-        &self,
-        event: events::UserRoleAssignmentsSyncedEvent,
-    ) -> anyhow::Result<()> {
-        user_assignments_cache_insert(&event.user_id, event.result).await;
-        for role_id in event.added.iter().chain(event.removed.iter()) {
-            role_members_cache_invalidate(*role_id).await;
-        }
-        Ok(())
-    }
 }
 
 // ============================================================================

@@ -290,7 +290,7 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: junit-pg${{ matrix.postgres-version }}
-          path: target/nextest/ci/junit.xml
+          path: target/nextest/${{ env.NEXTEST_PROFILE }}/junit.xml
       - name: Doc Test
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
