@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    hash::Hash,
     str::FromStr as _,
     sync::Arc,
 };
@@ -20,7 +21,7 @@ use iceberg_ext::{
 use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
-use tokio::task::JoinSet;
+use tokio::task::{JoinError, JoinSet};
 use uuid::Uuid;
 pub(crate) mod create_table;
 mod load_table;
@@ -51,6 +52,7 @@ use crate::{
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
+    config::TrustedEngine,
     request_metadata::RequestMetadata,
     server::{
         self,
@@ -58,10 +60,13 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
-        CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
-        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogBackendError,
+        CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore,
+        CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, GetTabularInfoError, NamedEntity,
+        NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse, State, TableCommit,
+        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
+        TabularIdentOwned, TabularInfo, TabularListFlags, TabularNotFound, Transaction,
+        ViewOrTableInfo, WarehouseStatus,
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
             AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -458,7 +463,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularListFlags::active_and_staged(),
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
-            referenced_by,
+            referenced_by.as_deref(),
         )
         .await
         {
@@ -771,256 +776,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-// ============================================================================
-// ============================================================================
-// Data structures for loading tabular metadata (Tables & Views)
-// ============================================================================
-
-/// A single entry in the combined tabular set.
-/// Contains namespace and tabular metadata paired by index.
-#[derive(Debug)]
-pub struct LoadedTabularEntry {
-    /// Namespace metadata result
-    pub namespace: Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-    /// Tabular (table or view) metadata result - supports both table and view info
-    pub tabular: Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
-}
-
-/// Raw results from parallel loading of tabular metadata.
-/// Contains unordered collections of namespaces and tabulars that need to be combined.
-#[derive(Debug)]
-pub struct LoadedTabularResults {
-    /// Warehouse metadata result
-    pub warehouse: Result<Option<Arc<ResolvedWarehouse>>, crate::service::CatalogGetWarehouseByIdError>,
-    /// Unordered map of namespace results keyed by index
-    pub namespaces: std::collections::HashMap<usize, Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>>,
-    /// Unordered map of tabular results keyed by index
-    pub tabulars: std::collections::HashMap<usize, Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>>,
-}
-
-/// Combine raw namespace and tabular results into ordered entries.
-///
-/// This function pairs namespace and tabular metadata by their indices,
-/// preserving the pairing information for validation in later stages.
-///
-/// # Parameters
-/// * `namespaces` - HashMap of namespace results keyed by index
-/// * `tabulars` - HashMap of tabular results keyed by index
-///
-/// # Returns
-/// A BTreeMap of combined entries ordered by index.
-fn combine_tabular_entries(
-    mut namespaces: std::collections::HashMap<usize, Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>>,
-    mut tabulars: std::collections::HashMap<usize, Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>>,
-) -> std::collections::BTreeMap<usize, LoadedTabularEntry> {
-    let mut combined = std::collections::BTreeMap::new();
-
-    // Get all indices from both maps (union of keys)
-    let all_indices: std::collections::HashSet<usize> = namespaces
-        .keys()
-        .chain(tabulars.keys())
-        .copied()
-        .collect();
-
-    // Combine entries for each index
-    for idx in all_indices {
-        let namespace = namespaces
-            .remove(&idx)
-            .unwrap_or_else(|| Ok(None));
-        let tabular = tabulars
-            .remove(&idx)
-            .unwrap_or_else(|| Ok(None));
-
-        combined.insert(
-            idx,
-            LoadedTabularEntry { namespace, tabular },
-        );
-    }
-
-    combined
-}
-
-/// Load metadata for a tabular operation in parallel.
-///
-/// Loads the following in parallel:
-/// - 1x Warehouse (always)
-/// - 1x Primary tabular namespace + metadata (always - type determined by primary_tabular)
-/// - 0..N ReferencingView namespaces + metadata (conditional, based on engine presence and non-empty referenced list)
-///
-/// The returned results are raw, unordered HashMaps that should be combined via `combine_tabular_entries()`.
-///
-/// # Parameters
-/// * `warehouse_id` - The warehouse ID
-/// * `primary_tabular` - The primary tabular identifier, wrapped in TabularIdentOwned for type information (Table or View)
-/// * `request_metadata` - Contains engine information for deciding whether to load ReferencingViews
-/// * `referencing_views` - Optional list of ReferencingViews to load
-/// * `list_flags` - Flags for tabular listing (e.g., active_and_staged)
-/// * `state` - The CatalogStore state
-///
-/// # Returns
-/// A `LoadedTabularResults` containing warehouse metadata and unordered namespace/tabular results.
-/// All errors from catalog operations are preserved as `Result` types within entries.
-/// Only `tokio::task::JoinError` indicates a critical failure (task panic).
-async fn load_tabular_set<C: CatalogStore>(
-    warehouse_id: WarehouseId,
-    primary_tabular: crate::service::TabularIdentOwned,
-    request_metadata: &RequestMetadata,
-    referencing_views: Option<Vec<ReferencingView>>,
-    list_flags: TabularListFlags,
-    state: C::State,
-) -> Result<LoadedTabularResults, tokio::task::JoinError> {
-    // Determine whether to load referencing views
-    let load_referencing = referencing_views.as_ref().is_some_and(|views| !views.is_empty())
-        && request_metadata.engine().is_some();
-    
-    // Extract primary tabular identity and type from TabularIdentOwned
-    let (is_table, primary_ident) = match &primary_tabular {
-        crate::service::TabularIdentOwned::Table(ident) => (true, ident.clone()),  // true = is_table
-        crate::service::TabularIdentOwned::View(ident) => (false, ident.clone()),   // false = is_view
-    };
-
-    // Enum for different task types in JoinSet
-    enum LoadTask {
-        Warehouse(
-            Result<Option<Arc<ResolvedWarehouse>>, crate::service::CatalogGetWarehouseByIdError>,
-        ),
-        PrimaryNamespace(
-            Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-        ),
-        PrimaryInfo(Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>),
-        ReferencingNamespace(
-            usize,
-            Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-        ),
-        ReferencingInfo(usize, Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>),
-    }
-
-    let mut set = JoinSet::new();
-
-    // === WAREHOUSE (always loaded) ===
-    set.spawn({
-        let state = state.clone();
-        async move {
-            LoadTask::Warehouse(C::get_active_warehouse_by_id(warehouse_id, state).await)
-        }
-    });
-
-    // === PRIMARY TABULAR (always loaded) ===
-    set.spawn({
-        let state = state.clone();
-        let namespace = primary_ident.namespace.clone();
-        async move {
-            LoadTask::PrimaryNamespace(C::get_namespace(warehouse_id, namespace, state).await)
-        }
-    });
-
-    set.spawn({
-        let state = state.clone();
-        let tabular_ident = primary_ident.clone();
-        let is_table = is_table;
-        async move {
-            let info = if is_table {
-                // Load as table
-                match C::get_table_info(warehouse_id, tabular_ident, list_flags, state).await {
-                    Ok(table_info) => Ok(table_info.map(crate::service::ViewOrTableInfo::Table)),
-                    Err(e) => Err(e),
-                }
-            } else {
-                // Load as view
-                let view_ident: crate::service::ViewIdentOrId = tabular_ident.into();
-                match C::get_view_info(warehouse_id, view_ident, list_flags, state).await {
-                    Ok(view_info) => Ok(view_info.map(crate::service::ViewOrTableInfo::View)),
-                    Err(e) => Err(e),
-                }
-            };
-            LoadTask::PrimaryInfo(info)
-        }
-    });
-
-    // === REFERENCING VIEWS (conditional) ===
-    // Per definition, ReferencingViews are guaranteed to be views
-    if load_referencing {
-        if let Some(ref views) = referencing_views {
-            for (idx, referencing_view) in views.iter().enumerate() {
-                let view_ident = referencing_view.clone().into_inner();
-                let view_namespace_ident = view_ident.namespace.clone();
-                let view_ident_for_info = view_ident.clone();
-
-                // Referencing View Namespace
-                set.spawn({
-                    let state = state.clone();
-                    async move {
-                        LoadTask::ReferencingNamespace(
-                            idx,
-                            C::get_namespace(warehouse_id, view_namespace_ident, state).await,
-                        )
-                    }
-                });
-
-                // Referencing View Info - load only as view (per definition)
-                set.spawn({
-                    let state = state.clone();
-                    async move {
-                        // ReferencingViews are guaranteed to be views, so use get_view_info directly
-                        let view_id: crate::service::ViewIdentOrId = view_ident_for_info.into();
-                        let info = match C::get_view_info(warehouse_id, view_id, list_flags, state).await {
-                            Ok(view_info) => Ok(view_info.map(crate::service::ViewOrTableInfo::View)),
-                            Err(e) => Err(e),
-                        };
-                        LoadTask::ReferencingInfo(idx, info)
-                    }
-                });
-            }
-        }
-    }
-
-    // === Collect results ===
-    let mut warehouse_result = None;
-    let mut primary_namespace_result = None;
-    let mut primary_info_result = None;
-    let mut referencing_namespaces: std::collections::HashMap<usize, _> = std::collections::HashMap::new();
-    let mut referencing_tabulars: std::collections::HashMap<usize, _> = std::collections::HashMap::new();
-
-    while let Some(join_result) = set.join_next().await {
-        let task_result = join_result?;
-
-        match task_result {
-            LoadTask::Warehouse(data) => warehouse_result = Some(data),
-            LoadTask::PrimaryNamespace(data) => primary_namespace_result = Some(data),
-            LoadTask::PrimaryInfo(data) => primary_info_result = Some(data),
-            LoadTask::ReferencingNamespace(idx, data) => { referencing_namespaces.insert(idx, data); }
-            LoadTask::ReferencingInfo(idx, data) => { referencing_tabulars.insert(idx, data); }
-        }
-    }
-
-    // === Prepare namespaces and tabulars for combining ===
-    let mut namespaces = referencing_namespaces;
-    let mut tabulars = referencing_tabulars;
-
-    // Add primary tabular with a high index to ensure it's last
-    let primary_idx = namespaces.len();
-    if let Some(namespace) = primary_namespace_result {
-        namespaces.insert(primary_idx, namespace);
-    }
-    if let Some(info) = primary_info_result {
-        tabulars.insert(primary_idx, info);
-    }
-
-    // Convert warehouse result
-    let warehouse = match warehouse_result {
-        Some(Ok(opt)) => Ok(opt),
-        Some(Err(e)) => Err(e),
-        None => panic!("Warehouse task should always be spawned and completed"),
-    };
-
-    // Return raw results without combining
-    Ok(LoadedTabularResults {
-        warehouse,
-        namespaces,
-        tabulars,
-    })
-}
-
 async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: TableIdent,
@@ -1028,7 +783,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     list_flags: TabularListFlags,
     authorizer: A,
     state: C::State,
-    _referenced_by: Option<Vec<ReferencingView>>,
+    referenced_by: Option<&[ReferencingView]>,
 ) -> Result<
     (
         Arc<ResolvedWarehouse>,
@@ -1037,6 +792,53 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     ),
     AuthZError,
 > {
+    let engine = request_metadata.engine();
+
+    // 1. Collect all relevant namespace idents
+    let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+        TabularIdentBorrowed::Table(&table),
+        referenced_by,
+        engine,
+    );
+
+    // 2. Collect all relevant tabular idents
+    let tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+        TabularIdentBorrowed::Table(&table),
+        referenced_by,
+        engine,
+    );
+
+    // 3. Load Objects with JoinSet:
+    // * warehouse (get_active_warehouse_by_id)
+    // * load namespaces with batch function (`get_namespaces_by_ident`)
+    // * load tabulars with batch function (`get_tabular_infos_by_idents`)
+    let objects = load_objects_to_authorize_load_tabular::<C>(
+        warehouse_id,
+        namespaces.into_iter().collect(),
+        tabulars.into_iter().collect(),
+        list_flags,
+        state.clone(),
+    )
+    .await
+    .map_err(|e| ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e)))?;
+
+    // 4. Check Warehouse presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, objects.warehouse)?;
+
+    // 5. Order views by comparing initial referenced_by list plus appended table/view
+    //     1. If view is not found -> AuthZCannotSeeView/AuthZCannotSeeTable
+    // 6. Connect tabular with namespaces by using namespace_id
+    //     1. If namespace is missing -> AuthZCannotSeeNamespace
+    // 7. Build list containing (current_user, view) pairs by iterating over ordered view.
+    //     1. Start with calling user
+    //     2. When current view has special engine property -> Definer view -> current user will change to owner of current view for next views in the list
+    // 8. Check all authorizations in batch with `are_allowed_tabular_actions_vec` with list of (current_user, view) pairs from Step 6.
+    //
+    // Prerequisites:
+    // Extend `ActionOnTableOrView` and add `for_user` as new value of the variants -> Transform variant value from tupel to struct -> Remove `for_user` from `are_allowed_tabular_actions_vec` params, as already contained in actions
+    //
+    // Notes:
+    // Probably use `ReferencedByQuery` as param instead of inner `Vec<ReferencingView>` to encapsulate some steps like collect relevant namespaces into it.
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
@@ -1087,6 +889,139 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         None
     };
     Ok((warehouse, table_info, storage_permissions))
+}
+
+fn get_relevant_namespaces_to_authorize_load_tabular<'a>(
+    tabular: TabularIdentBorrowed<'a>,
+    referenced_by: Option<&'a [ReferencingView]>,
+    engine: Option<&TrustedEngine>,
+) -> HashSet<NamespaceIdent> {
+    get_relevant_objects_to_authorize_load_tabular(tabular, referenced_by, engine, |o| match o {
+        TabularIdentBorrowed::Table(table_ident) | TabularIdentBorrowed::View(table_ident) => {
+            table_ident.namespace().clone()
+        }
+    })
+}
+
+fn get_relevant_tabulars_to_authorize_load_tabular<'a>(
+    tabular: TabularIdentBorrowed<'a>,
+    referenced_by: Option<&'a [ReferencingView]>,
+    engine: Option<&TrustedEngine>,
+) -> HashSet<TabularIdentOwned> {
+    get_relevant_objects_to_authorize_load_tabular(tabular, referenced_by, engine, |o| o.into())
+}
+
+fn get_relevant_objects_to_authorize_load_tabular<'a, F, O>(
+    tabular: TabularIdentBorrowed<'a>,
+    referenced_by: Option<&'a [ReferencingView]>,
+    engine: Option<&TrustedEngine>,
+    transformer: F,
+) -> HashSet<O>
+where
+    O: Eq + Hash,
+    F: Fn(TabularIdentBorrowed<'a>) -> O,
+{
+    let mut results = HashSet::new();
+
+    results.insert(transformer(tabular));
+
+    if let Some(views) = referenced_by
+        && engine.is_some()
+    {
+        for view in views {
+            results.insert(transformer(TabularIdentBorrowed::View(view)));
+        }
+    }
+
+    results
+}
+
+#[derive(Debug)]
+pub struct AuthorizeLoadTableObjects {
+    pub warehouse: Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>,
+    pub namespaces: Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>,
+    pub tabulars: Result<Vec<ViewOrTableInfo>, GetTabularInfoError>,
+}
+
+enum AuthorizeLoadTableLoadTaskResult {
+    Warehouse(Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>),
+    Namespaces(Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>),
+    Tabulars(Result<Vec<ViewOrTableInfo>, GetTabularInfoError>),
+}
+
+async fn load_objects_to_authorize_load_tabular<'a, C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    namespaces: Vec<NamespaceIdent>,
+    tabulars: Vec<TabularIdentOwned>,
+    list_flags: TabularListFlags,
+    state: C::State,
+) -> Result<AuthorizeLoadTableObjects, JoinError> {
+    let mut set = JoinSet::new();
+
+    set.spawn({
+        let state = state.clone();
+        async move {
+            AuthorizeLoadTableLoadTaskResult::Warehouse(
+                C::get_active_warehouse_by_id(warehouse_id, state).await,
+            )
+        }
+    });
+
+    set.spawn({
+        let state = state.clone();
+        async move {
+            AuthorizeLoadTableLoadTaskResult::Namespaces(
+                C::get_namespaces_by_ident(
+                    warehouse_id,
+                    &namespaces.iter().collect::<Vec<_>>(),
+                    state,
+                )
+                .await,
+            )
+        }
+    });
+
+    set.spawn({
+        let state = state.clone();
+        async move {
+            AuthorizeLoadTableLoadTaskResult::Tabulars(
+                C::get_tabular_infos_by_ident(
+                    warehouse_id,
+                    &tabulars.iter().map(|t| t.as_borrowed()).collect::<Vec<_>>(),
+                    list_flags,
+                    state,
+                )
+                .await,
+            )
+        }
+    });
+
+    let mut warehouse_result = None;
+    let mut tabulars_result = None;
+    let mut namespaces_result = None;
+
+    while let Some(join_result) = set.join_next().await {
+        let task_result = join_result?;
+
+        match task_result {
+            AuthorizeLoadTableLoadTaskResult::Warehouse(warehouse) => {
+                warehouse_result = Some(warehouse)
+            }
+            AuthorizeLoadTableLoadTaskResult::Namespaces(namespaces) => {
+                namespaces_result = Some(namespaces)
+            }
+            AuthorizeLoadTableLoadTaskResult::Tabulars(tabulars) => {
+                tabulars_result = Some(tabulars)
+            }
+        }
+    }
+
+    // TODO: Would it be better to delegate the error as JoinError?
+    Ok(AuthorizeLoadTableObjects {
+        warehouse: warehouse_result.expect("Warehouse task should be spawned and completed."),
+        namespaces: namespaces_result.expect("Namespaces task should be spawned and completed."),
+        tabulars: tabulars_result.expect("Tabulars task should be spawned and completed."),
+    })
 }
 
 /// Validate commit table requests
@@ -2071,6 +2006,7 @@ pub(crate) mod test {
                 warehouse::TabularDeleteProfile,
             },
         },
+        config::{TrinoEngineConfig, TrustedEngine},
         implementations::postgres::{
             PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
         },
@@ -4889,162 +4825,171 @@ pub(crate) mod test {
         }
     }
 
-    // Tests for combine_tabular_entries function
-    #[test]
-    fn test_combine_tabular_entries_empty_maps() {
-        let namespaces = HashMap::new();
-        let tabulars = HashMap::new();
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert!(result.is_empty());
+    fn get_test_engine() -> TrustedEngine {
+        TrustedEngine::Trino(TrinoEngineConfig {
+            idp_id: "keycloak~trino".to_string(),
+            security_model_property: "trino.run-as-owner".to_string(),
+        })
     }
 
     #[test]
-    fn test_combine_tabular_entries_matching_indices() {
-        let mut namespaces = HashMap::new();
-        let mut tabulars = HashMap::new();
-
-        for idx in 0..3 {
-            namespaces.insert(
-                idx,
-                Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-            );
-            tabulars.insert(
-                idx,
-                Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
-            );
-        }
-
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert_eq!(result.len(), 3);
-        assert!(result.contains_key(&0));
-        assert!(result.contains_key(&1));
-        assert!(result.contains_key(&2));
-        let keys: Vec<_> = result.keys().copied().collect();
-        assert_eq!(keys, vec![0, 1, 2]);
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_base_tabular_namespace() {
+        let engine = get_test_engine();
+        let namespace_ident = NamespaceIdent::from_strs(vec!["ns_a", "ns_b"])
+            .expect("NamespaceIdent should be able to be build");
+        let table = TabularIdentBorrowed::Table(&TableIdent::new(
+            namespace_ident.clone(),
+            "table".to_string(),
+        ));
+        let namespaces =
+            get_relevant_namespaces_to_authorize_load_tabular(table, None, Some(&engine));
+        assert!(namespaces.contains(&namespace_ident));
     }
 
     #[test]
-    fn test_combine_tabular_entries_mismatched_indices() {
-        let mut namespaces = HashMap::new();
-        let mut tabulars = HashMap::new();
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_all_namespaces_of_referencing_views()
+     {
+        let engine = get_test_engine();
 
-        namespaces.insert(
-            0,
-            Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-        );
-        namespaces.insert(
-            1,
-            Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-        );
-        tabulars.insert(
-            1,
-            Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
-        );
-        tabulars.insert(
-            2,
-            Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
+        let namespace_a = NamespaceIdent::from_strs(vec!["ns_a"]).unwrap();
+        let view_a = TableIdent::new(namespace_a.clone(), "view_a".to_string());
+
+        let namespace_b = NamespaceIdent::from_strs(vec!["ns_b"]).unwrap();
+        let view_b = TableIdent::new(namespace_b.clone(), "view_b".to_string());
+
+        let referencing_views = vec![ReferencingView::new(view_a), ReferencingView::new(view_b)];
+
+        let namespace_c = NamespaceIdent::from_strs(vec!["ns_c"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace_c.clone(), "table".to_string()));
+
+        let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+            table,
+            Some(&referencing_views),
+            Some(&engine),
         );
 
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert_eq!(result.len(), 3);
-        assert!(result.contains_key(&0));
-        assert!(result.contains_key(&1));
-        assert!(result.contains_key(&2));
-        let keys: Vec<_> = result.keys().copied().collect();
-        assert_eq!(keys, vec![0, 1, 2]);
+        assert_eq!(namespaces.len(), 3);
+        assert!(namespaces.contains(&namespace_a));
+        assert!(namespaces.contains(&namespace_b));
+        assert!(namespaces.contains(&namespace_c));
     }
 
     #[test]
-    fn test_combine_tabular_entries_missing_filled_with_ok_none() {
-        let mut namespaces = HashMap::new();
-        let mut tabulars = HashMap::new();
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_no_duplicates() {
+        let engine = get_test_engine();
 
-        namespaces.insert(
-            0,
-            Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-        );
-        tabulars.insert(
-            1,
-            Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+
+        let view_a = TableIdent::new(namespace.clone(), "view_a".to_string());
+        let view_b = TableIdent::new(namespace.clone(), "view_b".to_string());
+        let referencing_views = vec![ReferencingView::new(view_a), ReferencingView::new(view_b)];
+
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+
+        let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+            table,
+            Some(&referencing_views),
+            Some(&engine),
         );
 
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert!(result[&0].namespace.is_ok());
-        assert!(result[&0].tabular.is_ok());
-        assert!(result[&1].namespace.is_ok());
-        assert!(result[&1].tabular.is_ok());
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains(&namespace));
     }
 
     #[test]
-    fn test_combine_tabular_entries_single_matching_pair() {
-        let mut namespaces = HashMap::new();
-        let mut tabulars = HashMap::new();
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_ignores_referencing_views_without_trusted_engine()
+     {
+        let namespace_referenced_by = NamespaceIdent::from_strs(vec!["ns_referenced_by"]).unwrap();
 
-        namespaces.insert(
-            5,
-            Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
+        let referencing_view = TableIdent::new(
+            namespace_referenced_by.clone(),
+            "referencing_view".to_string(),
         );
-        tabulars.insert(
-            5,
-            Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
+        let referencing_views = vec![ReferencingView::new(referencing_view)];
+
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+
+        let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+            table,
+            Some(&referencing_views),
+            None,
         );
 
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert_eq!(result.len(), 1);
-        assert!(result.contains_key(&5));
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains(&namespace));
     }
 
     #[test]
-    fn test_combine_tabular_entries_sparse_indices() {
-        let mut namespaces = HashMap::new();
-        let mut tabulars = HashMap::new();
+    fn test_get_relevant_tabulars_to_authorize_load_tabular_contains_base_tabular() {
+        let engine = get_test_engine();
 
-        for idx in [0, 5, 10, 15].iter().copied() {
-            namespaces.insert(
-                idx,
-                Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-            );
-        }
-        for idx in [2, 5, 10, 20].iter().copied() {
-            tabulars.insert(
-                idx,
-                Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
-            );
-        }
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+        let table = TabularIdentBorrowed::Table(&TableIdent::new(namespace, "table".to_string()));
 
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert_eq!(result.len(), 6);
-        let keys: Vec<_> = result.keys().copied().collect();
-        assert_eq!(keys, vec![0, 2, 5, 10, 15, 20]);
+        let tabulars =
+            get_relevant_tabulars_to_authorize_load_tabular(table.clone(), None, Some(&engine));
+
+        assert_eq!(tabulars.len(), 1);
+        assert!(tabulars.contains(&table.into()));
     }
 
     #[test]
-    fn test_combine_tabular_entries_preserves_ok_none_semantics() {
-        let mut namespaces = HashMap::new();
-        let mut tabulars = HashMap::new();
+    fn test_get_relevant_tabulars_to_authorize_load_tabular_contains_all_referencing_views() {
+        let engine = get_test_engine();
 
-        namespaces.insert(
-            0,
-            Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
-        );
-        tabulars.insert(
-            0,
-            Ok(None) as Result<Option<crate::service::ViewOrTableInfo>, crate::service::GetTabularInfoError>,
-        );
-        namespaces.insert(
-            1,
-            Ok(None) as Result<Option<crate::service::NamespaceHierarchy>, crate::service::CatalogGetNamespaceError>,
+        let namespace_a = NamespaceIdent::from_strs(vec!["ns_a"]).unwrap();
+        let view_a = TableIdent::new(namespace_a.clone(), "view_a".to_string());
+
+        let namespace_b = NamespaceIdent::from_strs(vec!["ns_b"]).unwrap();
+        let view_b = TableIdent::new(namespace_b.clone(), "view_b".to_string());
+
+        let referencing_views = vec![
+            ReferencingView::new(view_a.clone()),
+            ReferencingView::new(view_b.clone()),
+        ];
+
+        let namespace_c = NamespaceIdent::from_strs(vec!["ns_c"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace_c.clone(), "table".to_string()));
+
+        let tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+            table.clone(),
+            Some(&referencing_views),
+            Some(&engine),
         );
 
-        let result = combine_tabular_entries(namespaces, tabulars);
-        assert_eq!(result.len(), 2);
-        assert!(result[&0].namespace.is_ok());
-        assert!(result[&0].namespace.as_ref().unwrap().is_none());
-        assert!(result[&0].tabular.is_ok());
-        assert!(result[&0].tabular.as_ref().unwrap().is_none());
-        assert!(result[&1].namespace.is_ok());
-        assert!(result[&1].namespace.as_ref().unwrap().is_none());
-        assert!(result[&1].tabular.is_ok());
-        assert!(result[&1].tabular.as_ref().unwrap().is_none());
+        assert_eq!(tabulars.len(), 3);
+        assert!(tabulars.contains(&TabularIdentOwned::View(view_a)));
+        assert!(tabulars.contains(&TabularIdentOwned::View(view_b)));
+        assert!(tabulars.contains(&table.into()));
+    }
+
+    #[test]
+    fn test_get_relevant_tabulars_to_authorize_load_tabular_ignores_referencing_views_without_trusted_engine()
+     {
+        let namespace_referenced_by = NamespaceIdent::from_strs(vec!["ns_referenced_by"]).unwrap();
+
+        let referencing_view = TableIdent::new(
+            namespace_referenced_by.clone(),
+            "referencing_view".to_string(),
+        );
+        let referencing_views = vec![ReferencingView::new(referencing_view)];
+
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+
+        let tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+            table.clone(),
+            Some(&referencing_views),
+            None,
+        );
+
+        assert_eq!(tabulars.len(), 1);
+        assert!(tabulars.contains(&table.into()));
     }
 }
