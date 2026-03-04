@@ -535,9 +535,7 @@ where
     ///    `members` slice is by definition the complete new member list, so no
     ///    extra DB round-trip is needed.
     /// 3. Inserts the result into `ROLE_MEMBERS_CACHE`.
-    /// 4. Emits [`RoleMembersSyncedEvent`] via `dispatcher` so that listeners
-    ///    (e.g. [`RoleAssignmentsCacheEventListener`]) can invalidate
-    ///    per-user assignment caches on this and other instances.
+    /// 4. Emits [`RoleMembersSyncedEvent`] via `dispatcher`
     async fn sync_role_members(
         project_id: &ArcProjectId,
         role: &CatalogRoleForAssignment<'_>,

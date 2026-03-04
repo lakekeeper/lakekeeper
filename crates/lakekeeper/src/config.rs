@@ -83,16 +83,16 @@ fn get_config() -> DynAppConfig {
     // `role.time_to_live_secs` a deleted role can remain visible through
     // user-assignment cache entries after it has been evicted from the role
     // cache, violating the documented invariant.
-    assert!(
-        config.cache.user_assignments.time_to_live_secs <= config.cache.role.time_to_live_secs,
-        "Invalid cache configuration: \
-         user_assignments.time_to_live_secs ({ua_ttl}) must not exceed \
-         role.time_to_live_secs ({role_ttl}). \
-         A larger user-assignments TTL would allow a deleted role to appear \
-         in authorisation results after it has been evicted from the role cache.",
-        ua_ttl = config.cache.user_assignments.time_to_live_secs,
-        role_ttl = config.cache.role.time_to_live_secs,
-    );
+    // The constraint is only meaningful when both caches are active; if either
+    // is disabled the TTL relationship has no effect at runtime.
+    if config.cache.user_assignments.enabled && config.cache.role.enabled {
+        assert!(
+            config.cache.user_assignments.time_to_live_secs <= config.cache.role.time_to_live_secs,
+            "Invalid cache configuration: user_assignments.time_to_live_secs ({}) must not exceed role.time_to_live_secs ({})",
+            config.cache.user_assignments.time_to_live_secs,
+            config.cache.role.time_to_live_secs,
+        );
+    }
 
     config
 }
