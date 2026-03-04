@@ -65,6 +65,9 @@ pub(crate) async fn user_assignments_cache_insert(
 pub(crate) async fn user_assignments_cache_get(
     user_id: &UserId,
 ) -> Option<Arc<ListUserRoleAssignmentsResult>> {
+    if !CONFIG.cache.user_assignments.enabled {
+        return None;
+    }
     update_ua_size_metric();
     if let Some(result) = USER_ASSIGNMENTS_CACHE.get(user_id).await {
         tracing::debug!("User assignments for {user_id} found in cache");
@@ -137,6 +140,9 @@ pub(crate) async fn role_members_cache_insert(role_id: RoleId, result: Arc<ListR
 }
 
 pub(crate) async fn role_members_cache_get(role_id: RoleId) -> Option<Arc<ListRoleMembersResult>> {
+    if !CONFIG.cache.role_members.enabled {
+        return None;
+    }
     update_rm_size_metric();
     if let Some(result) = ROLE_MEMBERS_CACHE.get(&role_id).await {
         tracing::debug!("Role members for {role_id} found in cache");

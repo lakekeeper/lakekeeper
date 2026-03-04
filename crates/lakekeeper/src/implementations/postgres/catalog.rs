@@ -373,6 +373,13 @@ impl CatalogStore for super::PostgresBackend {
         members: &[CatalogUserRoleAssignmentUser<'_>],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<SyncRoleMembersResult, SyncRoleMembersError> {
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                members.iter().all(|m| seen.insert(m.user_id.to_string()))
+            },
+            "sync_role_members_by_ident_impl: duplicate user_id in members slice"
+        );
         let unique = UniqueMembers::from_unchecked(members);
         super::role_assignment::sync_role_members_by_ident(project_id, role, unique, transaction)
             .await
@@ -385,6 +392,15 @@ impl CatalogStore for super::PostgresBackend {
         roles: &[CatalogRoleForAssignment<'_>],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                roles
+                    .iter()
+                    .all(|r| seen.insert(r.ident.source_id().to_string()))
+            },
+            "sync_user_role_assignments_by_provider_impl: duplicate source_id in roles slice"
+        );
         let unique = UniqueRoles::from_unchecked(roles);
         super::role_assignment::sync_user_role_assignments_by_provider(
             user,

@@ -107,9 +107,11 @@ pub struct UserProviderSyncInfo {
 #[derive(Debug, Clone)]
 pub struct ListUserRoleAssignmentsResult {
     pub roles: Vec<AssignedRole>,
-    /// One entry per `(project_id, provider_id)` pair for which a sync has
-    /// been recorded for this user.  Empty when no external provider has ever
-    /// synced this user's assignments.
+    /// One [`UserProviderSyncInfo`] entry per `(project_id, provider_id)` pair
+    /// for which the user currently has at least one assignment row.  Pairs
+    /// whose assignments have all been removed are not included even if a sync
+    /// was previously recorded for them.  Empty when the user has no
+    /// externally-managed assignments.
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
 }
 
@@ -168,8 +170,10 @@ pub struct SyncUserRoleAssignmentsResult {
     /// Returned so the caller can build [`ListUserRoleAssignmentsResult`]
     /// without a separate DB round-trip.
     pub all_roles: Vec<AssignedRole>,
-    /// Per-`(project_id, provider_id)` sync metadata for this user after the
-    /// sync run, covering all providers.
+    /// One [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair for
+    /// which the user has at least one assignment row after this sync run.
+    /// Pairs with no remaining assignments are omitted even if a prior sync was
+    /// recorded for them.
     ///
     /// Matches the `provider_sync_times` field of [`ListUserRoleAssignmentsResult`].
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
@@ -340,6 +344,7 @@ impl<'slice, 'data> UniqueMembers<'slice, 'data> {
     /// # Caller contract
     /// Every `user_id` in `members` must be unique. Violating this contract
     /// causes a runtime database error, not memory unsafety.
+    #[cfg(feature = "sqlx-postgres")]
     pub(crate) fn from_unchecked(members: &'slice [CatalogUserRoleAssignmentUser<'data>]) -> Self {
         Self { inner: members }
     }
@@ -384,6 +389,7 @@ impl<'slice, 'data> UniqueRoles<'slice, 'data> {
     /// # Caller contract
     /// Every `source_id` in `roles` must be unique. Violating this contract
     /// causes a runtime database error, not memory unsafety.
+    #[cfg(feature = "sqlx-postgres")]
     pub(crate) fn from_unchecked(roles: &'slice [CatalogRoleForAssignment<'data>]) -> Self {
         Self { inner: roles }
     }
@@ -682,9 +688,9 @@ where
     /// Each [`AssignedRole`] carries `role_id` (for internal authorizers) as
     /// well as `role_ident` + `project_id` (for external authorizers).
     /// [`ListUserRoleAssignmentsResult::provider_sync_times`] holds one
-    /// [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair that has
-    /// ever synced this user — the sync clock is at that granularity, not per
-    /// individual role.
+    /// [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair for which
+    /// the user has at least one active assignment — the sync clock is at that
+    /// granularity, not per individual role.
     ///
     /// Primary consumer: authorizers resolving a user's effective roles for a
     /// permission check.
@@ -750,7 +756,13 @@ where
             role_cache::role_ident_to_id(project_id.clone(), role_ident.clone()).await
             && let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await
         {
-            return Ok(cached);
+            // Guard against stale ident→id mappings: if the cached result's
+            // ident no longer matches the requested ident (e.g. source_id
+            // was changed since the entry was written), fall through to the
+            // DB path so we don't return members for the wrong role.
+            if cached.role_ident.as_ref() == role_ident.as_ref() {
+                return Ok(cached);
+            }
         }
 
         // DB fetch — the result carries role_id, project_id and role_ident so

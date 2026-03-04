@@ -395,9 +395,10 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     .await
     .map_err(map_role_upsert_error::<SyncUserRoleAssignmentsError>)?;
 
-    // Second query within the same transaction: the MERGE + sync_ts writes
-    // are now visible, so a plain SELECT gives the authoritative post-sync
-    // state without any snapshot-visibility gymnastics.
+    // Second query within the same transaction: the CTE-driven INSERT/DELETE
+    // (added_assignments / removed_assignments) and sync_ts upsert writes are
+    // now visible, so a plain SELECT gives the authoritative post-sync state
+    // without any snapshot-visibility gymnastics.
     let all_assignments = list_role_assignments_for_user(user.user_id, &mut **transaction)
         .await
         .map_err(SyncUserRoleAssignmentsError::from)?;

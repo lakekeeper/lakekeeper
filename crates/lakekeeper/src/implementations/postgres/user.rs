@@ -212,12 +212,7 @@ pub(crate) async fn create_or_update_user<
     user_type: UserType,
     connection: E,
 ) -> Result<CreateOrUpdateUserResponse> {
-    let db_last_updated_with = match last_updated_with {
-        UserLastUpdatedWith::CreateEndpoint => DbUserLastUpdatedWith::CreateEndpoint,
-        UserLastUpdatedWith::ConfigCallCreation => DbUserLastUpdatedWith::ConfigCallCreation,
-        UserLastUpdatedWith::UpdateEndpoint => DbUserLastUpdatedWith::UpdateEndpoint,
-        UserLastUpdatedWith::RoleProvider => DbUserLastUpdatedWith::RoleProvider,
-    };
+    let db_last_updated_with: DbUserLastUpdatedWith = last_updated_with.into();
 
     // query_as doesn't respect FromRow: https://github.com/launchbadge/sqlx/issues/2584
     let user = sqlx::query!(
