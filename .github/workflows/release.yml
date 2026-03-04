@@ -284,14 +284,14 @@ jobs:
         run: echo ${{ needs.release_please.outputs.tag_name }}
 
       - name: Test Login to Quay.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Test Login to Dockerhub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -309,14 +309,14 @@ jobs:
         uses: actions/download-artifact@v6
 
       - name: Login to Quay.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Login to Dockerhub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -386,14 +386,14 @@ jobs:
         uses: actions/download-artifact@v6
 
       - name: Login to Quay.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Login to Dockerhub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
