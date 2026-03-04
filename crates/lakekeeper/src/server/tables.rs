@@ -836,9 +836,6 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     //
     // Prerequisites:
     // Extend `ActionOnTableOrView` and add `for_user` as new value of the variants -> Transform variant value from tupel to struct -> Remove `for_user` from `are_allowed_tabular_actions_vec` params, as already contained in actions
-    //
-    // Notes:
-    // Probably use `ReferencedByQuery` as param instead of inner `Vec<ReferencingView>` to encapsulate some steps like collect relevant namespaces into it.
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
