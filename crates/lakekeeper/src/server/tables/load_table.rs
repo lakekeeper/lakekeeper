@@ -88,7 +88,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             TabularListFlags::active(),
             authorizer.clone(),
             catalog_state.clone(),
-            referenced_by,
+            referenced_by.as_deref(),
         )
         .await,
     )?;
