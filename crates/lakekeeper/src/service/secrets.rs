@@ -13,13 +13,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CONFIG,
     api::Result,
-    service::{health::HealthExt, storage::StorageCredential},
-};
-
-use crate::service::cache_metrics::{
-    METRIC_CACHE_HITS_TOTAL as METRIC_SECRETS_CACHE_HITS,
-    METRIC_CACHE_MISSES_TOTAL as METRIC_SECRETS_CACHE_MISSES,
-    METRIC_CACHE_SIZE as METRIC_SECRETS_CACHE_SIZE, METRICS_INITIALIZED,
+    service::{
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_SECRETS_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_SECRETS_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_SECRETS_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        health::HealthExt,
+        storage::StorageCredential,
+    },
 };
 
 pub(crate) static SECRETS_CACHE: LazyLock<Cache<SecretId, CachedSecret>> = LazyLock::new(|| {

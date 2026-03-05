@@ -11,13 +11,14 @@ use unicase::UniCase;
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
-    service::{ArcProjectId, ResolvedWarehouse},
-};
-
-use crate::service::cache_metrics::{
-    METRIC_CACHE_HITS_TOTAL as METRIC_WAREHOUSE_CACHE_HITS,
-    METRIC_CACHE_MISSES_TOTAL as METRIC_WAREHOUSE_CACHE_MISSES,
-    METRIC_CACHE_SIZE as METRIC_WAREHOUSE_CACHE_SIZE, METRICS_INITIALIZED,
+    service::{
+        ArcProjectId, ResolvedWarehouse,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_WAREHOUSE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_WAREHOUSE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_WAREHOUSE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+    },
 };
 
 // Main cache: stores warehouses by ID only

@@ -7,13 +7,14 @@ use moka::{future::Cache, notification::RemovalCause};
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG,
-    service::{ArcProjectId, ArcRole, ArcRoleIdent, RoleId},
-};
-
-use crate::service::cache_metrics::{
-    METRIC_CACHE_HITS_TOTAL as METRIC_ROLE_CACHE_HITS,
-    METRIC_CACHE_MISSES_TOTAL as METRIC_ROLE_CACHE_MISSES,
-    METRIC_CACHE_SIZE as METRIC_ROLE_CACHE_SIZE, METRICS_INITIALIZED,
+    service::{
+        ArcProjectId, ArcRole, ArcRoleIdent, RoleId,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_ROLE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_ROLE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_ROLE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+    },
 };
 
 // Primary cache: RoleId → ArcRole

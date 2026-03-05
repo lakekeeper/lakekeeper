@@ -9,13 +9,15 @@ use unicase::UniCase;
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
-    service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
-};
-
-use crate::service::cache_metrics::{
-    METRIC_CACHE_HITS_TOTAL as METRIC_NAMESPACE_CACHE_HITS,
-    METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
-    METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
+    service::{
+        NamespaceId, NamespaceWithParent,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_NAMESPACE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        catalog_store::namespace::NamespaceHierarchy,
+    },
 };
 
 // Main cache: stores individual namespaces by ID
