@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr as _,
+    sync::Arc,
+};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadViewResult;
@@ -17,8 +21,9 @@ use crate::{
         CatalogWarehouseOps, InternalParseLocationError, ResolvedWarehouse, Result, SecretStore,
         State, TabularListFlags, Transaction, ViewInfo,
         authz::{
-            AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogViewAction, refresh_warehouse_and_namespace_if_needed,
+            ActionOnView, AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogViewAction,
+            refresh_warehouse_and_namespace_if_needed,
         },
         events::{APIEventContext, context::ResolvedView},
         storage::StoragePermissions,
@@ -154,19 +159,38 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     )
     .await?;
 
+    let parent_namespaces: HashMap<_, _> = namespace
+        .parents
+        .iter()
+        .map(|ns| (ns.namespace_id(), ns.clone()))
+        .collect();
     let [can_load, can_write] = authorizer
         .are_allowed_view_actions_arr(
             request_metadata,
-            None,
             &warehouse,
-            &namespace,
-            &view_info,
+            &parent_namespaces,
             &[
-                CatalogViewAction::GetMetadata,
-                CatalogViewAction::Commit {
-                    updated_properties: Arc::new(BTreeMap::default()),
-                    removed_properties: Arc::new(Vec::default()),
-                },
+                (
+                    &namespace.namespace,
+                    ActionOnView {
+                        info: &view_info,
+                        action: CatalogViewAction::GetMetadata,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
+                (
+                    &namespace.namespace,
+                    ActionOnView {
+                        info: &view_info,
+                        action: CatalogViewAction::Commit {
+                            updated_properties: Arc::new(BTreeMap::default()),
+                            removed_properties: Arc::new(Vec::default()),
+                        },
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
             ],
         )
         .await?

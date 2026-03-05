@@ -14,13 +14,14 @@ use crate::{
         TabularListFlags, UserId, ViewId, WarehouseStatus,
         authn::UserIdRef,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectActionForbidden, AuthZProjectOps,
-            AuthZRoleOps, AuthZServerOps, AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps,
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireProjectActionError, RequireRoleActionError, RoleAssignee, UserOrRole,
+            ActionOnTable, ActionOnView, AuthZCannotSeeNamespace, AuthZCannotSeeRole,
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError,
+            AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
+            AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogUserAction,
+            CatalogViewAction, CatalogWarehouseAction, RequireProjectActionError,
+            RequireRoleActionError, RoleAssignee, UserOrRole,
             fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -701,12 +702,21 @@ async fn authorize_get_table_actions<C: CatalogStore>(
     let results = authorizer
         .are_allowed_table_actions_vec(
             request_metadata,
-            for_user.as_ref(),
             &warehouse,
             &parents_map,
             &actions
                 .iter()
-                .map(|action| (&namespace.namespace, &table_info, action.clone()))
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnTable {
+                            info: &table_info,
+                            action: action.clone(),
+                            user: for_user,
+                            is_delegated_execution: false,
+                        },
+                    )
+                })
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -808,12 +818,21 @@ async fn authorize_get_view_actions<C: CatalogStore>(
     let results = authorizer
         .are_allowed_view_actions_vec(
             request_metadata,
-            for_user.as_ref(),
             &warehouse,
             &parents_map,
             &actions
                 .iter()
-                .map(|action| (&namespace.namespace, &view_info, action.clone()))
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnView {
+                            info: &view_info,
+                            action: action.clone(),
+                            user: for_user,
+                            is_delegated_execution: false,
+                        },
+                    )
+                })
                 .collect::<Vec<_>>(),
         )
         .await?

@@ -1226,6 +1226,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     t.as_action_request(
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
+                                        None,
                                     ),
                                 ))
                             })
@@ -1234,7 +1235,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         authorizer
                             .are_allowed_tabular_actions_vec(
                                 &request_metadata,
-                                None,
                                 &warehouse,
                                 &namespaces,
                                 &actions,

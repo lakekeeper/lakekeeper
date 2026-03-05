@@ -68,9 +68,9 @@ use crate::{
         TabularIdentOwned, TabularInfo, TabularListFlags, TabularNotFound, Transaction,
         ViewOrTableInfo, WarehouseStatus,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
-            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            ActionOnTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError,
+            AuthZTableActionForbidden, AuthZTableOps, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
             RequireNamespaceActionError, RequireTableActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -823,7 +823,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     .map_err(|e| ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e)))?;
 
     // 4. Check Warehouse presence
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, objects.warehouse)?;
+    let _warehouse = authorizer.require_warehouse_presence(warehouse_id, objects.warehouse)?;
 
     // 5. Order views by comparing initial referenced_by list plus appended table/view
     //     1. If view is not found -> AuthZCannotSeeView/AuthZCannotSeeTable
@@ -858,17 +858,44 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     )
     .await?;
 
+    let parent_namespaces: HashMap<_, _> = namespace
+        .parents
+        .iter()
+        .map(|ns| (ns.namespace_id(), ns.clone()))
+        .collect();
     let [can_get_metadata, can_read, can_write] = authorizer
         .are_allowed_table_actions_arr(
             request_metadata,
-            None,
             &warehouse,
-            &namespace,
-            &table_info,
+            &parent_namespaces,
             &[
-                CatalogTableAction::GetMetadata,
-                CatalogTableAction::ReadData,
-                CatalogTableAction::WriteData,
+                (
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: &table_info,
+                        action: CatalogTableAction::GetMetadata,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
+                (
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: &table_info,
+                        action: CatalogTableAction::ReadData,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
+                (
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: &table_info,
+                        action: CatalogTableAction::WriteData,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
             ],
         )
         .await?
@@ -905,7 +932,12 @@ fn get_relevant_tabulars_to_authorize_load_tabular<'a>(
     referenced_by: Option<&'a [ReferencingView]>,
     engine: Option<&TrustedEngine>,
 ) -> HashSet<TabularIdentOwned> {
-    get_relevant_objects_to_authorize_load_tabular(tabular, referenced_by, engine, |o| o.into())
+    get_relevant_objects_to_authorize_load_tabular(
+        tabular,
+        referenced_by,
+        engine,
+        std::convert::Into::into,
+    )
 }
 
 fn get_relevant_objects_to_authorize_load_tabular<'a, F, O>(
@@ -946,7 +978,7 @@ enum AuthorizeLoadTableLoadTaskResult {
     Tabulars(Result<Vec<ViewOrTableInfo>, GetTabularInfoError>),
 }
 
-async fn load_objects_to_authorize_load_tabular<'a, C: CatalogStore>(
+async fn load_objects_to_authorize_load_tabular<C: CatalogStore>(
     warehouse_id: WarehouseId,
     namespaces: Vec<NamespaceIdent>,
     tabulars: Vec<TabularIdentOwned>,
@@ -1002,13 +1034,13 @@ async fn load_objects_to_authorize_load_tabular<'a, C: CatalogStore>(
 
         match task_result {
             AuthorizeLoadTableLoadTaskResult::Warehouse(warehouse) => {
-                warehouse_result = Some(warehouse)
+                warehouse_result = Some(warehouse);
             }
             AuthorizeLoadTableLoadTaskResult::Namespaces(namespaces) => {
-                namespaces_result = Some(namespaces)
+                namespaces_result = Some(namespaces);
             }
             AuthorizeLoadTableLoadTaskResult::Tabulars(tabulars) => {
-                tabulars_result = Some(tabulars)
+                tabulars_result = Some(tabulars);
             }
         }
     }
