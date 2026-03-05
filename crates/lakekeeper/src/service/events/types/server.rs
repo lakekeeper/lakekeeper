@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
-    ProjectId,
     api::RequestMetadata,
     service::{
-        ServerId,
+        ArcProjectId, ServerId,
         events::{
             APIEventContext,
             context::{APIEventActions, AuthzChecked, Unresolved},
@@ -15,13 +14,13 @@ use crate::{
 /// Event emitted when a project is created
 #[derive(Clone, Debug)]
 pub struct CreateProjectEvent {
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub project_name: String,
     pub request_metadata: Arc<RequestMetadata>,
 }
 
 impl<A: APIEventActions> APIEventContext<ServerId, Unresolved, A, AuthzChecked> {
-    pub(crate) fn emit_project_created(self, project_id: ProjectId, project_name: String) {
+    pub(crate) fn emit_project_created(self, project_id: ArcProjectId, project_name: String) {
         let event = CreateProjectEvent {
             project_id,
             project_name,

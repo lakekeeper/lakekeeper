@@ -7,14 +7,17 @@ use crate::{
     ProjectId, XXHashSet,
     api::endpoints::EndpointFlat,
     implementations::postgres::dbutils::DBErrorHandler,
-    service::endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
+    service::{
+        ArcProjectId,
+        endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
+    },
 };
 
 #[async_trait::async_trait]
 impl EndpointStatisticsSink for PostgresStatisticsSink {
     async fn consume_endpoint_statistics(
         &self,
-        stats: HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>,
+        stats: HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>,
     ) -> crate::api::Result<()> {
         let stats = Arc::new(stats);
 
@@ -63,7 +66,7 @@ impl PostgresStatisticsSink {
     #[allow(clippy::too_many_lines)]
     pub(super) async fn process_stats(
         &self,
-        stats: Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
+        stats: Arc<HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>>,
     ) -> crate::api::Result<()> {
         tracing::debug!(
             "Resolving projects and warehouses for '{}' recorded unique project ids.",
@@ -180,12 +183,12 @@ impl PostgresStatisticsSink {
 }
 
 async fn resolve_projects<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
-    stats: &Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
+    stats: &Arc<HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>>,
     conn: E,
-) -> crate::api::Result<XXHashSet<ProjectId>> {
+) -> crate::api::Result<XXHashSet<ArcProjectId>> {
     let projects = stats.keys().map(ToString::to_string).collect_vec();
     tracing::debug!("Resolving '{}' project ids.", projects.len());
-    let resolved_projects: XXHashSet<ProjectId> = sqlx::query!(
+    let resolved_projects: XXHashSet<ArcProjectId> = sqlx::query!(
         r#"SELECT true as "exists!", project_id
                FROM project
                WHERE project_id = ANY($1::text[])"#,
@@ -207,6 +210,7 @@ async fn resolve_projects<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Pos
             })
             .ok()
             .flatten()
+            .map(Arc::new)
     })
     .collect::<_>();
 
@@ -216,7 +220,7 @@ async fn resolve_projects<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Pos
 }
 
 async fn resolve_warehouses<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
-    stats: &Arc<HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>>,
+    stats: &Arc<HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>>,
     conn: E,
 ) -> crate::api::Result<HashMap<(String, String), Uuid>> {
     let (projects, warehouse_idents): (Vec<_>, Vec<_>) = stats

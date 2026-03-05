@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use chrono::DateTime;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
@@ -63,7 +63,7 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         },
         queue_name: row.queue_name.into(),
         task_metadata: TaskMetadata {
-            project_id: ProjectId::from_db_unchecked(row.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
             entity: scope,
             parent_task_id: row.parent_task_id.map(TaskId::from),
             scheduled_for: row.attempt_scheduled_for,
@@ -290,7 +290,7 @@ pub(crate) async fn list_tasks(
         entities_filter_is_none, // 12
         created_after, // 13
         created_before, // 14
-        &project_id.map(ProjectId::as_str).unwrap_or_default(), // 15
+        &project_id.map(|p| p.as_str()).unwrap_or_default(), // 15
         warehouse_id.is_none(), // 16
         include_sub_tasks, // 17
         project_id.is_none(), // 18
@@ -342,6 +342,7 @@ mod tests {
             pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
         },
         service::{
+            ArcProjectId,
             authz::AllowAllAuthorizer,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ScheduleTaskMetadata, TaskEntity, TaskInput,
@@ -389,7 +390,7 @@ mod tests {
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         entity_id: WarehouseTaskEntityId,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -410,7 +411,7 @@ mod tests {
         queue_name: &TaskQueueName,
         entity_id: WarehouseTaskEntityId,
         entity_name: Vec<String>,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -2095,7 +2096,7 @@ mod tests {
             if let Some(task_wh_id) = task.task_metadata.warehouse_id() {
                 assert_eq!(task_wh_id, warehouse_id);
             }
-            assert_eq!(*task.project_id(), project_id);
+            assert_eq!(task.project_id(), &*project_id);
         }
     }
 }

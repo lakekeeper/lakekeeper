@@ -34,8 +34,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        NamespaceId, State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
+        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
+        ViewOrTableDeletionInfo,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
@@ -169,7 +170,7 @@ impl CreateWarehouseResponse {
     }
 
     #[must_use]
-    pub fn project_id(&self) -> ProjectId {
+    pub fn project_id(&self) -> ArcProjectId {
         self.0.project_id.clone()
     }
 }
@@ -245,7 +246,7 @@ pub struct GetWarehouseResponse {
     pub name: String,
     /// Project ID in which the warehouse was created.
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
     /// Delete profile used for the warehouse.
@@ -343,17 +344,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id,
-            CatalogProjectAction::CreateWarehouse,
+            Arc::new(CatalogProjectAction::CreateWarehouse),
         );
 
         let authz_result = authorizer
             .require_project_action(
                 event_ctx.request_metadata(),
-                event_ctx.user_provided_entity(),
+                event_ctx.user_provided_entity_arc_ref(),
                 *event_ctx.action(),
             )
             .await;
@@ -446,18 +447,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let project_id = request_metadata.require_project_id(request.project_id)?;
 
-        let event_ctx = APIEventContext::for_project(
+        let event_ctx = APIEventContext::for_project_arc(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id,
-            CatalogProjectAction::ListWarehouses,
+            Arc::new(CatalogProjectAction::ListWarehouses),
         );
 
         let authorizer = context.v1_state.authz;
         let authz_result = authorizer
             .require_project_action(
                 event_ctx.request_metadata(),
-                event_ctx.user_provided_entity(),
+                event_ctx.user_provided_entity_arc_ref(),
                 *event_ctx.action(),
             )
             .await;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE role\n        SET source_id = $3\n        WHERE id = $1 AND project_id = $2\n        RETURNING id, name, description, project_id, source_id, created_at, updated_at\n        ",
+  "query": "\n        INSERT INTO role (id, name, description, source_id, provider_id, project_id)\n        SELECT u.*, $6 FROM UNNEST($1::UUID[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TEXT[]) u\n        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version\n        ",
   "describe": {
     "columns": [
       {
@@ -25,24 +25,37 @@
       },
       {
         "ordinal": 4,
-        "name": "source_id",
+        "name": "provider_id",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
+        "UuidArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
         "Text"
       ]
     },
@@ -51,10 +64,12 @@
       false,
       true,
       false,
-      true,
       false,
-      true
+      false,
+      false,
+      true,
+      false
     ]
   },
-  "hash": "18f0d8213714f504a8ff87d1275da3e65739fb99398b29e6662568e397ea2835"
+  "hash": "12dba7d7e089c0c495fcd9e8d623fde4f3d3b5a2061bd40aea94c78df537276c"
 }

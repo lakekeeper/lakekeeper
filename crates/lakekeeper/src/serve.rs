@@ -14,7 +14,7 @@ use crate::{
         shutdown_signal,
     },
     service::{
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
+        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
         endpoint_statistics::{
@@ -164,9 +164,17 @@ pub struct ServeConfiguration<
 /// - If the terms of service have not been accepted during bootstrap.
 #[allow(clippy::too_many_lines)]
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
-    config: ServeConfiguration<C, S, A, N>,
+    mut config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
     let cancellation_token = CancellationToken::new();
+
+    // Validate Authenticators and propagate their IDP IDs to the authorizer
+    if let Some(authenticator) = &config.authenticator {
+        let idp_ids = validate_authenticator_idp_ids(authenticator)?;
+        config.authorizer.set_registered_idp_ids(idp_ids);
+    }
+    let config = config; // Make config immutable for our sanity
+
     // Strings are name of the service, used for logging
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
@@ -385,6 +393,14 @@ async fn serve_inner<
     } else {
         tracing::info!("Namespace cache is disabled");
     }
+    if CONFIG.cache.role.enabled {
+        tracing::info!("Role cache is enabled, registering role cache event listener");
+        dispatcher.append(Arc::new(
+            crate::service::role_cache::RoleCacheEventListener {},
+        ));
+    } else {
+        tracing::info!("Role cache is disabled");
+    }
     if CONFIG.audit.tracing.enabled {
         tracing::info!("Audit tracing is enabled, registering audit event listener");
         dispatcher.append(Arc::new(AuditEventListener));
@@ -555,4 +571,30 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_authenticator_idp_ids(
+    authenticator: &impl Authenticator,
+) -> anyhow::Result<Arc<[RoleProviderId]>> {
+    let idp_ids = authenticator.idp_ids();
+    if idp_ids.is_empty() {
+        anyhow::bail!(
+            "Authenticator returned an empty list of IdP IDs. At least one IdP ID is required if authentication is enabled. All IdP IDs must be non-empty strings."
+        );
+    }
+    let mut result = Vec::with_capacity(idp_ids.len());
+    for idp_id in idp_ids {
+        let Some(idp_id) = idp_id else {
+            return Err(anyhow!(
+                "Authenticator returned an empty IdP ID. All IdP IDs must be non-empty strings."
+            ));
+        };
+        let role_provider_id = RoleProviderId::try_new(idp_id).map_err(|e| {
+            anyhow!(
+                "Invalid IdP ID '{idp_id}' in authenticator configuration: {e}. All IdP IDs must consist of lowercase letters, digits, or hyphens."
+            )
+        })?;
+        result.push(role_provider_id);
+    }
+    Ok(result.into())
 }

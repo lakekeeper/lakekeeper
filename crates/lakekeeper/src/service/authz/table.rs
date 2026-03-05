@@ -18,9 +18,9 @@ use crate::{
         TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
             AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogTableAction, MustUse, UserOrRole,
+            AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
+            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -416,6 +416,7 @@ pub enum RequireTableActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the table
     AuthZCannotSeeTable(AuthZCannotSeeTable),
     // Propagated directly
@@ -439,7 +440,6 @@ impl From<BackendUnavailableOrCountMismatch> for RequireTableActionError {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
@@ -465,6 +465,16 @@ impl From<GetTabularInfoByLocationError> for RequireTableActionError {
         }
     }
 }
+impl From<IsAllowedActionError> for RequireTableActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
+        }
+    }
+}
 delegate_authorization_failure_source!(RequireTableActionError => {
     AuthZTableActionForbidden,
     AuthorizationBackendUnavailable,
@@ -476,6 +486,7 @@ delegate_authorization_failure_source!(RequireTableActionError => {
     SerializationError,
     UnexpectedTabularInResponse,
     InternalParseLocationError,
+    AuthorizerValidationFailed
 });
 
 #[derive(Debug, PartialEq, derive_more::From)]
@@ -485,6 +496,7 @@ pub enum RequireTabularActionsError {
     AuthZTableActionForbidden(AuthZTableActionForbidden),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizerValidationFailed(AuthzBadRequest),
 }
 delegate_authorization_failure_source!(RequireTabularActionsError => {
     AuthorizationBackendUnavailable,
@@ -492,13 +504,23 @@ delegate_authorization_failure_source!(RequireTabularActionsError => {
     AuthZTableActionForbidden,
     AuthorizationCountMismatch,
     CannotInspectPermissions,
+    AuthorizerValidationFailed
 });
 impl From<BackendUnavailableOrCountMismatch> for RequireTabularActionsError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireTabularActionsError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -784,7 +806,7 @@ pub trait AuthZTableOps: Authorizer {
         namespace: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         action: impl Into<Self::TableAction> + Send,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_table_actions_arr(
                 metadata,
@@ -810,7 +832,7 @@ pub trait AuthZTableOps: Authorizer {
         namespace_hierarchy: &NamespaceHierarchy,
         table: &impl AuthZTableInfo,
         actions: &[A; N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let actions = actions
             .iter()
             .map(|a| (&namespace_hierarchy.namespace, table, a.clone().into()))
@@ -843,7 +865,7 @@ pub trait AuthZTableOps: Authorizer {
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&NamespaceWithParent, &impl AuthZTableInfo, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
             let namespaces: Vec<&NamespaceWithParent> =
@@ -920,7 +942,7 @@ pub trait AuthZTableOps: Authorizer {
             &NamespaceWithParent,
             ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
         )],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|(ns, a)| match a {
             ActionOnTableOrView::Table((t, a)) => {
                 itertools::Either::Left((*ns, *t, a.clone().into()))

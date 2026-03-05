@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Duration};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
@@ -102,7 +104,7 @@ fn parse_task_details(
             attempt: most_recent.attempt,
         },
         task_metadata: TaskMetadata {
-            project_id: ProjectId::from_db_unchecked(most_recent.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(most_recent.project_id)),
             parent_task_id: most_recent.parent_task_id.map(TaskId::from),
             scheduled_for: most_recent.attempt_scheduled_for,
             entity: scope,
@@ -284,10 +286,13 @@ mod tests {
             check_and_heartbeat_task, pick_task, queue_task_batch, record_failure, record_success,
             test::setup_warehouse,
         },
-        service::tasks::{
-            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ScheduleTaskMetadata, TaskCheckState,
-            TaskEntity, TaskInput, TaskIntermediateStatus, TaskOutcome, TaskQueueName,
-            WarehouseTaskEntityId,
+        service::{
+            ArcProjectId,
+            tasks::{
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ScheduleTaskMetadata, TaskCheckState,
+                TaskEntity, TaskInput, TaskIntermediateStatus, TaskOutcome, TaskQueueName,
+                WarehouseTaskEntityId,
+            },
         },
     };
 
@@ -592,7 +597,7 @@ mod tests {
         parent_task_id: Option<TaskId>,
         entity_id: WarehouseTaskEntityId,
         entity_name: Vec<String>,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         payload: Option<serde_json::Value>,

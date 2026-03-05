@@ -34,7 +34,7 @@ pub use limes;
 #[cfg_attr(docsrs, doc(cfg(feature = "kafka")))]
 pub use rdkafka;
 pub use request_metadata::{
-    X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER,
+    TokenRoles, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER,
     X_FORWARDED_PROTO_HEADER, X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
     determine_base_uri, determine_forwarded_prefix,
 };

@@ -116,8 +116,9 @@ pub async fn new_full_router<
                 authenticator,
                 authorizer: state.v1_state.authz.clone(),
                 events: state.v1_state.events.clone(),
+                catalog_state: state.v1_state.catalog.clone(),
             },
-            auth_middleware_fn,
+            auth_middleware_fn::<C, _, _>,
         )))
     } else {
         option_layer(None)

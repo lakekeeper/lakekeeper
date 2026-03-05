@@ -561,10 +561,15 @@ def spark(warehouse: Warehouse, storage_config):
     pyspark_version = pyspark.__version__
     # Strip patch version
     pyspark_version = ".".join(pyspark_version.split(".")[:2])
+    # We use scala 2.13 for spark 4, and scala 2.12 for spark 3
+    if int(pyspark_version.split(".")[0]) >= 4:
+        scala_version = "2.13"
+    else:
+        scala_version = "2.12"
 
     print(f"SPARK_ICEBERG_VERSION: {settings.spark_iceberg_version}")
     spark_jars_packages = (
-        f"org.apache.iceberg:iceberg-spark-runtime-{pyspark_version}_2.12:{settings.spark_iceberg_version},"
+        f"org.apache.iceberg:iceberg-spark-runtime-{pyspark_version}_{scala_version}:{settings.spark_iceberg_version},"
         f"org.apache.iceberg:iceberg-aws-bundle:{settings.spark_iceberg_version},"
         f"org.apache.iceberg:iceberg-azure-bundle:{settings.spark_iceberg_version},"
         f"org.apache.iceberg:iceberg-gcp-bundle:{settings.spark_iceberg_version}"

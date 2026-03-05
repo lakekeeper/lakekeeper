@@ -43,29 +43,46 @@ pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithPare
             ))
             .async_eviction_listener(|key, value: NamespaceWithParent, cause| {
                 Box::pin(async move {
-                    // Evictions:
-                    // - Replaced: only invalidate old-name mapping if the current entry
-                    //   either does not exist or has a different (warehouse_id, namespace_ident).
-                    // - Other causes: primary entry is gone; invalidate mapping.
-                    let should_invalidate = match cause {
+                    // On Replaced: invalidate the old secondary index mapping immediately,
+                    // then spawn a task to re-insert the new mapping (avoids re-entrant
+                    // NAMESPACE_CACHE.get() calls which can deadlock).
+                    // On all other causes (expired, explicit): always invalidate.
+                    match cause {
                         RemovalCause::Replaced => {
-                            if let Some(curr) = NAMESPACE_CACHE.get(&*key).await {
-                                curr.namespace.warehouse_id != value.namespace.warehouse_id
-                                    || curr.namespace.namespace_ident
-                                        != value.namespace.namespace_ident
-                            } else {
-                                true
-                            }
+                            let key = *key;
+                            // Immediately invalidate the old (warehouse_id, namespace_ident) → namespace_id mapping
+                            IDENT_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.namespace.warehouse_id,
+                                    namespace_ident_to_cache_key(&value.namespace.namespace_ident),
+                                ))
+                                .await;
+
+                            // Spawn task to add the new mapping (avoids re-entrant NAMESPACE_CACHE.get)
+                            tokio::spawn(async move {
+                                if let Some(curr) = NAMESPACE_CACHE.get(&key).await {
+                                    IDENT_TO_ID_CACHE
+                                        .insert(
+                                            (
+                                                curr.namespace.warehouse_id,
+                                                namespace_ident_to_cache_key(
+                                                    &curr.namespace.namespace_ident,
+                                                ),
+                                            ),
+                                            key,
+                                        )
+                                        .await;
+                                }
+                            });
                         }
-                        _ => true,
-                    };
-                    if should_invalidate {
-                        IDENT_TO_ID_CACHE
-                            .invalidate(&(
-                                value.namespace.warehouse_id,
-                                namespace_ident_to_cache_key(&value.namespace.namespace_ident),
-                            ))
-                            .await;
+                        _ => {
+                            IDENT_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.namespace.warehouse_id,
+                                    namespace_ident_to_cache_key(&value.namespace.namespace_ident),
+                                ))
+                                .await;
+                        }
                     }
                 })
             })
@@ -177,11 +194,18 @@ pub(super) async fn namespace_cache_get_by_ident(
     warehouse_id: WarehouseId,
 ) -> Option<NamespaceHierarchy> {
     update_cache_size_metric();
-    let cache_key = namespace_ident_to_cache_key(namespace_ident);
-    let namespace_id = IDENT_TO_ID_CACHE.get(&(warehouse_id, cache_key)).await?;
+    let ident_key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
+    let namespace_id = IDENT_TO_ID_CACHE.get(&ident_key).await?;
 
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
-    namespace_cache_get_by_id(namespace_id).await
+    let result = namespace_cache_get_by_id(namespace_id).await;
+    if result.is_none() {
+        tracing::debug!(
+            "Namespace id {namespace_id} not found in cache, invalidating stale ident mapping for {namespace_ident}"
+        );
+        IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+    }
+    result
 }
 
 /// Build a `NamespaceHierarchy` by collecting parents from the cache.
