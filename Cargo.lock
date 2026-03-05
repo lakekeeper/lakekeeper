@@ -4036,7 +4036,7 @@ dependencies = [
 [[package]]
 name = "limes"
 version = "0.3.2"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=a88da41#a88da41da04d97126f1e600f10e5ac5749601754"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=a1c2ea002582b217e096decd9faee9a5f1742a0f#a1c2ea002582b217e096decd9faee9a5f1742a0f"
 dependencies = [
  "axum",
  "axum-extra",
