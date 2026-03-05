@@ -426,10 +426,12 @@ impl UserId {
         Ok(Self(subject))
     }
 
+    #[must_use]
     pub fn idp_id(&self) -> Option<&str> {
-        self.0.idp_id().map(|s| s.as_str())
+        self.0.idp_id().map(std::string::String::as_str)
     }
 
+    #[must_use]
     pub fn subject_in_idp(&self) -> &str {
         self.0.subject_in_idp()
     }
