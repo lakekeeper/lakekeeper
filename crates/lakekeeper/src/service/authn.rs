@@ -199,6 +199,7 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
 }
 
 #[cfg(feature = "router")]
+#[allow(clippy::too_many_lines)]
 /// Use a limes [`Authenticator`] to Authenticate a request.
 ///
 /// This middleware needs to run after [`create_request_metadata_with_trace_and_project_fn`](crate::request_metadata::create_request_metadata_with_trace_and_project_fn).
@@ -265,16 +266,35 @@ pub(crate) async fn auth_middleware_fn<
         request_metadata.set_authentication(actor.clone(), authentication.clone());
 
         // Identify engine based on audience (aud) and IdP ID
-        if let Some(engine_config) = authentication.audiences().iter().find_map(|aud| {
-            CONFIG.trusted_engines.get(aud).filter(|cfg| {
-                authentication
-                    .subject()
-                    .idp_id()
-                    .is_some_and(|idp| idp == cfg.idp_id())
+        let matching_engines: Vec<_> = authentication
+            .audiences()
+            .iter()
+            .filter_map(|aud| {
+                CONFIG.trusted_engines.get(aud).filter(|cfg| {
+                    authentication
+                        .subject()
+                        .idp_id()
+                        .is_some_and(|idp| idp == cfg.idp_id())
+                })
             })
-        }) {
-            tracing::debug!("Identified trusted engine from audience and IdP ID");
-            request_metadata.set_engine(engine_config.clone());
+            .collect();
+
+        match matching_engines.as_slice() {
+            [engine_config] => {
+                tracing::debug!("Identified trusted engine from audience and IdP ID");
+                request_metadata.set_engine((*engine_config).clone());
+            }
+            [] => {}
+            _ => {
+                // Multiple matching engines - ambiguous, reject request
+                tracing::warn!("Multiple matching engines found for token audiences");
+                return ErrorModel::unauthorized(
+                    "Ambiguous engine identification: multiple matching engines found",
+                    "EngineIdentificationAmbiguous",
+                    None,
+                )
+                .into_response();
+            }
         }
 
         let check_result = if let Some(role_id) = role_id {
