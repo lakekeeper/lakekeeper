@@ -14,9 +14,12 @@ use crate::{
     service::{
         CatalogBackendError, CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken,
         NamespaceId, NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed,
-        TabularIdentOwned, Transaction, ViewId, WarehouseVersion, authz::ActionOnTableOrView,
-        define_simple_error, define_transparent_error, events::impl_authorization_failure_source,
-        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
+        TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
+        authz::{ActionOnTable, ActionOnTableOrView, ActionOnView, UserOrRole},
+        define_simple_error, define_transparent_error,
+        events::impl_authorization_failure_source,
+        impl_error_stack_methods, impl_from_with_detail,
+        tasks::TaskId,
     },
 };
 
@@ -246,14 +249,25 @@ impl ViewOrTableInfo {
         }
     }
 
-    pub fn as_action_request<AV, AT>(
+    pub fn as_action_request<'u, AV, AT>(
         &self,
         view_action: AV,
         table_action: AT,
-    ) -> ActionOnTableOrView<'_, TableInfo, ViewInfo, AT, AV> {
+        user: Option<&'u UserOrRole>,
+    ) -> ActionOnTableOrView<'_, 'u, TableInfo, ViewInfo, AT, AV> {
         match self {
-            Self::View(view) => ActionOnTableOrView::View((view, view_action)),
-            Self::Table(table) => ActionOnTableOrView::Table((table, table_action)),
+            Self::View(view) => ActionOnTableOrView::View(ActionOnView {
+                info: view,
+                action: view_action,
+                user,
+                is_delegated_execution: false,
+            }),
+            Self::Table(table) => ActionOnTableOrView::Table(ActionOnTable {
+                info: table,
+                action: table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 
@@ -645,14 +659,25 @@ impl ViewOrTableDeletionInfo {
         }
     }
 
-    pub fn as_action_request<AV, AT>(
+    pub fn as_action_request<'u, AV, AT>(
         &self,
         view_action: AV,
         table_action: AT,
-    ) -> ActionOnTableOrView<'_, TableDeletionInfo, ViewDeletionInfo, AT, AV> {
+        user: Option<&'u UserOrRole>,
+    ) -> ActionOnTableOrView<'_, 'u, TableDeletionInfo, ViewDeletionInfo, AT, AV> {
         match self {
-            Self::View(view) => ActionOnTableOrView::View((view, view_action)),
-            Self::Table(table) => ActionOnTableOrView::Table((table, table_action)),
+            Self::View(view) => ActionOnTableOrView::View(ActionOnView {
+                info: view,
+                action: view_action,
+                user,
+                is_delegated_execution: false,
+            }),
+            Self::Table(table) => ActionOnTableOrView::Table(ActionOnTable {
+                info: table,
+                action: table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 }

@@ -66,9 +66,15 @@ macro_rules! list_entities {
         |ps, page_token, trx: &mut _| {
             use ::pastey::paste;
 
+            #[allow(unused)]
             use crate::{
                 server::UnfilteredPage,
-                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular, events::context::authz_to_error_no_audit},
+                service::{
+                    BasicTabularInfo, TabularListFlags, require_namespace_for_tabular,
+                    authz::ActionOnTable,
+                    authz::ActionOnView,
+                    events::context::authz_to_error_no_audit,
+                },
             };
 
             // let namespace = $namespace.clone();
@@ -127,15 +133,18 @@ macro_rules! list_entities {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions_vec>](
                             &request_metadata,
-                            None,
                             &resolved_warehouse,
                             &namespaces,
                             &idents.iter().map(|t| Ok::<_, crate::service::authz::AuthZCannotSeeNamespace>((
                                 require_namespace_for_tabular(&namespaces, &t.tabular)?,
-                                t,
-                                [<Catalog $entity Action>]::IncludeInList)
+                                [<ActionOn $entity>] {
+                                    info: t,
+                                    action: [<Catalog $entity Action>]::IncludeInList,
+                                    user: None,
+                                    is_delegated_execution: false,
+                                }
                             )
-                            ).collect::<Result<Vec<_>, _>>()
+                            )).collect::<Result<Vec<_>, _>>()
                             .map_err(authz_to_error_no_audit)?,
                         ).await
                         .map_err(authz_to_error_no_audit)?

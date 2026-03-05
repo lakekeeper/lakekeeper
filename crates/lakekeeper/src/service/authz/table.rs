@@ -579,14 +579,36 @@ pub trait AuthZTableOps: Authorizer {
                 .into_inner();
             is_allowed.then_some(table).ok_or(cant_see_err)
         } else {
+            let parent_namespaces: HashMap<_, _> = namespace
+                .parents
+                .iter()
+                .map(|ns| (ns.namespace_id(), ns.clone()))
+                .collect();
             let [can_see_table, is_allowed] = self
                 .are_allowed_table_actions_arr(
                     metadata,
-                    None,
                     warehouse,
-                    namespace,
-                    &table,
-                    &[CAN_SEE_PERMISSION.into(), action.clone()],
+                    &parent_namespaces,
+                    &[
+                        (
+                            &namespace.namespace,
+                            ActionOnTable {
+                                info: &table,
+                                action: CAN_SEE_PERMISSION.into(),
+                                user: None,
+                                is_delegated_execution: false,
+                            },
+                        ),
+                        (
+                            &namespace.namespace,
+                            ActionOnTable {
+                                info: &table,
+                                action: action.clone(),
+                                user: None,
+                                is_delegated_execution: false,
+                            },
+                        ),
+                    ],
                 )
                 .await?
                 .into_inner();
@@ -737,37 +759,42 @@ pub trait AuthZTableOps: Authorizer {
             .into_iter()
             .flat_map(|(_id, (ns, table, mut actions))| {
                 actions.remove(&CAN_SEE_PERMISSION.into());
-                itertools::chain(std::iter::once(CAN_SEE_PERMISSION.into()), actions)
-                    .map(move |action| (ns, table, action))
+                itertools::chain(std::iter::once(CAN_SEE_PERMISSION.into()), actions).map(
+                    move |action| {
+                        (
+                            ns,
+                            ActionOnTable {
+                                info: table,
+                                action,
+                                user: None,
+                                is_delegated_execution: false,
+                            },
+                        )
+                    },
+                )
             })
             .collect_vec();
         // Perform batch authorization
         let decisions = self
-            .are_allowed_table_actions_vec(
-                metadata,
-                None,
-                warehouse,
-                parent_namespaces,
-                &batch_requests,
-            )
+            .are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &batch_requests)
             .await?
             .into_inner();
 
         // Check authorization results.
         // Due to ordering above, CAN_SEE_PERMISSION is always first for each table.
-        for ((_ns, table, action), &is_allowed) in batch_requests.iter().zip(decisions.iter()) {
+        for ((_ns, action), &is_allowed) in batch_requests.iter().zip(decisions.iter()) {
             if !is_allowed {
-                if *action == CAN_SEE_PERMISSION.into() {
+                if action.action == CAN_SEE_PERMISSION.into() {
                     return Err(AuthZCannotSeeTable::new_forbidden(
-                        table.warehouse_id(),
-                        table.table_id(),
+                        action.info.warehouse_id(),
+                        action.info.table_id(),
                     )
                     .into());
                 }
                 return Err(AuthZTableActionForbidden::new(
-                    table.warehouse_id(),
-                    table.table_ident().clone(),
-                    action,
+                    action.info.warehouse_id(),
+                    action.info.table_ident().clone(),
+                    &action.action,
                 )
                 .into());
             }
@@ -785,14 +812,25 @@ pub trait AuthZTableOps: Authorizer {
         table: &impl AuthZTableInfo,
         action: impl Into<Self::TableAction> + Send,
     ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+        let parent_namespaces: HashMap<_, _> = namespace
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
         let [decision] = self
             .are_allowed_table_actions_arr(
                 metadata,
-                for_user,
                 warehouse,
-                namespace,
-                table,
-                &[action.into()],
+                &parent_namespaces,
+                &[(
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: table,
+                        action: action.into(),
+                        user: for_user,
+                        is_delegated_execution: false,
+                    },
+                )],
             )
             .await?
             .into_inner();
@@ -805,28 +843,19 @@ pub trait AuthZTableOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        namespace_hierarchy: &NamespaceHierarchy,
-        table: &impl AuthZTableInfo,
-        actions: &[A; N],
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
+        ); N],
     ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
-        let actions = actions
+        let actions_vec: Vec<_> = actions
             .iter()
-            .map(|a| (&namespace_hierarchy.namespace, table, a.clone().into()))
-            .collect::<Vec<_>>();
+            .map(|(ns, action)| (*ns, action.clone()))
+            .collect();
         let result = self
-            .are_allowed_table_actions_vec(
-                metadata,
-                for_user,
-                warehouse,
-                &namespace_hierarchy
-                    .parents
-                    .iter()
-                    .map(|ns| (ns.namespace_id(), ns.clone()))
-                    .collect(),
-                &actions,
-            )
+            .are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &actions_vec)
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -839,70 +868,82 @@ pub trait AuthZTableOps: Authorizer {
     async fn are_allowed_table_actions_vec<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        mut for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        actions: &[(&NamespaceWithParent, &impl AuthZTableInfo, A)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
+        )],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         #[cfg(debug_assertions)]
         {
-            let namespaces: Vec<&NamespaceWithParent> =
-                actions.iter().map(|(ns, _, _)| *ns).collect();
+            let namespaces: Vec<&NamespaceWithParent> = actions.iter().map(|(ns, _)| *ns).collect();
             validate_namespace_hierarchy(&namespaces, parent_namespaces);
         }
 
-        if metadata.actor().to_user_or_role().as_ref() == for_user {
-            for_user = None;
+        // Check warehouse matches and determine which actions can be auto-approved
+        // Also collect actions that need authorization check
+        let mut auto_approved: Vec<Option<bool>> = Vec::with_capacity(actions.len());
+        let mut actions_to_check = Vec::new();
+
+        for (ns, action) in actions {
+            let same_warehouse = action.info.warehouse_id() == warehouse.warehouse_id;
+            if !same_warehouse {
+                tracing::warn!(
+                    "Table warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
+                    action.info.warehouse_id(),
+                    warehouse.warehouse_id
+                );
+                auto_approved.push(Some(false));
+                continue;
+            }
+
+            // Normalize user: if it's the actor itself, treat as None (acting as self)
+            let normalized_user = if metadata.actor().to_user_or_role().as_ref() == action.user {
+                None
+            } else {
+                action.user
+            };
+
+            // Auto-approve if admin and acting as self
+            if metadata.has_admin_privileges() && normalized_user.is_none() {
+                auto_approved.push(Some(true));
+            } else {
+                auto_approved.push(None);
+                actions_to_check.push((*ns, action.clone()));
+            }
         }
 
-        let warehouse_matches = actions
-            .iter()
-            .map(|(_, table, _)| {
-                let same_warehouse = table.warehouse_id() == warehouse.warehouse_id;
-                if !same_warehouse {
-                    tracing::warn!(
-                        "Table warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
-                        table.warehouse_id(),
-                        warehouse.warehouse_id
-                    );
-                }
-                same_warehouse
-            })
-            .collect::<Vec<_>>();
-
-        if metadata.has_admin_privileges() && for_user.is_none() {
-            Ok(warehouse_matches)
+        // If all actions are auto-decided, return early
+        if actions_to_check.is_empty() {
+            Ok(auto_approved.into_iter().map(|v| v.unwrap()).collect())
         } else {
-            let converted = actions
-                .iter()
-                .map(|(ns, id, action)| (*ns, *id, action.clone().into()))
-                .collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_table_actions_impl(
                     metadata,
-                    for_user,
                     warehouse,
                     parent_namespaces,
-                    &converted,
+                    &actions_to_check,
                 )
                 .await?;
 
-            if decisions.len() != actions.len() {
+            if decisions.len() != actions_to_check.len() {
                 return Err(AuthorizationCountMismatch::new(
-                    actions.len(),
+                    actions_to_check.len(),
                     decisions.len(),
                     "table",
                 )
                 .into());
             }
 
-            let decisions = warehouse_matches
-                .iter()
-                .zip(decisions.iter())
-                .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
-                .collect::<Vec<_>>();
+            // Merge auto-approved decisions with checked decisions
+            let mut decision_iter = decisions.into_iter();
+            let final_decisions: Vec<bool> = auto_approved
+                .into_iter()
+                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap()))
+                .collect();
 
-            Ok(decisions)
+            Ok(final_decisions)
         }
         .map(MustUse::from)
     }
@@ -913,49 +954,36 @@ pub trait AuthZTableOps: Authorizer {
     >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
+            ActionOnTableOrView<'_, '_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
         )],
     ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
         let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|(ns, a)| match a {
-            ActionOnTableOrView::Table((t, a)) => {
-                itertools::Either::Left((*ns, *t, a.clone().into()))
+            ActionOnTableOrView::Table(table_action) => {
+                itertools::Either::Left((*ns, table_action.clone()))
             }
-            ActionOnTableOrView::View((v, a)) => {
-                itertools::Either::Right((*ns, *v, a.clone().into()))
+            ActionOnTableOrView::View(view_action) => {
+                itertools::Either::Right((*ns, view_action.clone()))
             }
         });
 
         let table_results = if tables.is_empty() {
             Vec::new()
         } else {
-            self.are_allowed_table_actions_vec(
-                metadata,
-                for_user,
-                warehouse,
-                parent_namespaces,
-                &tables,
-            )
-            .await?
-            .into_inner()
+            self.are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &tables)
+                .await?
+                .into_inner()
         };
 
         let view_results = if views.is_empty() {
             Vec::new()
         } else {
-            self.are_allowed_view_actions_vec(
-                metadata,
-                for_user,
-                warehouse,
-                parent_namespaces,
-                &views,
-            )
-            .await?
-            .into_inner()
+            self.are_allowed_view_actions_vec(metadata, warehouse, parent_namespaces, &views)
+                .await?
+                .into_inner()
         };
 
         if table_results.len() != tables.len() {
@@ -1015,30 +1043,30 @@ pub trait AuthZTableOps: Authorizer {
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         tabulars: &[(
             &NamespaceWithParent,
-            ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
+            ActionOnTableOrView<'_, '_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
         )],
     ) -> Result<(), RequireTabularActionsError> {
         let decisions = self
-            .are_allowed_tabular_actions_vec(metadata, None, warehouse, parent_namespaces, tabulars)
+            .are_allowed_tabular_actions_vec(metadata, warehouse, parent_namespaces, tabulars)
             .await?
             .into_inner();
 
         for ((_ns, t), &allowed) in tabulars.iter().zip(decisions.iter()) {
             if !allowed {
                 match t {
-                    ActionOnTableOrView::View((info, action)) => {
+                    ActionOnTableOrView::View(view_action) => {
                         return Err(AuthZViewActionForbidden::new(
-                            info.warehouse_id(),
-                            info.view_id(),
-                            &action.clone().into(),
+                            view_action.info.warehouse_id(),
+                            view_action.info.view_id(),
+                            &view_action.action.clone().into(),
                         )
                         .into());
                     }
-                    ActionOnTableOrView::Table((info, action)) => {
+                    ActionOnTableOrView::Table(table_action) => {
                         return Err(AuthZTableActionForbidden::new(
-                            info.warehouse_id(),
-                            info.table_id(),
-                            &action.clone().into(),
+                            table_action.info.warehouse_id(),
+                            table_action.info.table_id(),
+                            &table_action.action.clone().into(),
                         )
                         .into());
                     }
@@ -1097,10 +1125,82 @@ where
     Ok((warehouse, namespace, table_info))
 }
 
+/// Represents an action to be performed on a table with authorization context.
+///
+/// The `is_delegated_execution` flag indicates whether this action is being performed
+/// as part of a delegated execution (e.g., DEFINER view execution) where the specified
+/// user's permissions are used without requiring the caller to have permission inspection rights.
+pub struct ActionOnTable<'a, 'u, I: AuthZTableInfo, A> {
+    pub info: &'a I,
+    pub action: A,
+    pub user: Option<&'u UserOrRole>,
+    /// If true, skip guard checks (`CanReadAssignments`) and allow delegated execution.
+    /// Use for DEFINER views where the view owner's permissions are used directly.
+    pub is_delegated_execution: bool,
+}
+
+impl<I: AuthZTableInfo, A: Clone> Clone for ActionOnTable<'_, '_, I, A> {
+    fn clone(&self) -> Self {
+        Self {
+            info: self.info,
+            action: self.action.clone(),
+            user: self.user,
+            is_delegated_execution: self.is_delegated_execution,
+        }
+    }
+}
+
+impl<I: AuthZTableInfo, A> std::fmt::Debug for ActionOnTable<'_, '_, I, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionOnTable")
+            .field("info", &format!("<{}>", std::any::type_name::<I>()))
+            .field("action", &std::any::type_name::<A>())
+            .field("user", &self.user)
+            .field("is_delegated_execution", &self.is_delegated_execution)
+            .finish()
+    }
+}
+
+/// Represents an action to be performed on a view with authorization context.
+///
+/// The `is_delegated_execution` flag indicates whether this action is being performed
+/// as part of a delegated execution (e.g., DEFINER view execution) where the specified
+/// user's permissions are used without requiring the caller to have permission inspection rights.
+pub struct ActionOnView<'a, 'u, I: AuthZViewInfo, A> {
+    pub info: &'a I,
+    pub action: A,
+    pub user: Option<&'u UserOrRole>,
+    /// If true, skip guard checks (`CanReadAssignments`) and allow delegated execution.
+    /// Use for DEFINER views where the view owner's permissions are used directly.
+    pub is_delegated_execution: bool,
+}
+
+impl<I: AuthZViewInfo, A: Clone> Clone for ActionOnView<'_, '_, I, A> {
+    fn clone(&self) -> Self {
+        Self {
+            info: self.info,
+            action: self.action.clone(),
+            user: self.user,
+            is_delegated_execution: self.is_delegated_execution,
+        }
+    }
+}
+
+impl<I: AuthZViewInfo, A> std::fmt::Debug for ActionOnView<'_, '_, I, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionOnView")
+            .field("info", &format!("<{}>", std::any::type_name::<I>()))
+            .field("action", &std::any::type_name::<A>())
+            .field("user", &self.user)
+            .field("is_delegated_execution", &self.is_delegated_execution)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
-pub enum ActionOnTableOrView<'a, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
-    Table((&'a IT, AT)),
-    View((&'a IV, AV)),
+pub enum ActionOnTableOrView<'a, 'u, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
+    Table(ActionOnTable<'a, 'u, IT, AT>),
+    View(ActionOnView<'a, 'u, IV, AV>),
 }
 
 #[cfg(test)]
@@ -1184,11 +1284,21 @@ mod tests {
         let actions = vec![
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table_info, CatalogTableAction::GetMetadata)),
+                ActionOnTableOrView::Table(ActionOnTable {
+                    info: &table_info,
+                    action: CatalogTableAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }),
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view_info, CatalogViewAction::GetMetadata)),
+                ActionOnTableOrView::View(ActionOnView {
+                    info: &view_info,
+                    action: CatalogViewAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }),
             ),
         ];
 
@@ -1200,7 +1310,6 @@ mod tests {
         let result = authz
             .are_allowed_tabular_actions_vec(
                 &crate::tests::random_request_metadata(),
-                None,
                 &warehouse,
                 &parents,
                 &actions,
@@ -1283,18 +1392,27 @@ mod tests {
         let actions = vec![
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table_info, CatalogTableAction::GetMetadata)),
+                ActionOnTableOrView::Table(ActionOnTable {
+                    info: &table_info,
+                    action: CatalogTableAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }),
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view_info, CatalogViewAction::GetMetadata)),
+                ActionOnTableOrView::View(ActionOnView {
+                    info: &view_info,
+                    action: CatalogViewAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }),
             ),
         ];
 
         let result = authz
             .are_allowed_tabular_actions_vec(
                 &crate::tests::random_request_metadata(),
-                None,
                 &warehouse,
                 &parent_namespaces,
                 &actions,
@@ -1387,26 +1505,45 @@ mod tests {
         let actions = vec![
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table1_info, CatalogTableAction::GetMetadata)),
+                ActionOnTableOrView::Table(ActionOnTable {
+                    info: &table1_info,
+                    action: CatalogTableAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }),
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view1_info, CatalogViewAction::Drop)), // Blocked
+                ActionOnTableOrView::View(ActionOnView {
+                    info: &view1_info,
+                    action: CatalogViewAction::Drop,
+                    user: None,
+                    is_delegated_execution: false,
+                }), // Blocked
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::Table((&table2_info, CatalogTableAction::ReadData)), // Hidden
+                ActionOnTableOrView::Table(ActionOnTable {
+                    info: &table2_info,
+                    action: CatalogTableAction::ReadData,
+                    user: None,
+                    is_delegated_execution: false,
+                }), // Hidden
             ),
             (
                 &ns_hierarchy.namespace,
-                ActionOnTableOrView::View((&view1_info, CatalogViewAction::GetMetadata)), // Allowed
+                ActionOnTableOrView::View(ActionOnView {
+                    info: &view1_info,
+                    action: CatalogViewAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }), // Allowed
             ),
         ];
 
         let result = authz
             .are_allowed_tabular_actions_vec(
                 &crate::tests::random_request_metadata(),
-                None,
                 &warehouse,
                 &parent_namespaces,
                 &actions,

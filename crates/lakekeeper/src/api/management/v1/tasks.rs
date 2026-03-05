@@ -1061,7 +1061,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, AuthZError>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(GET_TASK_PERMISSION_VIEW, GET_TASK_PERMISSION_TABLE),
+                t.as_action_request(GET_TASK_PERMISSION_VIEW, GET_TASK_PERMISSION_TABLE, None),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1290,7 +1290,11 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, AuthZError>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(CONTROL_TASK_PERMISSION_VIEW, CONTROL_TASK_PERMISSION_TABLE),
+                t.as_action_request(
+                    CONTROL_TASK_PERMISSION_VIEW,
+                    CONTROL_TASK_PERMISSION_TABLE,
+                    None,
+                ),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;

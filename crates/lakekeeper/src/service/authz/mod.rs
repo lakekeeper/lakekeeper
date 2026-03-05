@@ -861,16 +861,14 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_table_actions_impl(
+    async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZTableInfo,
-            Self::TableAction,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
@@ -882,13 +880,15 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_view_actions_impl(
+    async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     /// Hook that is called when a user is deleted.
@@ -1472,48 +1472,54 @@ pub(crate) mod tests {
             Ok(results)
         }
 
-        async fn are_allowed_table_actions_impl(
+        async fn are_allowed_table_actions_impl<
+            A: Into<Self::TableAction> + Send + Clone + Sync,
+        >(
             &self,
             _metadata: &RequestMetadata,
-            _for_user: Option<&UserOrRole>,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(
                 &NamespaceWithParent,
-                &impl AuthZTableInfo,
-                Self::TableAction,
+                ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
             )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
             let results: Vec<bool> = actions
                 .iter()
-                .map(|(_parent_namespace, table, action)| {
-                    if self.action_is_blocked(format!("table:{action:?}").as_str()) {
+                .map(|(_parent_namespace, action)| {
+                    if self.action_is_blocked(
+                        format!("table:{:?}", action.action.clone().into()).as_str(),
+                    ) {
                         return false;
                     }
-                    let table_id = table.table_id();
-                    let warehouse_id = table.warehouse_id();
+                    let table_id = action.info.table_id();
+                    let warehouse_id = action.info.warehouse_id();
                     self.check_available(format!("table:{warehouse_id}/{table_id}").as_str())
                 })
                 .collect();
             Ok(results)
         }
 
-        async fn are_allowed_view_actions_impl(
+        async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
             &self,
             _metadata: &RequestMetadata,
-            _for_user: Option<&UserOrRole>,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-            views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+            actions: &[(
+                &NamespaceWithParent,
+                ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+            )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
-            let results: Vec<bool> = views_with_actions
+            let results: Vec<bool> = actions
                 .iter()
-                .map(|(_parent_namespace, view, action)| {
-                    if self.action_is_blocked(format!("view:{action:?}").as_str()) {
+                .map(|(_parent_namespace, action)| {
+                    if self.action_is_blocked(
+                        format!("view:{:?}", action.action.clone().into()).as_str(),
+                    ) {
                         return false;
                     }
-                    let view_id = view.view_id();
-                    let warehouse_id = view.warehouse_id();
+                    let view_id = action.info.view_id();
+                    let warehouse_id = action.info.warehouse_id();
                     self.check_available(format!("view:{warehouse_id}/{view_id}").as_str())
                 })
                 .collect();
