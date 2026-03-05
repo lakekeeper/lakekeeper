@@ -465,6 +465,46 @@ impl AuthZViewInfo for ViewDeletionInfo {
     }
 }
 
+pub trait AuthZTabularInfo: BasicTabularInfo + Send + Sync {
+    fn tabular_id(&self) -> TabularId;
+    fn namespace_id(&self) -> NamespaceId;
+    fn namespace_ident(&self) -> &NamespaceIdent {
+        self.tabular_ident().namespace()
+    }
+    fn is_protected(&self) -> bool;
+    fn properties(&self) -> &HashMap<String, String>;
+}
+
+impl AuthZTabularInfo for ViewOrTableInfo {
+    fn tabular_id(&self) -> TabularId {
+        match self {
+            Self::Table(info) => TabularId::Table(info.tabular_id),
+            Self::View(info) => TabularId::View(info.tabular_id),
+        }
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
+        match self {
+            Self::Table(info) => info.namespace_id,
+            Self::View(info) => info.namespace_id,
+        }
+    }
+
+    fn is_protected(&self) -> bool {
+        match self {
+            Self::Table(info) => info.protected,
+            Self::View(info) => info.protected,
+        }
+    }
+
+    fn properties(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Table(info) => &info.properties,
+            Self::View(info) => &info.properties,
+        }
+    }
+}
+
 pub trait BasicTabularInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
     fn warehouse_version(&self) -> WarehouseVersion;
