@@ -281,3 +281,115 @@ impl Mappable for InternalActor {
         }
     }
 }
+
+// ============================================================================
+// Operational audit helpers
+// ============================================================================
+
+/// Borrowed actor value for **operational** audit events.
+///
+/// Produces the same JSON shape as [`Actor::Principal`]:
+/// ```json
+/// {"actor_type": "principal", "principal": "oidc~user@example.com"}
+/// ```
+/// but without requiring an owned `Arc<UserId>`.
+///
+/// Use this with [`audit_operation!`] for non-authz events that contain user
+/// identity (PII), such as role resolution, token introspection, etc.
+#[derive(Debug)]
+pub struct AuditPrincipal<'a>(pub &'a crate::service::authn::UserId);
+
+impl Valuable for AuditPrincipal<'_> {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        visit.visit_entry(Value::String("actor_type"), Value::String("principal"));
+        let principal = self.0.to_string();
+        visit.visit_entry(Value::String("principal"), Value::String(&principal));
+    }
+}
+
+impl Mappable for AuditPrincipal<'_> {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (2, Some(2))
+    }
+}
+
+/// Emit an audit `tracing::info!` event for a **non-authz** operation that
+/// touches user identity (PII).
+///
+/// Enforces the operational audit schema:
+/// ```json
+/// {
+///   "event_source": "audit",
+///   "operation":    "<operation name>",
+///   "actor":        { "actor_type": "principal", "principal": "oidc~…" },
+///   "outcome":      "<outcome>",
+///   "context":      { … }   // optional
+/// }
+/// ```
+///
+/// This is the counterpart to the authz-focused `audit_log!` macro. Use it
+/// whenever there is no `decision = "allowed"|"denied"` to emit — e.g. for
+/// role resolution, user lookup, or token enrichment.
+///
+/// # Examples
+/// ```rust,ignore
+/// use lakekeeper::audit_operation;
+/// use lakekeeper::service::events::backends::audit::AuditPrincipal;
+///
+/// // Without context
+/// audit_operation!(
+///     operation = "ldap_resolve_roles",
+///     actor     = AuditPrincipal(user_id),
+///     outcome   = "success",
+///     "LDAP role resolution complete"
+/// );
+///
+/// // With context (any type implementing `Valuable`)
+/// #[derive(valuable::Valuable)]
+/// struct Ctx<'a> { provider_id: &'a str, role_count: usize }
+///
+/// audit_operation!(
+///     operation = "ldap_resolve_roles",
+///     actor     = AuditPrincipal(user_id),
+///     outcome   = "success",
+///     context   = Ctx { provider_id: "ldap", role_count: 3 },
+///     "LDAP role resolution complete"
+/// );
+/// ```
+#[macro_export]
+macro_rules! audit_operation {
+    (
+        operation = $op:expr,
+        actor     = $actor:expr,
+        outcome   = $outcome:expr,
+        $msg:literal $(,)?
+    ) => {
+        $crate::tracing::info!(
+            event_source = "audit",
+            operation = $op,
+            actor = $crate::tracing::field::valuable(&$actor),
+            outcome = $outcome,
+            $msg
+        )
+    };
+    (
+        operation = $op:expr,
+        actor     = $actor:expr,
+        outcome   = $outcome:expr,
+        context   = $ctx:expr,
+        $msg:literal $(,)?
+    ) => {
+        $crate::tracing::info!(
+            event_source = "audit",
+            operation = $op,
+            actor = $crate::tracing::field::valuable(&$actor),
+            outcome = $outcome,
+            context = $crate::tracing::field::valuable(&$ctx),
+            $msg
+        )
+    };
+}

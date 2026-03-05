@@ -47,6 +47,12 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
 
 **Identified by:** `"event_source": "audit"`
 
+Audit logs cover two distinct schemas depending on the source of the event:
+
+#### Authorization Events
+
+Emitted for every authz check. Always contain `action`/`actions`, `entity`/`entities`, `actor`, and `decision`.
+
 **Structure:**
 
 | Field                  | Type            | Description                       |
@@ -157,6 +163,96 @@ When only a single action is involved, it appears as the `action` field. When mu
 }
 ```
 </details>
+
+#### Operational Audit Events
+
+Emitted for non-authz operations that touch user identity (PII) — such as LDAP/directory role resolution, token introspection, and user enrichment. Use these to audit *what the system fetched on behalf of a user*, rather than *whether the user was allowed to do something*.
+
+**Structure:**
+
+| Field          | Type   | Description                                        |
+|----------------|--------|----------------------------------------------------|
+| `event_source` | String | Always `"audit"`                                   |
+| `operation`    | String | Machine-readable name of the operation (e.g., `"ldap_resolve_roles"`) |
+| `actor`        | Object | Same shape as authorization events: `{"actor_type": "principal", "principal": "oidc~…"}` |
+| `outcome`      | String | Result of the operation. Component-specific; see individual operation docs below |
+| `context`      | Object | Optional. Operation-specific metadata (e.g., `provider_id`, `role_count`) |
+
+**Outcomes are not binary allow/deny** — they describe the result of the system operation. No `decision` field is present.
+
+**LDAP role resolution (`operation = "ldap_resolve_roles"`):**
+
+| `outcome`        | When emitted                                              |
+|------------------|-----------------------------------------------------------|
+| `success`        | User found and role list resolved (possibly empty after mapping) |
+| `user_not_found` | No LDAP entry matched the search filter for this subject  |
+| `no_roles`       | User entry exists but has no values for `user_member_of_attribute` |
+
+**Examples:**
+
+<details>
+<summary>Roles resolved successfully</summary>
+
+```json
+{
+  "timestamp": "2026-03-05T09:12:34.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~j791840@v990dtv1.v990.intern"
+  },
+  "outcome": "success",
+  "context": {
+    "provider_id": "vrz-ldap",
+    "role_count": 3
+  },
+  "message": "LDAP role resolution complete",
+  "target": "lakekeeper_role_provider::role_provider::ldap"
+}
+```
+</details>
+
+<details>
+<summary>User not found in LDAP</summary>
+
+```json
+{
+  "timestamp": "2026-03-05T09:12:34.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~unknown@v990dtv1.v990.intern"
+  },
+  "outcome": "user_not_found",
+  "context": {
+    "provider_id": "vrz-ldap",
+    "filter": "(&(|(objectClass=user)(objectClass=computer))(sAMAccountName=unknown))"
+  },
+  "message": "LDAP user not found; returning empty role list",
+  "target": "lakekeeper_role_provider::role_provider::ldap"
+}
+```
+</details>
+
+**jq filters for operational audit events:**
+
+```bash
+# All LDAP resolution events
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles")'
+
+# Users not found in LDAP (misconfigured filter or unknown principals)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "user_not_found")'
+
+# Successful resolutions for a specific user
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles" and .actor.principal == "oidc~user@example.com")'
+```
+
+**For extension authors:** Use the `lakekeeper::audit_operation!` macro to emit operational audit
+events in the same schema. See [crate documentation](https://docs.rs/lakekeeper) for usage examples.
 
 ### 2. Error Response Logs
 

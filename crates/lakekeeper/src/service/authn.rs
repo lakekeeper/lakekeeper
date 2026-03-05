@@ -426,6 +426,14 @@ impl UserId {
         Ok(Self(subject))
     }
 
+    pub fn idp_id(&self) -> Option<&str> {
+        self.0.idp_id().map(|s| s.as_str())
+    }
+
+    pub fn subject_in_idp(&self) -> &str {
+        self.0.subject_in_idp()
+    }
+
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn new_unchecked(idp_id: &str, sub: &str) -> Self {
