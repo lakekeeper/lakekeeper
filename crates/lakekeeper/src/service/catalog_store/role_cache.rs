@@ -10,22 +10,11 @@ use crate::{
     service::{ArcProjectId, ArcRole, ArcRoleIdent, RoleId},
 };
 
-const METRIC_ROLE_CACHE_SIZE: &str = "lakekeeper_role_cache_size";
-const METRIC_ROLE_CACHE_HITS: &str = "lakekeeper_role_cache_hits_total";
-const METRIC_ROLE_CACHE_MISSES: &str = "lakekeeper_role_cache_misses_total";
-
-/// Initialize metric descriptions for Role cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_ROLE_CACHE_SIZE,
-        "Current number of entries in the role cache"
-    );
-    metrics::describe_counter!(METRIC_ROLE_CACHE_HITS, "Total number of role cache hits");
-    metrics::describe_counter!(
-        METRIC_ROLE_CACHE_MISSES,
-        "Total number of role cache misses"
-    );
-});
+use crate::service::cache_metrics::{
+    METRIC_CACHE_HITS_TOTAL as METRIC_ROLE_CACHE_HITS,
+    METRIC_CACHE_MISSES_TOTAL as METRIC_ROLE_CACHE_MISSES,
+    METRIC_CACHE_SIZE as METRIC_ROLE_CACHE_SIZE, METRICS_INITIALIZED,
+};
 
 // Primary cache: RoleId → ArcRole
 pub(crate) static ROLE_CACHE: LazyLock<Cache<RoleId, ArcRole>> = LazyLock::new(|| {
