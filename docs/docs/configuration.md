@@ -288,9 +288,9 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 
 *Metrics*: The STC cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_stc_cache_size{cache_type="stc"}`: Current number of entries in the cache
-- `lakekeeper_stc_cache_hits_total{cache_type="stc"}`: Total number of cache hits
-- `lakekeeper_stc_cache_misses_total{cache_type="stc"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="stc"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="stc"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="stc"}`: Total number of cache misses
 
 **Warehouse Cache**
 
@@ -306,9 +306,9 @@ If the cache is enabled, changes to Storage Profile may take up to the configure
 
 *Metrics*: The Warehouse cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_warehouse_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
-- `lakekeeper_warehouse_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
-- `lakekeeper_warehouse_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
 
 **Namespace Cache**
 
@@ -324,9 +324,9 @@ If the cache is enabled, changes to namespace properties may take up to the conf
 
 *Metrics*: The Namespace cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_namespace_cache_size{cache_type="namespace"}`: Current number of entries in the cache
-- `lakekeeper_namespace_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
-- `lakekeeper_namespace_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="namespace"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
 
 **Secrets Cache**
 
@@ -340,9 +340,9 @@ Caches storage secrets to reduce load on the secret store. Since Lakekeeper neve
 
 *Metrics*: The Secrets cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_secrets_cache_size{cache_type="secrets"}`: Current number of entries in the cache
-- `lakekeeper_secrets_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
-- `lakekeeper_secrets_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="secrets"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
 
 **Role Cache**
 
@@ -358,9 +358,9 @@ If the cache is enabled, changes to role metadata may take up to the configured 
 
 *Metrics*: The Role cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_role_cache_size{cache_type="role"}`: Current number of entries in the cache
-- `lakekeeper_role_cache_hits_total{cache_type="role"}`: Total number of cache hits
-- `lakekeeper_role_cache_misses_total{cache_type="role"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="role"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="role"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="role"}`: Total number of cache misses
 
 ### Endpoint Statistics
 
