@@ -1138,32 +1138,26 @@ fn sort_tabulars_for_authorize_load_tabular(
 ) -> Vec<ViewOrTableInfo> {
     let mut results = BTreeMap::new();
 
-    // let mut current_index = 0;
+    let mut current_index = 0;
 
-    for tabular_info in &tabular_infos {
-        if tabular_info.tabular_ident() == &tabular {
-            results.insert(tabular_infos.len(), tabular_info.clone());
+    if let Some(referencing_views) = referenced_by {
+        for referencing_view in referencing_views {
+            let view_info = tabular_infos
+                .iter()
+                .find(|info| info.tabular_ident() == &referencing_view.clone().into_inner());
+            if let Some(view_info) = view_info {
+                results.insert(current_index, view_info.clone());
+                current_index += 1;
+            }
         }
     }
 
-    // if let Some(referencing_views) = referenced_by {
-    //     for referencing_view in referencing_views {
-    //         let view_info = tabular_infos
-    //             .iter()
-    //             .find(|info| info.tabular_ident() == &referencing_view.clone().into_inner());
-    //         if let Some(view_info) = view_info {
-    //             results.insert(current_index, view_info.clone());
-    //             current_index += 1;
-    //         }
-    //     }
-    // }
-
-    // let tabular_info = tabular_infos
-    //     .iter()
-    //     .find(|info| info.tabular_ident() == &tabular);
-    // if let Some(tabular_info) = tabular_info {
-    //     results.insert(current_index, tabular_info.clone());
-    // }
+    let tabular_info = tabular_infos
+        .iter()
+        .find(|info| info.tabular_ident() == &tabular);
+    if let Some(tabular_info) = tabular_info {
+        results.insert(current_index, tabular_info.clone());
+    }
 
     results.into_values().collect()
 }
