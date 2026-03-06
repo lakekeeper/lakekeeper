@@ -106,8 +106,8 @@ pub struct TrinoEngineConfig {
 impl TrinoEngineConfig {
     #[must_use]
     pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
-        if properties.contains_key(&self.security_model_property) {
-            SecurityModel::Definer
+        if let Some(owner) = properties.get(&self.security_model_property) {
+            SecurityModel::Definer(owner.clone())
         } else {
             SecurityModel::Invoker
         }
@@ -120,11 +120,11 @@ pub enum TrustedEngine {
     Trino(TrinoEngineConfig),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecurityModel {
     Invoker,
-    Definer,
+    Definer(String),
 }
 
 impl TrustedEngine {
