@@ -11,17 +11,16 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZTableInfo, AuthZViewInfo, CatalogBackendError,
-        CatalogGetNamespaceError, GetTabularInfoByLocationError, GetTabularInfoError,
-        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ResolvedWarehouse, SerializationError, TableId, TableIdentOrId,
-        TableInfo, TabularNotFound, TaskNotFoundError,
-        UnexpectedTabularInResponse, WarehouseStatus,
+        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError,
+        GetTabularInfoByLocationError, GetTabularInfoError, InternalParseLocationError,
+        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
+        TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
-            AuthZError, AuthZViewActionForbidden, AuthZViewOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogTableAction, MustUse, UserOrRole,
+            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogTableAction, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -1213,7 +1212,7 @@ mod tests {
     use crate::{
         implementations::postgres::PostgresBackend,
         service::{
-            CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed, TabularIdentOwned,
+            CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
             authz::{CatalogTableAction, CatalogViewAction, tests::HidingAuthorizer},
             catalog_store::TabularListFlags,
         },
