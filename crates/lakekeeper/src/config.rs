@@ -232,14 +232,14 @@ pub struct DynAppConfig {
     /// Expected audience for the provided token.
     /// Specify multiple audiences as a comma-separated list.
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub openid_audience: Option<Vec<String>>,
     /// Additional issuers to trust for `OpenID` Connect
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub openid_additional_issuers: Option<Vec<String>>,
     /// A scope that must be present in provided tokens
@@ -247,15 +247,22 @@ pub struct DynAppConfig {
     pub enable_kubernetes_authentication: bool,
     /// Audience expected in provided JWT tokens.
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
     /// Accept legacy k8s token without audience and issuer
     /// set to kubernetes/serviceaccount or `https://kubernetes.default.svc.cluster.local`
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
-    /// Claim to use in provided JWT tokens as the subject.
-    pub openid_subject_claim: Option<String>,
+    /// Claim(s) to use in provided JWT tokens as the subject.
+    /// Accepts a comma-separated list of claim names; the first claim present
+    /// in the token is used. A single claim name (without a comma) is also
+    /// accepted for backward compatibility.
+    #[serde(
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
+    )]
+    pub openid_subject_claim: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
     /// The field should contain an array of strings or a single string.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
@@ -382,7 +389,7 @@ where
     format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
-fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+fn deserialize_comma_separated<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -397,7 +404,10 @@ where
     .transpose()
 }
 
-fn serialize_audience<S>(value: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_comma_separated<S>(
+    value: &Option<Vec<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -1374,6 +1384,35 @@ mod test {
             let config = get_config();
             assert!(config.cache.role.enabled);
             assert_eq!(config.cache.role.capacity, 5000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn openid_subject_claims() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.openid_subject_claim.is_none());
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER__OPENID_SUBJECT_CLAIM", "custom_sub");
+            let config = get_config();
+            assert_eq!(
+                config.openid_subject_claim,
+                Some(vec!["custom_sub".to_string()])
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER__OPENID_SUBJECT_CLAIM", "custom_sub,oid");
+            let config = get_config();
+            assert_eq!(
+                config.openid_subject_claim,
+                Some(vec!["custom_sub".to_string(), "oid".to_string()])
+            );
             Ok(())
         });
     }

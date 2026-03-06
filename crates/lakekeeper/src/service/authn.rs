@@ -144,9 +144,9 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
             tracing::debug!("Setting openid_scope: {scope}");
             authenticator = authenticator.set_scope(scope.clone());
         }
-        if let Some(subject_claim) = &CONFIG.openid_subject_claim {
-            tracing::debug!("Setting openid_subject_claim: {subject_claim}");
-            authenticator = authenticator.with_subject_claim(subject_claim.clone());
+        if let Some(subject_claims) = &CONFIG.openid_subject_claim {
+            tracing::debug!("Setting openid_subject_claim: {subject_claims:?}");
+            authenticator = authenticator.with_subject_claims(subject_claims.clone());
         } else {
             // "oid" should be used for entra-id, as the `sub` is different between applications.
             // We prefer oid here by default as no other IdP sets this field (that we know of) and
