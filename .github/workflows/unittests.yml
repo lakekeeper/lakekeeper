@@ -283,7 +283,7 @@ jobs:
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
       - name: Upload junit
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: junit
           path: target/nextest/ci/junit.xml
