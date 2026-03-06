@@ -60,19 +60,20 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        Actor, AuthZTableInfo as _, AuthZTabularInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
+        Actor, AuthZTableInfo, AuthZTabularInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
         CatalogBackendError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError,
         CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
         GetTabularInfoError, NamedEntity, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
         ResolveTasksError, ResolvedWarehouse, State, TableCommit, TableCreation, TableId,
         TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed, TabularIdentOwned, TabularInfo,
-        TabularListFlags, TabularNotFound, Transaction, ViewOrTableInfo, WarehouseStatus,
+        TabularListFlags, TabularNotFound, Transaction, ViewInfo, ViewOrTableInfo, WarehouseStatus,
         authz::{
-            ActionOnTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError,
-            AuthZTableActionForbidden, AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            ActionOnTable, ActionOnTableOrView, ActionOnView, AuthZCannotSeeNamespace,
+            AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden, AuthZTableOps,
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
             RequireNamespaceActionError, RequireTableActionError, RequireViewActionError,
-            refresh_warehouse_and_namespace_if_needed,
+            UserOrRole, refresh_warehouse_and_namespace_if_needed,
         },
         build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
@@ -828,14 +829,14 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     .map_err(|e| ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e)))?;
 
     // 4. Check objects presence
-    let _warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
     let tabulars =
         check_required_tabulars(warehouse_id, user_provided_tabulars, tabulars, &authorizer)?;
     let namespaces =
         check_required_namespaces(warehouse_id, &user_provided_namespaces, namespaces)?;
 
     // 5. Build NamespaceHierarchy
-    let namespaces = namespaces
+    let namespaces_with_hierarchy = namespaces
         .iter()
         .map(|(namespace_id, namespace)| {
             (
@@ -853,7 +854,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     let sorted_tabulars = add_namespace_to_tabulars_for_authorize_load_tabular(
         warehouse_id,
         sorted_tabulars,
-        &namespaces,
+        &namespaces_with_hierarchy,
     )?;
 
     // 8. Collect all specified owners
@@ -871,7 +872,15 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     );
 
     // 10. Check all authorizations in batch with `are_allowed_tabular_actions_vec` with list of (current_user, view) pairs from Step 8.
+    let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+        &sorted_tabulars_with_full_info,
+        engine,
+    );
+    let _ = authorizer
+        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
+        .await?;
 
+    // ------------------ OLD ------------------
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
@@ -1233,21 +1242,25 @@ fn add_current_user_to_tabulars_for_authorize_load_tabular(
     actor: &Actor,
     owners: &HashMap<String, Actor>,
     engine: Option<&TrustedEngine>,
-) -> Vec<(ViewOrTableInfo, Actor, NamespaceHierarchy)> {
+) -> Vec<(ViewOrTableInfo, Option<UserOrRole>, NamespaceHierarchy)> {
     match engine {
         Some(engine) => {
-            let mut current_user = actor.clone();
+            let mut current_user = actor;
+
             tabulars
                 .iter()
                 .map(|(tabular, namespace)| {
-                    let result = (tabular.clone(), current_user.clone(), namespace.clone());
+                    let result = (
+                        tabular.clone(),
+                        current_user.to_user_or_role(),
+                        namespace.clone(),
+                    );
                     if let SecurityModel::Definer(owner) =
                         engine.determine_security_model(tabular.properties())
                     {
                         current_user = owners
                             .get(&owner)
-                            .expect("owners should contain all owners used in views.")
-                            .clone();
+                            .expect("owners should contain all owners used in views.");
                     }
                     result
                 })
@@ -1255,10 +1268,75 @@ fn add_current_user_to_tabulars_for_authorize_load_tabular(
         }
         None => tabulars
             .last()
-            .map(|(tabular, namespace)| (tabular.clone(), actor.clone(), namespace.clone()))
+            .map(|(tabular, namespace)| {
+                (tabular.clone(), actor.to_user_or_role(), namespace.clone())
+            })
             .into_iter()
             .collect(),
     }
+}
+
+type NamespaceWithAction<'a> = (
+    &'a NamespaceWithParent,
+    ActionOnTableOrView<'a, 'a, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>,
+);
+
+fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
+    tabulars: &'a [(ViewOrTableInfo, Option<UserOrRole>, NamespaceHierarchy)],
+    engine: Option<&TrustedEngine>,
+) -> Vec<NamespaceWithAction<'a>> {
+    tabulars
+        .iter()
+        .flat_map(|(tabular, user, namespace)| {
+            let is_delegated_execution = engine.is_some_and(|e| {
+                matches!(
+                    e.determine_security_model(tabular.properties()),
+                    SecurityModel::Definer(_)
+                )
+            });
+            let user = user.as_ref();
+            match tabular {
+                ViewOrTableInfo::Table(info) => vec![
+                    CatalogTableAction::GetMetadata,
+                    CatalogTableAction::ReadData,
+                    CatalogTableAction::WriteData,
+                ]
+                .into_iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnTableOrView::Table(ActionOnTable {
+                            info,
+                            action,
+                            user,
+                            is_delegated_execution,
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+                ViewOrTableInfo::View(info) => vec![
+                    CatalogViewAction::GetMetadata,
+                    CatalogViewAction::Commit {
+                        updated_properties: Arc::new(BTreeMap::default()),
+                        removed_properties: Arc::new(Vec::default()),
+                    },
+                ]
+                .into_iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnTableOrView::View(ActionOnView {
+                            info,
+                            action,
+                            user,
+                            is_delegated_execution,
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            }
+        })
+        .collect()
 }
 
 /// Validate commit table requests
@@ -5391,7 +5469,10 @@ pub(crate) mod test {
             &tabulars, &actor, &owners, None,
         );
 
-        assert_eq!(tabulars[0], (table.into(), actor, namespace));
+        assert_eq!(
+            tabulars[0],
+            (table.into(), actor.to_user_or_role(), namespace)
+        );
     }
 
     #[test]
@@ -5434,13 +5515,16 @@ pub(crate) mod test {
         assert_eq!(tabulars.len(), 3);
         assert_eq!(
             tabulars[0],
-            (view_1.into(), actor.clone(), view_1_namespace)
+            (view_1.into(), actor.to_user_or_role(), view_1_namespace)
         );
         assert_eq!(
             tabulars[1],
-            (view_2.into(), actor.clone(), view_2_namespace)
+            (view_2.into(), actor.to_user_or_role(), view_2_namespace)
         );
-        assert_eq!(tabulars[2], (table.into(), actor, table_namespace));
+        assert_eq!(
+            tabulars[2],
+            (table.into(), actor.to_user_or_role(), table_namespace)
+        );
     }
 
     #[test]
@@ -5509,17 +5593,42 @@ pub(crate) mod test {
         );
 
         assert_eq!(tabulars.len(), 5);
-        assert_eq!(tabulars[0], (view_1.into(), actor_test, view_1_namespace));
+        assert_eq!(
+            tabulars[0],
+            (
+                view_1.into(),
+                actor_test.to_user_or_role(),
+                view_1_namespace
+            )
+        );
         assert_eq!(
             tabulars[1],
-            (view_2.into(), actor_trino.clone(), view_2_namespace)
+            (
+                view_2.into(),
+                actor_trino.to_user_or_role(),
+                view_2_namespace
+            )
         );
-        assert_eq!(tabulars[2], (view_3.into(), actor_trino, view_3_namespace));
+        assert_eq!(
+            tabulars[2],
+            (
+                view_3.into(),
+                actor_trino.to_user_or_role(),
+                view_3_namespace
+            )
+        );
         assert_eq!(
             tabulars[3],
-            (view_4.into(), actor_peter.clone(), view_4_namespace)
+            (
+                view_4.into(),
+                actor_peter.to_user_or_role(),
+                view_4_namespace
+            )
         );
-        assert_eq!(tabulars[4], (table.into(), actor_peter, table_namespace));
+        assert_eq!(
+            tabulars[4],
+            (table.into(), actor_peter.to_user_or_role(), table_namespace)
+        );
     }
 
     #[test]
@@ -5581,6 +5690,9 @@ pub(crate) mod test {
         );
 
         assert_eq!(tabulars.len(), 1);
-        assert_eq!(tabulars[0], (table.into(), actor_test, table_namespace));
+        assert_eq!(
+            tabulars[0],
+            (table.into(), actor_test.to_user_or_role(), table_namespace)
+        );
     }
 }
