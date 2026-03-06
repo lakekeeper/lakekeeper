@@ -63,10 +63,10 @@ use crate::{
         AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogBackendError,
         CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore,
         CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, GetTabularInfoError, NamedEntity,
-        NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse, State, TableCommit,
-        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularIdentOwned, TabularInfo, TabularListFlags, TabularNotFound, Transaction,
-        ViewOrTableInfo, WarehouseStatus,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse,
+        State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularIdentOwned, TabularInfo, TabularListFlags, TabularNotFound,
+        Transaction, ViewOrTableInfo, WarehouseStatus,
         authz::{
             ActionOnTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError,
             AuthZTableActionForbidden, AuthZTableOps, AuthZViewOps, Authorizer, AuthzNamespaceOps,
@@ -74,6 +74,7 @@ use crate::{
             RequireNamespaceActionError, RequireTableActionError, RequireViewActionError,
             refresh_warehouse_and_namespace_if_needed,
         },
+        build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
@@ -775,7 +776,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         Ok(())
     }
 }
-
+#[allow(clippy::too_many_lines)]
 async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: TableIdent,
@@ -812,7 +813,11 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     // * warehouse (get_active_warehouse_by_id)
     // * load namespaces with batch function (`get_namespaces_by_ident`)
     // * load tabulars with batch function (`get_tabular_infos_by_idents`)
-    let loaded_objects = load_objects_to_authorize_load_tabular::<C>(
+    let AuthorizeLoadTableObjects {
+        warehouse,
+        namespaces,
+        tabulars,
+    } = load_objects_to_authorize_load_tabular::<C>(
         warehouse_id,
         user_provided_namespaces.clone().into_iter().collect(),
         user_provided_tabulars.clone().into_iter().collect(),
@@ -823,30 +828,40 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     .map_err(|e| ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e)))?;
 
     // 4. Check objects presence
-    let warehouse =
-        authorizer.require_warehouse_presence(warehouse_id, loaded_objects.warehouse)?;
-    let tabulars = check_required_tabulars(
-        warehouse_id,
-        user_provided_tabulars,
-        loaded_objects.tabulars,
-        &authorizer,
-    )?;
-    let namespaces = check_required_namespaces(
-        warehouse_id,
-        user_provided_namespaces,
-        loaded_objects.namespaces,
-    )?;
+    let _warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let tabulars =
+        check_required_tabulars(warehouse_id, user_provided_tabulars, tabulars, &authorizer)?;
+    let namespaces =
+        check_required_namespaces(warehouse_id, &user_provided_namespaces, namespaces)?;
 
-    // 5. Sort tabulars by comparing initial referenced_by list plus appended table/view
-    //     1. If view is not found -> AuthZCannotSeeView/AuthZCannotSeeTable
+    // 5. Build NamespaceHierarchy
+    let namespaces = namespaces
+        .iter()
+        .map(|(namespace_id, namespace)| {
+            (
+                *namespace_id,
+                build_namespace_hierarchy(namespace, &namespaces),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    // 6. Sort tabulars by comparing initial referenced_by list plus appended table/view
     let sorted_tabulars =
-        sort_tabulars_for_authorize_load_tabular(tabulars, referenced_by, table.clone());
-    // 6. Connect tabular with namespaces by using namespace_id
-    //     1. If namespace is missing -> AuthZCannotSeeNamespace
-    // 7. Build list containing (current_user, view) pairs by iterating over ordered view.
+        sort_tabulars_for_authorize_load_tabular(&tabulars, referenced_by, &table);
+
+    // 7. Connect tabular with namespaces by using namespace_id
+    let _sorted_tabulars = add_namespace_to_tabulars_for_authorize_load_tabular(
+        warehouse_id,
+        sorted_tabulars,
+        &namespaces,
+    );
+
+    // 8. Build list containing (current_user, view) pairs by iterating over ordered view.
     //     1. Start with calling user
     //     2. When current view has special engine property -> Definer view -> current user will change to owner of current view for next views in the list
-    // 8. Check all authorizations in batch with `are_allowed_tabular_actions_vec` with list of (current_user, view) pairs from Step 6.
+
+    // 9. Check all authorizations in batch with `are_allowed_tabular_actions_vec` with list of (current_user, view) pairs from Step 8.
+
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
@@ -1106,7 +1121,7 @@ fn check_required_tabulars<A: Authorizer>(
 
 fn check_required_namespaces(
     warehouse_id: WarehouseId,
-    user_provided_namespaces: HashSet<NamespaceIdent>,
+    user_provided_namespaces: &HashSet<NamespaceIdent>,
     namespaces: Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>,
 ) -> Result<HashMap<NamespaceId, NamespaceWithParent>, AuthZError> {
     let namespaces = namespaces.map_err(|e| {
@@ -1115,7 +1130,7 @@ fn check_required_namespaces(
 
     let namespace_idents: HashSet<NamespaceIdent> = namespaces
         .values()
-        .map(|namespace| namespace.namespace_ident())
+        .map(NamespaceWithParent::namespace_ident)
         .cloned()
         .collect();
 
@@ -1132,9 +1147,9 @@ fn check_required_namespaces(
 }
 
 fn sort_tabulars_for_authorize_load_tabular(
-    tabular_infos: Vec<ViewOrTableInfo>,
+    tabular_infos: &[ViewOrTableInfo],
     referenced_by: Option<&[ReferencingView]>,
-    tabular: TableIdent,
+    tabular: &TableIdent,
 ) -> Vec<ViewOrTableInfo> {
     let mut results = BTreeMap::new();
 
@@ -1154,12 +1169,31 @@ fn sort_tabulars_for_authorize_load_tabular(
 
     let tabular_info = tabular_infos
         .iter()
-        .find(|info| info.tabular_ident() == &tabular);
+        .find(|info| info.tabular_ident() == tabular);
     if let Some(tabular_info) = tabular_info {
         results.insert(current_index, tabular_info.clone());
     }
 
     results.into_values().collect()
+}
+
+fn add_namespace_to_tabulars_for_authorize_load_tabular(
+    warehouse_id: WarehouseId,
+    tabulars: Vec<ViewOrTableInfo>,
+    namespaces: &HashMap<NamespaceId, NamespaceHierarchy>,
+) -> Result<Vec<(ViewOrTableInfo, NamespaceHierarchy)>, AuthZError> {
+    tabulars
+        .into_iter()
+        .map(|tabular| {
+            let namespace_id = tabular.namespace_id();
+            namespaces
+                .get(&namespace_id)
+                .map(|namespace| (tabular, namespace.clone()))
+                .ok_or_else(|| {
+                    AuthZCannotSeeNamespace::new_not_found(warehouse_id, namespace_id).into()
+                })
+        })
+        .collect()
 }
 
 /// Validate commit table requests
@@ -2154,7 +2188,7 @@ pub(crate) mod test {
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            BasicTabularInfo, SecretStore, State, TableId, TabularListFlags, UserId, ViewInfo,
+            SecretStore, State, TableId, TabularListFlags, UserId, ViewInfo,
             authz::{
                 AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
                 tests::HidingAuthorizer,
@@ -5141,8 +5175,11 @@ pub(crate) mod test {
 
         let tabulars: Vec<ViewOrTableInfo> = vec![table.clone().into()];
 
-        let sorted_tabulars =
-            sort_tabulars_for_authorize_load_tabular(tabulars, referenced_by, table.tabular_ident);
+        let sorted_tabulars = sort_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            referenced_by,
+            &table.tabular_ident,
+        );
 
         assert_eq!(sorted_tabulars.len(), 1);
     }
@@ -5168,9 +5205,9 @@ pub(crate) mod test {
         ];
 
         let sorted_tabulars = sort_tabulars_for_authorize_load_tabular(
-            tabulars,
+            &tabulars,
             Some(&referenced_by),
-            table.clone().tabular_ident,
+            &table.tabular_ident,
         );
 
         assert_eq!(sorted_tabulars.len(), 3);
@@ -5178,5 +5215,80 @@ pub(crate) mod test {
         assert_eq!(sorted_tabulars[0], view_1.into());
         assert_eq!(sorted_tabulars[1], view_2.into());
         assert_eq!(sorted_tabulars[2], table.into());
+    }
+
+    #[test]
+    fn test_add_namespace_to_tabulars_for_authorize_load_tabular_adds_namespace_when_given_single_table_and_correct_namespace()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let tabulars = vec![table.clone().into()];
+
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let mut namespaces = HashMap::new();
+        namespaces.insert(namespace.namespace_id(), namespace.clone());
+
+        let tabulars_with_namespaces = add_namespace_to_tabulars_for_authorize_load_tabular(
+            warehouse_id,
+            tabulars,
+            &namespaces,
+        )
+        .unwrap();
+
+        assert_eq!(tabulars_with_namespaces.len(), 1);
+        assert_eq!(tabulars_with_namespaces[0], (table.into(), namespace));
+    }
+
+    #[test]
+    fn test_add_namespace_to_tabulars_for_authorize_load_tabular_adds_namespace_when_given_single_table_and_multiple_namespaces()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let tabulars = vec![table.clone().into()];
+
+        let namespace_1 = NamespaceHierarchy::new_with_id(warehouse_id, NamespaceId::new_random());
+        let namespace_2 = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let mut namespaces = HashMap::new();
+        namespaces.insert(namespace_1.namespace_id(), namespace_1);
+        namespaces.insert(namespace_2.namespace_id(), namespace_2.clone());
+
+        let tabulars_with_namespaces = add_namespace_to_tabulars_for_authorize_load_tabular(
+            warehouse_id,
+            tabulars,
+            &namespaces,
+        )
+        .unwrap();
+
+        assert_eq!(tabulars_with_namespaces.len(), 1);
+        assert_eq!(tabulars_with_namespaces[0], (table.into(), namespace_2));
+    }
+
+    #[test]
+    fn test_add_namespace_to_tabulars_for_authorize_load_tabular_adds_namespaces_when_given_multiple_tabulars_and_multiple_namespaces()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let view = ViewInfo::new_random(warehouse_id);
+        let tabulars = vec![view.clone().into(), table.clone().into()];
+
+        let namespace_1 = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let namespace_2 = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
+        let mut namespaces = HashMap::new();
+        namespaces.insert(namespace_1.namespace_id(), namespace_1.clone());
+        namespaces.insert(namespace_2.namespace_id(), namespace_2.clone());
+
+        let tabulars_with_namespaces = add_namespace_to_tabulars_for_authorize_load_tabular(
+            warehouse_id,
+            tabulars,
+            &namespaces,
+        )
+        .unwrap();
+
+        assert_eq!(tabulars_with_namespaces.len(), 2);
+        assert_eq!(tabulars_with_namespaces[0], (view.into(), namespace_2));
+        assert_eq!(tabulars_with_namespaces[1], (table.into(), namespace_1));
     }
 }
