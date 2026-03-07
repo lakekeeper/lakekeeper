@@ -18,6 +18,7 @@ nav:
           - Authorization (OpenFGA): authorization-openfga.md
           - Authorization (Cedar): authorization-cedar.md
           - logging.md
+          - monitoring.md
           - opa.md
           - table-maintenance.md
           - production.md
