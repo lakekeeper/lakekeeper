@@ -9,28 +9,16 @@ use unicase::UniCase;
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
-    service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
+    service::{
+        NamespaceId, NamespaceWithParent,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_NAMESPACE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        catalog_store::namespace::NamespaceHierarchy,
+    },
 };
-
-const METRIC_NAMESPACE_CACHE_SIZE: &str = "lakekeeper_namespace_cache_size";
-const METRIC_NAMESPACE_CACHE_HITS: &str = "lakekeeper_namespace_cache_hits_total";
-const METRIC_NAMESPACE_CACHE_MISSES: &str = "lakekeeper_namespace_cache_misses_total";
-
-/// Initialize metric descriptions for namespace cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_NAMESPACE_CACHE_SIZE,
-        "Current number of entries in the namespace cache"
-    );
-    metrics::describe_counter!(
-        METRIC_NAMESPACE_CACHE_HITS,
-        "Total number of namespace cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_NAMESPACE_CACHE_MISSES,
-        "Total number of namespace cache misses"
-    );
-});
 
 // Main cache: stores individual namespaces by ID
 pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =

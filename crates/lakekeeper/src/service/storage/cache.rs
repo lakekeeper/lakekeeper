@@ -7,28 +7,18 @@ use axum_prometheus::metrics;
 
 use crate::{
     CONFIG,
-    service::storage::{
-        ShortTermCredentialsRequest, StorageCredentialBorrowed, StorageProfileBorrowed,
-        gcs::CachedSTSResponse,
+    service::{
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_STC_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_STC_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_STC_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        storage::{
+            ShortTermCredentialsRequest, StorageCredentialBorrowed, StorageProfileBorrowed,
+            gcs::CachedSTSResponse,
+        },
     },
 };
-
-/// Metric name for STC cache size gauge
-const METRIC_STC_CACHE_SIZE: &str = "lakekeeper_stc_cache_size";
-/// Metric name for STC cache hit counter
-const METRIC_STC_CACHE_HITS: &str = "lakekeeper_stc_cache_hits_total";
-/// Metric name for STC cache miss counter
-const METRIC_STC_CACHE_MISSES: &str = "lakekeeper_stc_cache_misses_total";
-
-/// Initialize metric descriptions for STC cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_STC_CACHE_SIZE,
-        "Current number of entries in the Short-Term Credentials cache"
-    );
-    metrics::describe_counter!(METRIC_STC_CACHE_HITS, "Total number of STC cache hits");
-    metrics::describe_counter!(METRIC_STC_CACHE_MISSES, "Total number of STC cache misses");
-});
 
 /// Global cache for STC tokens, indexed by cache key.
 /// Note: We implement per-entry TTL by storing expiration in the value.

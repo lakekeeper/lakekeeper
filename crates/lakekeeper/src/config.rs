@@ -3,7 +3,7 @@
 
 use core::result::Result::Ok;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::Infallible,
     net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
@@ -95,6 +95,52 @@ fn get_config() -> DynAppConfig {
     }
 
     config
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrinoEngineConfig {
+    pub idp_id: String,
+    pub security_model_property: String,
+}
+
+impl TrinoEngineConfig {
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        if properties.contains_key(&self.security_model_property) {
+            SecurityModel::Definer
+        } else {
+            SecurityModel::Invoker
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TrustedEngine {
+    Trino(TrinoEngineConfig),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityModel {
+    Invoker,
+    Definer,
+}
+
+impl TrustedEngine {
+    #[must_use]
+    pub fn idp_id(&self) -> &str {
+        match self {
+            TrustedEngine::Trino(c) => &c.idp_id,
+        }
+    }
+
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        match self {
+            TrustedEngine::Trino(c) => c.determine_security_model(properties),
+        }
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -202,14 +248,14 @@ pub struct DynAppConfig {
     /// Expected audience for the provided token.
     /// Specify multiple audiences as a comma-separated list.
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub openid_audience: Option<Vec<String>>,
     /// Additional issuers to trust for `OpenID` Connect
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub openid_additional_issuers: Option<Vec<String>>,
     /// A scope that must be present in provided tokens
@@ -217,15 +263,22 @@ pub struct DynAppConfig {
     pub enable_kubernetes_authentication: bool,
     /// Audience expected in provided JWT tokens.
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
     /// Accept legacy k8s token without audience and issuer
     /// set to kubernetes/serviceaccount or `https://kubernetes.default.svc.cluster.local`
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
-    /// Claim to use in provided JWT tokens as the subject.
-    pub openid_subject_claim: Option<String>,
+    /// Claim(s) to use in provided JWT tokens as the subject.
+    /// Accepts a comma-separated list of claim names; the first claim present
+    /// in the token is used. A single claim name (without a comma) is also
+    /// accepted for backward compatibility.
+    #[serde(
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
+    )]
+    pub openid_subject_claim: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
     /// The field should contain an array of strings or a single string.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
@@ -234,6 +287,9 @@ pub struct DynAppConfig {
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
     pub authz_backend: AuthZBackend,
+    // ------------- TRUSTED ENGINES -------------
+    #[serde(default)]
+    pub trusted_engines: HashMap<String, TrustedEngine>,
     // ------------- Health -------------
     pub health_check_frequency_seconds: u64,
 
@@ -349,7 +405,7 @@ where
     format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
-fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+fn deserialize_comma_separated<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -364,7 +420,10 @@ where
     .transpose()
 }
 
-fn serialize_audience<S>(value: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_comma_separated<S>(
+    value: &Option<Vec<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -679,6 +738,7 @@ impl Default for DynAppConfig {
             kafka_topic: None,
             log_cloudevents: None,
             authz_backend: AuthZBackend::default(),
+            trusted_engines: HashMap::new(),
             openid_provider_uri: None,
             openid_audience: None,
             openid_additional_issuers: None,
@@ -1463,11 +1523,6 @@ mod test {
     #[test]
     #[should_panic(expected = "user_assignments.time_to_live_secs")]
     fn test_user_assignments_ttl_exceeds_role_ttl_is_rejected() {
-        // Setting user_assignments TTL (300 s) above the default role TTL
-        // (120 s) must violate the documented invariant and cause get_config()
-        // to panic.  role_members TTL is also set to a small value (60 s) to
-        // represent a misconfigured environment similar to what the request
-        // describes.
         figment::Jail::expect_with(|jail| {
             jail.set_env(
                 "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
@@ -1478,6 +1533,35 @@ mod test {
                 "60",
             );
             let _config = get_config(); // must panic – user_assignments TTL > role TTL
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn openid_subject_claims() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.openid_subject_claim.is_none());
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_SUBJECT_CLAIM", "custom_sub");
+            let config = get_config();
+            assert_eq!(
+                config.openid_subject_claim,
+                Some(vec!["custom_sub".to_string()])
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_SUBJECT_CLAIM", "custom_sub,oid");
+            let config = get_config();
+            assert_eq!(
+                config.openid_subject_claim,
+                Some(vec!["custom_sub".to_string(), "oid".to_string()])
+            );
             Ok(())
         });
     }
@@ -1504,6 +1588,58 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "true");
             let config = get_config();
             assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_trusted_engine_configuration() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.trusted_engines.is_empty());
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__TYPE",
+                "trino",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__IDP_ID",
+                "keycloak-dev",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__SECURITY_MODEL_PROPERTY",
+                "trino.dev.run-as-owner",
+            );
+
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__TYPE",
+                "trino",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__IDP_ID",
+                "keycloak-prod",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__SECURITY_MODEL_PROPERTY",
+                "trino.run-as-owner",
+            );
+
+            let config = get_config();
+            let trusted_engines = &config.trusted_engines;
+
+            let trino_dev_engine = trusted_engines.get("trino_dev_client").unwrap();
+            let TrustedEngine::Trino(dev_config) = trino_dev_engine;
+            assert_eq!(dev_config.idp_id, "keycloak-dev");
+            assert_eq!(dev_config.security_model_property, "trino.dev.run-as-owner");
+
+            let trino_prod_engine = trusted_engines.get("trino-prod-client").unwrap();
+            let TrustedEngine::Trino(prod_config) = trino_prod_engine;
+            assert_eq!(prod_config.idp_id, "keycloak-prod");
+            assert_eq!(prod_config.security_model_property, "trino.run-as-owner");
+
             Ok(())
         });
     }

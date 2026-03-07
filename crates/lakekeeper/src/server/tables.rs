@@ -14,7 +14,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{ETag, IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
@@ -42,7 +42,7 @@ use crate::{
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
-                tables::{DataAccessMode, LoadTableFilters},
+                tables::{DataAccessMode, LoadTableFilters, LoadTableRequest},
             },
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
@@ -419,21 +419,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn load_table(
         parameters: TableParameters,
-        data_access: impl Into<DataAccessMode> + Send,
-        filters: LoadTableFilters,
+        request: LoadTableRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified> {
-        load_table::load_table(
-            parameters,
-            data_access,
-            filters,
-            state,
-            request_metadata,
-            etags,
-        )
-        .await
+        load_table::load_table(parameters, request, state, request_metadata).await
     }
 
     async fn load_table_credentials(
@@ -1814,8 +1804,7 @@ pub(crate) mod test {
                 types::{PageToken, Prefix},
                 v1::{
                     DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
-                    NamespaceParameters, TableParameters,
-                    tables::{LoadTableFilters, TablesService as _},
+                    NamespaceParameters, TableParameters, tables::TablesService as _,
                 },
             },
             management::v1::{
@@ -2060,11 +2049,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident,
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2199,11 +2186,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2362,11 +2347,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2431,11 +2414,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2520,11 +2501,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2573,11 +2552,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2624,11 +2601,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2675,11 +2650,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2988,11 +2961,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3027,11 +2998,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3083,11 +3052,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3170,11 +3137,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3239,11 +3204,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3302,11 +3265,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3346,11 +3307,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -4461,11 +4420,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident,
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();

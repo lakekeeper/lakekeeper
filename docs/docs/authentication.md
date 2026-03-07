@@ -20,7 +20,7 @@ Users are automatically added to Lakekeeper after successful Authentication (use
 If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`.
 Lakekeeper determines the ID of users in the following order:
 
-1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this field is used and must be present.
+1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this value (or comma-separated list of values) is tried in order and the first claim present in the token is used. Setting only one claim, that claim must be present.
 1. If `oid` is present, it is used. The main motivation to prefer the `oid` over the `sub` is that the `sub` field is not unique across applications, while the `oid` is. (See for example [Entra-ID](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference)). Lakekeeper needs to the same IDs as query engines in order to share Permissions.
 1. If the `sub` field is present, use it, otherwise fail.
 

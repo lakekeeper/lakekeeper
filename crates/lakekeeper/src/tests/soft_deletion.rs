@@ -11,10 +11,10 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                DataAccessMode, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
-                NamespaceParameters, TableParameters,
+                DropParams, ListTablesQuery, LoadTableResultOrNotModified, NamespaceParameters,
+                TableParameters,
                 namespace::NamespaceService,
-                tables::{LoadTableFilters, TablesService},
+                tables::{LoadTableRequest, TablesService},
             },
         },
         management::v1::{
@@ -224,11 +224,9 @@ async fn test_soft_deletion(pool: PgPool) {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             table: TableIdent::new(ns_ident.clone(), undrop_table_name.to_string()),
         },
-        DataAccessMode::ClientManaged,
-        LoadTableFilters::default(),
+        LoadTableRequest::builder().build(),
         api_context.clone(),
         random_request_metadata(),
-        Vec::new(),
     )
     .await
     .unwrap();
