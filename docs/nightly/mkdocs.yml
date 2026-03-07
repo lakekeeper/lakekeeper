@@ -1,0 +1,28 @@
+site_name: docs/nightly
+
+plugins:
+    - search
+
+nav:
+    - Concepts: concepts.md
+    - API:
+          - Catalog: api/catalog.md
+          - Management (Core): api/management.md
+          - Management <span class="lkp"></span>: api/management-plus.md
+    - Query Engines: engines.md
+    - User Guide:
+          - bootstrap.md
+          - storage.md
+          - authentication.md
+          - authorization.md
+          - Authorization (OpenFGA): authorization-openfga.md
+          - Authorization (Cedar): authorization-cedar.md
+          - logging.md
+          - opa.md
+          - table-maintenance.md
+          - production.md
+          - gotchas.md
+    - Configuration: configuration.md
+    - Contribute:
+          - developer-guide.md
+          - customize.md
