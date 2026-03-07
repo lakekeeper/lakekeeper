@@ -424,10 +424,10 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 
 **Authentication:**
 
-| Variable                        | Default       | Description                |
-|---------------------------------|---------------|----------------------------|
-| <nobr>`…__BIND_DN`</nobr>       | _(anonymous)_ | Distinguished name of the service account used to bind. Omit for anonymous bind. |
-| <nobr>`…__BIND_PASSWORD`</nobr> |               | Password for the service account. Required when `BIND_DN` is set. Can also be supplied via `…__BIND_PASSWORD_FILE`. |
+| Variable                        | Default     | Description                  |
+|---------------------------------|-------------|------------------------------|
+| <nobr>`…__BIND_DN`</nobr>       | (anonymous) | Distinguished name of the service account used to bind. Omit for anonymous bind. |
+| <nobr>`…__BIND_PASSWORD`</nobr> |             | Password for the service account. Required when `…__BIND_DN` is set; can also be supplied via `…__BIND_PASSWORD_FILE`. |
 
 **User search:**
 
