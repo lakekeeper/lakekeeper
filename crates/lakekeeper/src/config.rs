@@ -78,6 +78,22 @@ fn get_config() -> DynAppConfig {
         );
     }
 
+    // `UserAssignmentsCache` entries may reference roles that are still live
+    // in the role cache.  If `user_assignments.time_to_live_secs` exceeds
+    // `role.time_to_live_secs` a deleted role can remain visible through
+    // user-assignment cache entries after it has been evicted from the role
+    // cache, violating the documented invariant.
+    // The constraint is only meaningful when both caches are active; if either
+    // is disabled the TTL relationship has no effect at runtime.
+    if config.cache.user_assignments.enabled && config.cache.role.enabled {
+        assert!(
+            config.cache.user_assignments.time_to_live_secs <= config.cache.role.time_to_live_secs,
+            "Invalid cache configuration: user_assignments.time_to_live_secs ({}) must not exceed role.time_to_live_secs ({})",
+            config.cache.user_assignments.time_to_live_secs,
+            config.cache.role.time_to_live_secs,
+        );
+    }
+
     config
 }
 
@@ -521,6 +537,51 @@ pub(crate) struct AuditTracingConfig {
     pub enabled: bool,
 }
 
+/// Cache for `UserId → ListUserRoleAssignmentsResult` lookups.
+///
+/// Hot path: checked on every authorisation request.
+/// `time_to_live_secs` must not exceed `role.time_to_live_secs` to bound
+/// the window where a deleted role can appear in user assignment results.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct UserAssignmentsCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for UserAssignmentsCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 50_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
+/// Cache for `RoleId → ListRoleMembersResult` lookups.
+///
+/// Cold path: admin / provider queries only. Keep capacity low —
+/// each entry holds an unbounded `Vec<AssignedUser>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleMembersCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for RoleMembersCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 1_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -533,6 +594,10 @@ pub(crate) struct Cache {
     pub(crate) secrets: SecretsCache,
     /// Role cache configuration.
     pub(crate) role: RoleCache,
+    /// User-assignments cache: `UserId → roles`.
+    pub(crate) user_assignments: UserAssignmentsCache,
+    /// Role-members cache: `RoleId → members`.
+    pub(crate) role_members: RoleMembersCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1384,6 +1449,90 @@ mod test {
             let config = get_config();
             assert!(config.cache.role.enabled);
             assert_eq!(config.cache.role.capacity, 5000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_user_assignments_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.user_assignments.enabled);
+            assert_eq!(config.cache.user_assignments.capacity, 50_000);
+            assert_eq!(config.cache.user_assignments.time_to_live_secs, 120);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.user_assignments.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__ENABLED", "true");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__CAPACITY",
+                "100000",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let config = get_config();
+            assert!(config.cache.user_assignments.enabled);
+            assert_eq!(config.cache.user_assignments.capacity, 100_000);
+            assert_eq!(config.cache.user_assignments.time_to_live_secs, 60);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_members_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.role_members.enabled);
+            assert_eq!(config.cache.role_members.capacity, 1_000);
+            assert_eq!(config.cache.role_members.time_to_live_secs, 120);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.role_members.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__CAPACITY", "5000");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS",
+                "30",
+            );
+            let config = get_config();
+            assert!(config.cache.role_members.enabled);
+            assert_eq!(config.cache.role_members.capacity, 5000);
+            assert_eq!(config.cache.role_members.time_to_live_secs, 30);
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "user_assignments.time_to_live_secs")]
+    fn test_user_assignments_ttl_exceeds_role_ttl_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "300",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let _config = get_config(); // must panic – user_assignments TTL > role TTL
             Ok(())
         });
     }

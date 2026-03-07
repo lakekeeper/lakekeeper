@@ -17,7 +17,7 @@ RUST_LOG=info              # Show INFO, WARN, ERROR
 RUST_LOG=debug             # Show DEBUG and above
 RUST_LOG=warn              # Show only WARN and ERROR
 
-# Filter by crate/module
+# Filter by `target`
 RUST_LOG=lakekeeper=debug                    # Debug for lakekeeper, nothing else
 RUST_LOG=info,lakekeeper=debug               # INFO globally, DEBUG for lakekeeper
 RUST_LOG=lakekeeper::service::events=trace   # Trace only the events module
@@ -46,6 +46,12 @@ Lakekeeper produces three types of logs, distinguished by the `event_source` fie
 Authorization events tracking access to catalog resources. **Contains PII** (user identities).
 
 **Identified by:** `"event_source": "audit"`
+
+Audit logs cover two distinct schemas depending on the source of the event:
+
+#### Authorization Events
+
+Emitted for every authz check. Always contain `action`/`actions`, `entity`/`entities`, `actor`, and `decision`.
 
 **Structure:**
 
@@ -158,6 +164,163 @@ When only a single action is involved, it appears as the `action` field. When mu
 ```
 </details>
 
+#### Operational Audit Events
+
+Emitted for non-authz operations that touch user identity (PII) — such as LDAP/directory role resolution and user enrichment. Use these to audit *what the system fetched on behalf of a user*, rather than *whether the user was allowed to do something*.
+
+**Structure:**
+
+| Field          | Type   | Description                                        |
+|----------------|--------|----------------------------------------------------|
+| `event_source` | String | Always `"audit"`                                   |
+| `operation`    | String | Machine-readable name of the operation (e.g., `"ldap_resolve_roles"`) |
+| `actor`        | Object | Same shape as authorization events: `{"actor_type": "principal", "principal": "oidc~…"}` |
+| `outcome`      | String | Result of the operation. Component-specific; see individual operation docs below |
+| `context`      | Object | Optional. Operation-specific metadata (e.g., `provider_id`, `role_count`) |
+
+**Outcomes are not binary allow/deny** — they describe the result of the system operation. No `decision` field is present.
+
+**LDAP role resolution (`operation = "ldap_resolve_roles"`):**
+
+| `outcome`        | When emitted                                              |
+|------------------|-----------------------------------------------------------|
+| `success`        | User found and role list resolved (possibly empty after mapping) |
+| `user_not_found` | No LDAP entry matched the search filter for this subject  |
+| `no_roles`       | User entry exists but has no group memberships configured |
+
+**Examples:**
+
+<details>
+<summary>Roles resolved successfully</summary>
+
+```json
+{
+  "timestamp": "2026-03-05T09:12:34.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~j791840@corp.example.com"
+  },
+  "outcome": "success",
+  "context": {
+    "provider_id": "my-ldap",
+    "role_count": 3
+  },
+  "message": "LDAP role resolution complete",
+  "target": "lakekeeper_role_provider::role_provider::ldap"
+}
+```
+</details>
+
+<details>
+<summary>User not found in LDAP</summary>
+
+```json
+{
+  "timestamp": "2026-03-05T09:12:34.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~unknown@corp.example.com"
+  },
+  "outcome": "user_not_found",
+  "context": {
+    "provider_id": "my-ldap",
+    "filter": "(&(objectClass=person)(uid=unknown))"
+  },
+  "message": "LDAP user not found; returning empty role list",
+  "target": "lakekeeper_role_provider::role_provider::ldap"
+}
+```
+</details>
+
+**Role provider chain (`operation = "chain_resolve_roles"`):**
+
+| `outcome`                | When emitted                                      |
+|--------------------------|---------------------------------------------------|
+| `no_provider_applicable` | No configured role provider matched this user.    |
+| `error`                  | A matched provider failed to resolve roles (e.g. LDAP connection error). The request proceeds with an empty role set. |
+
+The `no_provider_applicable` outcome is enabled by default and can be controlled via `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`. A `no_provider_applicable` outcome for a user that you expect to be covered indicates a misconfigured domain filter or a missing provider. Set the variable to `false` to suppress these events if some users are intentionally not covered.
+
+The `error` outcome always fires when role resolution fails. It is accompanied by a general application warning in the non-audit log stream (without PII).
+
+<details>
+<summary>No provider applicable</summary>
+
+```json
+{
+  "timestamp": "2026-03-07T10:00:00.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "chain_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~unknown@other-domain.com"
+  },
+  "outcome": "no_provider_applicable",
+  "context": {
+    "providers_checked": ["ldap-prod"]
+  },
+  "message": "No role provider handled user; user will have no provider-assigned roles"
+}
+```
+</details>
+
+**Role assignment cache (`operation = "cached_role_provider"`):**
+
+| `outcome`             | When emitted                                                            |
+|-----------------------|-------------------------------------------------------------------------|
+| `stale_cache_fallback` | One or more providers failed to refresh; stale DB-cached roles are returned instead. The `context.provider_ids` field lists the affected providers. |
+
+This outcome is always accompanied by a WARN-level general log (without PII) and indicates a transient connectivity issue with the role provider (e.g. LDAP unavailable). The user receives their last-known roles rather than an error.
+
+<details>
+<summary>Stale cache fallback</summary>
+
+```json
+{
+  "timestamp": "2026-03-07T11:30:00.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "cached_role_provider",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~user@corp.example.com"
+  },
+  "outcome": "stale_cache_fallback",
+  "context": {
+    "provider_ids": ["ldap-prod"]
+  },
+  "message": "stale provider(s) failed to refresh; serving cached roles"
+}
+```
+</details>
+
+**jq filters for operational audit events:**
+
+```bash
+# All LDAP resolution events
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles")'
+
+# Users not found in LDAP (misconfigured filter or unknown principals)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "user_not_found")'
+
+# Successful resolutions for a specific user
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles" and .actor.principal == "oidc~user@example.com")'
+
+# Users not matched by any role provider
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "no_provider_applicable")'
+
+# Stale cache fallbacks (role provider unreachable, last-known roles served)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "stale_cache_fallback")'
+```
+
+
 ### 2. Error Response Logs
 
 HTTP error responses returned to clients. **Does not contain PII.**
@@ -196,7 +359,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 
 ### 3. General Application Logs
 
-Standard operational and debug logs from Lakekeeper and Rust dependencies. No `event_source` field.
+Standard operational and debug logs from Lakekeeper. No `event_source` field.
 
 **Example:**
 ```json

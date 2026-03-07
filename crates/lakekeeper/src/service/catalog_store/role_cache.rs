@@ -126,6 +126,33 @@ pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
     }
 }
 
+/// Resolve `(project_id, role_ident)` → `RoleId` using the secondary index only.
+///
+/// Returns `None` if the ident is not in the role ident cache.  Does not
+/// touch the primary `ROLE_CACHE` — use [`role_cache_get_by_ident`] if the
+/// full role is needed.
+pub(crate) async fn role_ident_to_id(
+    project_id: ArcProjectId,
+    ident: ArcRoleIdent,
+) -> Option<RoleId> {
+    IDENT_TO_ID_CACHE.get(&(project_id, ident)).await
+}
+
+/// Insert a `(project_id, role_ident)` → `RoleId` mapping into the secondary
+/// index without touching the primary [`ROLE_CACHE`].
+///
+/// Used by sync-event listeners that know the full ident but not the complete
+/// [`ArcRole`] data required by [`role_cache_insert`].
+pub(crate) async fn role_ident_insert(
+    project_id: ArcProjectId,
+    ident: ArcRoleIdent,
+    role_id: RoleId,
+) {
+    if CONFIG.cache.role.enabled {
+        IDENT_TO_ID_CACHE.insert((project_id, ident), role_id).await;
+    }
+}
+
 pub(super) async fn role_cache_get_by_ident(
     project_id: ArcProjectId,
     ident: ArcRoleIdent,
@@ -190,6 +217,45 @@ impl EventListener for RoleCacheEventListener {
             request_metadata: _,
         } = event;
         role_cache_invalidate(role.id()).await;
+        Ok(())
+    }
+
+    /// Warm the `IDENT_TO_ID_CACHE` secondary index after a role's members
+    /// have been synced.
+    ///
+    /// The sync is authoritative proof that the role exists — its
+    /// `(project_id, role_ident)` → `role_id` mapping is therefore valid and
+    /// we can insert it without a DB round-trip.
+    async fn role_members_synced(
+        &self,
+        event: events::RoleMembersSyncedEvent,
+    ) -> anyhow::Result<()> {
+        role_ident_insert(
+            event.result.project_id.clone(),
+            event.result.role_ident.clone(),
+            event.result.role_id,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Warm the `IDENT_TO_ID_CACHE` secondary index for every role present in
+    /// the authoritative assignment list after a user's assignments are synced.
+    ///
+    /// Each [`AssignedRole`] in `result.roles` carries a valid
+    /// `(project_id, role_ident, role_id)` triple we can insert directly.
+    async fn user_role_assignments_synced(
+        &self,
+        event: events::UserRoleAssignmentsSyncedEvent,
+    ) -> anyhow::Result<()> {
+        for assigned in &event.result.roles {
+            role_ident_insert(
+                assigned.project_id.clone(),
+                assigned.role_ident.clone(),
+                assigned.role_id,
+            )
+            .await;
+        }
         Ok(())
     }
 }

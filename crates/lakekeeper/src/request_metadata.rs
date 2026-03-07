@@ -230,6 +230,12 @@ impl RequestMetadata {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_project_id(&mut self, project_id: ProjectId) -> &mut Self {
+        self.project_id = Some(Arc::new(project_id));
+        self
+    }
+
     #[must_use]
     pub fn preferred_project_id(&self) -> Option<ArcProjectId> {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())

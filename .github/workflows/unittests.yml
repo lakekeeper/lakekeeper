@@ -110,6 +110,10 @@ jobs:
 
   test:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-version: ["15", "18"]
     services:
       vault:
         image: hashicorp/vault:latest
@@ -124,7 +128,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres-version }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -285,8 +289,8 @@ jobs:
       - name: Upload junit
         uses: actions/upload-artifact@v5
         with:
-          name: junit
-          path: target/nextest/ci/junit.xml
+          name: junit-pg${{ matrix.postgres-version }}
+          path: target/nextest/${{ env.NEXTEST_PROFILE }}/junit.xml
       - name: Doc Test
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
