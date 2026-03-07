@@ -238,6 +238,39 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 ```
 </details>
 
+**Role provider chain (`operation = "chain_resolve_roles"`):**
+
+| `outcome`                | When emitted                                      |
+|--------------------------|---------------------------------------------------|
+| `no_provider_applicable` | No configured role provider matched this user.    |
+| `error`                  | A matched provider failed to resolve roles (e.g. LDAP connection error). The request proceeds with an empty role set. |
+
+The `no_provider_applicable` outcome is enabled by default and can be controlled via `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`. A `no_provider_applicable` outcome for a user that you expect to be covered indicates a misconfigured domain filter or a missing provider. Set the variable to `false` to suppress these events if some users are intentionally not covered.
+
+The `error` outcome always fires when role resolution fails. It is accompanied by a general application warning in the non-audit log stream (without PII).
+
+<details>
+<summary>No provider applicable</summary>
+
+```json
+{
+  "timestamp": "2026-03-07T10:00:00.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "chain_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~unknown@other-domain.com"
+  },
+  "outcome": "no_provider_applicable",
+  "context": {
+    "providers_checked": ["ldap-prod"]
+  },
+  "message": "No role provider handled user; user will have no provider-assigned roles"
+}
+```
+</details>
+
 **jq filters for operational audit events:**
 
 ```bash
