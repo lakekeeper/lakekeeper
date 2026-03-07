@@ -17,7 +17,7 @@ RUST_LOG=info              # Show INFO, WARN, ERROR
 RUST_LOG=debug             # Show DEBUG and above
 RUST_LOG=warn              # Show only WARN and ERROR
 
-# Filter by crate/module
+# Filter by `target`
 RUST_LOG=lakekeeper=debug                    # Debug for lakekeeper, nothing else
 RUST_LOG=info,lakekeeper=debug               # INFO globally, DEBUG for lakekeeper
 RUST_LOG=lakekeeper::service::events=trace   # Trace only the events module
@@ -166,7 +166,7 @@ When only a single action is involved, it appears as the `action` field. When mu
 
 #### Operational Audit Events
 
-Emitted for non-authz operations that touch user identity (PII) — such as LDAP/directory role resolution, token introspection, and user enrichment. Use these to audit *what the system fetched on behalf of a user*, rather than *whether the user was allowed to do something*.
+Emitted for non-authz operations that touch user identity (PII) — such as LDAP/directory role resolution and user enrichment. Use these to audit *what the system fetched on behalf of a user*, rather than *whether the user was allowed to do something*.
 
 **Structure:**
 
@@ -186,7 +186,7 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 |------------------|-----------------------------------------------------------|
 | `success`        | User found and role list resolved (possibly empty after mapping) |
 | `user_not_found` | No LDAP entry matched the search filter for this subject  |
-| `no_roles`       | User entry exists but has no values for `user_member_of_attribute` |
+| `no_roles`       | User entry exists but has no group memberships configured |
 
 **Examples:**
 
@@ -201,11 +201,11 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
-    "principal": "oidc~j791840@v990dtv1.v990.intern"
+    "principal": "oidc~j791840@corp.example.com"
   },
   "outcome": "success",
   "context": {
-    "provider_id": "vrz-ldap",
+    "provider_id": "my-ldap",
     "role_count": 3
   },
   "message": "LDAP role resolution complete",
@@ -225,12 +225,12 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
-    "principal": "oidc~unknown@v990dtv1.v990.intern"
+    "principal": "oidc~unknown@corp.example.com"
   },
   "outcome": "user_not_found",
   "context": {
-    "provider_id": "vrz-ldap",
-    "filter": "(&(|(objectClass=user)(objectClass=computer))(sAMAccountName=unknown))"
+    "provider_id": "my-ldap",
+    "filter": "(&(objectClass=person)(uid=unknown))"
   },
   "message": "LDAP user not found; returning empty role list",
   "target": "lakekeeper_role_provider::role_provider::ldap"
@@ -249,10 +249,11 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome 
 
 # Successful resolutions for a specific user
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles" and .actor.principal == "oidc~user@example.com")'
+
+# Users not matched by any role provider
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "no_provider_applicable")'
 ```
 
-**For extension authors:** Use the `lakekeeper::audit_operation!` macro to emit operational audit
-events in the same schema. See [crate documentation](https://docs.rs/lakekeeper) for usage examples.
 
 ### 2. Error Response Logs
 
@@ -292,7 +293,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 
 ### 3. General Application Logs
 
-Standard operational and debug logs from Lakekeeper and Rust dependencies. No `event_source` field.
+Standard operational and debug logs from Lakekeeper. No `event_source` field.
 
 **Example:**
 ```json
