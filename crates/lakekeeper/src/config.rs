@@ -1397,7 +1397,7 @@ mod test {
         });
 
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER__OPENID_SUBJECT_CLAIM", "custom_sub");
+            jail.set_env("LAKEKEEPER_TEST__OPENID_SUBJECT_CLAIM", "custom_sub");
             let config = get_config();
             assert_eq!(
                 config.openid_subject_claim,
@@ -1407,7 +1407,7 @@ mod test {
         });
 
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER__OPENID_SUBJECT_CLAIM", "custom_sub,oid");
+            jail.set_env("LAKEKEEPER_TEST__OPENID_SUBJECT_CLAIM", "custom_sub,oid");
             let config = get_config();
             assert_eq!(
                 config.openid_subject_claim,
