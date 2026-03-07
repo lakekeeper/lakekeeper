@@ -464,7 +464,7 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 
 | Variable                  | Default      | Description                       |
 |---------------------------|--------------|-----------------------------------|
-| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | Comma-separated list of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | Comma-separated list of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
 
 **Example — minimal LDAP provider:**
 ```bash
