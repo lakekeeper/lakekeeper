@@ -10,14 +10,10 @@ use crate::{
         ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId, RoleIdent,
         RoleNameAlreadyExists, RoleProviderId, Transaction,
         authn::{UserId, UserIdRef},
-        catalog_store::{
-            role::{RoleIdNotFound, RoleIdentNotFoundInProject},
-            role_assignments_cache, role_cache,
-        },
         define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
         identifier::role::ArcRoleIdent,
-        impl_error_stack_methods, impl_from_with_detail,
+        impl_error_stack_methods, impl_from_with_detail, role_assignments_cache, role_cache,
     },
 };
 
@@ -427,16 +423,6 @@ define_transparent_error! {
     ]
 }
 
-define_transparent_error! {
-    pub enum ListRoleAssignmentsError,
-    stack_message: "Error listing role assignments",
-    variants: [
-        CatalogBackendError,
-        RoleIdNotFound,
-        RoleIdentNotFoundInProject,
-    ]
-}
-
 // ============================================================================
 // Trait
 // ============================================================================
@@ -695,15 +681,12 @@ where
     async fn list_role_assignments_for_user(
         user_id: &UserId,
         catalog_state: Self::State,
-    ) -> Result<Arc<ListUserRoleAssignmentsResult>, ListRoleAssignmentsError> {
+    ) -> Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError> {
         if let Some(cached) = role_assignments_cache::user_assignments_cache_get(user_id).await {
             return Ok(cached);
         }
-        let result = Arc::new(
-            Self::list_role_assignments_for_user_impl(user_id, catalog_state)
-                .await
-                .map_err(ListRoleAssignmentsError::from)?,
-        );
+        let result =
+            Arc::new(Self::list_role_assignments_for_user_impl(user_id, catalog_state).await?);
         role_assignments_cache::user_assignments_cache_insert(user_id, Arc::clone(&result)).await;
         Ok(result)
     }
@@ -716,16 +699,15 @@ where
     async fn list_role_assignments_for_role(
         role_id: RoleId,
         catalog_state: Self::State,
-    ) -> Result<Arc<ListRoleMembersResult>, ListRoleAssignmentsError> {
+    ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
         if let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await {
-            return Ok(cached);
+            return Ok(Some(cached));
         }
-        let result = Arc::new(
-            Self::list_role_assignments_for_role_impl(role_id, catalog_state)
-                .await
-                .map_err(ListRoleAssignmentsError::from)?
-                .ok_or_else(|| RoleIdNotFound::new(role_id))?,
-        );
+        let result = match Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
+        {
+            Some(r) => Arc::new(r),
+            None => return Ok(None),
+        };
         role_assignments_cache::role_members_cache_insert(role_id, Arc::clone(&result)).await;
         role_cache::role_ident_insert(
             result.project_id.clone(),
@@ -733,7 +715,7 @@ where
             role_id,
         )
         .await;
-        Ok(result)
+        Ok(Some(result))
     }
 
     /// Return all members of a role identified by its project-scoped ident,
@@ -746,7 +728,7 @@ where
         project_id: &ArcProjectId,
         role_ident: &Arc<RoleIdent>,
         catalog_state: Self::State,
-    ) -> Result<Arc<ListRoleMembersResult>, ListRoleAssignmentsError> {
+    ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
         // Try to resolve (project_id, role_ident) → RoleId via the secondary
         // ident cache (populated by role-create/update events and sync events).
         // A cache hit lets us serve ROLE_MEMBERS_CACHE without touching the DB.
@@ -759,24 +741,22 @@ where
             // was changed since the entry was written), fall through to the
             // DB path so we don't return members for the wrong role.
             if cached.role_ident.as_ref() == role_ident.as_ref() {
-                return Ok(cached);
+                return Ok(Some(cached));
             }
         }
 
         // DB fetch — the result carries role_id, project_id and role_ident so
         // we can populate both caches without a second round-trip.
-        let result = Arc::new(
-            Self::list_role_assignments_for_role_by_ident_impl(
-                project_id,
-                role_ident,
-                catalog_state,
-            )
-            .await
-            .map_err(ListRoleAssignmentsError::from)?
-            .ok_or_else(|| {
-                RoleIdentNotFoundInProject::new(role_ident.clone(), project_id.clone())
-            })?,
-        );
+        let result = match Self::list_role_assignments_for_role_by_ident_impl(
+            project_id,
+            role_ident,
+            catalog_state,
+        )
+        .await?
+        {
+            Some(r) => Arc::new(r),
+            None => return Ok(None),
+        };
         role_assignments_cache::role_members_cache_insert(result.role_id, Arc::clone(&result))
             .await;
         role_cache::role_ident_insert(
@@ -785,7 +765,7 @@ where
             result.role_id,
         )
         .await;
-        Ok(result)
+        Ok(Some(result))
     }
 }
 

@@ -186,6 +186,7 @@ mod tests {
             authn::UserId,
             catalog_store::role_assignment::{
                 AssignedRole, AssignedUser, ListRoleMembersResult, ListUserRoleAssignmentsResult,
+                UserProviderSyncInfo,
             },
             identifier::role::{ArcRoleIdent, RoleSourceId},
         },
@@ -295,6 +296,37 @@ mod tests {
         assert!(Arc::ptr_eq(&result, &cached));
     }
 
+    /// A result with `provider_sync_times` populated but no roles must survive
+    /// a cache round-trip intact — this is the "synced but no assignments" shape.
+    #[tokio::test]
+    async fn test_user_assignments_sync_without_roles() {
+        let user_id = test_user_id("sync-no-roles");
+        let provider_id = RoleProviderId::try_new("oidc").unwrap();
+        let project_id = Arc::new(ProjectId::new_random());
+        let synced_at = chrono::Utc::now();
+
+        let result = Arc::new(ListUserRoleAssignmentsResult {
+            roles: vec![],
+            provider_sync_times: vec![UserProviderSyncInfo {
+                project_id: Arc::clone(&project_id),
+                provider_id: provider_id.clone(),
+                synced_at,
+            }],
+        });
+
+        user_assignments_cache_insert(&user_id, Arc::clone(&result)).await;
+        let cached = user_assignments_cache_get(&user_id).await.unwrap();
+
+        assert_eq!(cached.roles.len(), 0, "no roles");
+        assert_eq!(
+            cached.provider_sync_times.len(),
+            1,
+            "sync record must survive cache round-trip"
+        );
+        assert_eq!(cached.provider_sync_times[0].provider_id, provider_id);
+        assert_eq!(cached.provider_sync_times[0].synced_at, synced_at);
+    }
+
     #[tokio::test]
     async fn test_user_assignments_overwrite() {
         let user_id = test_user_id("overwrite-ua");
@@ -350,6 +382,32 @@ mod tests {
         let cached = role_members_cache_get(role_id).await.unwrap();
 
         assert!(Arc::ptr_eq(&result, &cached));
+    }
+
+    /// A result with `last_synced_at: Some(...)` but no members must survive
+    /// a cache round-trip intact — this is the "synced but no members" shape.
+    #[tokio::test]
+    async fn test_role_members_sync_without_members() {
+        let role_id = RoleId::new_random();
+        let synced_at = chrono::Utc::now();
+
+        let result = Arc::new(ListRoleMembersResult {
+            role_id,
+            project_id: Arc::new(ProjectId::new_random()),
+            role_ident: test_role_ident("ldap", "empty-group"),
+            members: vec![],
+            last_synced_at: Some(synced_at),
+        });
+
+        role_members_cache_insert(role_id, Arc::clone(&result)).await;
+        let cached = role_members_cache_get(role_id).await.unwrap();
+
+        assert_eq!(cached.members.len(), 0, "no members");
+        assert_eq!(
+            cached.last_synced_at,
+            Some(synced_at),
+            "last_synced_at must survive cache round-trip even with no members"
+        );
     }
 
     #[tokio::test]

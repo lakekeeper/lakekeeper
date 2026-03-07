@@ -424,21 +424,55 @@ pub(crate) async fn list_role_assignments_for_user<
 ) -> Result<ListUserRoleAssignmentsResult, CatalogBackendError> {
     let rows = sqlx::query!(
         r#"
+        WITH assigned AS (
+            SELECT
+                r.id          AS role_id,
+                r.source_id,
+                r.provider_id,
+                r.project_id,
+                s.project_id  AS sync_project_id,
+                s.provider_id AS sync_provider_id,
+                s.synced_at
+            FROM role_assignment ur
+            JOIN "role" r ON r.id = ur.role_id
+            LEFT JOIN role_assignment_sync s
+                ON  s.user_id     = ur.user_id
+                AND s.provider_id = r.provider_id
+                AND s.project_id  = r.project_id
+            WHERE ur.user_id = $1
+        )
         SELECT
-            r.id          AS role_id,
-            r.source_id,
-            r.provider_id,
-            r.project_id,
-            s.project_id  AS "sync_project_id?",
-            s.provider_id AS "sync_provider_id?",
-            s.synced_at   AS "synced_at?"
-        FROM role_assignment ur
-        JOIN "role" r ON r.id = ur.role_id
-        LEFT JOIN role_assignment_sync s
-            ON  s.user_id     = ur.user_id
-            AND s.provider_id = r.provider_id
-            AND s.project_id  = r.project_id
-        WHERE ur.user_id = $1
+            role_id          AS "role_id?: Uuid",
+            source_id        AS "source_id?",
+            provider_id      AS "provider_id?",
+            project_id       AS "project_id?",
+            sync_project_id  AS "sync_project_id?",
+            sync_provider_id AS "sync_provider_id?",
+            synced_at        AS "synced_at?"
+        FROM assigned
+
+        UNION ALL
+
+        -- Providers that have been synced but currently have no assignments.
+        -- These rows carry only sync metadata; all role columns are NULL.
+        -- The NOT EXISTS check reuses the already-computed `assigned` CTE
+        -- instead of re-joining role_assignment + role.
+        SELECT
+            NULL::UUID AS "role_id?: Uuid",
+            NULL::TEXT AS "source_id?",
+            NULL::TEXT AS "provider_id?",
+            NULL::TEXT AS "project_id?",
+            s.project_id,
+            s.provider_id,
+            s.synced_at
+        FROM role_assignment_sync s
+        WHERE s.user_id = $1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM assigned
+              WHERE assigned.provider_id = s.provider_id
+                AND assigned.project_id  = s.project_id
+          )
         "#,
         user_id.to_string(),
     )
@@ -451,11 +485,15 @@ pub(crate) async fn list_role_assignments_for_user<
     let mut provider_sync_times: Vec<UserProviderSyncInfo> = Vec::new();
 
     for row in rows {
-        roles.push(AssignedRole {
-            role_id: RoleId::new(row.role_id),
-            role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
-            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
-        });
+        if let (Some(role_id), Some(source_id), Some(provider_id_r), Some(project_id_r)) =
+            (row.role_id, row.source_id, row.provider_id, row.project_id)
+        {
+            roles.push(AssignedRole {
+                role_id: RoleId::new(role_id),
+                role_ident: Arc::new(RoleIdent::from_db_unchecked(provider_id_r, source_id)),
+                project_id: Arc::new(ProjectId::from_db_unchecked(project_id_r)),
+            });
+        }
 
         if let (Some(sp), Some(prov), Some(sat)) =
             (row.sync_project_id, row.sync_provider_id, row.synced_at)
@@ -745,6 +783,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(list.members.len(), 0);
+        // The sync record must survive even when the member list is empty —
+        // callers need to know "we synced and found no members".
+        assert_eq!(
+            list.last_synced_at,
+            Some(result.synced_at),
+            "last_synced_at must be present after clearing all members"
+        );
     }
 
     #[sqlx::test]
@@ -959,18 +1004,27 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 0);
-        assert!(result.synced_at <= chrono::Utc::now());
 
         let list = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(list.members.len(), 0);
+        // The sync record must be present even for a role that has never had
+        // any members — callers need to know "we synced and found nothing".
+        assert_eq!(
+            list.last_synced_at,
+            Some(result.synced_at),
+            "last_synced_at must be present even on a first-ever empty sync"
+        );
     }
 
     #[sqlx::test]
     async fn role_members_empty_twice(pool: sqlx::PgPool) {
         // Two consecutive empty syncs — second sync has 0 rows in member_changes.
+        // Core invariant: `last_synced_at` returned by the list function must
+        // be present and must strictly advance on every sync, even when the
+        // member set stays empty.
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let role_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-empty-twice"));
@@ -994,10 +1048,24 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        sync_role_members_by_ident(&project_id, &role, um(&[]), t.transaction())
+        let first_clear = sync_role_members_by_ident(&project_id, &role, um(&[]), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
+
+        assert_eq!(first_clear.added.len(), 0);
+        assert_eq!(first_clear.removed.len(), 1, "alice removed on first clear");
+
+        let list = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(list.members.len(), 0, "no members after first clear");
+        assert_eq!(
+            list.last_synced_at,
+            Some(first_clear.synced_at),
+            "last_synced_at must equal synced_at from first clear"
+        );
 
         // Second clear — member_changes produces 0 rows
         let mut t = PostgresTransaction::begin_write(state.clone())
@@ -1010,6 +1078,164 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 0);
+        // sync_ts must be written even on a no-op empty sync, advancing the timestamp.
+        assert!(
+            result.synced_at > first_clear.synced_at,
+            "synced_at must strictly advance on each sync: first={:?} second={:?}",
+            first_clear.synced_at,
+            result.synced_at,
+        );
+
+        let list2 = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            list2.members.len(),
+            0,
+            "still no members after second clear"
+        );
+        assert_eq!(
+            list2.last_synced_at,
+            Some(result.synced_at),
+            "last_synced_at must reflect the second sync"
+        );
+    }
+
+    // ── list_role_assignments_for_role / list_role_assignments_for_role_by_ident ──
+
+    /// Both list functions return `None` when no role with the given ident / id
+    /// exists in the database.
+    #[sqlx::test]
+    async fn list_role_by_ident_returns_none_for_unknown(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_ident = RoleIdent::new_unchecked("ldap", "does-not-exist");
+
+        let result = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "must return None when role does not exist"
+        );
+    }
+
+    #[sqlx::test]
+    async fn list_role_by_id_returns_none_for_unknown(pool: sqlx::PgPool) {
+        let pool2 = pool.clone();
+        let result = list_role_assignments_for_role(RoleId::new(Uuid::new_v4()), &pool2)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "must return None when role id does not exist"
+        );
+    }
+
+    /// Listing by ID and listing by ident return equivalent results: same
+    /// `role_id`, same members, same `last_synced_at`.
+    #[sqlx::test]
+    async fn list_role_by_id_matches_list_by_ident(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-engineers"));
+        let role = make_role(&role_ident, "Engineers");
+        let u1 = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let u2 = Arc::new(UserId::new_unchecked("oidc", "bob"));
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let sync = sync_role_members_by_ident(
+            &project_id,
+            &role,
+            um(&[make_user(&u1, "Alice"), make_user(&u2, "Bob")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let by_ident = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
+            .await
+            .unwrap()
+            .expect("role must exist");
+        let by_id = list_role_assignments_for_role(sync.role_id, &pool)
+            .await
+            .unwrap()
+            .expect("role must exist");
+
+        assert_eq!(by_id.role_id, by_ident.role_id, "role_id must match");
+        let ids_by_ident: HashSet<_> = by_ident.members.iter().map(|m| &m.user_id).collect();
+        let ids_by_id: HashSet<_> = by_id.members.iter().map(|m| &m.user_id).collect();
+        assert_eq!(ids_by_ident, ids_by_id, "member sets must match");
+        assert_eq!(
+            by_id.last_synced_at, by_ident.last_synced_at,
+            "last_synced_at must match"
+        );
+    }
+
+    /// `last_synced_at` on the list result must equal the `synced_at` returned
+    /// by the most recent sync call.
+    #[sqlx::test]
+    async fn list_role_last_synced_at_matches_sync_result(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-timed"));
+        let role = make_role(&role_ident, "Timed Group");
+        let u1 = Arc::new(UserId::new_unchecked("oidc", "alice"));
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first_sync = sync_role_members_by_ident(
+            &project_id,
+            &role,
+            um(&[make_user(&u1, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let list = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            list.last_synced_at,
+            Some(first_sync.synced_at),
+            "last_synced_at must equal synced_at from the sync result"
+        );
+
+        // A second sync advances the timestamp.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let second_sync = sync_role_members_by_ident(
+            &project_id,
+            &role,
+            um(&[make_user(&u1, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let list2 = list_role_assignments_for_role_by_ident(&project_id, &role_ident, &pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            list2.last_synced_at,
+            Some(second_sync.synced_at),
+            "last_synced_at must reflect the most recent sync"
+        );
+        assert!(
+            second_sync.synced_at > first_sync.synced_at,
+            "second sync timestamp must be strictly later"
+        );
     }
 
     // ── sync_user_role_assignments_by_provider ─────────────────────────────
@@ -1182,17 +1408,26 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 1);
-        assert_eq!(result.all_roles.len(), 0, "all roles removed");
+        assert_eq!(result.all_roles.len(), 0, "all role assignments removed");
+        // Even after all assignments are removed, the provider sync record must
+        // be retrievable so callers know "we synced and found nothing".
         assert_eq!(
             result.provider_sync_times.len(),
-            0,
-            "no assignments remain so no sync times surfaced"
+            1,
+            "sync record must still be surfaced after clearing all assignments"
         );
+        assert_eq!(result.provider_sync_times[0].provider_id, provider);
 
         let list = list_role_assignments_for_user(&user_id, &pool)
             .await
             .unwrap();
         assert_eq!(list.roles.len(), 0);
+        assert_eq!(
+            list.provider_sync_times.len(),
+            1,
+            "list must surface the sync record even when the user has no roles"
+        );
+        assert_eq!(list.provider_sync_times[0].provider_id, provider);
     }
 
     #[sqlx::test]
@@ -1343,20 +1578,26 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 0);
-        // sync_ts always writes a record — confirmed via the returned timestamp
-        assert!(result.synced_at <= chrono::Utc::now());
-        // all_roles / provider_sync_times are empty because the user has no
-        // assignments (list_role_assignments_for_user uses an inner join on
-        // role_assignment, so sync records without matching assignments are
-        // not surfaced).
         assert_eq!(result.all_roles.len(), 0);
-        assert_eq!(result.provider_sync_times.len(), 0);
+        // sync_ts always writes a record even for an empty sync; the provider
+        // sync time must be surfaced even when there are no role assignments.
+        assert_eq!(
+            result.provider_sync_times.len(),
+            1,
+            "sync record must be surfaced even when there are no role assignments"
+        );
+        assert_eq!(result.provider_sync_times[0].provider_id, provider);
 
         let list = list_role_assignments_for_user(&user_id, &pool)
             .await
             .unwrap();
         assert_eq!(list.roles.len(), 0);
-        assert_eq!(list.provider_sync_times.len(), 0);
+        assert_eq!(
+            list.provider_sync_times.len(),
+            1,
+            "list must also surface the sync record for the provider"
+        );
+        assert_eq!(list.provider_sync_times[0].provider_id, provider);
     }
 
     #[sqlx::test]
@@ -1387,7 +1628,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        sync_user_role_assignments_by_provider(
+        let first_clear = sync_user_role_assignments_by_provider(
             &user,
             &project_id,
             &provider,
@@ -1397,6 +1638,18 @@ mod tests {
         .await
         .unwrap();
         t.commit().await.unwrap();
+
+        assert_eq!(first_clear.added.len(), 0);
+        assert_eq!(
+            first_clear.removed.len(),
+            1,
+            "admin role removed on first clear"
+        );
+
+        let list = list_role_assignments_for_user(&user_id, &pool)
+            .await
+            .unwrap();
+        assert_eq!(list.roles.len(), 0, "no roles after first clear");
 
         // Second clear — assignment_changes produces 0 rows
         let mut t = PostgresTransaction::begin_write(state.clone())
@@ -1415,6 +1668,30 @@ mod tests {
 
         assert_eq!(result.added.len(), 0);
         assert_eq!(result.removed.len(), 0);
+        // sync_ts must be written even on a no-op empty sync, advancing the timestamp.
+        assert!(
+            result.synced_at > first_clear.synced_at,
+            "synced_at must strictly advance on each sync: first={:?} second={:?}",
+            first_clear.synced_at,
+            result.synced_at,
+        );
+
+        // The provider sync record must be retrievable even when the user has
+        // no role assignments — this is the core invariant being tested.
+        let list = list_role_assignments_for_user(&user_id, &pool)
+            .await
+            .unwrap();
+        assert_eq!(list.roles.len(), 0, "still no roles after second clear");
+        assert_eq!(
+            list.provider_sync_times.len(),
+            1,
+            "provider sync record must be retrievable even with no role assignments"
+        );
+        assert_eq!(list.provider_sync_times[0].provider_id, provider);
+        assert_eq!(
+            list.provider_sync_times[0].synced_at, result.synced_at,
+            "retrieved synced_at must match the value returned by the sync call"
+        );
     }
 
     /// When the role's name and description are unchanged, the role row must
@@ -1651,13 +1928,25 @@ mod tests {
             &provider_b,
             "surviving role is from provider_b"
         );
-        // provider_sync_times: provider_a no longer has assignments so it
-        // cannot be surfaced via the role_assignment join.
+        // provider_a was synced with an empty list, provider_b still has an
+        // active assignment — both sync records must be surfaced.
         assert_eq!(
             result.provider_sync_times.len(),
-            1,
-            "only provider_b still has an active assignment"
+            2,
+            "sync records for both providers must be surfaced"
         );
-        assert_eq!(result.provider_sync_times[0].provider_id, provider_b);
+        let sync_prov_ids: HashSet<&RoleProviderId> = result
+            .provider_sync_times
+            .iter()
+            .map(|s| &s.provider_id)
+            .collect();
+        assert!(
+            sync_prov_ids.contains(&provider_a),
+            "provider_a sync record present"
+        );
+        assert!(
+            sync_prov_ids.contains(&provider_b),
+            "provider_b sync record present"
+        );
     }
 }
