@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH\n        upserted_user AS (\n            INSERT INTO users (id, name, email, last_updated_with, user_type)\n            VALUES ($1, COALESCE($2, 'Nameless User with id ' || $1), NULLIF($3, ''), $4, COALESCE($5, 'human'::user_type))\n            ON CONFLICT (id) DO UPDATE SET\n                name              = COALESCE($2, users.name),\n                email             = CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END,\n                last_updated_with = EXCLUDED.last_updated_with,\n                user_type         = COALESCE($5, users.user_type),\n                deleted_at        = null\n            WHERE users.name IS DISTINCT FROM COALESCE($2, users.name)\n               OR users.email IS DISTINCT FROM\n                  CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END\n               OR users.user_type IS DISTINCT FROM COALESCE($5, users.user_type)\n               OR users.deleted_at IS NOT NULL\n        ),\n        role_input AS (\n            SELECT u.name,\n                   COALESCE(u.name, u.source_id || ' in Provider ' || $6) AS effective_name,\n                   u.description,\n                   NULLIF(u.description, '') AS effective_description,\n                   u.source_id\n            FROM UNNEST($8::TEXT[], $9::TEXT[], $10::TEXT[]) AS u(name, description, source_id)\n        ),\n        upserted_roles AS (\n            INSERT INTO \"role\" (id, name, description, source_id, provider_id, project_id)\n            SELECT gen_random_uuid(), effective_name, effective_description, source_id, $6, $7\n            FROM role_input\n            ON CONFLICT ON CONSTRAINT unique_role_provider_source_in_project DO UPDATE SET\n                name        = COALESCE(\n                                  (SELECT name FROM role_input WHERE source_id = EXCLUDED.source_id),\n                                  \"role\".name),\n                description = CASE\n                                  WHEN (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id) IS NULL\n                                      THEN \"role\".description\n                                  ELSE NULLIF(\n                                          (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),\n                                          '')\n                              END\n            WHERE \"role\".name IS DISTINCT FROM COALESCE(\n                                                  (SELECT name FROM role_input WHERE source_id = EXCLUDED.source_id),\n                                                  \"role\".name)\n               OR \"role\".description IS DISTINCT FROM\n                  CASE WHEN (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id) IS NULL\n                           THEN \"role\".description\n                       ELSE NULLIF(\n                               (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),\n                               '')\n                  END\n            RETURNING id\n        ),\n        -- Fallback: when the upsert WHERE was false (nothing changed) upserted_roles\n        -- returns no rows for those entries.  RETURNING id is available directly\n        -- (unlike reading the \"role\" table, which uses the pre-statement snapshot\n        -- and cannot see rows inserted by upserted_roles in the same query).\n        -- Arm 1: newly inserted roles and updated roles come from RETURNING.\n        -- Arm 2: roles that existed but were unchanged (WHERE skipped them) are\n        --        found in the old \"role\" snapshot; they are absent from upserted_roles.\n        role_ids AS (\n            SELECT id FROM upserted_roles\n            UNION ALL\n            SELECT r.id\n            FROM \"role\" r\n            JOIN role_input ri ON r.source_id = ri.source_id\n              AND r.provider_id = $6 AND r.project_id = $7\n            WHERE NOT EXISTS (\n                SELECT 1 FROM upserted_roles ur WHERE ur.id = r.id\n            )\n        ),\n        removed_assignments AS (\n            DELETE FROM role_assignment\n            WHERE user_id = $1\n              AND role_id IN (\n                  SELECT id FROM \"role\" WHERE provider_id = $6 AND project_id = $7\n              )\n              AND role_id NOT IN (SELECT id FROM role_ids)\n            RETURNING role_id\n        ),\n        added_assignments AS (\n            INSERT INTO role_assignment (user_id, role_id)\n            SELECT $1, id FROM role_ids\n            ON CONFLICT (user_id, role_id) DO NOTHING\n            RETURNING role_id\n        ),\n        sync_ts AS (\n            INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at)\n            VALUES ($1, $7, $6, $11)\n            ON CONFLICT (user_id, project_id, provider_id) DO UPDATE SET synced_at = $11\n            RETURNING synced_at\n        )\n        SELECT\n            (SELECT synced_at FROM sync_ts)                                                                AS \"synced_at!\",\n            (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM added_assignments)   AS \"added_ids!: Vec<Uuid>\",\n            (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM removed_assignments) AS \"removed_ids!: Vec<Uuid>\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "synced_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "added_ids!: Vec<Uuid>",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "removed_ids!: Vec<Uuid>",
+        "type_info": "UuidArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        {
+          "Custom": {
+            "name": "user_last_updated_with",
+            "kind": {
+              "Enum": [
+                "create-endpoint",
+                "config-call-creation",
+                "update-endpoint",
+                "role-provider"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "d7de2e54a6361b87925688339671f84c7bcab3acaa11b5fa254d0e5290284c87"
+}

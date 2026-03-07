@@ -113,6 +113,10 @@ pub(crate) async fn sync_role_members_by_ident(
         .iter()
         .map(|m| DbUserLastUpdatedWith::from(m.updated_with))
         .collect();
+    // Capture the timestamp on the client so the value written to Postgres
+    // and the value returned to the caller are identical, avoiding any
+    // clock skew between the DB server and the application server.
+    let synced_at = chrono::Utc::now();
 
     let row = sqlx::query!(
         r#"
@@ -202,8 +206,8 @@ pub(crate) async fn sync_role_members_by_ident(
         ),
         sync_ts AS (
             INSERT INTO role_members_sync (role_id, synced_at)
-            VALUES ((SELECT id FROM role_id), now())
-            ON CONFLICT (role_id) DO UPDATE SET synced_at = now()
+            VALUES ((SELECT id FROM role_id), $11)
+            ON CONFLICT (role_id) DO UPDATE SET synced_at = $11
             RETURNING synced_at
         )
         SELECT
@@ -222,6 +226,7 @@ pub(crate) async fn sync_role_members_by_ident(
         &user_emails as &[Option<&str>],
         &user_types as &[Option<DbUserType>],
         &user_updated_withs as &[DbUserLastUpdatedWith],
+        synced_at,
     )
     .fetch_one(&mut **transaction)
     .await
@@ -282,6 +287,10 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     let role_names: Vec<Option<&str>> = roles.iter().map(|r| r.name).collect();
     let role_descs: Vec<Option<&str>> = roles.iter().map(|r| r.description).collect();
     let role_src_ids: Vec<&str> = roles.iter().map(|r| r.ident.source_id().as_str()).collect();
+    // Capture the timestamp on the client so the value written to Postgres
+    // and the value returned to the caller are identical, avoiding any
+    // clock skew between the DB server and the application server.
+    let synced_at = chrono::Utc::now();
 
     let row = sqlx::query!(
         r#"
@@ -371,8 +380,8 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         ),
         sync_ts AS (
             INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at)
-            VALUES ($1, $7, $6, now())
-            ON CONFLICT (user_id, project_id, provider_id) DO UPDATE SET synced_at = now()
+            VALUES ($1, $7, $6, $11)
+            ON CONFLICT (user_id, project_id, provider_id) DO UPDATE SET synced_at = $11
             RETURNING synced_at
         )
         SELECT
@@ -390,6 +399,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         &role_names as &[Option<&str>],
         &role_descs as &[Option<&str>],
         &role_src_ids as &[&str],
+        synced_at,
     )
     .fetch_one(&mut **transaction)
     .await

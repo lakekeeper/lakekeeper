@@ -271,6 +271,36 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
 ```
 </details>
 
+**Role assignment cache (`operation = "cached_role_provider"`):**
+
+| `outcome`             | When emitted                                                            |
+|-----------------------|-------------------------------------------------------------------------|
+| `stale_cache_fallback` | One or more providers failed to refresh; stale DB-cached roles are returned instead. The `context.provider_ids` field lists the affected providers. |
+
+This outcome is always accompanied by a WARN-level general log (without PII) and indicates a transient connectivity issue with the role provider (e.g. LDAP unavailable). The user receives their last-known roles rather than an error.
+
+<details>
+<summary>Stale cache fallback</summary>
+
+```json
+{
+  "timestamp": "2026-03-07T11:30:00.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "cached_role_provider",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~user@corp.example.com"
+  },
+  "outcome": "stale_cache_fallback",
+  "context": {
+    "provider_ids": ["ldap-prod"]
+  },
+  "message": "stale provider(s) failed to refresh; serving cached roles"
+}
+```
+</details>
+
 **jq filters for operational audit events:**
 
 ```bash
@@ -285,6 +315,9 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operatio
 
 # Users not matched by any role provider
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "no_provider_applicable")'
+
+# Stale cache fallbacks (role provider unreachable, last-known roles served)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "stale_cache_fallback")'
 ```
 
 
