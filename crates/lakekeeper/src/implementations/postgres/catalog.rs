@@ -60,21 +60,25 @@ use crate::{
         CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
         CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogSearchTabularResponse,
-        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
-        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
+        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
+        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
+        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
         CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRolesError,
-        ListRolesResponse, ListTabularsError, LoadTableError, LoadTableResponse, LoadViewError,
-        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
-        RoleId, RoleIdent, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
+        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRoleMembersResult,
+        ListRolesError, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
+        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
+        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerInfo,
         SetTabularProtectionError, SetWarehouseDeletionProfileError, SetWarehouseProtectedError,
-        SetWarehouseStatusError, StagedTableId, TableCommit, TableCreation, TableId, TableIdent,
-        TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList,
-        Transaction, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
-        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        SetWarehouseStatusError, StagedTableId, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
+        TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags,
+        TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles, UpdateRoleError,
+        UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -360,6 +364,81 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError> {
         list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
+    }
+
+    // ---------------- Role Assignment Management ----------------
+    async fn sync_role_members_by_ident_impl<'a>(
+        project_id: &ProjectId,
+        role: &CatalogRoleForAssignment<'_>,
+        members: &[CatalogUserRoleAssignmentUser<'_>],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<SyncRoleMembersResult, SyncRoleMembersError> {
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                members.iter().all(|m| seen.insert(m.user_id.to_string()))
+            },
+            "sync_role_members_by_ident_impl: duplicate user_id in members slice"
+        );
+        let unique = UniqueMembers::from_unchecked(members);
+        super::role_assignment::sync_role_members_by_ident(project_id, role, unique, transaction)
+            .await
+    }
+
+    async fn sync_user_role_assignments_by_provider_impl<'a>(
+        user: &CatalogUserRoleAssignmentUser<'_>,
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        roles: &[CatalogRoleForAssignment<'_>],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                roles
+                    .iter()
+                    .all(|r| seen.insert(r.ident.source_id().to_string()))
+            },
+            "sync_user_role_assignments_by_provider_impl: duplicate source_id in roles slice"
+        );
+        let unique = UniqueRoles::from_unchecked(roles);
+        super::role_assignment::sync_user_role_assignments_by_provider(
+            user,
+            project_id,
+            provider_id,
+            unique,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<ListUserRoleAssignmentsResult, CatalogBackendError> {
+        super::role_assignment::list_role_assignments_for_user(user_id, &catalog_state.read_pool())
+            .await
+    }
+
+    async fn list_role_assignments_for_role_impl(
+        role_id: RoleId,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError> {
+        super::role_assignment::list_role_assignments_for_role(role_id, &catalog_state.read_pool())
+            .await
+    }
+
+    async fn list_role_assignments_for_role_by_ident_impl(
+        project_id: &ProjectId,
+        role_ident: &RoleIdent,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError> {
+        super::role_assignment::list_role_assignments_for_role_by_ident(
+            project_id,
+            role_ident,
+            &catalog_state.read_pool(),
+        )
+        .await
     }
 
     // ---------------- User Management API ----------------

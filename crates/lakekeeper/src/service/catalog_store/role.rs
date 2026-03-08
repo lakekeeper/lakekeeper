@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     CONFIG, ProjectId,

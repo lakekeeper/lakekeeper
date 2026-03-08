@@ -204,7 +204,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
-| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
+| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid,sub`                           | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
 | `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Currently only has an effect when using the Cedar Authorizer. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
@@ -288,9 +288,9 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 
 *Metrics*: The STC cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_stc_cache_size{cache_type="stc"}`: Current number of entries in the cache
-- `lakekeeper_stc_cache_hits_total{cache_type="stc"}`: Total number of cache hits
-- `lakekeeper_stc_cache_misses_total{cache_type="stc"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="stc"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="stc"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="stc"}`: Total number of cache misses
 
 **Warehouse Cache**
 
@@ -306,9 +306,9 @@ If the cache is enabled, changes to Storage Profile may take up to the configure
 
 *Metrics*: The Warehouse cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_warehouse_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
-- `lakekeeper_warehouse_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
-- `lakekeeper_warehouse_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="warehouse"}`: Total number of cache misses
 
 **Namespace Cache**
 
@@ -324,9 +324,9 @@ If the cache is enabled, changes to namespace properties may take up to the conf
 
 *Metrics*: The Namespace cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_namespace_cache_size{cache_type="namespace"}`: Current number of entries in the cache
-- `lakekeeper_namespace_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
-- `lakekeeper_namespace_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="namespace"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="namespace"}`: Total number of cache misses
 
 **Secrets Cache**
 
@@ -340,9 +340,9 @@ Caches storage secrets to reduce load on the secret store. Since Lakekeeper neve
 
 *Metrics*: The Secrets cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_secrets_cache_size{cache_type="secrets"}`: Current number of entries in the cache
-- `lakekeeper_secrets_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
-- `lakekeeper_secrets_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="secrets"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="secrets"}`: Total number of cache misses
 
 **Role Cache**
 
@@ -358,9 +358,9 @@ If the cache is enabled, changes to role metadata may take up to the configured 
 
 *Metrics*: The Role cache exposes Prometheus metrics for monitoring:
 
-- `lakekeeper_role_cache_size{cache_type="role"}`: Current number of entries in the cache
-- `lakekeeper_role_cache_hits_total{cache_type="role"}`: Total number of cache hits
-- `lakekeeper_role_cache_misses_total{cache_type="role"}`: Total number of cache misses
+- `lakekeeper_cache_size{cache_type="role"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="role"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="role"}`: Total number of cache misses
 
 ### Endpoint Statistics
 
@@ -381,7 +381,7 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | Variable                                         | Example   | Description   |
 |--------------------------------------------------|-----------|---------------|
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
-| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms |
+| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
 ### Audit Logging
 
@@ -390,6 +390,91 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 | Variable                                           | Example | Description   |
 |----------------------------------------------------|---------|---------------|
 | <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr> | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
+
+### Role Provider
+
+Some <span class="lkp"></span> Authorizers support pluggable role providers that resolve a user's group or role memberships from an external directory (e.g. LDAP / Active Directory). Multiple providers can be configured simultaneously; each is assigned a unique identifier.
+
+#### Chain settings
+
+| Variable                                                            | Default | Description |
+|---------------------------------------------------------------------|---------|-----|
+| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`</nobr> | `true`  | When `true`, an audit event is emitted whenever a user is not matched by any configured role provider. Useful for detecting misconfigured domain filters. Set to `false` to suppress these events for deployments where some users are intentionally not covered by any provider. |
+
+#### Token role provider
+
+When `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, Lakekeeper extracts roles directly from the authenticated user's JWT. A built-in token role provider is added to the chain **automatically** — no additional configuration is required.
+
+The token role provider only applies to OIDC-authenticated users (those whose identity was established via the configured OpenID Connect provider). It is a no-op for users authenticated through other mechanisms (e.g. Kubernetes service accounts).
+
+The provider uses the reserved identifier `oidc`. If you declare a role provider with this identifier in your configuration, the automatic provider is suppressed and your custom provider takes its place.
+
+#### LDAP role provider
+
+Each LDAP provider is configured under a unique `<ID>` of your choosing. All variables below use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
+
+**Required fields:**
+
+| Variable                       | Example                          | Description |
+|--------------------------------|----------------------------------|----------|
+| <nobr>`…__TYPE`</nobr>         | `ldap`                           | Provider type. Must be `ldap`. |
+| <nobr>`…__URL`</nobr>          | `ldaps://ldap.example.com:636`   | LDAP server URL. Use `ldap://` for plain-text or STARTTLS, `ldaps://` for TLS. |
+| <nobr>`…__DOMAINS`</nobr>      | `example.com,*.corp.example.com` | Comma-separated list of domain patterns. Only users whose login name ends with one of these domains are resolved via this provider. Supports `*` (any number of characters) and `?` (exactly one character). |
+| <nobr>`…__USER_BASE_DN`</nobr> | `ou=people,dc=example,dc=com`    | Base DN for the LDAP user search. |
+
+**Authentication:**
+
+| Variable                        | Default     | Description                  |
+|---------------------------------|-------------|------------------------------|
+| <nobr>`…__BIND_DN`</nobr>       | (anonymous) | Distinguished name of the service account used to bind. Omit for anonymous bind. |
+| <nobr>`…__BIND_PASSWORD`</nobr> |             | Password for the service account. Required when `…__BIND_DN` is set; can also be supplied via `…__BIND_PASSWORD_FILE`. |
+
+**User search:**
+
+| Variable                             | Default         | Description         |
+|--------------------------------------|-----------------|---------------------|
+| <nobr>`…__USER_SEARCH_FILTER`</nobr> | `(uid=${USER})` | LDAP filter used to locate a user entry. The literal `${USER}` is replaced with the subject portion of the user's login name (the part before `@`). |
+| <nobr>`…__USER_SEARCH_SCOPE`</nobr>  | `sub`           | Search scope: `sub` (entire subtree), `one` (one level below base), or `base`. |
+
+**Group / role mapping:**
+
+| Variable                                   | Default    | Description        |
+|--------------------------------------------|------------|--------------------|
+| <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. The default (`memberOf`) is correct for Active Directory and OpenLDAP with the `memberof` overlay. |
+| <nobr>`…__GROUP_NAME_SOURCE`</nobr>        | `dn_cn`    | How to derive the role name from a group entry. `dn_cn` extracts the `CN=` component from the group's distinguished name (recommended for AD/ADFS). |
+| <nobr>`…__GROUP_CASE`</nobr>               | `keep`     | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
+
+**Connection and TLS:**
+
+| Variable                               | Default | Description               |
+|----------------------------------------|---------|---------------------------|
+| <nobr>`…__STARTTLS`</nobr>             | `false` | Upgrade a plain TCP connection with STARTTLS before binding. Only applies to `ldap://` URLs. |
+| <nobr>`…__ALLOW_INSECURE`</nobr>       | `false` | Skip TLS certificate verification. **Do not use in production.** |
+| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `30`    | Seconds to wait when establishing the initial connection. |
+| <nobr>`…__READ_TIMEOUT_SECS`</nobr>    | `60`    | Seconds to wait for an LDAP response. |
+
+**Startup and resilience:**
+
+| Variable                                       | Default | Description       |
+|------------------------------------------------|---------|-------------------|
+| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if this provider cannot connect. Useful for catching misconfiguration early. When `false`, the provider starts in a disconnected state and reconnects automatically on first use. |
+| <nobr>`…__RECONNECT_COOLDOWN_SECS`</nobr>      | `30`    | Minimum seconds between reconnection attempts after a failure. |
+
+**IDP filtering (optional):**
+
+| Variable                  | Default      | Description                       |
+|---------------------------|--------------|-----------------------------------|
+| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | Comma-separated list of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+
+**Example — minimal LDAP provider:**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__TYPE=ldap
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__URL=ldaps://ldap.corp.example.com:636
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__DOMAINS=corp.example.com
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__USER_BASE_DN=ou=people,dc=corp,dc=example,dc=com
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_DN=cn=svc-lakekeeper,ou=service-accounts,dc=corp,dc=example,dc=com
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-password
+```
 
 ### Debug
 

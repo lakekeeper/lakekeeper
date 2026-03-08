@@ -178,7 +178,7 @@ jobs:
           ls -Rlh
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Docker info
         run: docker info
@@ -230,7 +230,7 @@ jobs:
         uses: actions/download-artifact@v6
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Docker info
         run: docker info

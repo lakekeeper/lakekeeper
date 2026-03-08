@@ -11,28 +11,15 @@ use unicase::UniCase;
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
-    service::{ArcProjectId, ResolvedWarehouse},
+    service::{
+        ArcProjectId, ResolvedWarehouse,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_WAREHOUSE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_WAREHOUSE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_WAREHOUSE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+    },
 };
-
-const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
-const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
-const METRIC_WAREHOUSE_CACHE_MISSES: &str = "lakekeeper_warehouse_cache_misses_total";
-
-/// Initialize metric descriptions for Warehouse cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_WAREHOUSE_CACHE_SIZE,
-        "Current number of entries in the warehouse cache"
-    );
-    metrics::describe_counter!(
-        METRIC_WAREHOUSE_CACHE_HITS,
-        "Total number of warehouse cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_WAREHOUSE_CACHE_MISSES,
-        "Total number of warehouse cache misses"
-    );
-});
 
 // Main cache: stores warehouses by ID only
 pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> =

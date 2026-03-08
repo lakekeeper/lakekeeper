@@ -7613,6 +7613,7 @@ components:
         - create-endpoint
         - config-call-creation
         - update-endpoint
+        - role-provider
     UserOrRole:
       oneOf:
         - type: object

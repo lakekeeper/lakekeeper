@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            r.id          AS role_id,\n            r.source_id,\n            r.provider_id,\n            r.project_id,\n            CASE WHEN ur.role_id IS NOT NULL THEN u.id END AS user_id,\n            rms.synced_at AS last_synced_at\n        FROM \"role\" r\n        LEFT JOIN role_assignment     ur  ON ur.role_id  = r.id\n        LEFT JOIN users         u   ON u.id         = ur.user_id\n        LEFT JOIN role_members_sync rms ON rms.role_id = r.id\n        WHERE r.project_id  = $1\n          AND r.provider_id = $2\n          AND r.source_id   = $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "source_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "project_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_synced_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "b104f2da1e2ca05bdc4666363587c34601c97dc68635af8d901791be0aa356b2"
+}

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, RawQuery, State},
     http::header,
     response::IntoResponse,
     routing::{get, post},
@@ -9,6 +9,7 @@ use axum::{
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::{ETag, LoadCredentialsResponse};
+use serde::Deserialize;
 
 use super::{PageToken, PaginationQuery};
 use crate::{
@@ -17,8 +18,11 @@ use crate::{
         CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
         RenameTableRequest, Result,
         iceberg::{
-            types::{DropParams, Prefix},
-            v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
+            types::{DropParams, Prefix, ReferencedByQuery},
+            v1::{
+                ReferencingView,
+                namespace::{NamespaceIdentUrl, NamespaceParameters},
+            },
         },
     },
     request_metadata::RequestMetadata,
@@ -28,6 +32,23 @@ use crate::{
 /// This is needed because `+` in URLs is decoded to space by some clients.
 pub(super) fn normalize_tabular_name(table: &str) -> String {
     table.replace('+', " ")
+}
+
+/// Parse `referenced-by` query parameter with special encoding handling.
+pub(crate) fn parse_referenced_by_param(query_str: &str) -> Option<ReferencedByQuery> {
+    use serde::de::IntoDeserializer;
+
+    query_str
+        .split('&')
+        .find(|param| param.starts_with("referenced-by="))
+        .and_then(|param| param.strip_prefix("referenced-by="))
+        .and_then(|value| {
+            let referenced_by_deserializer: serde::de::value::StrDeserializer<
+                '_,
+                serde::de::value::Error,
+            > = value.into_deserializer();
+            ReferencedByQuery::deserialize(referenced_by_deserializer).ok()
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
@@ -57,15 +78,82 @@ pub enum SnapshotsQuery {
     Refs,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
 pub struct LoadTableQuery {
     pub snapshots: Option<SnapshotsQuery>,
+    pub referenced_by: Option<ReferencedByQuery>,
+}
+
+impl<'de> serde::Deserialize<'de> for LoadTableQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct LoadTableQueryVisitor;
+
+        impl Visitor<'_> for LoadTableQueryVisitor {
+            type Value = LoadTableQuery;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string containing query parameters")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let mut snapshots = None;
+
+                for param in s.split('&') {
+                    if param.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(value) = param.strip_prefix("snapshots=") {
+                        let decoded = urlencoding::decode(value).map_err(E::custom)?;
+                        snapshots = match decoded.as_ref() {
+                            "all" => Some(SnapshotsQuery::All),
+                            "refs" => Some(SnapshotsQuery::Refs),
+                            _ => {
+                                return Err(E::custom(format!(
+                                    "Invalid snapshots value: {decoded}"
+                                )));
+                            }
+                        };
+                    }
+                }
+
+                let referenced_by = parse_referenced_by_param(s);
+
+                Ok(LoadTableQuery {
+                    snapshots,
+                    referenced_by,
+                })
+            }
+        }
+
+        deserializer.deserialize_str(LoadTableQueryVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LoadTableFilters {
     pub snapshots: SnapshotsQuery,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, typed_builder::TypedBuilder)]
+pub struct LoadTableRequest {
+    #[builder(default)]
+    pub data_access: DataAccessMode,
+    #[builder(default)]
+    pub filters: LoadTableFilters,
+    #[builder(default)]
+    pub etags: Vec<ETag>,
+    #[builder(default)]
+    pub referenced_by: Option<Vec<ReferencingView>>,
 }
 
 impl From<ListTablesQuery> for PaginationQuery {
@@ -110,6 +198,42 @@ impl IntoResponse for LoadTableResultOrNotModified {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct LoadTableCredentialsQuery {
+    pub referenced_by: Option<ReferencedByQuery>,
+}
+
+impl<'de> serde::Deserialize<'de> for LoadTableCredentialsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct LoadTableCredentialsQueryVisitor;
+
+        impl Visitor<'_> for LoadTableCredentialsQueryVisitor {
+            type Value = LoadTableCredentialsQuery;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string containing query parameters")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let referenced_by = parse_referenced_by_param(s);
+
+                Ok(LoadTableCredentialsQuery { referenced_by })
+            }
+        }
+
+        deserializer.deserialize_str(LoadTableCredentialsQueryVisitor)
+    }
+}
+
 #[async_trait]
 pub trait TablesService<S: crate::api::ThreadSafe>
 where
@@ -143,11 +267,9 @@ where
     /// Load a table from the catalog
     async fn load_table(
         parameters: TableParameters,
-        data_access: impl Into<DataAccessMode> + Send,
-        filters: LoadTableFilters,
+        request: LoadTableRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified>;
 
     /// Load a table from the catalog
@@ -268,13 +390,28 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
-                 Query(load_table_query): Query<LoadTableQuery>,
+                 RawQuery(load_table_query): RawQuery,
                  State(api_context): State<ApiContext<S>>,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
-                    let filters = LoadTableFilters {
-                        snapshots: load_table_query.snapshots.unwrap_or_default(),
-                    };
+                    tracing::debug!(
+                        "Received load table request with raw query: {load_table_query:#?}"
+                    );
+
+                    let load_table_query = load_table_query
+                        .as_deref()
+                        .and_then(|q| {
+                            use serde::de::{IntoDeserializer, value::StrDeserializer};
+                            let deserializer: StrDeserializer<'_, serde::de::value::Error> =
+                                q.into_deserializer();
+                            LoadTableQuery::deserialize(deserializer)
+                                .map_err(|e| {
+                                    tracing::warn!("Failed to parse load table query: {}", e);
+                                    e
+                                })
+                                .ok()
+                        })
+                        .unwrap_or_default();
                     I::load_table(
                         TableParameters {
                             prefix: Some(prefix),
@@ -283,11 +420,18 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                                 name: normalize_tabular_name(&table),
                             },
                         },
-                        parse_data_access(&headers),
-                        filters,
+                        LoadTableRequest {
+                            data_access: parse_data_access(&headers),
+                            filters: LoadTableFilters {
+                                snapshots: load_table_query.snapshots.unwrap_or_default(),
+                            },
+                            etags: parse_if_none_match(&headers),
+                            referenced_by: load_table_query
+                                .referenced_by
+                                .map(ReferencedByQuery::into_inner),
+                        },
                         api_context,
                         metadata,
-                        parse_if_none_match(&headers),
                     )
                 },
             )
@@ -361,8 +505,27 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
+                 RawQuery(load_table_credentials_query): RawQuery,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
+                    let _load_table_credentials_query = load_table_credentials_query
+                        .as_deref()
+                        .and_then(|q| {
+                            use serde::de::{IntoDeserializer, value::StrDeserializer};
+                            let deserializer: StrDeserializer<'_, serde::de::value::Error> =
+                                q.into_deserializer();
+                            LoadTableCredentialsQuery::deserialize(deserializer)
+                                .map_err(|e| {
+                                    tracing::warn!(
+                                        "Failed to parse load table credentials query: {}",
+                                        e
+                                    );
+                                    e
+                                })
+                                .ok()
+                        })
+                        .unwrap_or_default();
+
                     I::load_table_credentials(
                         TableParameters {
                             prefix: Some(prefix),
@@ -445,6 +608,12 @@ pub enum DataAccessMode {
     ServerDelegated(DataAccess),
 }
 
+impl std::default::Default for DataAccessMode {
+    fn default() -> Self {
+        DataAccessMode::ServerDelegated(DataAccess::not_specified())
+    }
+}
+
 impl DataAccessMode {
     #[must_use]
     pub(crate) fn provide_credentials(self) -> bool {
@@ -522,6 +691,7 @@ mod test {
     use iceberg::spec::{
         FormatVersion, Schema, SortOrder, TableMetadata, TableMetadataBuilder, UnboundPartitionSpec,
     };
+    use serde::de::{IntoDeserializer, value::StrDeserializer};
 
     use super::*;
 
@@ -581,6 +751,27 @@ mod test {
     fn test_load_table_query_defaults() {
         let query = super::LoadTableQuery::default();
         assert_eq!(query.snapshots, None);
+        assert_eq!(query.referenced_by, None);
+    }
+
+    #[test]
+    fn test_load_table_query_deserialization_with_referenced_by() {
+        let query =
+            "referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
+        let query_deserializer: StrDeserializer<'_, serde::de::value::Error> =
+            query.into_deserializer();
+        let deserialized_query: LoadTableQuery =
+            LoadTableQuery::deserialize(query_deserializer).unwrap();
+        assert_eq!(
+            deserialized_query,
+            LoadTableQuery {
+                snapshots: None,
+                referenced_by: Some(ReferencedByQuery::from(vec![
+                    TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"]).unwrap(),
+                    TableIdent::from_strs(vec!["prod", "analytics", "monthly_view"]).unwrap(),
+                ]))
+            }
+        );
     }
 
     #[tokio::test]
@@ -635,14 +826,12 @@ mod test {
 
             async fn load_table(
                 _parameters: super::TableParameters,
-                _data_access: impl Into<super::DataAccessMode> + Send,
-                filters: super::LoadTableFilters,
+                request: super::LoadTableRequest,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-                _etags: Vec<ETag>,
             ) -> crate::api::Result<LoadTableResultOrNotModified> {
                 // Return the snapshots filter in the error message for testing
-                let snapshots_str = match filters.snapshots {
+                let snapshots_str = match request.filters.snapshots {
                     super::SnapshotsQuery::All => "all",
                     super::SnapshotsQuery::Refs => "refs",
                 };
@@ -772,6 +961,183 @@ mod test {
         assert_eq!(error.error.message, "snapshots=refs");
     }
 
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn test_referenced_by_deserialization() {
+        use async_trait::async_trait;
+        use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+        use tower::ServiceExt;
+
+        use crate::{
+            api::{ApiContext, LoadTableResult},
+            request_metadata::RequestMetadata,
+        };
+
+        #[derive(Debug, Clone)]
+        struct TestService;
+
+        #[derive(Debug, Clone)]
+        struct ThisState;
+
+        impl crate::api::ThreadSafe for ThisState {}
+
+        #[async_trait]
+        impl super::TablesService<ThisState> for TestService {
+            async fn list_tables(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _query: super::ListTablesQuery,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::ListTablesResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn create_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::CreateTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn register_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::RegisterTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn load_table(
+                _parameters: super::TableParameters,
+                request: super::LoadTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResultOrNotModified> {
+                let referencing_view_str = serde_json::to_string(&request.referenced_by).unwrap();
+
+                Err(ErrorModel::builder()
+                    .message(referencing_view_str)
+                    .r#type("UnsupportedOperationException".to_string())
+                    .code(406)
+                    .build()
+                    .into())
+            }
+
+            async fn load_table_credentials(
+                _parameters: super::TableParameters,
+                _data_access: super::DataAccess,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<iceberg_ext::catalog::rest::LoadCredentialsResponse>
+            {
+                panic!("Should not be called");
+            }
+
+            async fn commit_table(
+                _parameters: super::TableParameters,
+                _request: crate::api::CommitTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::CommitTableResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn drop_table(
+                _parameters: super::TableParameters,
+                _drop_params: crate::api::iceberg::types::DropParams,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn table_exists(
+                _parameters: super::TableParameters,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn rename_table(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::RenameTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn commit_transaction(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::CommitTransactionRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+        }
+
+        let api_context = ApiContext {
+            v1_state: ThisState,
+        };
+
+        let app = super::router::<TestService, ThisState>();
+        let router = axum::Router::new().merge(app).with_state(api_context);
+
+        // Test 1: Default - no referenced_by parameter
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        let referenced_view: Option<Vec<ReferencingView>> =
+            serde_json::from_str(&error.error.message).unwrap();
+        assert_eq!(referenced_view, None);
+
+        // Test 2: With referenced_by parameter
+        let mut req = http::Request::builder()
+            .uri("/test/namespaces/test-namespace/tables/test-table?referenced-by=prod%1Fanalytics%20ns%1Fquarterly+view,prod%1Fanalytics+ns%1Fmonthly%20view%2Cwith%2Ccommas")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
+        let r = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status().as_u16(), 406);
+        let bytes = http_body_util::BodyExt::collect(r)
+            .await
+            .unwrap()
+            .to_bytes();
+        let response_str = String::from_utf8(bytes.to_vec()).unwrap();
+        let error = serde_json::from_str::<IcebergErrorResponse>(&response_str).unwrap();
+        let referenced_view: Option<Vec<ReferencingView>> =
+            serde_json::from_str(&error.error.message).unwrap();
+        assert_eq!(
+            referenced_view,
+            Some(vec![
+                TableIdent::from_strs(vec!["prod", "analytics ns", "quarterly view"])
+                    .unwrap()
+                    .into(),
+                TableIdent::from_strs(vec!["prod", "analytics ns", "monthly view,with,commas"])
+                    .unwrap()
+                    .into(),
+            ])
+        );
+    }
+
     #[test]
     fn test_load_table_result_or_not_modified_from_not_modified_response() {
         let etag = "\"abcdef1234567890\"".to_string();
@@ -810,6 +1176,31 @@ mod test {
                 panic!("Failed to extract body: {e}");
             }
         }
+    }
+
+    #[test]
+    fn test_load_table_credentials_query_defaults() {
+        let query = super::LoadTableCredentialsQuery::default();
+        assert_eq!(query.referenced_by, None);
+    }
+
+    #[test]
+    fn test_load_table_credentials_query_deserialization_with_referenced_by() {
+        let query =
+            "referenced-by=prod%1Fanalytics%1Fquarterly_view,prod%1Fanalytics%1Fmonthly_view";
+        let query_deserializer: StrDeserializer<'_, serde::de::value::Error> =
+            query.into_deserializer();
+        let deserialized_query: LoadTableCredentialsQuery =
+            LoadTableCredentialsQuery::deserialize(query_deserializer).unwrap();
+        assert_eq!(
+            deserialized_query,
+            LoadTableCredentialsQuery {
+                referenced_by: Some(ReferencedByQuery::from(vec![
+                    TableIdent::from_strs(vec!["prod", "analytics", "quarterly_view"]).unwrap(),
+                    TableIdent::from_strs(vec!["prod", "analytics", "monthly_view"]).unwrap(),
+                ]))
+            }
+        );
     }
 
     async fn extract_body_from_response(response: Response) -> Result<String, Box<dyn Error>> {

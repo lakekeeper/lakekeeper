@@ -62,6 +62,18 @@ impl Health {
         }
     }
 
+    /// Like [`now`](Self::now) but accepts any `Into<String>` name —
+    /// useful when the provider name is only known at runtime (e.g. a
+    /// dynamically-configured role provider ID).
+    #[must_use]
+    pub fn new_dynamic(name: impl Into<String>, status: HealthStatus) -> Self {
+        Self {
+            name: name.into(),
+            checked_at: chrono::Utc::now(),
+            status,
+        }
+    }
+
     #[must_use]
     pub fn status(&self) -> HealthStatus {
         self.status
