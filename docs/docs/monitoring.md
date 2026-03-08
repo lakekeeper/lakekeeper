@@ -10,9 +10,9 @@ Three metrics cover all HTTP traffic:
 
 | Metric                                                | Labels                               | Description |
 |-------------------------------------------------------|--------------------------------------|-----|
-| <code>axum_http_<wbr>requests_total</code>            | `method`, `status`, `endpoint`       | Request count broken down by HTTP method, status code, and endpoint path |
-| <code>axum_http_<wbr>requests_pending</code>          | `method`, `endpoint`                 | Requests currently in-flight per endpoint and method |
-| <code>axum_http_requests_<wbr>duration_seconds</code> | `method`, `status`, `endpoint`, `le` | Response time histogram; use the `le=1` bucket as a baseline health indicator |
+| <code style="user-select:all">axum_http_<wbr>requests_total</code>            | `method`, `status`, `endpoint`       | Request count broken down by HTTP method, status code, and endpoint path |
+| <code style="user-select:all">axum_http_<wbr>requests_pending</code>          | `method`, `endpoint`                 | Requests currently in-flight per endpoint and method |
+| <code style="user-select:all">axum_http_requests_<wbr>duration_seconds</code> | `method`, `status`, `endpoint`, `le` | Response time histogram; use the `le=1` bucket as a baseline health indicator |
 
 !!! tip "Interpreting HTTP request metrics"
     Visualize `axum_http_requests_total` by status code for overall API health. Rising 4XX rates indicate client-side issues; rising 5XX rates indicate server or database problems requiring urgent attention. High `axum_http_requests_pending` counts signal backend bottlenecks — consider scaling Lakekeeper horizontally. For latency, monitor the `le=1` bucket of `axum_http_requests_duration_seconds` as a baseline; spikes typically point to Postgres or upstream service issues.
@@ -23,9 +23,9 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 
 | Metric                                          | Type    | Labels       | Description |
 |-------------------------------------------------|---------|--------------|-----|
-| <code>lakekeeper_cache_<wbr>size</code>         | Gauge   | `cache_type` | Current number of entries in the cache |
-| <code>lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
-| <code>lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
+| <code style="user-select:all">lakekeeper_cache_<wbr>size</code>         | Gauge   | `cache_type` | Current number of entries in the cache |
+| <code style="user-select:all">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
+| <code style="user-select:all">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
 `cache_type` values: `stc`, `warehouse`, `namespace`, `secrets`, `role`, `user_assignments`, `role_members`. A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
 
@@ -35,10 +35,10 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 
 | Metric                                                                | Type      | Labels                   | Description |
 |-----------------------------------------------------------------------|-----------|--------------------------|-----|
-| <code>lakekeeper_<wbr>role_provider_up</code>                                    | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable. Updated by the periodic health-check loop. |
-| <code>lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code>  | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call. The `outcome` label reflects how the request was served (see table below). |
-| <code>lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>                | Counter   | `provider_id`            | Number of failures writing fresh roles back to the Postgres catalog cache. |
-| <code>lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>       | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts (LDAP providers only), labelled `success` or `error`. |
+| <code style="user-select:all">lakekeeper_<wbr>role_provider_up</code>                                    | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable. Updated by the periodic health-check loop. |
+| <code style="user-select:all">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code>  | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call. The `outcome` label reflects how the request was served (see table below). |
+| <code style="user-select:all">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>                | Counter   | `provider_id`            | Number of failures writing fresh roles back to the Postgres catalog cache. |
+| <code style="user-select:all">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>       | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts (LDAP providers only), labelled `success` or `error`. |
 
 **`outcome` values for `lakekeeper_role_provider_get_roles_duration_seconds`** (histogram label):
 
