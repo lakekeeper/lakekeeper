@@ -94,7 +94,7 @@ async fn serve_inner<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenti
         .stats(stats)
         .modify_router_fn(Some(add_ui_routes))
         .cloud_event_sinks(cloud_event_sinks)
-        .additional_event_dispatcher(Some(events))
+        .event_dispatcher(Some(events))
         .build();
 
     serve(config).await

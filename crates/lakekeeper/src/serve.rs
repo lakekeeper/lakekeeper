@@ -147,7 +147,7 @@ pub struct ServeConfiguration<
     /// Additional event listeners to register.
     /// Emitting cloud events is always registered.
     #[builder(default)]
-    pub additional_event_dispatcher: Option<EventDispatcher>,
+    pub event_dispatcher: Option<EventDispatcher>,
     /// Additional background services / futures to await.
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
@@ -323,7 +323,7 @@ async fn serve_inner<
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
-        additional_event_dispatcher,
+        event_dispatcher: additional_event_dispatcher,
         register_additional_background_services_fn: additional_background_services,
         license_status,
     } = config;
