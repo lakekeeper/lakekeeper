@@ -4,18 +4,19 @@ use std::{
 };
 
 use futures::TryFutureExt;
+use tokio::sync::RwLock;
 
 use super::types;
 
 /// Macro to dispatch events to all listeners with error logging.
 ///
-/// Reduces boilerplate by handling the common pattern of:
-/// - Cloning the event for each listener
-/// - Calling the listener method
-/// - Logging errors without propagating them
+/// Snapshots the listener list (acquiring + releasing the read lock) *before*
+/// awaiting any futures, so no lock guard is held across an `.await` point.
 macro_rules! dispatch_event {
-    ($self:ident, $method:ident, $event:expr) => {
-        futures::future::join_all($self.0.iter().map(|listener| {
+    ($self:ident, $method:ident, $event:expr) => {{
+        // Snapshot under the lock, then drop the guard before any await.
+        let listeners: Vec<Arc<dyn EventListener>> = $self.0.read().await.clone();
+        futures::future::join_all(listeners.iter().map(|listener| {
             listener.$method($event.clone()).map_err(|e| {
                 tracing::warn!(
                     "Listener '{}' encountered error on {}: {e:?}",
@@ -25,41 +26,59 @@ macro_rules! dispatch_event {
             })
         }))
         .await;
-    };
+    }};
 }
 
-/// Collection of event listeners that are invoked after successful operations
+/// Collection of event listeners invoked after successful operations.
+///
+/// Cloning an `EventDispatcher` produces a second handle that shares the same
+/// underlying listener list — listeners appended to either handle are visible
+/// to both. This allows a sub-system (e.g. `CachedRoleProvider`) to receive a
+/// clone *before* the full listener set is assembled, and still dispatch to
+/// every listener that is registered later.
 #[derive(Clone)]
-pub struct EventDispatcher(pub(crate) Vec<Arc<dyn EventListener>>);
+pub struct EventDispatcher(pub(crate) Arc<RwLock<Vec<Arc<dyn EventListener>>>>);
 
 impl core::fmt::Debug for EventDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Listeners").field(&self.0.len()).finish()
+        // Avoid blocking in Debug; show pointer identity instead of contents.
+        f.debug_tuple("EventDispatcher")
+            .field(&Arc::as_ptr(&self.0))
+            .finish()
     }
 }
 
 impl EventDispatcher {
     #[must_use]
     pub fn new(listeners: Vec<Arc<dyn EventListener>>) -> Self {
-        Self(listeners)
+        Self(Arc::new(RwLock::new(listeners)))
     }
 
-    pub fn append(&mut self, listener: Arc<dyn EventListener>) -> &mut Self {
-        self.0.push(listener);
-        self
+    /// Register an additional listener.
+    ///
+    /// Because all clones share the same inner list, this is visible to every
+    /// clone of this dispatcher regardless of when the clone was made.
+    pub async fn append(&self, listener: Arc<dyn EventListener>) {
+        self.0.write().await.push(listener);
     }
 }
 
 impl Display for EventDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EventDispatcher with [")?;
-        for (idx, hook) in self.0.iter().enumerate() {
-            if idx > 0 {
-                write!(f, ", ")?;
+        // Best-effort non-blocking display; skip listing if lock is contended.
+        match self.0.try_read() {
+            Ok(listeners) => {
+                write!(f, "EventDispatcher with [")?;
+                for (idx, hook) in listeners.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{hook}")?;
+                }
+                write!(f, "]")
             }
-            write!(f, "{hook}")?;
+            Err(_) => write!(f, "EventDispatcher(locked)"),
         }
-        write!(f, "]")
     }
 }
 
