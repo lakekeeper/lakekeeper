@@ -8,18 +8,53 @@ Lakekeeper exposes Prometheus metrics and per-project endpoint statistics. We re
 
 Three metrics cover all HTTP traffic:
 
-| Metric                                             | Labels                               | Description |
-|----------------------------------------------------|--------------------------------------|-----|
-| <nobr>`axum_http_requests_total`</nobr>            | `method`, `status`, `endpoint`       | Request count broken down by HTTP method, status code, and endpoint path |
-| <nobr>`axum_http_requests_pending`</nobr>          | `method`, `endpoint`                 | Requests currently in-flight per endpoint and method |
-| <nobr>`axum_http_requests_duration_seconds`</nobr> | `method`, `status`, `endpoint`, `le` | Response time histogram; use the `le=1` bucket as a baseline health indicator |
+| Metric                                                | Labels                               | Description |
+|-------------------------------------------------------|--------------------------------------|-----|
+| <code>axum_http_<wbr>requests_total</code>            | `method`, `status`, `endpoint`       | Request count broken down by HTTP method, status code, and endpoint path |
+| <code>axum_http_<wbr>requests_pending</code>          | `method`, `endpoint`                 | Requests currently in-flight per endpoint and method |
+| <code>axum_http_requests_<wbr>duration_seconds</code> | `method`, `status`, `endpoint`, `le` | Response time histogram; use the `le=1` bucket as a baseline health indicator |
 
-!!! tip "..."
+!!! tip "Interpreting HTTP request metrics"
     Visualize `axum_http_requests_total` by status code for overall API health. Rising 4XX rates indicate client-side issues; rising 5XX rates indicate server or database problems requiring urgent attention. High `axum_http_requests_pending` counts signal backend bottlenecks — consider scaling Lakekeeper horizontally. For latency, monitor the `le=1` bucket of `axum_http_requests_duration_seconds` as a baseline; spikes typically point to Postgres or upstream service issues.
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, and Roles. Each exposes hit/miss/size metrics (e.g. `lakekeeper_stc_cache_hits_total`, `lakekeeper_warehouse_cache_hits_total`). A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for the full list.
+Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, and Role Members. All caches share three metric names, differentiated by the `cache_type` label:
+
+| Metric                                          | Type    | Labels       | Description |
+|-------------------------------------------------|---------|--------------|-----|
+| <code>lakekeeper_cache_<wbr>size</code>         | Gauge   | `cache_type` | Current number of entries in the cache |
+| <code>lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
+| <code>lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
+
+`cache_type` values: `stc`, `warehouse`, `namespace`, `secrets`, `role`, `user_assignments`, `role_members`. A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
+
+### Role Provider Metrics <span class="lkp"></span>
+
+When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
+
+| Metric                                                                | Type      | Labels                   | Description |
+|-----------------------------------------------------------------------|-----------|--------------------------|-----|
+| <code>lakekeeper_<wbr>role_provider_up</code>                                    | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable. Updated by the periodic health-check loop. |
+| <code>lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code>  | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call. The `outcome` label reflects how the request was served (see table below). |
+| <code>lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>                | Counter   | `provider_id`            | Number of failures writing fresh roles back to the Postgres catalog cache. |
+| <code>lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>       | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts (LDAP providers only), labelled `success` or `error`. |
+
+**`outcome` values for `lakekeeper_role_provider_get_roles_duration_seconds`** (histogram label):
+
+| Value            | Meaning                                                   |
+|------------------|-----------------------------------------------------------|
+| `cache_hit`      | All applicable providers were fresh; the external provider was not contacted. |
+| `success`        | Fresh roles were fetched from the external provider and synced to Postgres. |
+| `stale_fallback` | The external provider was unreachable, but previously cached roles from Postgres were served instead. Authorization continues to work. |
+| `error`          | Unrecoverable error — the provider failed and no cached roles were available. |
+
+**Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle (to drive reconnection attempts and keep `lakekeeper_role_provider_up` current), but an unreachable provider does **not** cause the pod to fail its liveness or readiness probe. Lakekeeper continues serving the roles it last synced to Postgres (`stale_fallback`), so authorization keeps working during a provider outage — at the cost of potentially stale group memberships.
+
+This contrasts with the Postgres connection: if Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below).
+
+!!! tip "Alerting on role provider health"
+    Alert on `lakekeeper_role_provider_up == 0` to detect provider outages early. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms that Lakekeeper is actively falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` with a healthy provider indicates a separate Postgres write problem — investigate database connectivity or permissions.
 
 ## Prometheus Integration
 
@@ -80,20 +115,8 @@ See [Configuration - Endpoint Statistics](./configuration.md#endpoint-statistics
 
 ## Best Practices
 
-Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, and low cache hit rates. Use endpoint statistics for periodic API usage audits and to inform scaling and access control decisions.
+Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, and `lakekeeper_role_provider_up == 0`.
 
 ## Troubleshooting
 
 If Grafana shows stale or missing metrics, verify that Prometheus can reach the metrics endpoint and that the bind IP and port match your scrape configuration. For historical analysis beyond Prometheus retention, query endpoint statistics from the database.
-
-## References
-
-- [Lakekeeper Caching Configuration](./configuration.md#caching)
-- [Configuration - Endpoint Statistics](./configuration.md#endpoint-statistics)
-- [Lakekeeper Logging](./logging.md)
-- [Production Checklist](./production.md)
-- [Axum HTTP Metrics](https://docs.rs/axum-prometheus/latest/axum_prometheus/)
-- [Prometheus](https://prometheus.io/) · [Grafana](https://grafana.com/)
-- [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics)
-- [postgres_exporter](https://github.com/prometheus-community/postgres_exporter)
-- [CloudNativePG Monitoring](https://cloudnative-pg.io/documentation/current/monitoring/)

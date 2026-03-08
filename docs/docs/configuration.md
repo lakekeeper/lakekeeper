@@ -249,6 +249,7 @@ Please check the [Authorization User Guide](./authorization.md#authorization-wit
 | `LAKEKEEPER__CEDAR__SCHEMA_FILE`                         | `/path/to/custom/schema.cedarschema`                  | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
 | `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE`                | `/path/to/schema-fragment.cedarschema`                | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
 | `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`             | `["access_", "access-"]`                              | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization.md#property-based-access-control). |
+| `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED`             | `false`                                               | When `true`, the `global_role_ids: Set<String>` attribute on every `Lakekeeper::User` entity is populated with the `source_id` of every provider-resolved role (token claims, LDAP, etc.). This enables simpler policies such as `principal.global_role_ids.contains("admins")` without needing to specify a `provider_id`. Only meaningful when all configured role providers use globally unique `source_id` values (i.e. no two providers assign the same `source_id` to different roles). When `false` (default), `global_role_ids` is always an empty set. |
 
 **Debug configurations for Cedar**
 
@@ -362,6 +363,22 @@ If the cache is enabled, changes to role metadata may take up to the configured 
 - `lakekeeper_cache_hits_total{cache_type="role"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="role"}`: Total number of cache misses
 
+**User Assignments Cache**
+
+Caches the set of roles assigned to each user (`UserId → role assignments`). This is the hot-path cache checked on every authorization request and is also the in-memory layer used by the LDAP role provider's two-layer caching scheme. The TTL must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` to bound the window in which a deleted role can still appear in assignment results.
+
+| Configuration Key                                                    | Type    | Default | Description |
+|----------------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable user-assignments caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`<nobr>          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
+| <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+
+*Metrics*: The User Assignments cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_cache_size{cache_type="user_assignments"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="user_assignments"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="user_assignments"}`: Total number of cache misses
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
@@ -452,6 +469,19 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 | <nobr>`…__ALLOW_INSECURE`</nobr>       | `false` | Skip TLS certificate verification. **Do not use in production.** |
 | <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `30`    | Seconds to wait when establishing the initial connection. |
 | <nobr>`…__READ_TIMEOUT_SECS`</nobr>    | `60`    | Seconds to wait for an LDAP response. |
+
+**Caching & performance:**
+
+Each LDAP provider uses a two-layer cache to avoid a network round-trip to the LDAP server on every request:
+
+1. **In-memory layer** — role assignments are held in a per-node moka cache (see [User Assignments Cache](#caching) above). Reads that hit this layer incur no I/O at all.
+2. **Database layer** — on an in-memory miss, role assignments are read from (and re-populate) the database. The database record includes a `synced_at` timestamp that is compared against `SYNC_INTERVAL_SECS` to decide whether the data is still fresh.
+
+If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts LDAP, writes the fresh assignments back to both the database and the in-memory cache, and returns the result. If LDAP is temporarily unreachable, the stale database record is served instead and an audit warning is emitted — the request is never failed solely due to an LDAP outage.
+
+| Variable                             | Default | Description                 |
+|--------------------------------------|---------|-----------------------------|
+| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300`   | Maximum age (in seconds) of a cached role-assignment record before Lakekeeper re-fetches from LDAP. Increase to reduce LDAP traffic; decrease when group membership changes must propagate more quickly. Also controls the TTL of the corresponding database record. |
 
 **Startup and resilience:**
 

@@ -43,21 +43,25 @@ Lakekeeper populates this set automatically from the user's token (when `LAKEKEE
 
 The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attributes identifying the user's own authentication provider and their ID within it:
 
-| Attribute                    | Example value                                  | Description |
-|------------------------------|------------------------------------------------|-----|
-| `provider_id`                | `"oidc"`                                       | Authentication provider of the user |
-| `source_id`                  | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
-| <nobr>`project_roles`</nobr> | `[{provider_id: "oidc", source_id: "admins"}]` | Roles relevant to the current project |
+| Attribute                       | Example value                                  | Description |
+|---------------------------------|------------------------------------------------|-----|
+| `provider_id`                   | `"oidc"`                                       | Authentication provider of the user |
+| `source_id`                     | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
+| <nobr>`project_roles`</nobr>    | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
+| <nobr>`global_role_ids`</nobr>  | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
-### When to use `project_roles` vs `principal in Role::...`
+### When to use `project_roles` vs `global_role_ids` vs `principal in Role::...`
 
 | Scenario                                                 | Recommended approach |
 |----------------------------------------------------------|-------------------|
-| Roles come from OIDC/token claims                        | `principal.project_roles.contains({provider_id: "oidc", source_id: "my-group"})` |
+| Roles come from OIDC/token claims or a role provider (e.g. LDAP) | `principal.project_roles.contains({provider_id: "oidc", source_id: "my-group"})` |
+| Role `source_id` values are globally unique across all providers | `principal.global_role_ids.contains("my-group")` *(requires `GLOBAL_ROLE_IDS_ENABLED`)* |
 | Roles are managed in Lakekeeper (via the management API) | `principal in Lakekeeper::Role::"<project-id>/oidc~my-role"` |
 | Roles come from an external entities file                | Either approach works; `project_roles` is simpler |
 
 `project_roles` simplifies policies especially in single-project setups: to use `principal in Lakekeeper::Role::...` you need to know the project ID, which is an identifier that is inconvenient to embed in policy files. `project_roles` lets you match by provider and role name alone, with no project ID required.
+
+`global_role_ids` further simplifies policies when all configured role providers use globally unique `source_id` values (e.g. a single LDAP server or OIDC provider where group names are unique). Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
 
 ### Policy example
 
@@ -81,7 +85,31 @@ when {
 ```
 
 !!! note
-    `project_roles` is only populated when the request has a project context (i.e. for warehouse, namespace, table, and view operations). It is an empty set for server-level actions that span multiple projects, so policies using `project_roles` will always deny server level actions. Use the full Role ID or grant direct access to users for server-level policies.
+    `project_roles` and `global_role_ids` are only populated when the request has a project context (i.e. for warehouse, namespace, table, and view operations). Both are empty sets for server-level actions that span multiple projects, so policies using either attribute will always deny server-level actions. Use the full Role ID or grant direct access to users for server-level policies.
+
+!!! tip "Monitoring role providers"
+    Role provider availability is tracked via Prometheus metrics (`lakekeeper_role_provider_up`, `lakekeeper_role_provider_get_roles_duration_seconds`). Lakekeeper deliberately excludes role provider health from the pod liveness probe — an unreachable provider causes graceful fallback to cached roles from Postgres rather than a pod restart. See [Monitoring — Role Provider Metrics](./monitoring.md#role-provider-metrics) for details and alerting guidance.
+
+### Policy example — `global_role_ids`
+
+Use this simpler form when all your role providers are server-wide and use unique group names (e.g. a single LDAP directory). Requires `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`.
+
+```cedar
+// Grant access to users who are members of the "data-engineers" group,
+// regardless of which provider that group came from.
+permit (
+    principal is Lakekeeper::User,
+    action in
+        [Lakekeeper::Action::"NamespaceActions",
+         Lakekeeper::Action::"TableActions",
+         Lakekeeper::Action::"ViewActions"],
+    resource
+)
+when {
+    resource.warehouse.name == "my-warehouse" &&
+    principal.global_role_ids.contains("data-engineers")
+};
+```
 
 ## Property-Based Access Control
 

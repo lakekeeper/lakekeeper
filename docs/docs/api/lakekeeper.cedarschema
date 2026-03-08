@@ -66,22 +66,56 @@ namespace Lakekeeper {
 
   // A user principal, typically derived from an authentication token.
   // ID: "<provider_id>~<subject-in-provider>"  e.g. "oidc~alice@example.com"
+  //
+  // PROVIDER ROLES — TWO REPRESENTATIONS
+  // -------------------------------------
+  // Provider-resolved roles (from LDAP, token claims, etc.) are surfaced on
+  // the User entity in two complementary forms:
+  //
+  //   `roles`        — Cedar Role entity UIDs, e.g. Role::"my-project/ldap~admins"
+  //                    The user entity is also a Cedar *parent* of every listed
+  //                    role, enabling `principal in Role::"..."` hierarchy checks.
+  //                    These UIDs embed the project ID, so they are project-scoped.
+  //                    Use this form when the policy already knows the exact
+  //                    project-scoped role UID it wants to match.
+  //
+  //   `project_roles` — flat records {provider_id, source_id} without a project
+  //                    field. Includes server-wide provider roles as well as any
+  //                    project-specific provider roles that apply to the current
+  //                    request. The recommended attribute for provider-backed
+  //                    policies; prefer it over `roles` when the policy does not
+  //                    need to reference an exact project-scoped role UID.
+  //                    Use `principal.project_roles.contains({provider_id: "ldap",
+  //                    source_id: "admins"})` to match.
+  //
+  // Both attributes are populated from the same provider role resolution and are
+  // empty when no project context is available (server-level actions such as
+  // CreateProject that span multiple projects).
   entity User in [Role, Server] {
-    // Email of the user, extracted from the User's token.
+    // Email of the user, extracted from the authentication token.
     // Not available for all token types.
     email?: String,
-    // Roles of the user, extracted from the User's token.
-    // Only available if role extraction from tokens is configured and
-    // the token contains the configured claim.
+    // Provider-resolved role memberships as Cedar Role entity UIDs.
+    // The user entity is a Cedar parent of every role in this set, so
+    // `principal in Role::"<project>/<provider>~<source>"` works for hierarchy checks.
+    // Roles are project-scoped to the request's project context; prefer
+    // `project_roles` for policies that need to work across project contexts.
     roles: Set<Role>,
-    // Flattened role memberships relevant to the current project context.
-    // Combines server-level token claims (e.g. OIDC) and project-specific
-    // provider roles (e.g. LDAP) into a single set for policy evaluation.
-    // Only roles applicable to the project being accessed are included;
-    // the set is empty when no project context exists (e.g. role-management
-    // actions that span multiple projects).
-    // Use `.contains({provider_id: "oidc", source_id: "my-role"})` to match.
+    // Provider-resolved role memberships as flat {provider_id, source_id} records.
+    // Includes server-wide provider roles and any project-specific provider roles
+    // that apply to the current request. Unlike `roles`, these records carry no
+    // project ID, making them the preferred attribute for provider-backed policies.
+    // Empty when no project context exists.
+    // Use `.contains({provider_id: "ldap", source_id: "admins"})` to match.
     project_roles: Set<{provider_id: String, source_id: String}>,
+    // source_id of every provider-resolved role, as a plain Set<String>.
+    // Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`.
+    // Meaningful only when all configured role providers use globally unique
+    // source IDs (no two providers share the same source_id for different roles).
+    // Prefer `project_roles` when provider uniqueness cannot be guaranteed.
+    // Use `principal.global_role_ids.contains("admins")` to match.
+    // Always present (empty set when the feature is disabled or no project context exists).
+    global_role_ids: Set<String>,
     // Authentication provider of the user (e.g. "oidc", "kubernetes", etc.)
     provider_id: String,
     // The ID of this user in its authentication provider

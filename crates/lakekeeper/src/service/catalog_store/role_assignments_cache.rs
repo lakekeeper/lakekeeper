@@ -8,6 +8,7 @@ use crate::{
     service::{
         RoleId,
         authn::UserId,
+        cache_metrics,
         catalog_store::role_assignment::{ListRoleMembersResult, ListUserRoleAssignmentsResult},
     },
 };
@@ -16,24 +17,7 @@ use crate::{
 // User assignments cache  (UserId → Arc<ListUserRoleAssignmentsResult>)
 // ============================================================================
 
-const METRIC_UA_SIZE: &str = "lakekeeper_user_assignments_cache_size";
-const METRIC_UA_HITS: &str = "lakekeeper_user_assignments_cache_hits_total";
-const METRIC_UA_MISSES: &str = "lakekeeper_user_assignments_cache_misses_total";
-
-static UA_METRICS_INITIALIZED: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_UA_SIZE,
-        "Current number of entries in the user-assignments cache"
-    );
-    metrics::describe_counter!(
-        METRIC_UA_HITS,
-        "Total number of user-assignments cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_UA_MISSES,
-        "Total number of user-assignments cache misses"
-    );
-});
+const CACHE_TYPE_UA: &str = "user_assignments";
 
 /// Hot path: one entry per active user.
 ///
@@ -71,10 +55,12 @@ pub(crate) async fn user_assignments_cache_get(
     update_ua_size_metric();
     if let Some(result) = USER_ASSIGNMENTS_CACHE.get(user_id).await {
         tracing::debug!("User assignments for {user_id} found in cache");
-        metrics::counter!(METRIC_UA_HITS).increment(1);
+        metrics::counter!(cache_metrics::METRIC_CACHE_HITS_TOTAL, "cache_type" => CACHE_TYPE_UA)
+            .increment(1);
         Some(result)
     } else {
-        metrics::counter!(METRIC_UA_MISSES).increment(1);
+        metrics::counter!(cache_metrics::METRIC_CACHE_MISSES_TOTAL, "cache_type" => CACHE_TYPE_UA)
+            .increment(1);
         None
     }
 }
@@ -91,29 +77,16 @@ pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
 #[inline]
 #[allow(clippy::cast_precision_loss)]
 fn update_ua_size_metric() {
-    let () = &*UA_METRICS_INITIALIZED;
-    metrics::gauge!(METRIC_UA_SIZE).set(USER_ASSIGNMENTS_CACHE.entry_count() as f64);
+    let () = &*cache_metrics::METRICS_INITIALIZED;
+    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_UA)
+        .set(USER_ASSIGNMENTS_CACHE.entry_count() as f64);
 }
 
 // ============================================================================
 // Role members cache  (RoleId → Arc<ListRoleMembersResult>)
 // ============================================================================
 
-const METRIC_RM_SIZE: &str = "lakekeeper_role_members_cache_size";
-const METRIC_RM_HITS: &str = "lakekeeper_role_members_cache_hits_total";
-const METRIC_RM_MISSES: &str = "lakekeeper_role_members_cache_misses_total";
-
-static RM_METRICS_INITIALIZED: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_RM_SIZE,
-        "Current number of entries in the role-members cache"
-    );
-    metrics::describe_counter!(METRIC_RM_HITS, "Total number of role-members cache hits");
-    metrics::describe_counter!(
-        METRIC_RM_MISSES,
-        "Total number of role-members cache misses"
-    );
-});
+const CACHE_TYPE_RM: &str = "role_members";
 
 /// Cold path: one entry per queried role. `RoleId` is `Copy` (UUID).
 ///
@@ -146,10 +119,12 @@ pub(crate) async fn role_members_cache_get(role_id: RoleId) -> Option<Arc<ListRo
     update_rm_size_metric();
     if let Some(result) = ROLE_MEMBERS_CACHE.get(&role_id).await {
         tracing::debug!("Role members for {role_id} found in cache");
-        metrics::counter!(METRIC_RM_HITS).increment(1);
+        metrics::counter!(cache_metrics::METRIC_CACHE_HITS_TOTAL, "cache_type" => CACHE_TYPE_RM)
+            .increment(1);
         Some(result)
     } else {
-        metrics::counter!(METRIC_RM_MISSES).increment(1);
+        metrics::counter!(cache_metrics::METRIC_CACHE_MISSES_TOTAL, "cache_type" => CACHE_TYPE_RM)
+            .increment(1);
         None
     }
 }
@@ -166,8 +141,9 @@ pub(crate) async fn role_members_cache_invalidate(role_id: RoleId) {
 #[inline]
 #[allow(clippy::cast_precision_loss)]
 fn update_rm_size_metric() {
-    let () = &*RM_METRICS_INITIALIZED;
-    metrics::gauge!(METRIC_RM_SIZE).set(ROLE_MEMBERS_CACHE.entry_count() as f64);
+    let () = &*cache_metrics::METRICS_INITIALIZED;
+    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_RM)
+        .set(ROLE_MEMBERS_CACHE.entry_count() as f64);
 }
 
 // ============================================================================
