@@ -23,12 +23,12 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 
 ## Prometheus Integration
 
-The metrics endpoint is served at `http://<bind_ip>:<metrics_port>/metrics` (defaults: `0.0.0.0:9000`).
+Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS_PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`.
 
 | Variable                                | Description                        |
 |-----------------------------------------|------------------------------------|
-| <nobr>`LAKEKEEPER__METRICS_PORT`</nobr> | Port for the Prometheus metrics endpoint (default `9000`) |
-| <nobr>`LAKEKEEPER__BIND_IP`</nobr>      | Bind address shared by metrics, REST API, and Management API |
+| <nobr>`LAKEKEEPER__METRICS_PORT`</nobr> | Port Lakekeeper listens on for the metrics endpoint (default `9000`) |
+| <nobr>`LAKEKEEPER__BIND_IP`</nobr>      | Listener bind address for metrics, REST API, and Management API (default `0.0.0.0`; use a specific IP to restrict access) |
 
 ```yaml title="Example Prometheus scrape configuration"
 scrape_configs:
@@ -39,7 +39,18 @@ scrape_configs:
 
 ## Database (Postgres) Monitoring
 
-Postgres is Lakekeeper's primary backend. Monitor it with standard tooling (pg_exporter, kube-state-metrics, or your cloud provider). Key signals: free pool slots, connection failures, query latency, replication lag, and disk/IOPS usage.
+Postgres is Lakekeeper's primary backend. Use [postgres_exporter](https://github.com/prometheus-community/postgres_exporter) for database-internal signals — kube-state-metrics covers Kubernetes API object state (pods, deployments, nodes) but not Postgres internals.
+
+| Signal                                | Recommended tool                     |
+|---------------------------------------|--------------------------------------|
+| Free connection pool slots            | `postgres_exporter`                  |
+| Connection failures / pool exhaustion | `postgres_exporter`                  |
+| Query latency                         | `postgres_exporter`                  |
+| Replication lag                       | `postgres_exporter`                  |
+| Disk usage and IOPS                   | Cloud provider metrics or `node_exporter` |
+| Pod restarts, deployment health       | kube-state-metrics                   |
+
+If you run Postgres via the [CloudNativePG](https://cloudnative-pg.io/) operator, its built-in per-instance exporter (port `9187`, metrics prefixed `cnpg_collector_*`) covers WAL file counts and size, archive status, sync replica state, and basic liveness — complementing `postgres_exporter` for those signals. Connection pool slots, query latency, and replication lag are available as [user-defined custom queries](https://cloudnative-pg.io/documentation/current/monitoring/#user-defined-metrics) in CloudNativePG; disk and IOPS still require `node_exporter` or cloud provider metrics.
 
 !!! warning
     Lakekeeper's liveness probe checks the database connection. If Postgres becomes unreachable or runs out of connections, the pod will fail its health check and be marked unhealthy.
@@ -57,7 +68,7 @@ These statistics can be viewed in the UI under the Project View's **Statistics**
 - `POST /management/v1/endpoint-statistics` — query endpoint-level usage data, filterable by warehouse, status code, and time window.
 - `GET /management/v1/warehouse/{warehouse_id}/statistics` — query warehouse-level table and view counts.
 
-For real-time or higher-granularity data, the [HTTP request metrics](#http-request-metrics) above provide the same information broken down per-second via Prometheus. Endpoint statistics are better suited for historical usage reporting, chargeback, and abuse detection. In multi-tenant deployments, the project- and warehouse-level granularity enables per-customer analytics.
+For real-time traffic visibility, the [HTTP request metrics](#http-request-metrics) expose per-second counters and latency histograms via Prometheus — but only with `method`, `status`, and `endpoint` labels. They carry no project or warehouse dimensions, so they cannot be used for tenant-scoped analysis. Endpoint statistics are the only source of per-project and per-warehouse breakdowns, making them the right tool for chargeback, abuse detection, and per-customer analytics in multi-tenant deployments.
 
 The flush interval is controlled by `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` (supports `s` and `ms` units):
 
@@ -84,4 +95,5 @@ If Grafana shows stale or missing metrics, verify that Prometheus can reach the 
 - [Axum HTTP Metrics](https://docs.rs/axum-prometheus/latest/axum_prometheus/)
 - [Prometheus](https://prometheus.io/) · [Grafana](https://grafana.com/)
 - [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics)
-- [pg_exporter](https://github.com/prometheus-community/postgres_exporter)
+- [postgres_exporter](https://github.com/prometheus-community/postgres_exporter)
+- [CloudNativePG Monitoring](https://cloudnative-pg.io/documentation/current/monitoring/)
