@@ -906,13 +906,11 @@ impl S3Profile {
             StoragePermissions::Read => "\"s3:GetObject\"",
             StoragePermissions::ReadWrite => concat!(
                 "\"s3:GetObject\", \"s3:PutObject\", ",
-                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\", ",
-                "\"s3:CreateMultipartUpload\", \"s3:UploadPart\", \"s3:CompleteMultipartUpload\""
+                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\""
             ),
             StoragePermissions::ReadWriteDelete => concat!(
                 "\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\", ",
-                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\", ",
-                "\"s3:CreateMultipartUpload\", \"s3:UploadPart\", \"s3:CompleteMultipartUpload\""
+                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\""
             ),
         }
     }
@@ -1673,6 +1671,7 @@ pub(crate) mod test {
             );
         }
         #[test]
+        #[allow(clippy::too_many_lines)]
         fn test_multipart_upload_with_vended_credentials() {
             crate::tests::test_block_on(
                 async {
@@ -1693,6 +1692,16 @@ pub(crate) mod test {
                     let policy = profile
                         .get_sts_policy_string(&table_location, StoragePermissions::ReadWriteDelete)
                         .unwrap();
+
+                    // Verify the policy includes the multipart-specific actions
+                    assert!(
+                        policy.contains("s3:AbortMultipartUpload"),
+                        "STS policy must include s3:AbortMultipartUpload"
+                    );
+                    assert!(
+                        policy.contains("s3:ListMultipartUploadParts"),
+                        "STS policy must include s3:ListMultipartUploadParts"
+                    );
 
                     // Assume role with the downscoped policy
                     let sts_creds = profile
@@ -1743,7 +1752,7 @@ pub(crate) mod test {
 
                     let upload_id = create_resp.upload_id().unwrap();
 
-                    let part = s3_client
+                    s3_client
                         .upload_part()
                         .bucket(&profile.bucket)
                         .key(&key)
@@ -1758,32 +1767,30 @@ pub(crate) mod test {
                         .await
                         .expect("upload_part must succeed with vended credentials");
 
-                    let completed_part = aws_sdk_s3::types::CompletedPart::builder()
-                        .part_number(1)
-                        .e_tag(part.e_tag().unwrap())
-                        .build();
-
-                    s3_client
-                        .complete_multipart_upload()
+                    // Exercise s3:ListMultipartUploadParts
+                    let list_resp = s3_client
+                        .list_parts()
                         .bucket(&profile.bucket)
                         .key(&key)
                         .upload_id(upload_id)
-                        .multipart_upload(
-                            aws_sdk_s3::types::CompletedMultipartUpload::builder()
-                                .parts(completed_part)
-                                .build(),
-                        )
                         .send()
                         .await
-                        .expect("complete_multipart_upload must succeed with vended credentials");
+                        .expect("list_parts must succeed with vended credentials");
+                    assert_eq!(
+                        list_resp.parts().len(),
+                        1,
+                        "list_parts should return the uploaded part"
+                    );
 
-                    // Cleanup
-                    let _ = s3_client
-                        .delete_object()
+                    // Exercise s3:AbortMultipartUpload
+                    s3_client
+                        .abort_multipart_upload()
                         .bucket(&profile.bucket)
                         .key(&key)
+                        .upload_id(upload_id)
                         .send()
-                        .await;
+                        .await
+                        .expect("abort_multipart_upload must succeed with vended credentials");
                 },
                 true,
             );
