@@ -3695,6 +3695,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-s3",
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-smithy-http 0.62.6",
