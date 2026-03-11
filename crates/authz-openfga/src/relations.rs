@@ -1,14 +1,17 @@
-use lakekeeper::service::{
-    authn::UserId,
-    authz::{
-        CatalogAction, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-        CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-        NamespaceAction, ProjectAction, RoleAction, RoleAssignee, ServerAction, TableAction,
-        UserOrRole, ViewAction, WarehouseAction,
+use lakekeeper::{
+    api::management::v1::check::{RoleAssignee, UserOrRole},
+    service::{
+        authn::UserId,
+        authz::{
+            ActionDescriptor, CatalogAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, NamespaceAction, ProjectAction, RoleAction, ServerAction,
+            TableAction, ViewAction, WarehouseAction,
+        },
     },
 };
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
+use strum::{IntoEnumIterator, IntoStaticStr};
 use strum_macros::EnumIter;
 
 use crate::{
@@ -75,7 +78,7 @@ impl OpenFgaEntity for UserOrRole {
 }
 
 /// Role Relations in the `OpenFGA` schema
-#[derive(Debug, Copy, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum RoleRelation {
     // -- Hierarchical relations --
@@ -102,6 +105,11 @@ impl From<CatalogRoleAction> for RoleRelation {
 }
 
 impl OpenFgaRelation for RoleRelation {}
+impl CatalogAction for RoleRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -237,7 +245,7 @@ impl ReducedRelation for CatalogRoleAction {
 }
 
 /// Server Relations in the `OpenFGA` schema
-#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
+#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ServerRelation {
     // -- Hierarchical relations --
@@ -257,7 +265,11 @@ pub enum ServerRelation {
     CanGrantOperator,
 }
 impl ServerAction for ServerRelation {}
-
+impl CatalogAction for ServerRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 impl OpenFgaRelation for ServerRelation {}
 
 impl From<CatalogServerAction> for ServerRelation {
@@ -403,7 +415,7 @@ impl ReducedRelation for OpenFGAServerAction {
     }
 }
 
-#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
+#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ProjectRelation {
     // -- Hierarchical relations --
@@ -443,7 +455,11 @@ pub enum ProjectRelation {
     CanGetProjectTasks,
     CanControlProjectTasks,
 }
-
+impl CatalogAction for ProjectRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 impl ProjectAction for ProjectRelation {}
 impl OpenFgaRelation for ProjectRelation {}
 
@@ -691,7 +707,7 @@ impl ReducedRelation for OpenFGAProjectAction {
     }
 }
 
-#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq)]
+#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum WarehouseRelation {
     // -- Hierarchical relations --
@@ -740,7 +756,11 @@ pub enum WarehouseRelation {
     CanGetEndpointStatistics,
 }
 impl WarehouseAction for WarehouseRelation {}
-impl CatalogAction for WarehouseRelation {}
+impl CatalogAction for WarehouseRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 
 impl OpenFgaRelation for WarehouseRelation {}
 
@@ -1008,7 +1028,7 @@ impl ReducedRelation for OpenFGAWarehouseAction {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum NamespaceRelation {
     // -- Hierarchical relations --
@@ -1050,7 +1070,11 @@ pub enum NamespaceRelation {
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
-impl CatalogAction for NamespaceRelation {}
+impl CatalogAction for NamespaceRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 impl NamespaceAction for NamespaceRelation {}
 
 impl From<CatalogNamespaceAction> for NamespaceRelation {
@@ -1282,7 +1306,7 @@ impl ReducedRelation for OpenFGANamespaceAction {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum TableRelation {
     // -- Hierarchical relations --
@@ -1316,7 +1340,11 @@ pub enum TableRelation {
 }
 
 impl TableAction for TableRelation {}
-impl CatalogAction for TableRelation {}
+impl CatalogAction for TableRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 impl OpenFgaRelation for TableRelation {}
 
 impl From<CatalogTableAction> for TableRelation {
@@ -1536,7 +1564,7 @@ impl ReducedRelation for OpenFGATableAction {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ViewRelation {
     // -- Hierarchical relations --
@@ -1566,7 +1594,11 @@ pub enum ViewRelation {
 }
 
 impl ViewAction for ViewRelation {}
-impl CatalogAction for ViewRelation {}
+impl CatalogAction for ViewRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 impl OpenFgaRelation for ViewRelation {}
 
 impl From<CatalogViewAction> for ViewRelation {

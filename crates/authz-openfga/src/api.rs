@@ -1,7 +1,7 @@
 #![allow(clippy::needless_for_each)]
 #![allow(deprecated)]
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use http::StatusCode;
 #[cfg(feature = "open-api")]
@@ -10,7 +10,10 @@ use lakekeeper::{
     ProjectId, WarehouseId,
     api::{
         ApiContext, RequestMetadata,
-        management::v1::lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+        management::v1::{
+            check::UserOrRole,
+            lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+        },
     },
     axum::{
         Extension, Json, Router,
@@ -19,7 +22,11 @@ use lakekeeper::{
     },
     service::{
         Actor, CatalogStore, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
-        authz::UserOrRole,
+        authz::ActionDescriptor,
+        events::{
+            APIEventContext,
+            context::{APIEventActions, IntrospectPermissions, authz_to_error_no_audit},
+        },
     },
 };
 use openfga_client::client::{
@@ -260,6 +267,15 @@ struct UpdateServerAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<ServerAssignment>,
 }
+impl APIEventActions for UpdateServerAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_server_assignments")
+                .build(),
+        ]
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -269,6 +285,15 @@ struct UpdateProjectAssignmentsRequest {
     writes: Vec<ProjectAssignment>,
     #[serde(default)]
     deletes: Vec<ProjectAssignment>,
+}
+impl APIEventActions for UpdateProjectAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_project_assignments")
+                .build(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -280,6 +305,15 @@ struct UpdateWarehouseAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<WarehouseAssignment>,
 }
+impl APIEventActions for UpdateWarehouseAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_warehouse_assignments")
+                .build(),
+        ]
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -289,6 +323,15 @@ struct UpdateNamespaceAssignmentsRequest {
     writes: Vec<NamespaceAssignment>,
     #[serde(default)]
     deletes: Vec<NamespaceAssignment>,
+}
+impl APIEventActions for UpdateNamespaceAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_namespace_assignments")
+                .build(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -300,6 +343,15 @@ struct UpdateTableAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<TableAssignment>,
 }
+impl APIEventActions for UpdateTableAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_table_assignments")
+                .build(),
+        ]
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -310,6 +362,15 @@ struct UpdateViewAssignmentsRequest {
     #[serde(default)]
     deletes: Vec<ViewAssignment>,
 }
+impl APIEventActions for UpdateViewAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_view_assignments")
+                .build(),
+        ]
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -319,6 +380,15 @@ struct UpdateRoleAssignmentsRequest {
     writes: Vec<RoleAssignment>,
     #[serde(default)]
     deletes: Vec<RoleAssignment>,
+}
+impl APIEventActions for UpdateRoleAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_role_assignments")
+                .build(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -370,14 +440,23 @@ async fn get_role_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetRoleAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_role(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        role_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &role_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetRoleAccessResponse {
@@ -410,14 +489,23 @@ async fn get_authorizer_role_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGARoleActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_role(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        role_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &role_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetOpenFGARoleActionsResponse {
@@ -451,14 +539,23 @@ async fn get_server_access<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
     let openfga_server = authorizer.openfga_server().clone();
+
+    let event_ctx = APIEventContext::for_server(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        IntrospectPermissions {},
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &openfga_server,
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetServerAccessResponse {
@@ -488,14 +585,23 @@ async fn get_authorizer_server_actions<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
     let openfga_server = authorizer.openfga_server().clone();
+
+    let event_ctx = APIEventContext::for_server(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        IntrospectPermissions {},
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &openfga_server,
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetOpenFGAServerActionsResponse {
@@ -530,15 +636,25 @@ async fn get_project_access<C: CatalogStore, S: SecretStore>(
     let query = ParsedAccessQuery::try_from(query)?;
     let project_id = metadata
         .preferred_project_id()
-        .ok_or(OpenFGAError::NoProjectId)?;
+        .ok_or(OpenFGAError::NoProjectId)
+        .map_err(authz_to_error_no_audit)?;
+
+    let event_ctx = APIEventContext::for_project_arc(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id.clone(),
+        Arc::new(IntrospectPermissions {}),
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &project_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetProjectAccessResponse {
@@ -569,15 +685,25 @@ async fn get_authorizer_project_actions<C: CatalogStore, S: SecretStore>(
     let query = ParsedAccessQuery::try_from(query)?;
     let project_id = metadata
         .preferred_project_id()
-        .ok_or(OpenFGAError::NoProjectId)?;
+        .ok_or(OpenFGAError::NoProjectId)
+        .map_err(authz_to_error_no_audit)?;
+
+    let event_ctx = APIEventContext::for_project_arc(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id.clone(),
+        Arc::new(IntrospectPermissions {}),
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &project_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetOpenFGAProjectActionsResponse {
@@ -614,14 +740,23 @@ async fn get_project_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_project(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id.clone(),
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &project_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetProjectAccessResponse {
@@ -658,14 +793,23 @@ async fn get_warehouse_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetWarehouseAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_warehouse(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &warehouse_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetWarehouseAccessResponse {
@@ -698,14 +842,23 @@ async fn get_authorizer_warehouse_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGAWarehouseActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_warehouse(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &warehouse_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
 
+    let (_, relations) = event_ctx.emit_authz(relations)?;
     Ok((
         StatusCode::OK,
         Json(GetOpenFGAWarehouseActionsResponse {
@@ -732,15 +885,27 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<(StatusCode, Json<GetWarehouseAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    authorizer
+
+    let event_ctx = APIEventContext::for_warehouse(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        AllWarehouseRelation::CanGetMetadata,
+    );
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllWarehouseRelation::CanGetMetadata,
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
             &warehouse_id.to_openfga(),
         )
-        .await?;
+        .await;
 
-    let managed_access = get_managed_access(&authorizer, &warehouse_id).await?;
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let managed_access = get_managed_access(&authorizer, &warehouse_id)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -767,15 +932,27 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
     Json(request): Json<SetManagedAccessRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    authorizer
+
+    let event_ctx = APIEventContext::for_warehouse(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        AllWarehouseRelation::CanSetManagedAccess,
+    );
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllWarehouseRelation::CanSetManagedAccess,
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
             &warehouse_id.to_openfga(),
         )
-        .await?;
+        .await;
 
-    set_managed_access(authorizer, &warehouse_id, request.managed_access).await?;
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    set_managed_access(authorizer, &warehouse_id, request.managed_access)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::OK)
 }
@@ -800,15 +977,27 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
     Json(request): Json<SetManagedAccessRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    authorizer
+
+    let event_ctx = APIEventContext::for_namespace_only_id(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        namespace_id,
+        AllNamespaceRelations::CanSetManagedAccess,
+    );
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllNamespaceRelations::CanSetManagedAccess,
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
             &namespace_id.to_openfga(),
         )
-        .await?;
+        .await;
 
-    set_managed_access(authorizer, &namespace_id, request.managed_access).await?;
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    set_managed_access(authorizer, &namespace_id, request.managed_access)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::OK)
 }
@@ -831,22 +1020,35 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<(StatusCode, Json<GetNamespaceAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    authorizer
+
+    let event_ctx = APIEventContext::for_namespace_only_id(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        namespace_id,
+        AllNamespaceRelations::CanGetMetadata,
+    );
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllNamespaceRelations::CanGetMetadata,
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
             &namespace_id.to_openfga(),
         )
-        .await?;
+        .await;
 
-    let managed_access = get_managed_access(&authorizer, &namespace_id).await?;
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let managed_access = get_managed_access(&authorizer, &namespace_id)
+        .await
+        .map_err(authz_to_error_no_audit)?;
     let managed_access_inherited = authorizer
         .check(CheckRequestTupleKey {
             user: "user:*".to_string(),
             relation: AllNamespaceRelations::ManagedAccessInheritance.to_string(),
             object: namespace_id.to_openfga(),
         })
-        .await?;
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -885,13 +1087,23 @@ async fn get_namespace_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetNamespaceAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_namespace_only_id(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        namespace_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &namespace_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
+
+    let (_, relations) = event_ctx.emit_authz(relations)?;
 
     Ok((
         StatusCode::OK,
@@ -925,13 +1137,23 @@ async fn get_authorizer_namespace_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGANamespaceActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_namespace_only_id(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        namespace_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &namespace_id.to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
+
+    let (_, relations) = event_ctx.emit_authz(relations)?;
 
     Ok((
         StatusCode::OK,
@@ -970,13 +1192,24 @@ async fn get_table_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        table_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &(warehouse_id, table_id).to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
+
+    let (_, relations) = event_ctx.emit_authz(relations)?;
 
     Ok((
         StatusCode::OK,
@@ -1011,13 +1244,24 @@ async fn get_authorizer_table_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGATableActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        table_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &(warehouse_id, table_id).to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
+
+    let (_, relations) = event_ctx.emit_authz(relations)?;
 
     Ok((
         StatusCode::OK,
@@ -1056,13 +1300,24 @@ async fn get_view_access_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        view_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &(warehouse_id, view_id).to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
+
+    let (_, relations) = event_ctx.emit_authz(relations)?;
 
     Ok((
         StatusCode::OK,
@@ -1097,13 +1352,24 @@ async fn get_authorizer_view_actions<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetOpenFGAViewActionsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        view_id,
+        IntrospectPermissions {},
+    );
+
     let relations = get_allowed_actions(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         &(warehouse_id, view_id).to_openfga(),
         query.principal.as_ref(),
     )
-    .await?;
+    .await;
+
+    let (_, relations) = event_ctx.emit_authz(relations)?;
 
     Ok((
         StatusCode::OK,
@@ -1133,14 +1399,27 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Query(query): Query<GetRoleAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetRoleAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    authorizer
+
+    let event_ctx = APIEventContext::for_role(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        role_id,
+        AllRoleRelations::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllRoleRelations::CanReadAssignments,
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
             &role_id.to_openfga(),
         )
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &role_id.to_openfga()).await?;
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &role_id.to_openfga())
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -1165,10 +1444,27 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let server_id = authorizer.openfga_server().clone();
-    authorizer
-        .require_action(&metadata, AllServerAction::CanReadAssignments, &server_id)
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &server_id).await?;
+
+    let event_ctx = APIEventContext::for_server(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        AllServerAction::CanReadAssignments,
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
+    );
+
+    let authz_result = authorizer
+        .require_action(
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
+            &server_id,
+        )
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &server_id)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -1194,21 +1490,36 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .preferred_project_id()
-        .ok_or(OpenFGAError::NoProjectId)?;
-    authorizer
+        .ok_or(OpenFGAError::NoProjectId)
+        .map_err(authz_to_error_no_audit)?;
+
+    let event_ctx = APIEventContext::for_project_arc(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id,
+        Arc::new(AllProjectRelations::CanReadAssignments),
+    );
+    let project_id_openfga = event_ctx.user_provided_entity().to_openfga();
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllProjectRelations::CanReadAssignments,
-            &project_id.to_openfga(),
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
+            &project_id_openfga,
         )
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &project_id.to_openfga()).await?;
+        .await;
+
+    let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &project_id_openfga)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
         Json(GetProjectAssignmentsResponse {
             assignments,
-            project_id,
+            project_id: event_ctx.user_provided_entity().clone(),
         }),
     ))
 }
@@ -1239,20 +1550,34 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Query(query): Query<GetProjectAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    authorizer
+
+    let event_ctx = APIEventContext::for_project(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id,
+        AllProjectRelations::CanReadAssignments,
+    );
+    let project_id_openfga = event_ctx.user_provided_entity().to_openfga();
+
+    let authz_result = authorizer
         .require_action(
-            &metadata,
-            AllProjectRelations::CanReadAssignments,
-            &project_id.to_openfga(),
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
+            &project_id_openfga,
         )
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &project_id.to_openfga()).await?;
+        .await;
+
+    let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &project_id_openfga)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
         Json(GetProjectAssignmentsResponse {
             assignments,
-            project_id,
+            project_id: event_ctx.user_provided_entity().clone(),
         }),
     ))
 }
@@ -1278,10 +1603,23 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetWarehouseAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = warehouse_id.to_openfga();
-    authorizer
-        .require_action(&metadata, AllWarehouseRelation::CanReadAssignments, &object)
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &object).await?;
+
+    let event_ctx = APIEventContext::for_warehouse(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        AllWarehouseRelation::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -1310,14 +1648,23 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetNamespaceAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = namespace_id.to_openfga();
-    authorizer
-        .require_action(
-            &metadata,
-            AllNamespaceRelations::CanReadAssignments,
-            &object,
-        )
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &object).await?;
+
+    let event_ctx = APIEventContext::for_namespace_only_id(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        namespace_id,
+        AllNamespaceRelations::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -1347,10 +1694,24 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = (warehouse_id, table_id).to_openfga();
-    authorizer
-        .require_action(&metadata, AllTableRelations::CanReadAssignments, &object)
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &object).await?;
+
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        table_id,
+        AllTableRelations::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -1380,10 +1741,24 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetViewAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = (warehouse_id, view_id).to_openfga();
-    authorizer
-        .require_action(&metadata, AllViewRelations::CanReadAssignments, &object)
-        .await?;
-    let assignments = get_relations(authorizer, query.relations, &object).await?;
+
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        view_id,
+        AllViewRelations::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
+        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok((
         StatusCode::OK,
@@ -1408,14 +1783,22 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     let server_id = authorizer.openfga_server().clone();
-    checked_write(
+
+    let event_ctx = APIEventContext::for_server(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        request.clone(),
+        lakekeeper::service::authz::Authorizer::server_id(&authorizer),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
         &server_id,
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1438,15 +1821,24 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .preferred_project_id()
-        .ok_or(OpenFGAError::NoProjectId)?;
-    checked_write(
+        .ok_or(OpenFGAError::NoProjectId)
+        .map_err(authz_to_error_no_audit)?;
+
+    let event_ctx = APIEventContext::for_project_arc(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id,
+        Arc::new(request.clone()),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
-        &project_id.to_openfga(),
+        &event_ctx.user_provided_entity().to_openfga(),
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1471,14 +1863,22 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateProjectAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    checked_write(
+
+    let event_ctx = APIEventContext::for_project(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        project_id,
+        request.clone(),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
-        &project_id.to_openfga(),
+        &event_ctx.user_provided_entity().to_openfga(),
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1503,14 +1903,22 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    checked_write(
+
+    let event_ctx = APIEventContext::for_warehouse(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        request.clone(),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
-        &warehouse_id.to_openfga(),
+        &event_ctx.user_provided_entity().to_openfga(),
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1535,14 +1943,22 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    checked_write(
+
+    let event_ctx = APIEventContext::for_namespace_only_id(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        namespace_id,
+        request.clone(),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
         &namespace_id.to_openfga(),
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1568,14 +1984,23 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateTableAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    checked_write(
+
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        table_id,
+        request.clone(),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
         &(warehouse_id, table_id).to_openfga(),
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1601,14 +2026,23 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateViewAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    checked_write(
+
+    let event_ctx = APIEventContext::for_view(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        warehouse_id,
+        view_id,
+        request.clone(),
+    );
+    let authz_result = checked_write(
         authorizer,
-        metadata.actor(),
+        event_ctx.request_metadata().actor(),
         request.writes,
         request.deletes,
         &(warehouse_id, view_id).to_openfga(),
     )
-    .await?;
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1633,23 +2067,34 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Json(request): Json<UpdateRoleAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+
+    let event_ctx = APIEventContext::for_role(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        role_id,
+        request.clone(),
+    );
+
     // Improve error message of role being assigned to itself
-    for assignment in &request.writes {
-        let assignee = match assignment {
-            RoleAssignment::Ownership(r) | RoleAssignment::Assignee(r) => r,
-        };
-        if assignee == &UserOrRole::Role(role_id.into_assignees()) {
-            return Err(OpenFGAError::SelfAssignment(role_id.to_string()).into());
+    let authz_result = 'authz: {
+        for assignment in &request.writes {
+            let assignee = match assignment {
+                RoleAssignment::Ownership(r) | RoleAssignment::Assignee(r) => r,
+            };
+            if assignee == &UserOrRole::Role(role_id.into_api_assignee()) {
+                break 'authz Err(OpenFGAError::SelfAssignment(role_id.to_string()));
+            }
         }
-    }
-    checked_write(
-        authorizer,
-        metadata.actor(),
-        request.writes,
-        request.deletes,
-        &role_id.to_openfga(),
-    )
-    .await?;
+        checked_write(
+            authorizer,
+            event_ctx.request_metadata().actor(),
+            request.writes,
+            request.deletes,
+            &role_id.to_openfga(),
+        )
+        .await
+    };
+    let _ = event_ctx.emit_authz(authz_result)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1823,7 +2268,7 @@ async fn get_relations<RA: Assignment>(
     authorizer: OpenFGAAuthorizer,
     query_relations: Option<Vec<RA::Relation>>,
     object: &str,
-) -> Result<Vec<RA>> {
+) -> OpenFGAResult<Vec<RA>> {
     let relations = query_relations.unwrap_or_else(|| RA::Relation::iter().collect());
 
     let relations = relations.iter().map(|relation| async {
@@ -1871,7 +2316,6 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
         let allowed = authorizer.clone().check(key).await?;
         if !allowed {
             return Err(OpenFGAError::Unauthorized {
-                user: openfga_actor.clone(),
                 relation: RoleAction::ReadAssignments.to_openfga().to_string(),
                 object: object.to_string(),
             });
@@ -1949,7 +2393,6 @@ async fn checked_write<RA: Assignment>(
             Ok(())
         } else {
             Err(OpenFGAError::Unauthorized {
-                user: openfga_actor.clone(),
                 relation: relation.to_string(),
                 object: object.to_string(),
             })
@@ -2070,7 +2513,7 @@ mod tests {
                 RoleAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
                 RoleAssignment::Assignee(UserOrRole::Role(
                     RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
-                        .into_assignees(),
+                        .into_api_assignee(),
                 )),
             ],
         };
@@ -2099,7 +2542,7 @@ mod tests {
 
         use lakekeeper::{
             service::{
-                ResolvedWarehouse,
+                ArcProjectId, ResolvedWarehouse, Role,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
             },
@@ -2134,7 +2577,7 @@ mod tests {
             let result = checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id.clone()),
-                vec![RoleAssignment::Assignee(role_id.into_assignees().into())],
+                vec![RoleAssignment::Assignee(role_id.into_api_assignee().into())],
                 vec![],
                 &role_id.to_openfga(),
             )
@@ -2327,9 +2770,10 @@ mod tests {
             let openfga_server = authorizer.openfga_server();
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role = Arc::new(Role::new_random_with_id(role_id));
             let actor = Actor::Role {
                 principal: user_id.clone(),
-                assumed_role: role_id,
+                assumed_role: role,
             };
             let access: Vec<ServerAction> =
                 get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
@@ -2340,7 +2784,7 @@ mod tests {
             authorizer
                 .write(
                     Some(vec![TupleKey {
-                        user: role_id.into_assignees().to_openfga(),
+                        user: role_id.into_api_assignee().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: openfga_server.clone(),
                         condition: None,
@@ -2384,7 +2828,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into_assignees().into()),
+                Some(&role_id.into_api_assignee().into()),
             )
             .await
             .unwrap();
@@ -2393,7 +2837,7 @@ mod tests {
             authorizer
                 .write(
                     Some(vec![TupleKey {
-                        user: role_id.into_assignees().to_openfga(),
+                        user: role_id.into_api_assignee().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: openfga_server.clone(),
                         condition: None,
@@ -2407,7 +2851,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &openfga_server,
-                Some(&role_id.into_assignees().into()),
+                Some(&role_id.into_api_assignee().into()),
             )
             .await
             .unwrap();
@@ -2481,7 +2925,7 @@ mod tests {
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     RoleAssignment::Assignee(user_id_owner.into()),
-                    RoleAssignment::Assignee(role_id_2.into_assignees().into()),
+                    RoleAssignment::Assignee(role_id_2.into_api_assignee().into()),
                 ],
                 vec![],
                 &role_id_1.to_openfga(),
@@ -2522,8 +2966,8 @@ mod tests {
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
-                    ProjectAssignment::Describe(UserOrRole::Role(role_id.into_assignees())),
-                    ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_assignees())),
+                    ProjectAssignment::Describe(UserOrRole::Role(role_id.into_api_assignee())),
+                    ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_api_assignee())),
                     ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
                 ],
                 vec![],
@@ -2728,8 +3172,9 @@ mod tests {
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
 
             // Create 4 projects
-            let project_ids: Vec<ProjectId> =
-                (0..4).map(|_| ProjectId::from(Uuid::now_v7())).collect();
+            let project_ids: Vec<ArcProjectId> = (0..4)
+                .map(|_| Arc::new(ProjectId::from(Uuid::now_v7())))
+                .collect();
 
             // Grant Describe to projects 0 and 2
             for idx in [0, 2] {
@@ -2934,7 +3379,8 @@ mod tests {
 
             // Create two users: user A will be namespace owner, user B will receive grants
             let user_a = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let role_a = RoleId::new(Uuid::now_v7());
+            let role_a_id = RoleId::new(Uuid::now_v7());
+            let role_a = Arc::new(Role::new_random_with_id(role_a_id));
 
             let actor = Actor::Role {
                 principal: user_a.clone(),
@@ -2948,7 +3394,7 @@ mod tests {
             // Setup hierarchy: warehouse -> namespace
             authorizer
                 .create_namespace(
-                    &RequestMetadata::test_user_assumed_role(user_a.clone(), role_a),
+                    &RequestMetadata::test_user_assumed_role(user_a.clone(), role_a_id),
                     namespace_id,
                     NamespaceParent::Warehouse(warehouse_id),
                 )

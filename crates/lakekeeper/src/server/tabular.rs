@@ -1,17 +1,22 @@
 use crate::{
     server::tables::parse_location,
     service::{
-        Namespace, TabularId,
-        storage::{StorageLocations as _, StorageProfile},
+        NamespaceHierarchy, TabularId,
+        storage::{
+            StorageProfile,
+            storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
+        },
     },
 };
 
 pub(super) fn determine_tabular_location(
-    namespace: &Namespace,
+    namespace_hierarchy: &NamespaceHierarchy,
     request_table_location: Option<String>,
     table_id: TabularId,
+    table_ident: &TableIdent,
     storage_profile: &StorageProfile,
 ) -> Result<Location, ErrorModel> {
+    let namespace = &namespace_hierarchy.namespace;
     let request_table_location = request_table_location
         .map(|l| parse_location(&l, StatusCode::BAD_REQUEST))
         .transpose()?;
@@ -21,23 +26,35 @@ pub(super) fn determine_tabular_location(
         location
     } else {
         let namespace_props = NamespaceProperties::from_props_unchecked(
-            namespace.properties.clone().unwrap_or_default(),
+            namespace.namespace.properties.clone().unwrap_or_default(),
         );
 
-        let namespace_location = match namespace_props.get_location() {
-            Some(location) => location,
-            None => storage_profile
-                .default_namespace_location(namespace.namespace_id)
+        let namespace_location = if let Some(location) = namespace_props.get_location() {
+            location
+        } else {
+            let mut namespace_name_contexts = vec![NamespaceNameContext::try_from(namespace)?];
+            for ancestor in &namespace_hierarchy.parents {
+                namespace_name_contexts.push(NamespaceNameContext::try_from(ancestor)?);
+            }
+            namespace_name_contexts.reverse();
+            let namespace_path = NamespacePath::new(namespace_name_contexts);
+            storage_profile
+                .default_namespace_location(&namespace_path)
                 .map_err(|e| {
                     ErrorModel::internal(
                         "Failed to generate default namespace location",
                         "InvalidDefaultNamespaceLocation",
                         Some(Box::new(e)),
                     )
-                })?,
+                })?
         };
 
-        storage_profile.default_tabular_location(&namespace_location, table_id)
+        let table_name_context = TabularNameContext {
+            name: table_ident.name.clone(),
+            uuid: *table_id,
+        };
+
+        storage_profile.default_tabular_location(&namespace_location, &table_name_context)
     };
     // all locations are without a trailing slash
     location.without_trailing_slash();
@@ -45,19 +62,18 @@ pub(super) fn determine_tabular_location(
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
+    ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $event_ctx:ident) => {
         |ps, page_token, trx: &mut _| {
             use ::pastey::paste;
-            use iceberg_ext::catalog::rest::ErrorModel;
 
             use crate::{
                 server::UnfilteredPage,
-                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular},
+                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular, events::context::authz_to_error_no_audit},
             };
 
             // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
-            let request_metadata = $request_metadata.clone();
+            let request_metadata = $event_ctx.request_metadata().clone();
             let warehouse_id = $namespace_response.warehouse_id();
             let namespace_id = $namespace_response.namespace_id();
             let namespace_response = $namespace_response.clone();
@@ -85,7 +101,8 @@ macro_rules! list_entities {
                         &namespace_response.namespace,
                         CatalogNamespaceAction::ListEverything,
                     )
-                    .await?
+                    .await
+                    .map_err(authz_to_error_no_audit)?
                     .into_inner();
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
@@ -113,13 +130,16 @@ macro_rules! list_entities {
                             None,
                             &resolved_warehouse,
                             &namespaces,
-                            &idents.iter().map(|t| Ok::<_, ErrorModel>((
+                            &idents.iter().map(|t| Ok::<_, crate::service::authz::AuthZCannotSeeNamespace>((
                                 require_namespace_for_tabular(&namespaces, &t.tabular)?,
                                 t,
                                 [<Catalog $entity Action>]::IncludeInList)
                             )
-                            ).collect::<Result<Vec<_>, _>>()?,
-                        ).await?.into_inner()
+                            ).collect::<Result<Vec<_>, _>>()
+                            .map_err(authz_to_error_no_audit)?,
+                        ).await
+                        .map_err(authz_to_error_no_audit)?
+                        .into_inner()
                     }
                 };
 
@@ -149,6 +169,7 @@ macro_rules! list_entities {
 }
 
 use http::StatusCode;
+use iceberg::TableIdent;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::namespace::NamespaceProperties};
 use lakekeeper_io::Location;
 pub(crate) use list_entities;

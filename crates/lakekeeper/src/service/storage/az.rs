@@ -47,6 +47,7 @@ use crate::{
                 CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
                 UpdateError, ValidationError,
             },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -77,6 +78,9 @@ pub struct AdlsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sas_enabled: bool,
+    /// Storage layout for namespace and tabular paths.
+    #[serde(default)]
+    pub storage_layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -139,7 +143,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Fails if the `bucket`, `region` or `key_prefix` is different.
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.filesystem != other.filesystem {
             return Err(UpdateError::ImmutableField("filesystem".to_string()));
         }
@@ -154,6 +158,10 @@ impl AdlsProfile {
 
         if self.host != other.host {
             return Err(UpdateError::ImmutableField("host".to_string()));
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)
@@ -718,9 +726,10 @@ impl TryFrom<AzCredential> for AzureAuth {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::service::{
-        NamespaceId, TabularId,
-        storage::{AdlsProfile, StorageLocations, StorageProfile, az::DEFAULT_AUTHORITY_HOST},
+    use crate::service::storage::{
+        AdlsProfile, StorageProfile,
+        az::DEFAULT_AUTHORITY_HOST,
+        storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
 
     #[test]
@@ -762,6 +771,7 @@ pub(crate) mod test {
                 sas_token_validity_seconds: None,
                 allow_alternative_protocols: false,
                 sas_enabled: true,
+                storage_layout: None,
             }
         }
 
@@ -847,19 +857,28 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            storage_layout: None,
         };
 
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
+        let namespace_uuid = uuid::Uuid::now_v7();
+        let tabular_uuid = uuid::Uuid::now_v7();
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_ns".to_string(),
+            uuid: namespace_uuid,
+        }]);
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
+            uuid: tabular_uuid,
+        };
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
             format!(
-                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_id}/{table_id}"
+                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_uuid}/{tabular_uuid}"
             )
         );
 
@@ -868,11 +887,11 @@ pub(crate) mod test {
         profile.host = Some("blob.com".to_string());
         let sp: StorageProfile = profile.into();
 
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("abfss://filesystem@account.blob.com/{namespace_id}/{table_id}")
+            format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")
         );
     }
 
@@ -887,6 +906,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
             sas_enabled: true,
+            storage_layout: None,
         };
 
         assert!(
@@ -907,6 +927,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            storage_layout: None,
         };
 
         assert!(
@@ -940,6 +961,7 @@ mod is_overlapping_location_tests {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            storage_layout: None,
         }
     }
 

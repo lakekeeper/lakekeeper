@@ -27,8 +27,12 @@ use crate::{
         CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
         Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        events::{
+            APIEventContext,
+            context::{ResolvedNamespace, UserProvidedNamespace},
+        },
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions, ValidationError},
+        storage::{StoragePermissions, ValidationError},
     },
 };
 
@@ -149,6 +153,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = guard.warehouse_id();
     let table = TableIdent::new(provided_ns.clone(), request.name.clone());
+
     validate_table_or_view_ident_creation(&table)?;
 
     if let Some(properties) = &request.properties {
@@ -158,25 +163,42 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let (warehouse, ns_hierarchy) = authorizer
-        .load_and_authorize_namespace_action::<C>(
-            &request_metadata,
-            warehouse_id,
-            provided_ns,
-            CatalogNamespaceAction::CreateTable {
-                properties: Arc::new(
-                    request
-                        .properties
-                        .clone()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect(),
-                ),
-            },
-            CachePolicy::Use,
-            state.v1_state.catalog.clone(),
-        )
-        .await?;
+    let action = CatalogNamespaceAction::CreateTable {
+        properties: Arc::new(
+            request
+                .properties
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        ),
+    };
+
+    let event_ctx = APIEventContext::for_namespace(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events,
+        warehouse_id,
+        provided_ns.clone(),
+        action.clone(),
+    );
+
+    let (event_ctx, (warehouse, ns_hierarchy)) = event_ctx.emit_authz(
+        authorizer
+            .load_and_authorize_namespace_action::<C>(
+                &request_metadata,
+                UserProvidedNamespace::new(warehouse_id, provided_ns.clone()),
+                action.clone(),
+                CachePolicy::Use,
+                state.v1_state.catalog.clone(),
+            )
+            .await,
+    )?;
+
+    let event_ctx = event_ctx.resolve(ResolvedNamespace {
+        warehouse,
+        namespace: ns_hierarchy.namespace.clone(),
+    });
+    let warehouse = &event_ctx.resolved().warehouse;
 
     // ------------------- BUSINESS LOGIC -------------------
     let table_id = guard.table_id();
@@ -185,9 +207,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let storage_profile = &warehouse.storage_profile;
 
     let table_location = determine_tabular_location(
-        &ns_hierarchy.namespace.namespace,
+        &ns_hierarchy,
         request.location.clone(),
         tabular_id,
+        &table,
         storage_profile,
     )?;
 
@@ -311,19 +334,14 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             .ok();
     }
 
-    state
-        .v1_state
-        .hooks
-        .create_table(
-            warehouse_id,
-            parameters,
-            Arc::new(request),
-            table_metadata.clone(),
-            metadata_location.map(Arc::new),
-            data_access,
-            Arc::new(request_metadata),
-        )
-        .await;
+    // Emit success event using the event context
+    event_ctx.emit_table_created_async(
+        table_metadata.clone(),
+        metadata_location.map(Arc::new),
+        data_access,
+        table.name,
+        Arc::new(request),
+    );
 
     Ok(load_table_result)
 }

@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH\n        upserted_role AS (\n            INSERT INTO \"role\" (id, name, description, source_id, provider_id, project_id)\n            VALUES (gen_random_uuid(), COALESCE($1, $3 || ' in Provider ' || $4), NULLIF($2, ''), $3, $4, $5)\n            ON CONFLICT ON CONSTRAINT unique_role_provider_source_in_project\n            DO UPDATE SET name        = COALESCE($1, \"role\".name),\n                          description = CASE WHEN $2 IS NULL THEN \"role\".description ELSE NULLIF($2, '') END\n            WHERE \"role\".name IS DISTINCT FROM COALESCE($1, \"role\".name)\n               OR \"role\".description IS DISTINCT FROM\n                  CASE WHEN $2 IS NULL THEN \"role\".description ELSE NULLIF($2, '') END\n            RETURNING id\n        ),\n        -- Fallback: when the upsert WHERE was false (nothing changed) upserted_role\n        -- returns no rows.  Union with a direct lookup so downstream CTEs always\n        -- have exactly one role id regardless of whether the row was written.\n        role_id AS (\n            SELECT id FROM upserted_role\n            UNION ALL\n            SELECT id FROM \"role\"\n            WHERE source_id = $3 AND provider_id = $4 AND project_id = $5\n              AND NOT EXISTS (SELECT 1 FROM upserted_role)\n        ),\n        user_input AS (\n            SELECT u.id,\n                   u.name,\n                   COALESCE(u.name, 'Nameless User with id ' || u.id) AS effective_name,\n                   u.email,\n                   NULLIF(u.email, '') AS effective_email,\n                   u.utype,\n                   COALESCE(u.utype, 'human'::user_type) AS effective_utype,\n                   u.updated_with\n            FROM UNNEST($6::TEXT[], $7::TEXT[], $8::TEXT[], $9::user_type[], $10::user_last_updated_with[])\n                AS u(id, name, email, utype, updated_with)\n        ),\n        upserted_users AS (\n            INSERT INTO users (id, name, email, last_updated_with, user_type)\n            SELECT id, effective_name, effective_email, updated_with, effective_utype\n            FROM user_input\n            ON CONFLICT (id) DO UPDATE SET\n                name              = COALESCE(\n                                        (SELECT name FROM user_input WHERE id = EXCLUDED.id),\n                                        users.name),\n                email             = CASE\n                                        WHEN (SELECT email FROM user_input WHERE id = EXCLUDED.id) IS NULL\n                                            THEN users.email\n                                        ELSE NULLIF(\n                                                (SELECT email FROM user_input WHERE id = EXCLUDED.id),\n                                                '')\n                                    END,\n                last_updated_with = EXCLUDED.last_updated_with,\n                user_type         = COALESCE(\n                                        (SELECT utype FROM user_input WHERE id = EXCLUDED.id),\n                                        users.user_type),\n                deleted_at        = null\n            WHERE users.name IS DISTINCT FROM COALESCE(\n                                                 (SELECT name FROM user_input WHERE id = EXCLUDED.id),\n                                                 users.name)\n               OR users.email IS DISTINCT FROM\n                  CASE WHEN (SELECT email FROM user_input WHERE id = EXCLUDED.id) IS NULL\n                           THEN users.email\n                       ELSE NULLIF((SELECT email FROM user_input WHERE id = EXCLUDED.id), '')\n                  END\n               OR users.user_type IS DISTINCT FROM COALESCE(\n                                                        (SELECT utype FROM user_input WHERE id = EXCLUDED.id),\n                                                        users.user_type)\n               OR users.deleted_at IS NOT NULL\n        ),\n        -- Remove members no longer in the desired set.\n        -- References user_input (all requested users) rather than upserted_users\n        -- so that unchanged rows skipped by the ON CONFLICT WHERE clause are\n        -- still treated as members-to-keep.\n        removed_members AS (\n            DELETE FROM role_assignment\n            WHERE role_id = (SELECT id FROM role_id)\n              AND user_id NOT IN (SELECT id FROM user_input)\n            RETURNING user_id\n        ),\n        added_members AS (\n            INSERT INTO role_assignment (user_id, role_id)\n            SELECT id, (SELECT id FROM role_id)\n            FROM user_input\n            ON CONFLICT (user_id, role_id) DO NOTHING\n            RETURNING user_id\n        ),\n        sync_ts AS (\n            INSERT INTO role_members_sync (role_id, synced_at)\n            VALUES ((SELECT id FROM role_id), $11)\n            ON CONFLICT (role_id) DO UPDATE SET synced_at = $11\n            RETURNING synced_at\n        )\n        SELECT\n            (SELECT id        FROM role_id)                                                       AS \"role_id!: Uuid\",\n            (SELECT synced_at FROM sync_ts)                                                       AS \"synced_at!\",\n            (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM added_members)   AS \"added_ids!: Vec<String>\",\n            (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM removed_members) AS \"removed_ids!: Vec<String>\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "synced_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "added_ids!: Vec<String>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "removed_ids!: Vec<String>",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "user_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "user_type",
+                  "kind": {
+                    "Enum": [
+                      "application",
+                      "human"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "user_last_updated_with[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "user_last_updated_with",
+                  "kind": {
+                    "Enum": [
+                      "create-endpoint",
+                      "config-call-creation",
+                      "update-endpoint",
+                      "role-provider"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "470b25047d1c0936dad4b560df9a0c3b40d501ec8ecb8f3823ea05dae4c3b68a"
+}

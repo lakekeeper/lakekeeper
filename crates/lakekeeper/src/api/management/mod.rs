@@ -47,8 +47,7 @@ pub mod v1 {
         RenameProjectRequest, Service as _,
     };
     use role::{
-        CreateRoleRequest, ListRolesQuery, ListRolesResponse, Role, SearchRoleRequest,
-        SearchRoleResponse, Service as _, UpdateRoleRequest,
+        CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest, Service as _, UpdateRoleRequest,
     };
     use serde::{Deserialize, Serialize};
     use server::{BootstrapRequest, ServerInfo, Service as _};
@@ -68,6 +67,43 @@ pub mod v1 {
         WarehouseStatisticsResponse,
     };
 
+    /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
+    /// This is useful for caching responses that are expensive to compute.
+    ///
+    /// # Example
+    /// ```ignore
+    /// impl_arc_into_response!(GetTaskDetailsResponse);
+    /// ```
+    ///
+    /// This generates:
+    /// ```ignore
+    /// pub struct GetTaskDetailsResponseRef(pub Arc<GetTaskDetailsResponse>);
+    ///
+    /// impl IntoResponse for GetTaskDetailsResponseRef {
+    ///     fn into_response(self) -> axum::response::Response {
+    ///         (http::StatusCode::OK, Json(self.0)).into_response()
+    ///     }
+    /// }
+    /// ```
+    macro_rules! impl_arc_into_response {
+        ($type_name:ident) => {
+            pastey::paste! {
+                #[derive(Clone, Debug)]
+                pub struct [<$type_name Ref>](pub Arc<$type_name>);
+
+                impl IntoResponse for [<$type_name Ref>] {
+                    fn into_response(self) -> axum::response::Response {
+                        (http::StatusCode::OK, Json(self.0)).into_response()
+                    }
+                }
+            }
+        };
+    }
+
+    pub(crate) use impl_arc_into_response;
+
+    #[cfg(feature = "open-api")]
+    use crate::api::management::v1::{role::RoleMetadata, tasks::GetTaskDetailsResponse};
     use crate::{
         ProjectId, WarehouseId,
         api::{
@@ -78,12 +114,15 @@ pub mod v1 {
                 check::{CatalogActionsBatchCheckRequest, CatalogActionsBatchCheckResponse},
                 lakekeeper_actions::GetAccessQuery,
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
-                role::{RoleMetadata, UpdateRoleSourceSystemRequest},
+                role::{
+                    ListRolesResponse, RoleMetadataRef, SearchRoleResponse,
+                    UpdateRoleSourceSystemRequest,
+                },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
                 task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
                 tasks::{
                     ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
-                    GetTaskDetailsResponse, ListProjectTasksRequest, ListProjectTasksResponse,
+                    GetTaskDetailsResponseRef, ListProjectTasksRequest, ListProjectTasksResponse,
                     ListTasksRequest, ListTasksResponse, Service,
                 },
                 user::{ListUsersQuery, ListUsersResponse},
@@ -148,8 +187,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperServerActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_server_actions(authorizer, &metadata, query).await?;
+        let relations = get_allowed_server_actions(api_context, metadata, query).await?;
 
         Ok((
             StatusCode::OK,
@@ -272,8 +310,8 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperUserActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
-        let relations = get_allowed_user_actions(authorizer, &metadata, query, user_id).await?;
+        let relations =
+            get_allowed_user_actions(api_context, metadata, query, Arc::new(user_id)).await?;
 
         Ok((
             StatusCode::OK,
@@ -429,7 +467,8 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<SearchRoleRequest>,
     ) -> Result<SearchRoleResponse> {
-        ApiServer::<C, A, S>::search_role(api_context, metadata, request).await
+        let response = ApiServer::<C, A, S>::search_role(api_context, metadata, request).await?;
+        Ok(response)
     }
 
     /// List Roles
@@ -450,7 +489,8 @@ pub mod v1 {
         Query(query): Query<ListRolesQuery>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<ListRolesResponse> {
-        ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await
+        let response = ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await?;
+        Ok(response)
     }
 
     /// Delete Role
@@ -493,7 +533,7 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+    ) -> Result<(StatusCode, Json<Role>)> {
         ApiServer::<C, A, S>::get_role(api_context, metadata, role_id)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -518,10 +558,10 @@ pub mod v1 {
         Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<RoleMetadata>)> {
-        ApiServer::<C, A, S>::get_role_metadata(api_context, metadata, role_id)
-            .await
-            .map(|role| (StatusCode::OK, Json(role)))
+    ) -> Result<RoleMetadataRef> {
+        let response =
+            ApiServer::<C, A, S>::get_role_metadata(api_context, metadata, role_id).await?;
+        Ok(RoleMetadataRef(response))
     }
 
     /// Update Role
@@ -541,7 +581,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleRequest>,
-    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+    ) -> Result<(StatusCode, Json<Role>)> {
         ApiServer::<C, A, S>::update_role(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -564,7 +604,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleSourceSystemRequest>,
-    ) -> Result<(StatusCode, Json<Arc<Role>>)> {
+    ) -> Result<(StatusCode, Json<Role>)> {
         ApiServer::<C, A, S>::update_role_source_system(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
@@ -587,7 +627,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperRoleActionsResponse>)> {
-        let relations = get_allowed_role_actions(api_context, &metadata, query, role_id).await?;
+        let relations = get_allowed_role_actions(api_context, metadata, query, role_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -811,11 +851,10 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperProjectActionsResponse>)> {
-        let authorizer = api_context.v1_state.authz;
         let project_id = metadata.require_project_id(None)?;
 
         let actions =
-            get_allowed_project_actions(authorizer, &metadata, query, &project_id).await?;
+            get_allowed_project_actions(api_context, metadata, query, &project_id).await?;
 
         Ok((
             StatusCode::OK,
@@ -1022,7 +1061,7 @@ pub mod v1 {
         Query(query): Query<GetAccessQuery>,
     ) -> Result<(StatusCode, Json<GetLakekeeperWarehouseActionsResponse>)> {
         let relations =
-            get_allowed_warehouse_actions::<A, C, S>(api_context, &metadata, query, warehouse_id)
+            get_allowed_warehouse_actions::<A, C, S>(api_context, metadata, query, warehouse_id)
                 .await?;
 
         Ok((
@@ -1395,7 +1434,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<GetLakekeeperTableActionsResponse>)> {
         let relations = get_allowed_table_actions::<A, C, S>(
             api_context,
-            &metadata,
+            metadata,
             query,
             warehouse_id,
             table_id,
@@ -1485,7 +1524,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<GetLakekeeperViewActionsResponse>)> {
         let relations = get_allowed_view_actions::<A, C, S>(
             api_context,
-            &metadata,
+            metadata,
             query,
             warehouse_id,
             view_id,
@@ -1575,7 +1614,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<GetLakekeeperNamespaceActionsResponse>)> {
         let relations = get_allowed_namespace_actions::<A, C, S>(
             api_context,
-            &metadata,
+            metadata,
             query,
             warehouse_id,
             namespace_id,
@@ -1714,11 +1753,18 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Query(query): Query<GetTaskDetailsQuery>,
-    ) -> Result<GetTaskDetailsResponse> {
+    ) -> Result<GetTaskDetailsResponseRef> {
         let warehouse_id = WarehouseId::from(warehouse_id);
         let task_id = TaskId::from(task_id);
-        ApiServer::<C, A, S>::get_task_details(warehouse_id, task_id, query, api_context, metadata)
-            .await
+        let response = ApiServer::<C, A, S>::get_task_details(
+            warehouse_id,
+            task_id,
+            query,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(GetTaskDetailsResponseRef(response))
     }
 
     /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
@@ -1898,7 +1944,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CatalogActionsBatchCheckRequest>,
     ) -> Result<Json<CatalogActionsBatchCheckResponse>> {
-        check::check_internal(api_context, &metadata, request)
+        check::check_internal(api_context, metadata, request)
             .await
             .map(Json)
             .map_err(Into::into)
@@ -1909,12 +1955,12 @@ pub mod v1 {
     #[serde(rename_all = "kebab-case")]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
-        pub tabulars: Vec<DeletedTabularResponse>,
+        pub tabulars: Arc<Vec<DeletedTabularResponse>>,
         /// Token to fetch the next page
         pub next_page_token: Option<String>,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     #[serde(rename_all = "kebab-case")]
     pub struct DeletedTabularResponse {

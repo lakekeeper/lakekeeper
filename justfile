@@ -32,7 +32,7 @@ fix:
     cargo sort -w
 
 sqlx-prepare:
-    cargo sqlx prepare --workspace -- --tests
+    cargo sqlx prepare --workspace -- --tests --features "sqlx-postgres"
 
 doc-test:
 	cargo test --no-fail-fast --doc --all-features --workspace

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
@@ -11,7 +13,7 @@ use crate::{
     },
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        TableId, ViewId,
+        ArcProjectId, DatabaseIntegrityError, TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
@@ -76,25 +78,19 @@ fn task_entity_from_db(
     warehouse_id: Option<Uuid>,
     entity_id: Option<Uuid>,
     entity_name: Option<Vec<String>>,
-) -> Result<TaskEntity, IcebergErrorResponse> {
+) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
         TaskEntityTypeDB::View | TaskEntityTypeDB::Table => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    ErrorModel::internal(
-                        "WarehouseId is missing for Warehouse task.",
-                        "InternalError",
-                        None,
+                    DatabaseIntegrityError::new(
+                        "WarehouseId is missing for table or view scoped task.",
                     )
                 })
                 .map(WarehouseId::from)?;
 
             let entity_id = entity_id.ok_or_else(|| {
-                ErrorModel::internal(
-                    "EntityId is missing for table or view scoped task.",
-                    "InternalError",
-                    None,
-                )
+                DatabaseIntegrityError::new("EntityId is missing for table or view scoped task.")
             })?;
 
             let entity_id = match entity_type {
@@ -108,11 +104,7 @@ fn task_entity_from_db(
             };
 
             let entity_name = entity_name.ok_or_else(|| {
-                ErrorModel::internal(
-                    "Entity name is missing for table or view scoped task.",
-                    "InternalError",
-                    None,
-                )
+                DatabaseIntegrityError::new("Entity name is missing for table or view scoped task.")
             })?;
 
             Ok(TaskEntity::EntityInWarehouse {
@@ -125,11 +117,7 @@ fn task_entity_from_db(
         TaskEntityTypeDB::Warehouse => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    ErrorModel::internal(
-                        "WarehouseId is missing for warehouse scoped task.",
-                        "InternalError",
-                        None,
-                    )
+                    DatabaseIntegrityError::new("WarehouseId is missing for warehouse scoped task.")
                 })
                 .map(WarehouseId::from)?;
             Ok(TaskEntity::Warehouse { warehouse_id })
@@ -432,13 +420,14 @@ pub(crate) async fn pick_task(
 
     if let Some(task) = x {
         tracing::trace!("Picked up task: {:?}", task);
-        let project_id = ProjectId::from_db_unchecked(task.project_id);
+        let project_id = Arc::new(ProjectId::from_db_unchecked(task.project_id));
         let scope = task_entity_from_db(
             task.entity_type,
             task.warehouse_id,
             task.entity_id,
             task.entity_name.clone(),
-        )?;
+        )
+        .map_err(ErrorModel::from)?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
                 project_id,
@@ -832,11 +821,11 @@ pub(crate) async fn get_task_queue_config<
 pub(crate) async fn set_task_queue_config(
     transaction: &mut PgConnection,
     queue_name: &TaskQueueName,
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     warehouse_id: Option<WarehouseId>,
-    config: SetTaskQueueConfigRequest,
+    config: &SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
-    let serialized = config.queue_config.0;
+    let serialized = &config.queue_config.0;
     let max_time_since_last_heartbeat =
         if let Some(max_seconds_since_last_heartbeat) = config.max_seconds_since_last_heartbeat {
             Some(PgInterval {
@@ -1291,7 +1280,7 @@ mod test {
         conn: &mut PgConnection,
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         scheduled_for: Option<DateTime<Utc>>,
         payload: Option<serde_json::Value>,
         entity: TaskEntity,
@@ -1384,7 +1373,7 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    pub(crate) async fn setup_warehouse(pool: PgPool) -> (WarehouseId, ProjectId) {
+    pub(crate) async fn setup_warehouse(pool: PgPool) -> (WarehouseId, ArcProjectId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -1402,7 +1391,7 @@ mod test {
 
     pub(crate) async fn setup_two_warehouses(
         pool: PgPool,
-    ) -> (ProjectId, WarehouseId, WarehouseId) {
+    ) -> (ArcProjectId, WarehouseId, WarehouseId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -2027,7 +2016,7 @@ mod test {
     }
 
     fn task_schedule_metadata(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         entity_id: WarehouseTaskEntityId,
     ) -> ScheduleTaskMetadata {
@@ -2188,7 +2177,7 @@ mod test {
             &tq_name,
             project_id.clone(),
             Some(warehouse_id),
-            config,
+            &config,
         )
         .await
         .unwrap();
@@ -2228,7 +2217,7 @@ mod test {
             &warehouse_task_queue_name,
             project_id.clone(),
             Some(warehouse_id),
-            warehouse_config,
+            &warehouse_config,
         )
         .await
         .unwrap();
@@ -2245,7 +2234,7 @@ mod test {
             &project_task_queue_name,
             project_id.clone(),
             None,
-            project_config,
+            &project_config,
         )
         .await
         .unwrap();
@@ -2284,7 +2273,7 @@ mod test {
             &task_queue_name,
             project_id.clone(),
             Some(warehouse_id),
-            warehouse_config,
+            &warehouse_config,
         )
         .await
         .unwrap();
@@ -2300,7 +2289,7 @@ mod test {
             &task_queue_name,
             project_id.clone(),
             None,
-            project_config,
+            &project_config,
         )
         .await
         .unwrap();
@@ -2334,7 +2323,7 @@ mod test {
             &tq_name,
             project_id.clone(),
             Some(warehouse_id),
-            config,
+            &config,
         )
         .await
         .unwrap();
@@ -3389,8 +3378,8 @@ mod test {
         assert_eq!(now_task.attempt(), 2); // Attempt 2 now as the task used to be running
     }
 
-    async fn setup_project(state: CatalogState) -> crate::api::Result<ProjectId> {
-        let project_id = ProjectId::new_random();
+    async fn setup_project(state: CatalogState) -> crate::api::Result<ArcProjectId> {
+        let project_id = Arc::new(ProjectId::new_random());
         let mut transaction = PostgresTransaction::begin_write(state).await?;
         PostgresBackend::create_project(
             &project_id,
@@ -3406,7 +3395,7 @@ mod test {
         conn: &mut PgConnection,
         queue_name: &TaskQueueName,
         config: Value,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
     ) -> crate::api::Result<()> {
         set_task_queue_config(
@@ -3414,7 +3403,7 @@ mod test {
             queue_name,
             project_id,
             warehouse_id,
-            SetTaskQueueConfigRequest {
+            &SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(config),
                 max_seconds_since_last_heartbeat: None,
             },

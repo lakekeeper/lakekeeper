@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ops::Deref};
+use std::{collections::HashSet, ops::Deref, sync::Arc};
 
 use sqlx::{PgPool, types::Json};
 
@@ -231,7 +231,7 @@ pub(crate) async fn get_project(
 
     if let Some(project) = project {
         Ok(Some(GetProjectResponse {
-            project_id: ProjectId::from_db_unchecked(project.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(project.project_id)),
             name: project.project_name,
         }))
     } else {
@@ -296,7 +296,7 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
         Ok(ResolvedWarehouse {
             warehouse_id: value.warehouse_id.into(),
             name: value.warehouse_name,
-            project_id: ProjectId::from_db_unchecked(value.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(value.project_id)),
             storage_profile: value.storage_profile.deref().clone(),
             storage_secret_id: value.storage_secret_id.map(Into::into),
             status: value.status,
@@ -447,7 +447,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     Ok(projects
         .into_iter()
         .map(|project| GetProjectResponse {
-            project_id: ProjectId::from_db_unchecked(project.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(project.project_id)),
             name: project.project_name,
         })
         .collect())
@@ -796,11 +796,10 @@ pub(crate) mod test {
         project_id: Option<&ProjectId>,
         secret_id: Option<SecretId>,
         create_project: bool,
-    ) -> (crate::ProjectId, crate::WarehouseId) {
-        let project_id = project_id.map_or(
-            ProjectId::from(uuid::Uuid::nil()),
-            std::borrow::ToOwned::to_owned,
-        );
+    ) -> (crate::service::ArcProjectId, crate::WarehouseId) {
+        let project_id = project_id.map_or(Arc::new(ProjectId::from(uuid::Uuid::nil())), |id| {
+            Arc::new(id.clone())
+        });
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
@@ -848,7 +847,7 @@ pub(crate) mod test {
 
         let fetched_warehouse = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
-            &ProjectId::from(uuid::Uuid::nil()),
+            &Arc::new(ProjectId::from(uuid::Uuid::nil())),
             WarehouseStatus::active(),
             state.clone(),
         )
@@ -865,7 +864,7 @@ pub(crate) mod test {
     async fn test_list_projects(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let project_id_1 = ProjectId::from(uuid::Uuid::new_v4());
+        let project_id_1 = Arc::new(ProjectId::from(uuid::Uuid::new_v4()));
         initialize_warehouse(state.clone(), None, Some(&project_id_1), None, true).await;
 
         let mut trx = PostgresTransaction::begin_read(state.clone())
@@ -882,7 +881,7 @@ pub(crate) mod test {
         assert_eq!(projects.len(), 1);
         assert!(projects.contains(&project_id_1));
 
-        let project_id_2 = ProjectId::from(uuid::Uuid::new_v4());
+        let project_id_2 = Arc::new(ProjectId::from(uuid::Uuid::new_v4()));
         initialize_warehouse(state.clone(), None, Some(&project_id_2), None, true).await;
 
         let mut trx = PostgresTransaction::begin_read(state.clone())
@@ -902,7 +901,7 @@ pub(crate) mod test {
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
         let projects = PostgresBackend::list_projects(
-            Some(HashSet::from_iter(vec![project_id_1.clone()])),
+            Some(HashSet::from_iter(vec![(*project_id_1).clone()])),
             trx.transaction(),
         )
         .await

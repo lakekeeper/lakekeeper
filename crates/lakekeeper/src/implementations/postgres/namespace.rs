@@ -376,7 +376,7 @@ pub(crate) async fn list_namespaces(
                 INNER JOIN warehouse w ON w.warehouse_id = $1
                 WHERE n.warehouse_id = $1
                 AND w.status = 'active'
-                AND array_length("namespace_name", 1) = $2 + 1
+                AND n.depth = $2 + 1
                 AND "namespace_name"[1:$2] = $3
                 --- PAGINATION
                 AND ((n.created_at > $4 OR $4 IS NULL) OR (n.created_at = $4 AND n.namespace_id > $5))
@@ -443,7 +443,7 @@ pub(crate) async fn list_namespaces(
                 FROM namespace n
                 INNER JOIN warehouse w ON w.warehouse_id = $1
                 WHERE n.warehouse_id = $1
-                AND array_length("namespace_name", 1) = 1
+                AND n.depth = 1
                 AND w.status = 'active'
                 AND ((n.created_at > $2 OR $2 IS NULL) OR (n.created_at = $2 AND n.namespace_id > $3))
                 ORDER BY n.created_at, n.namespace_id ASC
@@ -675,7 +675,11 @@ pub(crate) async fn drop_namespace(
         Some(namespace_id),
     )?;
 
-    if !recursive && (!info.child_tabulars.is_empty() || !info.child_namespaces.is_empty()) {
+    if !recursive
+        && (!info.child_tabulars.is_empty()
+            || !info.child_tabulars_deleted.is_empty()
+            || !info.child_namespaces.is_empty())
+    {
         return Err(
             NamespaceNotEmpty::new(warehouse_id, namespace_ident.clone()).append_detail(format!("Contains {} tables/views, {} soft-deleted tables/views and {} child namespaces.", 
                 info.child_tabulars.len(),
@@ -973,7 +977,7 @@ pub(crate) mod tests {
         implementations::postgres::{
             CatalogState, PostgresTransaction,
             tabular::{
-                set_tabular_protected,
+                mark_tabular_as_deleted, set_tabular_protected,
                 table::{load_tables, tests::initialize_table},
             },
         },
@@ -1365,6 +1369,64 @@ pub(crate) mod tests {
             result,
             CatalogNamespaceDropError::NamespaceNotEmpty(_)
         ));
+    }
+
+    // Regression test: a namespace containing only soft-deleted tabulars (pending
+    // expiration) must not be droppable non-recursively.  Before the fix the
+    // non-recursive guard checked only active tabulars, so the FK CASCADE on
+    // namespace deletion would hard-delete the soft-deleted rows and orphan their
+    // expiration tasks.
+    #[sqlx::test]
+    async fn test_cannot_drop_namespace_with_soft_deleted_tabulars(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let staged = false;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
+
+        let namespace_id = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            Into::<NamespaceIdent>::into(table.namespace.clone()),
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("Namespace should exist")
+        .namespace_id();
+
+        // Soft-delete the table — it stays in the tabular table with deleted_at set.
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        mark_tabular_as_deleted(
+            warehouse_id,
+            TabularId::Table(table.table_id),
+            false,
+            None,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // Non-recursive drop must fail: the namespace still contains a soft-deleted tabular.
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(result, CatalogNamespaceDropError::NamespaceNotEmpty(_)),
+            "expected NamespaceNotEmpty, got {result:?}"
+        );
     }
 
     #[sqlx::test]

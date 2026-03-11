@@ -1,10 +1,10 @@
 pub mod authn;
 pub mod authz;
+pub(crate) mod cache_metrics;
 mod catalog_store;
 pub mod contract_verification;
-pub mod endpoint_hooks;
 pub mod endpoint_statistics;
-pub mod event_publisher;
+pub mod events;
 pub mod health;
 pub mod secrets;
 pub mod storage;
@@ -25,12 +25,12 @@ use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::{ThreadSafe as ServiceState, management::v1::server::LicenseStatus},
-    service::{contract_verification::ContractVerifiers, endpoint_hooks::EndpointHookCollection},
+    service::{contract_verification::ContractVerifiers, events::EventDispatcher},
 };
 
 mod identifier;
 
-pub use identifier::{generic::*, project::ProjectId};
+pub use identifier::{generic::*, project::*, role::*};
 pub use post_migration_hooks::run_post_migration_hooks;
 
 // ---------------- State ----------------
@@ -40,7 +40,7 @@ pub struct State<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> {
     pub catalog: C::State,
     pub secrets: S,
     pub contract_verifiers: ContractVerifiers,
-    pub hooks: EndpointHookCollection,
+    pub events: EventDispatcher,
     pub registered_task_queues: RegisteredTaskQueues,
     pub license_status: &'static LicenseStatus,
 }

@@ -7,7 +7,8 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    NamespaceId, ProjectId, RoleId, TableId, ViewId, WarehouseId, storage::StorageProfile,
+    NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
+    storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -23,7 +24,7 @@ use crate::{
         management::v1::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
             tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
@@ -31,7 +32,7 @@ use crate::{
         },
     },
     service::{
-        TabularId, TabularIdentBorrowed,
+        ArcProjectId, RoleProviderId, RoleSourceId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -46,6 +47,7 @@ pub use namespace::*;
 mod tabular;
 pub use tabular::*;
 pub(crate) mod namespace_cache;
+pub(crate) mod role_cache;
 mod warehouse;
 pub(crate) mod warehouse_cache;
 pub use warehouse::*;
@@ -65,6 +67,9 @@ mod table;
 pub use table::*;
 mod role;
 pub use role::*;
+mod role_assignment;
+pub use role_assignment::*;
+pub(crate) mod role_assignments_cache;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -149,8 +154,8 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub role_name: &'a str,
     #[builder(default)]
     pub description: Option<&'a str>,
-    #[builder(default)]
-    pub source_id: Option<&'a str>,
+    pub source_id: &'a RoleSourceId,
+    pub provider_id: &'a RoleProviderId,
 }
 
 #[async_trait::async_trait]
@@ -517,7 +522,7 @@ where
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;
@@ -526,7 +531,6 @@ where
     async fn delete_roles_impl<'a>(
         project_id: &ProjectId,
         role_id_filter: Option<&[RoleId]>,
-        source_id_filter: Option<&[&str]>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
@@ -535,6 +539,46 @@ where
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
+
+    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
+    /// the provided idents. Ordering is unspecified. No pagination.
+    async fn list_roles_by_idents_impl(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Role>, CatalogBackendError>;
+
+    // ---------------- Role Assignment Management ----------------
+    async fn sync_role_members_by_ident_impl<'a>(
+        project_id: &ProjectId,
+        role: &CatalogRoleForAssignment<'_>,
+        members: &[CatalogUserRoleAssignmentUser<'_>],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<SyncRoleMembersResult, SyncRoleMembersError>;
+
+    async fn sync_user_role_assignments_by_provider_impl<'a>(
+        user: &CatalogUserRoleAssignmentUser<'_>,
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        roles: &[CatalogRoleForAssignment<'_>],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError>;
+
+    async fn list_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<ListUserRoleAssignmentsResult, CatalogBackendError>;
+
+    async fn list_role_assignments_for_role_impl(
+        role_id: RoleId,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
+
+    async fn list_role_assignments_for_role_by_ident_impl(
+        project_id: &ProjectId,
+        role_ident: &RoleIdent,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
@@ -571,7 +615,7 @@ where
     /// We'll return statistics for the time-frame end - interval until end.
     /// If `status_codes` is None, return all status codes.
     async fn get_endpoint_statistics(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseFilter,
         range_specifier: TimeWindowSelector,
         status_codes: Option<&[u16]>,
@@ -589,7 +633,7 @@ where
         scope: TaskResolveScope,
         task_ids: &[TaskId],
         state: Self::State,
-    ) -> Result<Vec<ResolvedTask>>;
+    ) -> Result<Vec<ResolvedTask>, ResolveTasksError>;
 
     async fn record_task_success_impl(
         id: TaskAttemptId,
@@ -611,12 +655,12 @@ where
         scope: TaskDetailsScope,
         num_attempts: u16, // Number of attempts to retrieve in the task details
         state: Self::State,
-    ) -> Result<Option<TaskDetails>>;
+    ) -> Result<Option<TaskDetails>, GetTaskDetailsError>;
 
     /// List tasks
     async fn list_tasks_impl(
         filter: &TaskFilter,
-        query: ListTasksRequest,
+        query: &ListTasksRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<TaskList>;
 
@@ -670,10 +714,10 @@ where
     ) -> Result<()>;
 
     async fn set_task_queue_config_impl(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
-        config: SetTaskQueueConfigRequest,
+        config: &SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

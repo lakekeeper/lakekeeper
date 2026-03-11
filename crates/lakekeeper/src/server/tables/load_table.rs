@@ -8,7 +8,7 @@ use crate::{
     api::iceberg::v1::{
         ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
         TableParameters,
-        tables::{DataAccessMode, LoadTableFilters},
+        tables::{LoadTableFilters, LoadTableRequest},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -19,7 +19,11 @@ use crate::{
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId, TabularInfo,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
-        authz::{Authorizer, AuthzWarehouseOps},
+        authz::{Authorizer, AuthzWarehouseOps, CatalogTableAction},
+        events::{
+            APIEventContext,
+            context::{ResolvedTable, authz_to_error_no_audit},
+        },
         secrets::SecretStore,
     },
 };
@@ -40,12 +44,17 @@ fn etag_already_present(etags: &[ETag], etag: &ETag) -> bool {
 #[allow(clippy::too_many_lines)]
 pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
-    data_access: impl Into<DataAccessMode> + Send,
-    filters: LoadTableFilters,
+    request: LoadTableRequest,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-    etags: Vec<ETag>,
 ) -> Result<LoadTableResultOrNotModified> {
+    let LoadTableRequest {
+        data_access,
+        filters,
+        etags,
+        referenced_by: _,
+    } = request;
+
     // ------------------- VALIDATIONS -------------------
     let TableParameters { prefix, table } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -63,18 +72,34 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     let authorizer = state.v1_state.authz;
     let catalog_state = state.v1_state.catalog;
 
-    let (warehouse, table_info, storage_permissions) = authorize_load_table::<C, A>(
-        &request_metadata,
-        table,
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events,
         warehouse_id,
-        TabularListFlags::active(),
-        authorizer.clone(),
-        catalog_state.clone(),
-    )
-    .await?;
+        table.clone(),
+        CatalogTableAction::GetMetadata,
+    );
+
+    let (event_ctx, (warehouse, table_info, storage_permissions)) = event_ctx.emit_authz(
+        authorize_load_table::<C, A>(
+            &request_metadata,
+            table,
+            warehouse_id,
+            TabularListFlags::active(),
+            authorizer.clone(),
+            catalog_state.clone(),
+        )
+        .await,
+    )?;
+
+    let mut event_ctx = event_ctx.resolve(ResolvedTable {
+        warehouse,
+        table: Arc::new(table_info),
+        storage_permissions,
+    });
 
     // ------------------- ETAG CHECK -------------------
-    let etag = get_etag(&table_info);
+    let etag = get_etag(&event_ctx.resolved().table);
     if let Some(etag_value) = etag
         .as_ref()
         .map(|e| e.as_str().trim_matches('"'))
@@ -96,8 +121,8 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         warehouse_version,
     } = load_table_inner::<C>(
         warehouse_id,
-        table_info.table_id(),
-        table_info.table_ident(),
+        event_ctx.resolved().table.table_id(),
+        event_ctx.resolved().table.table_ident(),
         false,
         &filters,
         &mut t,
@@ -106,7 +131,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     t.commit().await?;
 
     // Refetch warehouse if version is stale
-    let warehouse = if warehouse.version < warehouse_version {
+    if event_ctx.resolved().warehouse.version < warehouse_version {
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
             WarehouseStatus::active(),
@@ -114,10 +139,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             catalog_state.clone(),
         )
         .await;
-        authorizer.require_warehouse_presence(warehouse_id, warehouse)?
-    } else {
-        warehouse
-    };
+        let fresh_warehouse = authorizer
+            .require_warehouse_presence(warehouse_id, warehouse)
+            .map_err(authz_to_error_no_audit)?;
+        event_ctx.resolved_mut().warehouse = fresh_warehouse;
+    }
+    let warehouse = &event_ctx.resolved().warehouse;
 
     let table_location =
         parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -130,12 +157,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             warehouse
                 .storage_profile
                 .generate_table_config(
-                    data_access.into(),
+                    data_access,
                     storage_secret_ref,
                     &table_location,
                     storage_permissions,
                     &request_metadata,
-                    &table_info,
+                    &*event_ctx.resolved().table,
                 )
                 .await?,
         )
@@ -152,9 +179,14 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         })
     });
 
+    let metadata_ref = Arc::new(table_metadata);
+    let metadata_location_ref = metadata_location.map(Arc::new);
+
+    event_ctx.emit_table_loaded_async(metadata_ref.clone(), metadata_location_ref.clone());
+
     let load_table_result = LoadTableResult {
-        metadata_location: metadata_location.as_ref().map(ToString::to_string),
-        metadata: Arc::new(table_metadata),
+        metadata_location: metadata_location_ref.as_ref().map(ToString::to_string),
+        metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
     };
@@ -242,8 +274,8 @@ mod tests {
                 NamespaceParameters, TableParameters,
                 namespace::NamespaceService as _,
                 tables::{
-                    DataAccess, LoadTableFilters, LoadTableResultOrNotModified, SnapshotsQuery,
-                    TablesService as _,
+                    DataAccess, LoadTableFilters, LoadTableRequest, LoadTableResultOrNotModified,
+                    SnapshotsQuery, TablesService as _,
                 },
             },
             management::v1::warehouse::TabularDeleteProfile,
@@ -544,11 +576,9 @@ mod tests {
 
         let result = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().filters(filters).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -600,11 +630,9 @@ mod tests {
 
         let result = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().filters(filters).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -649,15 +677,11 @@ mod tests {
         };
 
         // Test with default LoadTableFilters (should use SnapshotsQuery::All by default)
-        let filters = LoadTableFilters::default();
-
         let result = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -773,11 +797,9 @@ mod tests {
 
         let result = CatalogServer::load_table(
             table_params.clone(),
-            DataAccess::not_specified(),
-            filters,
+            LoadTableRequest::builder().filters(filters).build(),
             ctx.clone(),
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -802,11 +824,9 @@ mod tests {
 
         let result_all = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters_all,
+            LoadTableRequest::builder().filters(filters_all).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -846,11 +866,9 @@ mod tests {
 
         let result_all = CatalogServer::load_table(
             table_params.clone(),
-            DataAccess::not_specified(),
-            filters_all,
+            LoadTableRequest::builder().filters(filters_all).build(),
             ctx.clone(),
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -861,11 +879,9 @@ mod tests {
 
         let result_refs = CatalogServer::load_table(
             table_params,
-            DataAccess::not_specified(),
-            filters_refs,
+            LoadTableRequest::builder().filters(filters_refs).build(),
             ctx,
             random_request_metadata(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -917,20 +933,15 @@ mod tests {
             table: table_identifier.clone(),
         };
 
-        let data_access = DataAccess::not_specified();
-        let filters = LoadTableFilters::default();
-
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec![etag.as_str().trim_matches('"').into()];
         let load_table_result = load_table(
             parameters,
-            data_access,
-            filters,
+            LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-            etags,
         )
         .await;
         let Ok(result) = load_table_result else {
@@ -953,9 +964,6 @@ mod tests {
             table: table_identifier.clone(),
         };
 
-        let data_access = DataAccess::not_specified();
-        let filters = LoadTableFilters::default();
-
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
@@ -966,11 +974,9 @@ mod tests {
         ];
         let load_table_result = load_table(
             parameters,
-            data_access,
-            filters,
+            LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-            etags,
         )
         .await;
         let Ok(result) = load_table_result else {
@@ -991,20 +997,15 @@ mod tests {
             table: table_identifier.clone(),
         };
 
-        let data_access = DataAccess::not_specified();
-        let filters = LoadTableFilters::default();
-
         let request_metadata = random_request_metadata();
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec!["*".into()];
         let load_table_result = load_table(
             parameters,
-            data_access,
-            filters,
+            LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-            etags,
         )
         .await;
         let Ok(result) = load_table_result else {

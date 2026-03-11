@@ -1,4 +1,4 @@
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     api::RequestMetadata,
@@ -6,8 +6,13 @@ use crate::{
         Actor, ServerId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
-            MustUse, UserOrRole,
+            AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogServerAction, IsAllowedActionError, MustUse,
+            UserOrRole,
+        },
+        events::{
+            AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,
+            delegate_authorization_failure_source,
         },
     },
 };
@@ -25,37 +30,77 @@ impl ServerAction for CatalogServerAction {}
 pub struct AuthZServerActionForbidden {
     server_id: ServerId,
     action: String,
-    actor: Actor,
 }
 impl AuthZServerActionForbidden {
     #[must_use]
-    pub fn new(server_id: ServerId, action: impl ServerAction, actor: Actor) -> Self {
+    pub fn new(server_id: ServerId, action: impl ServerAction) -> Self {
         Self {
             server_id,
             action: action.to_string(),
-            actor,
         }
     }
 }
-impl From<AuthZServerActionForbidden> for ErrorModel {
-    fn from(err: AuthZServerActionForbidden) -> Self {
-        let AuthZServerActionForbidden {
-            server_id,
-            action,
-            actor,
-        } = err;
+impl AuthorizationFailureSource for AuthZServerActionForbidden {
+    fn into_error_model(self) -> ErrorModel {
+        let AuthZServerActionForbidden { server_id, action } = self;
         ErrorModel::forbidden(
-            format!("Server action `{action}` forbidden for {actor} on server `{server_id}`",),
+            format!("Server action `{action}` forbidden on server `{server_id}`",),
             "ServerActionForbidden",
             None,
         )
     }
-}
-impl From<AuthZServerActionForbidden> for IcebergErrorResponse {
-    fn from(err: AuthZServerActionForbidden) -> Self {
-        ErrorModel::from(err).into()
+
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 }
+
+// --------------------------- Assume Role Errors ---------------------------
+#[derive(Debug, PartialEq, Eq)]
+pub struct AssumeRoleForbidden {
+    pub(crate) role: UserProvidedRole,
+}
+impl AssumeRoleForbidden {
+    #[must_use]
+    pub fn new(role: UserProvidedRole) -> Self {
+        Self { role }
+    }
+}
+impl AuthorizationFailureSource for AssumeRoleForbidden {
+    fn into_error_model(self) -> ErrorModel {
+        let AssumeRoleForbidden { role } = self;
+        ErrorModel::forbidden(
+            format!("Assume {role} forbidden",),
+            "AssumeRoleForbidden",
+            None,
+        )
+    }
+
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+}
+#[derive(Debug, derive_more::From)]
+pub enum CheckActorError {
+    AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
+    AssumeRoleForbidden(AssumeRoleForbidden),
+    BadRequest(AuthzBadRequest),
+}
+
+impl From<AuthzBackendErrorOrBadRequest> for CheckActorError {
+    fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
+        match err {
+            AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
+        }
+    }
+}
+
+delegate_authorization_failure_source!(CheckActorError => {
+    AuthorizationBackendUnavailable,
+    AssumeRoleForbidden,
+    BadRequest
+});
 
 // --------------------------- Return Error types ---------------------------
 #[derive(Debug, derive_more::From)]
@@ -64,31 +109,41 @@ pub enum RequireServerActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    BadRequest(AuthzBadRequest),
+}
+impl From<AuthzBackendErrorOrBadRequest> for RequireServerActionError {
+    fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
+        match err {
+            AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
+        }
+    }
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireServerActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
         }
     }
 }
-impl From<RequireServerActionError> for ErrorModel {
-    fn from(err: RequireServerActionError) -> Self {
+impl From<IsAllowedActionError> for RequireServerActionError {
+    fn from(err: IsAllowedActionError) -> Self {
         match err {
-            RequireServerActionError::AuthZServerActionForbidden(e) => e.into(),
-            RequireServerActionError::AuthorizationBackendUnavailable(e) => e.into(),
-            RequireServerActionError::CannotInspectPermissions(e) => e.into(),
-            RequireServerActionError::AuthorizationCountMismatch(e) => e.into(),
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
-impl From<RequireServerActionError> for IcebergErrorResponse {
-    fn from(err: RequireServerActionError) -> Self {
-        ErrorModel::from(err).into()
-    }
-}
+delegate_authorization_failure_source!(RequireServerActionError => {
+    AuthZServerActionForbidden,
+    AuthorizationBackendUnavailable,
+    CannotInspectPermissions,
+    AuthorizationCountMismatch,
+    BadRequest
+});
 
 // --------------------------- Server Ops ---------------------------
 
@@ -99,7 +154,7 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         action: impl Into<Self::ServerAction> + Send + Sync + Copy,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_server_actions_arr(metadata, for_user, &[action])
             .await?
@@ -112,7 +167,7 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         actions: &[A],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
@@ -147,7 +202,7 @@ pub trait AuthZServerOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         actions: &[A; N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_server_actions_vec(metadata, for_user, actions)
             .await?
@@ -173,10 +228,7 @@ pub trait AuthZServerOps: Authorizer {
         {
             Ok(())
         } else {
-            Err(
-                AuthZServerActionForbidden::new(self.server_id(), action, metadata.actor().clone())
-                    .into(),
-            )
+            Err(AuthZServerActionForbidden::new(self.server_id(), action).into())
         }
     }
 
@@ -184,7 +236,7 @@ pub trait AuthZServerOps: Authorizer {
         &self,
         actor: &Actor,
         request_metadata: &RequestMetadata,
-    ) -> Result<(), ErrorModel> {
+    ) -> Result<(), CheckActorError> {
         match actor {
             Actor::Principal(_user_id) => Ok(()),
             Actor::Anonymous => Ok(()),
@@ -193,19 +245,17 @@ pub trait AuthZServerOps: Authorizer {
                 assumed_role,
             } => {
                 let assume_role_allowed = self
-                    .check_assume_role_impl(principal, *assumed_role, request_metadata)
+                    .check_assume_role_impl(principal, assumed_role, request_metadata)
                     .await?;
 
                 if assume_role_allowed {
                     Ok(())
                 } else {
-                    Err(ErrorModel::forbidden(
-                        format!(
-                            "Actor `{principal}` is not allowed to assume role `{assumed_role}`"
-                        ),
-                        "RoleAssumptionNotAllowed",
-                        None,
-                    ))
+                    Err(AssumeRoleForbidden::new(UserProvidedRole::Ident {
+                        project_id: assumed_role.project_id().clone(),
+                        ident: assumed_role.ident_arc(),
+                    })
+                    .into())
                 }
             }
         }
@@ -214,7 +264,7 @@ pub trait AuthZServerOps: Authorizer {
     async fn can_search_users(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<MustUse<bool>, AuthorizationBackendUnavailable> {
+    ) -> Result<MustUse<bool>, AuthzBackendErrorOrBadRequest> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
@@ -235,7 +285,6 @@ pub trait AuthZServerOps: Authorizer {
             Err(AuthZServerActionForbidden {
                 server_id: self.server_id(),
                 action: "search_users".to_string(),
-                actor: metadata.actor().clone(),
             }
             .into())
         }

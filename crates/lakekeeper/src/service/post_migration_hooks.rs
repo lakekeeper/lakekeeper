@@ -76,7 +76,7 @@ async fn initialize_cron_tasks<C: CatalogStore>(state: C::State) -> anyhow::Resu
 async fn get_scheduled_project_ids<C: CatalogStore>(
     queue_name: &crate::service::tasks::TaskQueueName,
     transaction: &mut <C as CatalogStore>::Transaction,
-) -> anyhow::Result<HashSet<crate::ProjectId>> {
+) -> anyhow::Result<HashSet<crate::service::ArcProjectId>> {
     const MAX_ITERATIONS: usize = 100;
 
     let mut project_ids = HashSet::new();
@@ -94,7 +94,7 @@ async fn get_scheduled_project_ids<C: CatalogStore>(
 
         let response = C::list_tasks(
             &TaskFilter::All,
-            ListTasksRequest::builder()
+            &ListTasksRequest::builder()
                 .status(Some(vec![TaskStatus::Scheduled, TaskStatus::Running]))
                 .queue_name(Some(vec![queue_name.clone()]))
                 .page_size(Some(CONFIG.pagination_size_max.into()))

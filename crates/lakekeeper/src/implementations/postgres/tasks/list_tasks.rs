@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use chrono::DateTime;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
@@ -51,7 +51,8 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         row.warehouse_id,
         row.entity_id,
         row.entity_name.clone(),
-    )?;
+    )
+    .map_err(ErrorModel::from)?;
 
     let status = task_status_from_db(row.task_status, row.task_log_status)?;
 
@@ -62,7 +63,7 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         },
         queue_name: row.queue_name.into(),
         task_metadata: TaskMetadata {
-            project_id: ProjectId::from_db_unchecked(row.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
             entity: scope,
             parent_task_id: row.parent_task_id.map(TaskId::from),
             scheduled_for: row.attempt_scheduled_for,
@@ -97,7 +98,7 @@ fn categorize_task_statuses(
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn list_tasks(
     filter: &TaskFilter,
-    query: ListTasksRequest,
+    query: &ListTasksRequest,
     transaction: &mut PgConnection,
 ) -> Result<TaskList, IcebergErrorResponse> {
     let ListTasksRequest {
@@ -108,7 +109,7 @@ pub(crate) async fn list_tasks(
         created_before,
         page_token,
         page_size,
-    } = query;
+    } = (*query).clone();
 
     let (warehouse_id, project_id, include_sub_tasks) = match filter {
         TaskFilter::WarehouseId {
@@ -148,7 +149,7 @@ pub(crate) async fn list_tasks(
         .collect_vec();
 
     let status_filter_is_none = status.is_none();
-    let status_filter = status.unwrap_or_default();
+    let status_filter = status.clone().unwrap_or_default();
     let (task_status_filter, task_log_status_filter) = categorize_task_statuses(&status_filter);
 
     let entities_filter_is_none = entities.is_none();
@@ -278,7 +279,7 @@ pub(crate) async fn list_tasks(
         warehouse_id.map(|id| **id), // 1
         page_size as i64, // 2
         pagination_ts, // 3
-        pagination_task_id.map(|id| *id), // 4
+        pagination_task_id.copied(), // 4
         &queue_names, // 5
         queue_names_is_none, // 6
         task_status_filter.iter().collect_vec() as Vec<_>, // 7
@@ -289,7 +290,7 @@ pub(crate) async fn list_tasks(
         entities_filter_is_none, // 12
         created_after, // 13
         created_before, // 14
-        &project_id.map(ProjectId::as_str).unwrap_or_default(), // 15
+        &project_id.map(|p| p.as_str()).unwrap_or_default(), // 15
         warehouse_id.is_none(), // 16
         include_sub_tasks, // 17
         project_id.is_none(), // 18
@@ -341,6 +342,7 @@ mod tests {
             pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
         },
         service::{
+            ArcProjectId,
             authz::AllowAllAuthorizer,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ScheduleTaskMetadata, TaskEntity, TaskInput,
@@ -388,7 +390,7 @@ mod tests {
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         entity_id: WarehouseTaskEntityId,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -409,7 +411,7 @@ mod tests {
         queue_name: &TaskQueueName,
         entity_id: WarehouseTaskEntityId,
         entity_name: Vec<String>,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -449,7 +451,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -489,7 +491,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -557,7 +559,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -621,7 +623,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -682,7 +684,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -701,7 +703,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -757,7 +759,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -812,7 +814,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -830,7 +832,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -848,7 +850,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -865,7 +867,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -909,7 +911,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -935,7 +937,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -961,7 +963,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -987,7 +989,7 @@ mod tests {
                 warehouse_id,
                 project_id: project_id.clone(),
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1013,7 +1015,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1107,7 +1109,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1220,7 +1222,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1356,7 +1358,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1491,7 +1493,7 @@ mod tests {
                     warehouse_id,
                     project_id: project_id.clone(),
                 },
-                request,
+                &request,
                 &mut conn,
             )
             .await
@@ -1569,7 +1571,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1653,7 +1655,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1728,7 +1730,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1770,7 +1772,7 @@ mod tests {
                 warehouse_id: wrong_warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1839,7 +1841,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1910,7 +1912,7 @@ mod tests {
                 warehouse_id,
                 project_id,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -1993,7 +1995,7 @@ mod tests {
                 project_id,
                 include_sub_tasks: false,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -2083,7 +2085,7 @@ mod tests {
                 project_id: project_id.clone(),
                 include_sub_tasks: true,
             },
-            request,
+            &request,
             &mut conn,
         )
         .await
@@ -2094,7 +2096,7 @@ mod tests {
             if let Some(task_wh_id) = task.task_metadata.warehouse_id() {
                 assert_eq!(task_wh_id, warehouse_id);
             }
-            assert_eq!(*task.project_id(), project_id);
+            assert_eq!(task.project_id(), &*project_id);
         }
     }
 }

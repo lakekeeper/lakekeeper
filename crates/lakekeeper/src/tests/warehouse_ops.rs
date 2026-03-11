@@ -55,7 +55,7 @@ async fn test_create_warehouse(pool: PgPool) {
     transaction.commit().await.unwrap();
 
     // Verify warehouse was created
-    assert_eq!(warehouse.project_id, project_id);
+    assert_eq!(*warehouse.project_id, project_id);
     assert_eq!(warehouse.status, WarehouseStatus::Active);
     assert!(matches!(
         warehouse.tabular_delete_profile,
@@ -248,7 +248,7 @@ async fn test_get_warehouse_by_name(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     // Get warehouse by name
     let warehouse = PostgresBackend::get_warehouse_by_name(
@@ -278,7 +278,7 @@ async fn test_get_warehouse_by_name_not_found(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     // Get warehouse by non-existent name
     let warehouse = PostgresBackend::get_warehouse_by_name(
@@ -318,7 +318,7 @@ async fn test_list_warehouses(pool: PgPool) {
     // Verify all warehouses are active
     for warehouse in &warehouses {
         assert_eq!(warehouse.status, WarehouseStatus::Active);
-        assert_eq!(warehouse.project_id, project_id);
+        assert_eq!(*warehouse.project_id, project_id);
     }
 
     // Verify main warehouse is in the list
@@ -585,6 +585,9 @@ async fn test_set_warehouse_deletion_profile(pool: PgPool) {
         TabularDeleteProfile::Soft { .. }
     ));
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Verify the profile persisted
     let warehouse = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -672,7 +675,10 @@ async fn test_set_warehouse_protection(pool: PgPool) {
     .unwrap();
     assert!(updated_warehouse.protected);
 
-    // Protect warehouse
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Unprotect warehouse
     let updated_warehouse = ApiServer::set_warehouse_protection(
         warehouse_resp.warehouse_id,
         false,
@@ -682,6 +688,9 @@ async fn test_set_warehouse_protection(pool: PgPool) {
     .await
     .unwrap();
     assert!(!updated_warehouse.protected);
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
@@ -1008,7 +1017,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     let warehouse1 = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -1159,6 +1168,9 @@ async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
     .await
     .unwrap();
 
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Get from cache - should have updated name
     let warehouse_after = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -1211,6 +1223,9 @@ async fn test_cache_invalidation_on_api_update_storage(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Get from cache - should have fresh data with updated_at timestamp changed
     let warehouse_after = PostgresBackend::get_warehouse_by_id(
@@ -1269,6 +1284,9 @@ async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    // Give the async event handler time to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Get from cache - should have updated profile
     let warehouse_after = PostgresBackend::get_warehouse_by_id(

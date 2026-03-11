@@ -6,18 +6,19 @@ use std::{
 use axum::Router;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
-use strum_macros::EnumString;
+use strum_macros::{EnumString, IntoStaticStr};
+use valuable::Valuable;
 
 use super::{
-    CatalogStore, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId, WarehouseId,
-    health::HealthExt,
+    CatalogStore, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore, State, TableId,
+    ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
-    api::{iceberg::v1::Result, management::v1::role::Role},
+    api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
     request_metadata::RequestMetadata,
     service::{
-        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, NamespaceWithParent,
-        ResolvedWarehouse, ServerId, TableInfo,
+        Actor, ArcProjectId, ArcRole, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
+        NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
     },
 };
 
@@ -29,6 +30,8 @@ pub use implementations::allow_all::AllowAllAuthorizer;
 pub use warehouse::*;
 mod namespace;
 pub use namespace::*;
+mod role;
+pub use role::*;
 mod table;
 pub use table::*;
 mod view;
@@ -39,8 +42,6 @@ mod server;
 pub use server::*;
 mod user;
 pub use user::*;
-mod role;
-pub use role::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
@@ -68,27 +69,24 @@ where
     Ok(Arc::new(string_map))
 }
 
-#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Assignees to a role
-pub struct RoleAssignee(RoleId);
+pub struct RoleAssignee(ArcRole);
 
 impl RoleAssignee {
     #[must_use]
-    pub fn from_role(role: RoleId) -> Self {
+    pub fn from_role(role: ArcRole) -> Self {
         RoleAssignee(role)
     }
 
     #[must_use]
-    pub fn role(&self) -> RoleId {
-        self.0
+    pub fn role(&self) -> &Role {
+        &self.0
     }
-}
 
-impl RoleId {
     #[must_use]
-    pub fn into_assignees(self) -> RoleAssignee {
-        RoleAssignee::from_role(self)
+    pub fn role_arc(&self) -> ArcRole {
+        self.0.clone()
     }
 }
 
@@ -100,33 +98,109 @@ impl Actor {
             Actor::Role {
                 assumed_role,
                 principal: _,
-            } => Some(UserOrRole::Role(RoleAssignee::from_role(*assumed_role))),
+            } => Some(UserOrRole::Role(RoleAssignee::from_role(
+                assumed_role.clone(),
+            ))),
+            Actor::Anonymous => None,
+        }
+    }
+
+    #[must_use]
+    pub fn api_user_or_role(&self) -> Option<AuthzUserOrRole> {
+        match self {
+            Actor::Principal(user) => Some(AuthzUserOrRole::User(user.clone())),
+            Actor::Role {
+                assumed_role,
+                principal: _,
+            } => Some(AuthzUserOrRole::Role(assumed_role.id().into_api_assignee())),
             Actor::Anonymous => None,
         }
     }
 }
 
-#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
+#[derive(Eq, Debug, Clone, PartialEq, derive_more::From)]
 /// Identifies a user or a role
 pub enum UserOrRole {
-    #[cfg_attr(feature = "open-api", schema(value_type = String))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
     /// Id of the user
     User(UserId),
-    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleRole"))]
-    /// Id of the role
+    /// User acting in a role.
     Role(RoleAssignee),
 }
 
 pub trait CatalogAction
 where
-    Self: std::fmt::Debug + Send + Sync,
+    Self: std::fmt::Debug + Send + Sync + 'static,
 {
     fn as_log_str(&self) -> String {
-        format!("{self:?}")
+        self.action_descriptor().log_string()
+    }
+
+    fn action_descriptor(&self) -> ActionDescriptor;
+}
+
+#[derive(Clone, Debug)]
+pub enum ContextValue {
+    /// A set of key-value pairs (e.g. properties, `updated_properties`).
+    Map(BTreeMap<String, String>),
+    /// A list of plain strings (e.g. `removed_properties`).
+    List(Vec<String>),
+}
+
+impl std::fmt::Display for ContextValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Map(map) => {
+                let entries = map
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "{{{entries}}}")
+            }
+            Self::List(list) => {
+                write!(f, "[{}]", list.join(", "))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, typed_builder::TypedBuilder)]
+#[builder(mutators(
+    #[allow(unreachable_pub)]
+    pub fn context_map(&mut self, key: &'static str, map: impl Into<BTreeMap<String, String>>) {
+        self.context.push((key, ContextValue::Map(map.into())));
+    }
+    #[allow(unreachable_pub)]
+    pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
+        self.context.push((key, ContextValue::List(list.into())));
+    }
+))]
+pub struct ActionDescriptor {
+    pub action_name: &'static str,
+    #[builder(via_mutators)]
+    pub context: Vec<(&'static str, ContextValue)>,
+}
+
+impl ActionDescriptor {
+    /// Format as a log-friendly string.
+    ///
+    /// Examples:
+    /// - `"list_tables"`
+    /// - `"create_namespace(properties={location: s3://bucket, foo: bar})"`
+    /// - `"update_namespace(updated={foo: new}, removed=[bar, baz])"`
+    #[must_use]
+    pub fn log_string(&self) -> String {
+        if self.context.is_empty() {
+            self.action_name.to_string()
+        } else {
+            let params = self
+                .context
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({params})", self.action_name)
+        }
     }
 }
 
@@ -139,6 +213,7 @@ where
     strum_macros::Display,
     EnumIter,
     EnumString,
+    IntoStaticStr,
     Serialize,
     Deserialize,
     VariantArray,
@@ -156,6 +231,12 @@ pub enum CatalogUserAction {
     Delete,
 }
 
+impl CatalogAction for CatalogUserAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+
 #[derive(
     Debug,
     Clone,
@@ -165,9 +246,11 @@ pub enum CatalogUserAction {
     strum_macros::Display,
     EnumIter,
     EnumString,
+    IntoStaticStr,
     Serialize,
     Deserialize,
     VariantArray,
+    Valuable,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -185,6 +268,11 @@ pub enum CatalogServerAction {
     /// Can provision user
     ProvisionUsers,
 }
+impl CatalogAction for CatalogServerAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 
 #[derive(
     Debug,
@@ -195,9 +283,11 @@ pub enum CatalogServerAction {
     strum_macros::Display,
     EnumIter,
     EnumString,
+    IntoStaticStr,
     Serialize,
     Deserialize,
     VariantArray,
+    Valuable,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
@@ -219,7 +309,11 @@ pub enum CatalogProjectAction {
     GetProjectTasks,
     ControlProjectTasks,
 }
-impl CatalogAction for CatalogProjectAction {}
+impl CatalogAction for CatalogProjectAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 
 #[derive(
     Debug,
@@ -232,6 +326,7 @@ impl CatalogAction for CatalogProjectAction {}
     strum_macros::Display,
     EnumIter,
     EnumString,
+    IntoStaticStr,
     VariantArray,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -246,12 +341,27 @@ pub enum CatalogRoleAction {
     Delete,
     Update,
 }
-impl CatalogAction for CatalogRoleAction {}
+impl CatalogAction for CatalogRoleAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
+#[strum(serialize_all = "snake_case")]
 pub enum CatalogWarehouseAction {
     CreateNamespace {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -312,12 +422,33 @@ impl CatalogWarehouseAction {
         &WAREHOUSE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogWarehouseAction {}
+impl CatalogAction for CatalogWarehouseAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::CreateNamespace { properties } = self
+            && !properties.is_empty()
+        {
+            b = b.context_map("properties", properties.as_ref().clone());
+        }
+        b.build()
+    }
+}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
+#[strum(serialize_all = "snake_case")]
 pub enum CatalogNamespaceAction {
     CreateTable {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -381,12 +512,49 @@ impl CatalogNamespaceAction {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogNamespaceAction {}
+impl CatalogAction for CatalogNamespaceAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        match self {
+            Self::CreateTable { properties }
+            | Self::CreateView { properties }
+            | Self::CreateNamespace { properties } => {
+                if !properties.is_empty() {
+                    b = b.context_map("properties", properties.as_ref().clone());
+                }
+            }
+            Self::UpdateProperties {
+                removed_properties,
+                updated_properties,
+            } => {
+                if !updated_properties.is_empty() {
+                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                }
+                if !removed_properties.is_empty() {
+                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                }
+            }
+            _ => {}
+        }
+        b.build()
+    }
+}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
+#[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     Drop,
     WriteData,
@@ -430,12 +598,40 @@ impl CatalogTableAction {
         &TABLE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogTableAction {}
+impl CatalogAction for CatalogTableAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::Commit {
+            updated_properties,
+            removed_properties,
+        } = self
+        {
+            if !updated_properties.is_empty() {
+                b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+            }
+            if !removed_properties.is_empty() {
+                b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+            }
+        }
+        b.build()
+    }
+}
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, strum_macros::EnumCount)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
 #[serde(rename_all = "snake_case", tag = "action")]
+#[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     Drop,
     GetMetadata,
@@ -475,7 +671,24 @@ impl CatalogViewAction {
         &VIEW_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogViewAction {}
+impl CatalogAction for CatalogViewAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::Commit {
+            updated_properties,
+            removed_properties,
+        } = self
+        {
+            if !updated_properties.is_empty() {
+                b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+            }
+            if !removed_properties.is_empty() {
+                b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+            }
+        }
+        b.build()
+    }
+}
 
 pub trait AsTableId {
     fn as_table_id(&self) -> TableId;
@@ -554,6 +767,12 @@ where
     /// Must remain stable for the lifetime of the running process (typically generated at startup).
     fn server_id(&self) -> ServerId;
 
+    /// Called once during server startup to provide the IDP IDs of all registered authenticators.
+    ///
+    /// Authorizer implementations that need this information should override this method and store
+    /// the IDs internally. The default implementation is a no-op.
+    fn set_registered_idp_ids(&mut self, _idp_ids: Arc<[RoleProviderId]>) {}
+
     /// API Doc
     #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi;
@@ -566,9 +785,9 @@ where
     async fn check_assume_role_impl(
         &self,
         principal: &UserId,
-        assumed_role: RoleId,
+        assumed_role: &Role,
         request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest>;
 
     /// Check if this server can be bootstrapped by the provided user.
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
@@ -582,7 +801,7 @@ where
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::Unsupported)
     }
 
@@ -590,7 +809,7 @@ where
     async fn can_search_users_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable>;
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest>;
 
     async fn are_allowed_user_actions_impl(
         &self,
@@ -617,7 +836,7 @@ where
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     async fn are_allowed_warehouse_actions_impl(
@@ -683,7 +902,7 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectId,
+        parent_project_id: ArcProjectId,
     ) -> Result<()>;
 
     /// Hook that is called when a role is deleted.
@@ -782,10 +1001,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        api::management::v1::role::Role,
-        service::{Namespace, NamespaceHierarchy, health::Health},
-    };
+    use crate::service::{Namespace, NamespaceHierarchy, health::Health};
 
     #[test]
     fn test_warehouse_action_variant_completeness() {
@@ -1133,9 +1349,9 @@ pub(crate) mod tests {
         async fn check_assume_role_impl(
             &self,
             _principal: &UserId,
-            _assumed_role: RoleId,
+            _assumed_role: &Role,
             _request_metadata: &RequestMetadata,
-        ) -> Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
             Ok(true)
         }
 
@@ -1150,14 +1366,14 @@ pub(crate) mod tests {
         async fn list_projects_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+        ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
             Ok(ListProjectsResponse::All)
         }
 
         async fn can_search_users_impl(
             &self,
             _metadata: &RequestMetadata,
-        ) -> Result<bool, AuthorizationBackendUnavailable> {
+        ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
             Ok(true)
         }
 
@@ -1201,7 +1417,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
-            projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+            projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
             let results: Vec<bool> = projects_with_actions
                 .iter()
@@ -1311,7 +1527,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _role_id: RoleId,
-            _parent_project_id: ProjectId,
+            _parent_project_id: ArcProjectId,
         ) -> Result<()> {
             Ok(())
         }
@@ -1441,7 +1657,7 @@ pub(crate) mod tests {
     test_block_action!(
         project,
         CatalogProjectAction::Rename,
-        &ProjectId::new_random()
+        &Arc::new(ProjectId::new_random())
     );
     test_block_action!(
         warehouse,

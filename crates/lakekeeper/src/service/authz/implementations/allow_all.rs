@@ -8,15 +8,15 @@ use axum::Router;
 use utoipa::OpenApi;
 
 use crate::{
-    api::{ApiContext, iceberg::v1::Result, management::v1::role::Role},
+    api::{ApiContext, iceberg::v1::Result},
     request_metadata::RequestMetadata,
     service::{
-        AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
-        NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, ViewId, WarehouseId,
+        ArcProjectId, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
+        NamespaceWithParent, ProjectId, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId,
+        State, TableId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
+            Authorizer, AuthzBackendErrorOrBadRequest, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
             ListProjectsResponse, NamespaceParent, UserOrRole,
@@ -85,9 +85,9 @@ impl Authorizer for AllowAllAuthorizer {
     async fn check_assume_role_impl(
         &self,
         _principal: &UserId,
-        _assumed_role: RoleId,
+        _assumed_role: &Role,
         _request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         Ok(true)
     }
 
@@ -102,14 +102,14 @@ impl Authorizer for AllowAllAuthorizer {
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::All)
     }
 
     async fn can_search_users_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         Ok(true)
     }
 
@@ -144,7 +144,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; projects_with_actions.len()])
     }
@@ -203,7 +203,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
-        _parent_project_id: ProjectId,
+        _parent_project_id: ArcProjectId,
     ) -> Result<()> {
         Ok(())
     }

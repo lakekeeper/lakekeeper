@@ -15,6 +15,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct RestMakeSpan {
     level: Level,
+    log_authorization_header: bool,
 }
 
 impl RestMakeSpan {
@@ -23,7 +24,18 @@ impl RestMakeSpan {
     /// [tracing span]: https://docs.rs/tracing/latest/tracing/#spans
     #[must_use]
     pub fn new(level: Level) -> Self {
-        Self { level }
+        Self {
+            level,
+            log_authorization_header: false,
+        }
+    }
+
+    /// If enabled, the `Authorization` header will be included in request spans.
+    /// This exposes sensitive credentials and should never be enabled in production.
+    #[must_use]
+    pub fn with_log_authorization_header(mut self, enabled: bool) -> Self {
+        self.log_authorization_header = enabled;
+        self
     }
 }
 
@@ -51,7 +63,29 @@ impl<B> MakeSpan<B> for RestMakeSpan {
                                 .headers()
                                 .get(X_REQUEST_ID_HEADER)
                                 .and_then(|v| v.to_str().ok())
-                                .unwrap_or("MISSING-REQUEST-ID")
+                                .unwrap_or("MISSING-REQUEST-ID"),
+                )
+            }
+        }
+        macro_rules! make_full_span_with_auth {
+            ($level:expr, $auth:expr) => {
+                tracing::span!(
+                    $level,
+                    "request",
+                    method = %request.method(),
+                    host = %request.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                    "x-forwarded-host" = %request.headers().get(X_FORWARDED_HOST_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                    "x-forwarded-proto" = %request.headers().get(X_FORWARDED_PROTO_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                    "x-forwarded-port" = %request.headers().get(X_FORWARDED_PORT_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                    "x-forwarded-prefix" = %request.headers().get(X_FORWARDED_PREFIX_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                    uri = %request.uri(),
+                    version = ?request.version(),
+                    request_id = %request
+                                .headers()
+                                .get(X_REQUEST_ID_HEADER)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("MISSING-REQUEST-ID"),
+                    authorization = %$auth,
                 )
             }
         }
@@ -67,15 +101,29 @@ impl<B> MakeSpan<B> for RestMakeSpan {
                                 .headers()
                                 .get(X_REQUEST_ID_HEADER)
                                 .and_then(|v| v.to_str().ok())
-                                .unwrap_or("MISSING-REQUEST-ID")
+                                .unwrap_or("MISSING-REQUEST-ID"),
                 )
             }
         }
-
         let path = request.uri().path();
-        if request.method() == http::Method::GET
-            && (path.ends_with("/v1/config") || path.ends_with("/management/v1/info"))
-        {
+        let is_info_endpoint = request.method() == http::Method::GET
+            && (path.ends_with("/v1/config") || path.ends_with("/management/v1/info"));
+
+        if self.log_authorization_header && is_info_endpoint {
+            let authorization = request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("not set");
+
+            match self.level {
+                Level::TRACE => make_full_span_with_auth!(tracing::Level::TRACE, authorization),
+                Level::DEBUG => make_full_span_with_auth!(tracing::Level::DEBUG, authorization),
+                Level::INFO => make_full_span_with_auth!(tracing::Level::INFO, authorization),
+                Level::WARN => make_full_span_with_auth!(tracing::Level::WARN, authorization),
+                Level::ERROR => make_full_span_with_auth!(tracing::Level::ERROR, authorization),
+            }
+        } else if is_info_endpoint {
             match self.level {
                 Level::TRACE => make_full_span!(tracing::Level::TRACE),
                 Level::DEBUG => make_full_span!(tracing::Level::DEBUG),

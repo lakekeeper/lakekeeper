@@ -7,39 +7,19 @@ use axum_prometheus::metrics;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
-use crate::{CONFIG, ProjectId, WarehouseId, service::ResolvedWarehouse};
 #[cfg(feature = "router")]
+use crate::service::events::{self, EventListener};
 use crate::{
-    SecretId,
-    api::{
-        RequestMetadata,
-        management::v1::warehouse::{
-            RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
-            UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+    CONFIG, WarehouseId,
+    service::{
+        ArcProjectId, ResolvedWarehouse,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_WAREHOUSE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_WAREHOUSE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_WAREHOUSE_CACHE_SIZE, METRICS_INITIALIZED,
         },
     },
-    service::endpoint_hooks::EndpointHook,
 };
-
-const METRIC_WAREHOUSE_CACHE_SIZE: &str = "lakekeeper_warehouse_cache_size";
-const METRIC_WAREHOUSE_CACHE_HITS: &str = "lakekeeper_warehouse_cache_hits_total";
-const METRIC_WAREHOUSE_CACHE_MISSES: &str = "lakekeeper_warehouse_cache_misses_total";
-
-/// Initialize metric descriptions for Warehouse cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_WAREHOUSE_CACHE_SIZE,
-        "Current number of entries in the warehouse cache"
-    );
-    metrics::describe_counter!(
-        METRIC_WAREHOUSE_CACHE_HITS,
-        "Total number of warehouse cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_WAREHOUSE_CACHE_MISSES,
-        "Total number of warehouse cache misses"
-    );
-});
 
 // Main cache: stores warehouses by ID only
 pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> =
@@ -52,28 +32,44 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
             ))
             .async_eviction_listener(|key, value: CachedWarehouse, cause| {
                 Box::pin(async move {
-                    // Evictions:
-                    // - Replaced: only invalidate old-name mapping if the current entry
-                    //   either does not exist or has a different (project_id, name).
-                    // - Other causes: primary entry is gone; invalidate mapping.
-                    let should_invalidate = match cause {
+                    // On Replaced: invalidate the old secondary index mapping immediately,
+                    // then spawn a task to re-insert the new mapping (avoids re-entrant
+                    // WAREHOUSE_CACHE.get() calls which can deadlock).
+                    // On all other causes (expired, explicit): always invalidate.
+                    match cause {
                         RemovalCause::Replaced => {
-                            if let Some(curr) = WAREHOUSE_CACHE.get(&*key).await {
-                                curr.warehouse.project_id != value.warehouse.project_id
-                                    || curr.warehouse.name != value.warehouse.name
-                            } else {
-                                true
-                            }
+                            let key = *key;
+                            // Immediately invalidate the old (project_id, name) → warehouse_id mapping
+                            NAME_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.warehouse.project_id.clone(),
+                                    UniCase::new(value.warehouse.name.clone()),
+                                ))
+                                .await;
+
+                            // Spawn task to add the new mapping (avoids re-entrant WAREHOUSE_CACHE.get)
+                            tokio::spawn(async move {
+                                if let Some(curr) = WAREHOUSE_CACHE.get(&key).await {
+                                    NAME_TO_ID_CACHE
+                                        .insert(
+                                            (
+                                                curr.warehouse.project_id.clone(),
+                                                UniCase::new(curr.warehouse.name.clone()),
+                                            ),
+                                            key,
+                                        )
+                                        .await;
+                                }
+                            });
                         }
-                        _ => true,
-                    };
-                    if should_invalidate {
-                        NAME_TO_ID_CACHE
-                            .invalidate(&(
-                                value.warehouse.project_id.clone(),
-                                UniCase::new(value.warehouse.name.clone()),
-                            ))
-                            .await;
+                        _ => {
+                            NAME_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.warehouse.project_id.clone(),
+                                    UniCase::new(value.warehouse.name.clone()),
+                                ))
+                                .await;
+                        }
                     }
                 })
             })
@@ -82,7 +78,7 @@ pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>>
 
 // Secondary index: (project_id, name) → warehouse_id
 // Uses UniCase for case-insensitive warehouse name lookups
-static NAME_TO_ID_CACHE: LazyLock<Cache<(ProjectId, UniCase<String>), WarehouseId>> =
+static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), WarehouseId>> =
     LazyLock::new(|| {
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
@@ -161,13 +157,11 @@ pub(super) async fn warehouse_cache_get_by_id(
 
 pub(super) async fn warehouse_cache_get_by_name(
     name: &str,
-    project_id: &ProjectId,
+    project_id: &ArcProjectId,
 ) -> Option<Arc<ResolvedWarehouse>> {
     update_cache_size_metric();
-    let Some(warehouse_id) = NAME_TO_ID_CACHE
-        .get(&(project_id.clone(), UniCase::new(name.to_string())))
-        .await
-    else {
+    let name_key = (project_id.clone(), UniCase::new(name.to_string()));
+    let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         return None;
     };
@@ -178,6 +172,10 @@ pub(super) async fn warehouse_cache_get_by_name(
         metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse").increment(1);
         Some(value.warehouse.clone())
     } else {
+        tracing::debug!(
+            "Warehouse id {warehouse_id} not found in cache, invalidating stale name mapping for {name}"
+        );
+        NAME_TO_ID_CACHE.invalidate(&name_key).await;
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         None
     }
@@ -185,89 +183,97 @@ pub(super) async fn warehouse_cache_get_by_name(
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct WarehouseCacheEndpointHook;
+pub(crate) struct WarehouseCacheEventListener;
 
 #[cfg(feature = "router")]
-impl std::fmt::Display for WarehouseCacheEndpointHook {
+impl std::fmt::Display for WarehouseCacheEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WarehouseCacheEndpointHook")
+        write!(f, "WarehouseCacheEventListener")
     }
 }
 
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
-impl EndpointHook for WarehouseCacheEndpointHook {
-    async fn create_warehouse(
-        &self,
-        warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+impl EventListener for WarehouseCacheEventListener {
+    async fn warehouse_created(&self, event: events::CreateWarehouseEvent) -> anyhow::Result<()> {
+        let events::CreateWarehouseEvent {
+            warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(warehouse).await;
         Ok(())
     }
 
-    async fn delete_warehouse(
-        &self,
-        warehouse_id: WarehouseId,
-        _request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn warehouse_deleted(&self, event: events::DeleteWarehouseEvent) -> anyhow::Result<()> {
+        let events::DeleteWarehouseEvent {
+            warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         // When we invalidate by warehouse_id, the eviction listener will handle
         // removing the entry from NAME_TO_ID_CACHE
-        warehouse_cache_invalidate(warehouse_id).await;
+        warehouse_cache_invalidate(warehouse.warehouse_id).await;
         Ok(())
     }
 
-    async fn set_warehouse_protection(
+    async fn warehouse_protection_set(
         &self,
-        _requested_protected: bool,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::SetWarehouseProtectionEvent,
     ) -> anyhow::Result<()> {
+        let events::SetWarehouseProtectionEvent {
+            requested_protected: _requested_protected,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn rename_warehouse(
-        &self,
-        _request: Arc<RenameWarehouseRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn warehouse_renamed(&self, event: events::RenameWarehouseEvent) -> anyhow::Result<()> {
+        let events::RenameWarehouseEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn update_warehouse_delete_profile(
+    async fn warehouse_delete_profile_updated(
         &self,
-        _request: Arc<UpdateWarehouseDeleteProfileRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::UpdateWarehouseDeleteProfileEvent,
     ) -> anyhow::Result<()> {
-        println!(
-            "Updating delete profile in cache hook for warehouse id {}",
-            updated_warehouse.warehouse_id
-        );
+        let events::UpdateWarehouseDeleteProfileEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn update_warehouse_storage(
+    async fn warehouse_storage_updated(
         &self,
-        _request: Arc<UpdateWarehouseStorageRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::UpdateWarehouseStorageEvent,
     ) -> anyhow::Result<()> {
+        let events::UpdateWarehouseStorageEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
 
-    async fn update_warehouse_storage_credential(
+    async fn warehouse_storage_credential_updated(
         &self,
-        _request: Arc<UpdateWarehouseCredentialRequest>,
-        _old_secret_id: Option<SecretId>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
-        _request_metadata: Arc<RequestMetadata>,
+        event: events::UpdateWarehouseStorageCredentialEvent,
     ) -> anyhow::Result<()> {
+        let events::UpdateWarehouseStorageCredentialEvent {
+            request: _request,
+            old_secret_id: _old_secret_id,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
         warehouse_cache_insert(updated_warehouse).await;
         Ok(())
     }
@@ -279,6 +285,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        ProjectId,
         api::management::v1::warehouse::TabularDeleteProfile,
         service::{catalog_store::warehouse::WarehouseStatus, storage::MemoryProfile},
     };
@@ -287,7 +294,7 @@ mod tests {
     fn test_warehouse(
         warehouse_id: WarehouseId,
         name: String,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         updated_at: Option<chrono::DateTime<chrono::Utc>>,
         version: i64,
     ) -> Arc<ResolvedWarehouse> {
@@ -308,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_and_get_by_id() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -333,7 +340,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_get_by_name() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-by-name".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -358,8 +365,8 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_get_by_name_different_project() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
-        let different_project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        let different_project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-project".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -380,7 +387,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_invalidate() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-invalidate".to_string();
         let warehouse = test_warehouse(
             warehouse_id,
@@ -412,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_miss() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "nonexistent-warehouse".to_string();
 
         // Try to get a warehouse that was never cached
@@ -426,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_newer_timestamp() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-timestamp".to_string();
 
         let old_time = Utc::now();
@@ -466,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_older_timestamp_ignored() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-old-timestamp".to_string();
 
         let new_time = Utc::now();
@@ -506,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_same_timestamp_ignored() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-same-timestamp".to_string();
 
         let timestamp = Utc::now();
@@ -540,7 +547,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_rename_updates_name_to_id_cache() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let old_name = "old-warehouse-name".to_string();
         let new_name = "new-warehouse-name".to_string();
 
@@ -587,7 +594,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_insert_none_timestamp() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "test-warehouse-none-timestamp".to_string();
 
         // Insert warehouse without timestamp
@@ -618,7 +625,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_warehouse_cache_multiple_warehouses() {
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
 
         // Create multiple warehouses
         let warehouse1_id = WarehouseId::new_random();
@@ -678,8 +685,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_warehouse_cache_same_name_different_projects() {
-        let project_id1 = ProjectId::new_random();
-        let project_id2 = ProjectId::new_random();
+        let project_id1 = Arc::new(ProjectId::new_random());
+        let project_id2 = Arc::new(ProjectId::new_random());
         let name = "same-warehouse-name".to_string();
 
         let warehouse1_id = WarehouseId::new_random();
@@ -717,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn test_warehouse_cache_case_insensitive_lookup() {
         let warehouse_id = WarehouseId::new_random();
-        let project_id = ProjectId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
         let name = "Test-Warehouse".to_string();
         let warehouse = test_warehouse(
             warehouse_id,

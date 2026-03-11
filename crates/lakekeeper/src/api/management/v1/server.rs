@@ -5,11 +5,11 @@ use typed_builder::TypedBuilder;
 
 use super::user::{CreateUserRequest, UserLastUpdatedWith, UserType, parse_create_user_request};
 use crate::{
-    CONFIG, DEFAULT_PROJECT_ID, ProjectId,
+    CONFIG, DEFAULT_PROJECT_ID,
     api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
-        Actor, CatalogStore, Result, SecretStore, State, Transaction,
+        Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction,
         authz::Authorizer,
         tasks::{
             ScheduleTaskMetadata, TaskEntity,
@@ -101,7 +101,7 @@ pub struct ServerInfo {
     pub server_id: uuid::Uuid,
     /// Default Project ID. Null if not set
     #[cfg_attr(feature = "open-api", schema(value_type = Option::<String>))]
-    pub default_project_id: Option<ProjectId>,
+    pub default_project_id: Option<ArcProjectId>,
     /// `AuthZ` backend in use.
     pub authz_backend: String,
     /// If using AWS system identities for S3 storage profiles are enabled.

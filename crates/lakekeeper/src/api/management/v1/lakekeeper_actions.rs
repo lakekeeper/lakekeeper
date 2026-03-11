@@ -1,23 +1,34 @@
+use std::sync::Arc;
+
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
+use super::check::UserOrRole as APIUserOrRole;
 use crate::{
-    ProjectId, WarehouseId,
+    WarehouseId,
     api::{ApiContext, RequestMetadata},
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogWarehouseOps,
-        NamespaceId, Result, RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewId,
-        WarehouseStatus,
+        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
+        CatalogWarehouseOps, NamespaceId, Result, RoleId, SecretStore, State, TableId,
+        TabularListFlags, UserId, ViewId, WarehouseStatus,
+        authn::UserIdRef,
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps,
-            AuthZServerOps, AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectActionForbidden, AuthZProjectOps,
+            AuthZRoleOps, AuthZServerOps, AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps,
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, UserOrRole,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            RequireProjectActionError, RequireRoleActionError, RoleAssignee, UserOrRole,
             fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
             refresh_warehouse_and_namespace_if_needed,
+        },
+        events::{
+            APIEventContext,
+            context::{
+                APIEventActions, IntrospectPermissions, ResolutionState, UserProvidedEntity,
+            },
         },
     },
 };
@@ -40,7 +51,7 @@ pub struct GetAccessQuery {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedAccessQuery {
-    pub principal: Option<UserOrRole>,
+    pub principal: Option<APIUserOrRole>,
 }
 
 impl GetAccessQuery {
@@ -54,8 +65,8 @@ impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
 
     fn try_from(query: GetAccessQuery) -> Result<Self, ErrorModel> {
         let principal = match (query.principal_user, query.principal_role) {
-            (Some(user), None) => Some(UserOrRole::User(user)),
-            (None, Some(role)) => Some(UserOrRole::Role(role.into_assignees())),
+            (Some(user), None) => Some(APIUserOrRole::User(user)),
+            (None, Some(role)) => Some(APIUserOrRole::Role(role.into_api_assignee())),
             (Some(_), Some(_)) => {
                 return Err(ErrorModel::bad_request(
                     "Cannot specify both user and role in GetAccessQuery".to_string(),
@@ -81,6 +92,19 @@ macro_rules! action_response {
     };
 }
 
+fn push_for_user_context<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
+    event_ctx: &mut APIEventContext<P, R, A>,
+    for_user: Option<&APIUserOrRole>,
+) {
+    if let Some(for_user) = for_user {
+        let s = match for_user {
+            APIUserOrRole::User(id) => format!("User({id})"),
+            APIUserOrRole::Role(assignee) => format!("Role({})", assignee.role_id()),
+        };
+        event_ctx.push_extra_context("for-user", s);
+    }
+}
+
 // Generate response structs for all action types
 action_response!(GetLakekeeperRoleActionsResponse, CatalogRoleAction);
 action_response!(GetLakekeeperServerActionsResponse, CatalogServerAction);
@@ -97,18 +121,58 @@ action_response!(GetLakekeeperTableActionsResponse, CatalogTableAction);
 action_response!(GetLakekeeperViewActionsResponse, CatalogViewAction);
 action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
 
-pub(super) async fn get_allowed_server_actions(
-    authorizer: impl Authorizer,
-    request_metadata: &RequestMetadata,
+/// Resolve an API-level principal (which may contain only a `RoleId`) into the authz `UserOrRole`
+/// by fetching the full role from the catalog when needed.
+async fn resolve_principal<C: CatalogStore>(
+    principal: Option<APIUserOrRole>,
+    catalog_state: C::State,
+) -> Result<Option<UserOrRole>, AuthZError> {
+    match principal {
+        None => Ok(None),
+        Some(APIUserOrRole::User(id)) => Ok(Some(UserOrRole::User(id))),
+        Some(APIUserOrRole::Role(assignee)) => {
+            let role = C::get_role_by_id_across_projects_cache_aware(
+                assignee.role_id(),
+                CachePolicy::Use,
+                catalog_state,
+            )
+            .await?;
+            Ok(Some(UserOrRole::Role(RoleAssignee::from_role(role))))
+        }
+    }
+}
+
+pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
-) -> Result<Vec<CatalogServerAction>> {
-    let for_user = query.try_parse()?.principal;
+) -> Result<Vec<CatalogServerAction>, ErrorModel> {
+    let for_user_api = query.try_parse()?.principal;
     let actions = CatalogServerAction::VARIANTS;
 
-    let results = authorizer
-        .are_allowed_server_actions_vec(request_metadata, for_user.as_ref(), actions)
-        .await?
-        .into_inner();
+    let mut event_ctx = APIEventContext::for_server(
+        Arc::new(request_metadata),
+        state.v1_state.events,
+        IntrospectPermissions {},
+        state.v1_state.authz.server_id(),
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result: Result<_, AuthZError> = async {
+        let for_user = resolve_principal::<C>(for_user_api, state.v1_state.catalog.clone()).await?;
+        Ok(state
+            .v1_state
+            .authz
+            .are_allowed_server_actions_vec(
+                event_ctx.request_metadata(),
+                for_user.as_ref(),
+                actions,
+            )
+            .await?
+            .into_inner())
+    }
+    .await;
+    let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
 
     let allowed_actions = results
         .iter()
@@ -123,13 +187,44 @@ pub(super) async fn get_allowed_server_actions(
     Ok(allowed_actions)
 }
 
-pub(super) async fn get_allowed_user_actions(
-    authorizer: impl Authorizer,
-    request_metadata: &RequestMetadata,
+pub(super) async fn get_allowed_user_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
-    object: UserId,
+    object: UserIdRef,
 ) -> Result<Vec<CatalogUserAction>> {
-    let for_user = query.try_parse()?.principal;
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_user(
+        Arc::new(request_metadata),
+        state.v1_state.events,
+        object,
+        IntrospectPermissions {},
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let allowed_actions = authorize_get_user_actions::<C>(
+        event_ctx.request_metadata(),
+        state.v1_state.authz,
+        for_user_api,
+        event_ctx.user_provided_entity(),
+        state.v1_state.catalog,
+    )
+    .await;
+
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(allowed_actions)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_user_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    object: &UserId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogUserAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
     let actions = CatalogUserAction::VARIANTS;
     let can_see_permission = CatalogUserAction::Read;
 
@@ -139,7 +234,7 @@ pub(super) async fn get_allowed_user_actions(
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (&object, *action))
+                .map(|action| (object, *action))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -162,12 +257,7 @@ pub(super) async fn get_allowed_user_actions(
         .collect();
 
     if !can_see {
-        return Err(AuthZUserActionForbidden::new(
-            object,
-            can_see_permission,
-            request_metadata.actor().clone(),
-        )
-        .into());
+        return Err(AuthZUserActionForbidden::new(can_see_permission).into());
     }
 
     Ok(allowed_actions)
@@ -175,18 +265,62 @@ pub(super) async fn get_allowed_user_actions(
 
 pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
     context: ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
     role_id: RoleId,
 ) -> Result<Vec<CatalogRoleAction>> {
     let authorizer = context.v1_state.authz;
-    let for_user = query.try_parse()?.principal;
-    let actions = CatalogRoleAction::VARIANTS;
-    let can_see_permission = CatalogRoleAction::Read;
+    let for_user_api = query.try_parse()?.principal;
     let project_id = request_metadata.require_project_id(None)?;
 
-    let role = C::get_role_by_id(&project_id, role_id, context.v1_state.catalog).await;
-    let role = authorizer.require_role_presence(role)?;
+    let mut event_ctx = APIEventContext::for_role(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        role_id,
+        IntrospectPermissions {},
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_role_actions::<C>(
+        event_ctx.request_metadata(),
+        authorizer,
+        for_user_api,
+        project_id,
+        role_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_role_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    project_id: ArcProjectId,
+    role_id: RoleId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogRoleAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
+    let actions = CatalogRoleAction::VARIANTS;
+    let can_see_permission = CatalogRoleAction::Read;
+
+    // Short-circuit: if resolve_principal already fetched the target role (i.e.
+    // for_user_api was APIUserOrRole::Role with the same id and project), reuse
+    // that role instead of calling C::get_role_by_id_cache_aware again.
+    let role = if let Some(UserOrRole::Role(assignee)) = &for_user
+        && assignee.role().id() == role_id
+        && assignee.role().project_id_arc() == project_id
+    {
+        assignee.role_arc()
+    } else {
+        let fetched =
+            C::get_role_by_id_cache_aware(&project_id, role_id, CachePolicy::Use, catalog_state)
+                .await;
+        authorizer.require_role_presence(fetched)?
+    };
 
     let results = authorizer
         .are_allowed_role_actions_vec(
@@ -217,19 +351,51 @@ pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: 
         .collect();
 
     if !can_see {
-        return Err(AuthZCannotSeeRole::new(project_id, role_id).into());
+        let err: RequireRoleActionError =
+            AuthZCannotSeeRole::new(project_id, role_id, false, vec![]).into();
+        return Err(err.into());
     }
 
     Ok(allowed_actions)
 }
 
-pub(super) async fn get_allowed_project_actions(
-    authorizer: impl Authorizer,
-    request_metadata: &RequestMetadata,
+pub(super) async fn get_allowed_project_actions<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
-    object: &ProjectId,
+    object: &ArcProjectId,
 ) -> Result<Vec<CatalogProjectAction>> {
-    let for_user = query.try_parse()?.principal;
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_project_arc(
+        Arc::new(request_metadata),
+        state.v1_state.events,
+        object.clone(),
+        Arc::new(IntrospectPermissions {}),
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_project_actions::<C>(
+        event_ctx.request_metadata(),
+        state.v1_state.authz,
+        for_user_api,
+        object,
+        state.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_project_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    object: &ArcProjectId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogProjectAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
     let actions = CatalogProjectAction::VARIANTS;
     let can_see_permission = CatalogProjectAction::GetMetadata;
 
@@ -262,12 +428,9 @@ pub(super) async fn get_allowed_project_actions(
         .collect();
 
     if !can_see {
-        return Err(AuthZProjectActionForbidden::new(
-            object.clone(),
-            can_see_permission,
-            request_metadata.actor().clone(),
-        )
-        .into());
+        let err: RequireProjectActionError =
+            AuthZProjectActionForbidden::new(object.clone(), can_see_permission).into();
+        return Err(err.into());
     }
 
     Ok(allowed_actions)
@@ -279,12 +442,41 @@ pub(super) async fn get_allowed_warehouse_actions<
     S: SecretStore,
 >(
     context: ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
     object: WarehouseId,
 ) -> Result<Vec<CatalogWarehouseAction>> {
-    let for_user = query.try_parse()?.principal;
-    let authorizer = context.v1_state.authz;
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_warehouse(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        object,
+        IntrospectPermissions {},
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_warehouse_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        object,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_warehouse_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    object: WarehouseId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogWarehouseAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
     let actions = CatalogWarehouseAction::variants();
     let can_see_permission = CatalogWarehouseAction::IncludeInList;
 
@@ -292,7 +484,7 @@ pub(super) async fn get_allowed_warehouse_actions<
         object,
         WarehouseStatus::active_and_inactive(),
         CachePolicy::Skip,
-        context.v1_state.catalog,
+        catalog_state,
     )
     .await;
     let warehouse = authorizer.require_warehouse_presence(object, warehouse)?;
@@ -326,7 +518,7 @@ pub(super) async fn get_allowed_warehouse_actions<
         .collect();
 
     if !can_see {
-        return Err(AuthZCannotUseWarehouseId::new(object).into());
+        return Err(AuthZCannotUseWarehouseId::new_access_denied(object).into());
     }
 
     Ok(allowed_actions)
@@ -338,23 +530,55 @@ pub(super) async fn get_allowed_namespace_actions<
     S: SecretStore,
 >(
     context: ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
     warehouse_id: WarehouseId,
     provided_namespace_id: NamespaceId,
 ) -> Result<Vec<CatalogNamespaceAction>> {
-    let for_user = query.try_parse()?.principal;
-    let authorizer = context.v1_state.authz;
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_namespace(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        warehouse_id,
+        provided_namespace_id,
+        IntrospectPermissions {},
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_namespace_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        warehouse_id,
+        provided_namespace_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_namespace_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    warehouse_id: WarehouseId,
+    provided_namespace_id: NamespaceId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogNamespaceAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
     let actions = CatalogNamespaceAction::variants();
     let can_see_permission = CatalogNamespaceAction::IncludeInList;
 
     let (warehouse, namespace) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()),
+        C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
         C::get_namespace_cache_aware(
             warehouse_id,
             provided_namespace_id,
             CachePolicy::Skip,
-            context.v1_state.catalog
+            catalog_state
         )
     );
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
@@ -396,7 +620,9 @@ pub(super) async fn get_allowed_namespace_actions<
         .collect();
 
     if !can_see {
-        return Err(AuthZCannotSeeNamespace::new(warehouse_id, provided_namespace_id).into());
+        return Err(
+            AuthZCannotSeeNamespace::new_forbidden(warehouse_id, provided_namespace_id).into(),
+        );
     }
 
     Ok(allowed_actions)
@@ -404,14 +630,45 @@ pub(super) async fn get_allowed_namespace_actions<
 
 pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
     context: ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
     warehouse_id: WarehouseId,
     table_id: TableId,
 ) -> Result<Vec<CatalogTableAction>> {
-    let for_user = query.try_parse()?.principal;
-    let authorizer = context.v1_state.authz;
-    let catalog_state = context.v1_state.catalog;
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_table(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        warehouse_id,
+        table_id,
+        IntrospectPermissions {},
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_table_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        warehouse_id,
+        table_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_table_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogTableAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
     let actions = CatalogTableAction::variants();
     let can_see_permission = CatalogTableAction::IncludeInList;
 
@@ -425,13 +682,13 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
     .await?;
 
     // Validate warehouse and namespace ID and version consistency (with TOCTOU protection)
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-        &authorizer,
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
         &warehouse,
-        &table_info,
         namespace,
+        &table_info,
+        AuthZCannotSeeTable::new_forbidden(warehouse_id, table_id),
+        &authorizer,
         catalog_state,
-        AuthZCannotSeeTable::new(warehouse_id, table_id),
     )
     .await?;
 
@@ -472,7 +729,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
         .collect();
 
     if !can_see {
-        return Err(AuthZCannotSeeTable::new(warehouse_id, table_id).into());
+        return Err(AuthZCannotSeeTable::new_forbidden(warehouse_id, table_id).into());
     }
 
     Ok(allowed_actions)
@@ -480,14 +737,45 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
 
 pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
     context: ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
+    request_metadata: RequestMetadata,
     query: GetAccessQuery,
     warehouse_id: WarehouseId,
     view_id: ViewId,
 ) -> Result<Vec<CatalogViewAction>> {
-    let for_user = query.try_parse()?.principal;
-    let authorizer = context.v1_state.authz;
-    let catalog_state = context.v1_state.catalog;
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_view(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        warehouse_id,
+        view_id,
+        IntrospectPermissions {},
+    );
+    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_view_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        warehouse_id,
+        view_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_view_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    warehouse_id: WarehouseId,
+    view_id: ViewId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogViewAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
     let actions = CatalogViewAction::variants();
     let can_see_permission = CatalogViewAction::IncludeInList;
 
@@ -501,13 +789,13 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
     .await?;
 
     // Validate warehouse and namespace ID and version consistency (with TOCTOU protection)
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _, _>(
-        &authorizer,
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
         &warehouse,
-        &view_info,
         namespace,
+        &view_info,
+        AuthZCannotSeeView::new_forbidden(warehouse_id, view_id),
+        &authorizer,
         catalog_state,
-        AuthZCannotSeeView::new(warehouse_id, view_id),
     )
     .await?;
 
@@ -548,7 +836,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
         .collect();
 
     if !can_see {
-        return Err(AuthZCannotSeeView::new(warehouse_id, view_id).into());
+        return Err(AuthZCannotSeeView::new_forbidden(warehouse_id, view_id).into());
     }
 
     Ok(allowed_actions)

@@ -498,8 +498,28 @@ pub(crate) async fn load_tables(
         r#"
         WITH filtered_table_refs AS (
             SELECT warehouse_id, table_id, snapshot_id, table_ref_name, retention
-            FROM table_refs 
+            FROM table_refs
             WHERE warehouse_id = $1 AND table_id = ANY($2)
+        ),
+        snapshots_to_load AS (
+            -- refs mode: drive from filtered_table_refs (one index lookup per ref)
+            SELECT ts.table_id, ts.snapshot_id, ts.parent_snapshot_id, ts.sequence_number,
+                   ts.manifest_list, ts.summary, ts.schema_id, ts.timestamp_ms,
+                   ts.first_row_id, ts.assigned_rows, ts.key_id
+            FROM table_snapshot ts
+            INNER JOIN filtered_table_refs ftr
+                ON ftr.warehouse_id = ts.warehouse_id
+               AND ftr.table_id    = ts.table_id
+               AND ftr.snapshot_id = ts.snapshot_id
+            WHERE $4 = 'refs'
+            UNION ALL
+            -- all mode: full scan, unchanged behaviour
+            SELECT table_id, snapshot_id, parent_snapshot_id, sequence_number,
+                   manifest_list, summary, schema_id, timestamp_ms,
+                   first_row_id, assigned_rows, key_id
+            FROM table_snapshot
+            WHERE warehouse_id = $1 AND table_id = ANY($2)
+            AND $4 = 'all'
         )
         SELECT
             t.warehouse_id,
@@ -582,26 +602,19 @@ pub(crate) async fn load_tables(
                             ARRAY_AGG(value) as values
                      FROM table_properties WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tp ON tp.table_id = t.table_id
-        LEFT JOIN (SELECT ts.table_id,
-                          ARRAY_AGG(ts.snapshot_id) as snapshot_ids,
-                          ARRAY_AGG(ts.parent_snapshot_id) as parent_snapshot_ids,
-                          ARRAY_AGG(ts.sequence_number) as sequence_numbers,
-                          ARRAY_AGG(ts.manifest_list) as manifest_lists,
-                          ARRAY_AGG(ts.summary) as summaries,
-                          ARRAY_AGG(ts.schema_id) as schema_ids,
-                          ARRAY_AGG(ts.timestamp_ms) as timestamp,
-                          ARRAY_AGG(ts.first_row_id) as first_row_ids,
-                          ARRAY_AGG(ts.assigned_rows) as assigned_rows,
-                          ARRAY_AGG(ts.key_id) as key_id
-                   FROM table_snapshot ts
-                   WHERE ts.warehouse_id = $1 AND ts.table_id = ANY($2)
-                   AND ($4 = 'all' OR EXISTS (
-                       SELECT 1 FROM filtered_table_refs ftr 
-                       WHERE ftr.warehouse_id = ts.warehouse_id 
-                         AND ftr.table_id = ts.table_id 
-                         AND ftr.snapshot_id = ts.snapshot_id
-                   ))
-                   GROUP BY ts.table_id) tsnap ON tsnap.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(parent_snapshot_id) as parent_snapshot_ids,
+                          ARRAY_AGG(sequence_number) as sequence_numbers,
+                          ARRAY_AGG(manifest_list) as manifest_lists,
+                          ARRAY_AGG(summary) as summaries,
+                          ARRAY_AGG(schema_id) as schema_ids,
+                          ARRAY_AGG(timestamp_ms) as timestamp,
+                          ARRAY_AGG(first_row_id) as first_row_ids,
+                          ARRAY_AGG(assigned_rows) as assigned_rows,
+                          ARRAY_AGG(key_id) as key_id
+                   FROM snapshots_to_load
+                   GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps

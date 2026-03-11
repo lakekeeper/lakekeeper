@@ -764,3 +764,107 @@ def test_create_view_security_invoker(trino, warehouse: conftest.Warehouse):
     assert ["my_view"] in cur.execute(
         f"SHOW TABLES IN test_create_view_security_invoker_trino"
     ).fetchall()
+
+
+def test_special_characters_in_names(trino):
+    """Test various UTF-8 special characters in schema and table names"""
+    cur = trino.cursor()
+
+    # In Trino, identifiers with special characters are quoted with double quotes.
+    # Nested namespaces are expressed as "parent.child" (dot-separated within quotes).
+    special_schema_names = [
+        "tsc_namespace with spaces",
+        "tsc_namespace-with-hyphens",
+        "tsc_naméspace_with_àccents_ñ",
+        "tsc_namespace_with_ümlauts_ä_ö",
+        "tsc_namespace_中文_日本語",
+        "tsc_namespace_🚀_emoji_✨",
+        "tsc_namespace%with%percent",
+    ]
+
+    special_table_names = [
+        "table-with-hyphens",
+        "tablé_with_àccents_ñ",
+        "table_with_ümlauts_ä_ö",
+        "table_中文_日本語",
+        "table_🚀_emoji_✨",
+        "table with spaces",
+    ]
+
+    # Test creating schemas with special characters
+    for i, schema_name in enumerate(special_schema_names):
+        cur.execute(f'CREATE SCHEMA "{schema_name}"')
+
+        # Verify schema was created
+        schemas = [row[0] for row in cur.execute("SHOW SCHEMAS").fetchall()]
+        assert schema_name in schemas
+
+        # Create a table in the special schema and insert/read data
+        cur.execute(
+            f"CREATE TABLE \"{schema_name}\".my_table (id INT, value VARCHAR) WITH (format='PARQUET')"
+        )
+        cur.execute(
+            f"""INSERT INTO "{schema_name}".my_table VALUES ({i + 1}, 'test_{i}')"""
+        )
+        r = cur.execute(f'SELECT id, value FROM "{schema_name}".my_table').fetchall()
+        assert len(r) == 1
+        assert r[0][0] == i + 1
+        assert r[0][1] == f"test_{i}"
+
+    # Test creating tables with special character names inside a regular schema
+    root_schema = "tsc_root_schema"
+    cur.execute(f"CREATE SCHEMA {root_schema}")
+
+    for i, table_name in enumerate(special_table_names):
+        cur.execute(
+            f"""CREATE TABLE {root_schema}."{table_name}" (id INT, value VARCHAR) WITH (format='PARQUET')"""
+        )
+        cur.execute(
+            f"""INSERT INTO {root_schema}."{table_name}" VALUES ({i}, 'value_{i}')"""
+        )
+
+        r = cur.execute(
+            f'SELECT id, value FROM {root_schema}."{table_name}"'
+        ).fetchall()
+        assert len(r) == 1
+        assert r[0][0] == i
+        assert r[0][1] == f"value_{i}"
+
+        # Verify table appears in listing
+        tables = [
+            row[0] for row in cur.execute(f"SHOW TABLES IN {root_schema}").fetchall()
+        ]
+        assert table_name in tables
+
+    # Test deeply nested schemas with special characters.
+    # Trino represents nested namespaces as "level1.level2.level3" (dot-separated).
+    cur.execute('CREATE SCHEMA "tsc_nested_parent"')
+    cur.execute('CREATE SCHEMA "tsc_nested_parent.child_ä"')
+    cur.execute('CREATE SCHEMA "tsc_nested_parent.child_ä.lëvel_🚀"')
+
+    cur.execute(
+        'CREATE TABLE "tsc_nested_parent.child_ä.lëvel_🚀"."tåble_émoji_🎯" '
+        "(id INT, data VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(
+        """INSERT INTO "tsc_nested_parent.child_ä.lëvel_🚀"."tåble_émoji_🎯" VALUES (42, 'nested_data')"""
+    )
+    r = cur.execute(
+        'SELECT id, data FROM "tsc_nested_parent.child_ä.lëvel_🚀"."tåble_émoji_🎯"'
+    ).fetchall()
+    assert len(r) == 1
+    assert r[0][0] == 42
+    assert r[0][1] == "nested_data"
+
+    # Test renaming a table to a name with special characters
+    cur.execute(
+        f"CREATE TABLE {root_schema}.rename_test (id INT) WITH (format='PARQUET')"
+    )
+    new_name = "rënamed_tåble_🎯"
+    cur.execute(
+        f'ALTER TABLE {root_schema}.rename_test RENAME TO {root_schema}."{new_name}"'
+    )
+
+    cur.execute(f'INSERT INTO {root_schema}."{new_name}" VALUES (42)')
+    r = cur.execute(f'SELECT id FROM {root_schema}."{new_name}"').fetchall()
+    assert r[0][0] == 42

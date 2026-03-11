@@ -5,35 +5,20 @@ use iceberg::NamespaceIdent;
 use moka::{future::Cache, notification::RemovalCause};
 use unicase::UniCase;
 
+#[cfg(feature = "router")]
+use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
-    service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
+    service::{
+        NamespaceId, NamespaceWithParent,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_NAMESPACE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        catalog_store::namespace::NamespaceHierarchy,
+    },
 };
-#[cfg(feature = "router")]
-use crate::{
-    api::{RequestMetadata, UpdateNamespacePropertiesResponse},
-    service::endpoint_hooks::EndpointHook,
-};
-
-const METRIC_NAMESPACE_CACHE_SIZE: &str = "lakekeeper_namespace_cache_size";
-const METRIC_NAMESPACE_CACHE_HITS: &str = "lakekeeper_namespace_cache_hits_total";
-const METRIC_NAMESPACE_CACHE_MISSES: &str = "lakekeeper_namespace_cache_misses_total";
-
-/// Initialize metric descriptions for namespace cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_NAMESPACE_CACHE_SIZE,
-        "Current number of entries in the namespace cache"
-    );
-    metrics::describe_counter!(
-        METRIC_NAMESPACE_CACHE_HITS,
-        "Total number of namespace cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_NAMESPACE_CACHE_MISSES,
-        "Total number of namespace cache misses"
-    );
-});
 
 // Main cache: stores individual namespaces by ID
 pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =
@@ -46,29 +31,46 @@ pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithPare
             ))
             .async_eviction_listener(|key, value: NamespaceWithParent, cause| {
                 Box::pin(async move {
-                    // Evictions:
-                    // - Replaced: only invalidate old-name mapping if the current entry
-                    //   either does not exist or has a different (warehouse_id, namespace_ident).
-                    // - Other causes: primary entry is gone; invalidate mapping.
-                    let should_invalidate = match cause {
+                    // On Replaced: invalidate the old secondary index mapping immediately,
+                    // then spawn a task to re-insert the new mapping (avoids re-entrant
+                    // NAMESPACE_CACHE.get() calls which can deadlock).
+                    // On all other causes (expired, explicit): always invalidate.
+                    match cause {
                         RemovalCause::Replaced => {
-                            if let Some(curr) = NAMESPACE_CACHE.get(&*key).await {
-                                curr.namespace.warehouse_id != value.namespace.warehouse_id
-                                    || curr.namespace.namespace_ident
-                                        != value.namespace.namespace_ident
-                            } else {
-                                true
-                            }
+                            let key = *key;
+                            // Immediately invalidate the old (warehouse_id, namespace_ident) → namespace_id mapping
+                            IDENT_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.namespace.warehouse_id,
+                                    namespace_ident_to_cache_key(&value.namespace.namespace_ident),
+                                ))
+                                .await;
+
+                            // Spawn task to add the new mapping (avoids re-entrant NAMESPACE_CACHE.get)
+                            tokio::spawn(async move {
+                                if let Some(curr) = NAMESPACE_CACHE.get(&key).await {
+                                    IDENT_TO_ID_CACHE
+                                        .insert(
+                                            (
+                                                curr.namespace.warehouse_id,
+                                                namespace_ident_to_cache_key(
+                                                    &curr.namespace.namespace_ident,
+                                                ),
+                                            ),
+                                            key,
+                                        )
+                                        .await;
+                                }
+                            });
                         }
-                        _ => true,
-                    };
-                    if should_invalidate {
-                        IDENT_TO_ID_CACHE
-                            .invalidate(&(
-                                value.namespace.warehouse_id,
-                                namespace_ident_to_cache_key(&value.namespace.namespace_ident),
-                            ))
-                            .await;
+                        _ => {
+                            IDENT_TO_ID_CACHE
+                                .invalidate(&(
+                                    value.namespace.warehouse_id,
+                                    namespace_ident_to_cache_key(&value.namespace.namespace_ident),
+                                ))
+                                .await;
+                        }
                     }
                 })
             })
@@ -98,7 +100,7 @@ async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     }
 }
 
-#[allow(dead_code)] // Only required for hooks which are behind a feature flag
+#[allow(dead_code)] // Only required for listeners which are behind a feature flag
 pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
     if CONFIG.cache.namespace.enabled {
         let namespace_id = namespace.namespace.namespace_id;
@@ -180,11 +182,18 @@ pub(super) async fn namespace_cache_get_by_ident(
     warehouse_id: WarehouseId,
 ) -> Option<NamespaceHierarchy> {
     update_cache_size_metric();
-    let cache_key = namespace_ident_to_cache_key(namespace_ident);
-    let namespace_id = IDENT_TO_ID_CACHE.get(&(warehouse_id, cache_key)).await?;
+    let ident_key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
+    let namespace_id = IDENT_TO_ID_CACHE.get(&ident_key).await?;
 
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
-    namespace_cache_get_by_id(namespace_id).await
+    let result = namespace_cache_get_by_id(namespace_id).await;
+    if result.is_none() {
+        tracing::debug!(
+            "Namespace id {namespace_id} not found in cache, invalidating stale ident mapping for {namespace_ident}"
+        );
+        IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+    }
+    result
 }
 
 /// Build a `NamespaceHierarchy` by collecting parents from the cache.
@@ -265,57 +274,62 @@ fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceI
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct NamespaceCacheEndpointHook;
+pub(crate) struct NamespaceCacheEventListener;
 
 #[cfg(feature = "router")]
-impl std::fmt::Display for NamespaceCacheEndpointHook {
+impl std::fmt::Display for NamespaceCacheEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NamespaceCacheEndpointHook")
+        write!(f, "NamespaceCacheEventListener")
     }
 }
 
 #[cfg(feature = "router")]
 #[async_trait::async_trait]
-impl EndpointHook for NamespaceCacheEndpointHook {
-    async fn create_namespace(
-        &self,
-        _warehouse_id: WarehouseId,
-        namespace: NamespaceWithParent,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+impl EventListener for NamespaceCacheEventListener {
+    async fn namespace_created(&self, event: events::CreateNamespaceEvent) -> anyhow::Result<()> {
+        let events::CreateNamespaceEvent {
+            warehouse_id: _warehouse_id,
+            namespace,
+            request_metadata: _request_metadata,
+        } = event;
         namespace_cache_insert(namespace).await;
         Ok(())
     }
 
-    async fn drop_namespace(
-        &self,
-        _warehouse_id: WarehouseId,
-        namespace_id: NamespaceId,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
-    ) -> anyhow::Result<()> {
+    async fn namespace_dropped(&self, event: events::DropNamespaceEvent) -> anyhow::Result<()> {
+        let events::DropNamespaceEvent {
+            namespace,
+            request_metadata: _request_metadata,
+        } = event;
         // This is sufficient also for recursive drops, as the cache only supports loading the full
         // hierarchy, which breaks if any of the entries in the path are missing.
-        namespace_cache_invalidate(namespace_id).await;
+        namespace_cache_invalidate(namespace.namespace_id()).await;
         Ok(())
     }
 
-    async fn update_namespace_properties(
+    async fn namespace_properties_updated(
         &self,
-        _warehouse_id: WarehouseId,
-        namespace: NamespaceWithParent,
-        _updated_properties: std::sync::Arc<UpdateNamespacePropertiesResponse>,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
+        event: events::UpdateNamespacePropertiesEvent,
     ) -> anyhow::Result<()> {
+        let events::UpdateNamespacePropertiesEvent {
+            warehouse_id: _warehouse_id,
+            namespace,
+            updated_properties: _updated_properties,
+            request_metadata: _request_metadata,
+        } = event;
         namespace_cache_insert(namespace).await;
         Ok(())
     }
 
-    async fn set_namespace_protection(
+    async fn namespace_protection_set(
         &self,
-        _requested_protected: bool,
-        updated_namespace: NamespaceWithParent,
-        _request_metadata: std::sync::Arc<RequestMetadata>,
+        event: events::SetNamespaceProtectionEvent,
     ) -> anyhow::Result<()> {
+        let events::SetNamespaceProtectionEvent {
+            requested_protected: _requested_protected,
+            updated_namespace,
+            request_metadata: _request_metadata,
+        } = event;
         namespace_cache_insert(updated_namespace).await;
         Ok(())
     }

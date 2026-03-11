@@ -14,16 +14,16 @@ use crate::{
         shutdown_signal,
     },
     service::{
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
+        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
-        endpoint_hooks::EndpointHookCollection,
         endpoint_statistics::{
             EndpointStatisticsMessage, EndpointStatisticsSink, EndpointStatisticsTracker, FlushMode,
         },
-        event_publisher::{
+        events::{
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
-            CloudEventsPublisherBackgroundTask,
+            CloudEventsPublisherBackgroundTask, EventDispatcher,
+            backends::audit::AuditEventListener,
         },
         health::ServiceHealthProvider,
         tasks::TaskQueueRegistry,
@@ -144,10 +144,10 @@ pub struct ServeConfiguration<
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_task_queues_fn.len())]
     pub register_additional_task_queues_fn: Vec<RegisterTaskQueueFn<A, C, S>>,
-    /// Additional endpoint hooks to register.
+    /// Additional event listeners to register.
     /// Emitting cloud events is always registered.
     #[builder(default)]
-    pub additional_endpoint_hooks: Option<EndpointHookCollection>,
+    pub event_dispatcher: Option<EventDispatcher>,
     /// Additional background services / futures to await.
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
@@ -164,9 +164,17 @@ pub struct ServeConfiguration<
 /// - If the terms of service have not been accepted during bootstrap.
 #[allow(clippy::too_many_lines)]
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
-    config: ServeConfiguration<C, S, A, N>,
+    mut config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
     let cancellation_token = CancellationToken::new();
+
+    // Validate Authenticators and propagate their IDP IDs to the authorizer
+    if let Some(authenticator) = &config.authenticator {
+        let idp_ids = validate_authenticator_idp_ids(authenticator)?;
+        config.authorizer.set_registered_idp_ids(idp_ids);
+    }
+    let config = config; // Make config immutable for our sanity
+
     // Strings are name of the service, used for logging
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
@@ -315,7 +323,7 @@ async fn serve_inner<
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
-        additional_endpoint_hooks,
+        event_dispatcher: additional_event_dispatcher,
         register_additional_background_services_fn: additional_background_services,
         license_status,
     } = config;
@@ -366,24 +374,46 @@ async fn serve_inner<
         FlushMode::Automatic,
     );
 
-    // Endpoint Hooks
-    let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
-    hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
+    // Event system setup
+    let dispatcher = additional_event_dispatcher.unwrap_or(EventDispatcher::new(vec![]));
+    dispatcher
+        .append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())))
+        .await;
     if CONFIG.cache.warehouse.enabled {
-        tracing::info!("Warehouse cache is enabled, registering warehouse cache endpoint hook");
-        hooks.append(Arc::new(
-            crate::service::warehouse_cache::WarehouseCacheEndpointHook {},
-        ));
+        tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::warehouse_cache::WarehouseCacheEventListener {},
+            ))
+            .await;
     } else {
         tracing::info!("Warehouse cache is disabled");
     }
     if CONFIG.cache.namespace.enabled {
-        tracing::info!("Namespace cache is enabled, registering namespace cache endpoint hook");
-        hooks.append(Arc::new(
-            crate::service::namespace_cache::NamespaceCacheEndpointHook {},
-        ));
+        tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::namespace_cache::NamespaceCacheEventListener {},
+            ))
+            .await;
     } else {
         tracing::info!("Namespace cache is disabled");
+    }
+    if CONFIG.cache.role.enabled {
+        tracing::info!("Role cache is enabled, registering role cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::role_cache::RoleCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Role cache is disabled");
+    }
+    if CONFIG.audit.tracing.enabled {
+        tracing::info!("Audit tracing is enabled, registering audit event listener");
+        dispatcher.append(Arc::new(AuditEventListener)).await;
+    } else {
+        tracing::info!("Audit tracing is disabled");
     }
 
     // Task queues
@@ -410,7 +440,7 @@ async fn serve_inner<
             secrets: secrets_state,
             contract_verifiers: contract_verification,
             registered_task_queues,
-            hooks,
+            events: dispatcher,
             license_status,
         },
     };
@@ -549,4 +579,30 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_authenticator_idp_ids(
+    authenticator: &impl Authenticator,
+) -> anyhow::Result<Arc<[RoleProviderId]>> {
+    let idp_ids = authenticator.idp_ids();
+    if idp_ids.is_empty() {
+        anyhow::bail!(
+            "Authenticator returned an empty list of IdP IDs. At least one IdP ID is required if authentication is enabled. All IdP IDs must be non-empty strings."
+        );
+    }
+    let mut result = Vec::with_capacity(idp_ids.len());
+    for idp_id in idp_ids {
+        let Some(idp_id) = idp_id else {
+            return Err(anyhow!(
+                "Authenticator returned an empty IdP ID. All IdP IDs must be non-empty strings."
+            ));
+        };
+        let role_provider_id = RoleProviderId::try_new(idp_id).map_err(|e| {
+            anyhow!(
+                "Invalid IdP ID '{idp_id}' in authenticator configuration: {e}. All IdP IDs must consist of lowercase letters, digits, or hyphens."
+            )
+        })?;
+        result.push(role_provider_id);
+    }
+    Ok(result.into())
 }

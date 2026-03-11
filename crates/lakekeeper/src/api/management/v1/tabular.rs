@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
@@ -7,11 +9,16 @@ use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
-        State, TabularId,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        ResolvedWarehouse, SecretStore, State, TabularId,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            RequireWarehouseActionError,
+        },
+        events::{
+            APIEventContext,
+            context::{WarehouseActionSearchTabulars, authz_to_error_no_audit},
         },
         require_namespace_for_tabular,
     },
@@ -36,25 +43,27 @@ where
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
-        let warehouse =
-            C::get_active_warehouse_by_id(warehouse_id, context.v1_state.catalog.clone()).await;
-        let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            WarehouseActionSearchTabulars {},
+        );
 
-        let [authz_can_use, authz_list_all] = authorizer
-            .are_allowed_warehouse_actions_arr(
-                &request_metadata,
-                None,
-                &[
-                    (&warehouse, CatalogWarehouseAction::Use),
-                    (&warehouse, CatalogWarehouseAction::ListEverything),
-                ],
-            )
-            .await?
-            .into_inner();
-
-        if !authz_can_use {
-            return Err(AuthZCannotUseWarehouseId::new(warehouse_id).into());
-        }
+        let authz_result = authorize_search_tabular::<C, A>(
+            event_ctx.request_metadata(),
+            warehouse_id,
+            &authorizer,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let (
+            event_ctx,
+            AuthorizeSearchTabularResult {
+                warehouse,
+                authz_list_all,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic & Tabular level AuthZ filters --------------------
         let mut search = request.search;
@@ -76,7 +85,8 @@ where
             .iter()
             .map(|t| {
                 Ok::<_, ErrorModel>((
-                    require_namespace_for_tabular(&namespaces, t)?,
+                    require_namespace_for_tabular(&namespaces, t)
+                        .map_err(authz_to_error_no_audit)?,
                     t.tabular.as_action_request(
                         CatalogViewAction::IncludeInList,
                         CatalogTableAction::IncludeInList,
@@ -90,13 +100,14 @@ where
         } else {
             authorizer
                 .are_allowed_tabular_actions_vec(
-                    &request_metadata,
+                    event_ctx.request_metadata(),
                     None,
                     &warehouse,
                     &namespaces,
                     &actions,
                 )
-                .await?
+                .await
+                .map_err(authz_to_error_no_audit)?
                 .into_inner()
         };
 
@@ -129,6 +140,42 @@ where
             tabulars: authorized_tabulars,
         })
     }
+}
+
+struct AuthorizeSearchTabularResult {
+    warehouse: Arc<ResolvedWarehouse>,
+    authz_list_all: bool,
+}
+
+async fn authorize_search_tabular<C: CatalogStore, A: Authorizer>(
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    authorizer: &A,
+    state: C::State,
+) -> Result<AuthorizeSearchTabularResult, RequireWarehouseActionError> {
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, state.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let [authz_can_use, authz_list_all] = authorizer
+        .are_allowed_warehouse_actions_arr(
+            request_metadata,
+            None,
+            &[
+                (&warehouse, CatalogWarehouseAction::Use),
+                (&warehouse, CatalogWarehouseAction::ListEverything),
+            ],
+        )
+        .await?
+        .into_inner();
+
+    if !authz_can_use {
+        return Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id).into());
+    }
+
+    Ok(AuthorizeSearchTabularResult {
+        warehouse,
+        authz_list_all,
+    })
 }
 
 #[derive(Debug, Deserialize)]
