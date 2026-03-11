@@ -6547,6 +6547,16 @@ components:
               description: Storage layout for namespace and tabular paths.
         sts-enabled:
           type: boolean
+        sts-endpoint:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            Optional endpoint to use for STS requests.
+            Use this when the STS endpoint differs from the S3 endpoint,
+            which is common with S3-compatible storage systems.
+            If not provided, the S3 `endpoint` is used for STS requests as well.
         sts-role-arn:
           type:
             - string

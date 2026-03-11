@@ -115,6 +115,10 @@ pub struct S3Settings {
     pub sts_session_tags: BTreeMap<String, String>,
     #[builder(default)]
     pub endpoint: Option<url::Url>,
+    /// Optional separate endpoint for STS requests.
+    /// If not set, the S3 `endpoint` is used for STS as well.
+    #[builder(default)]
+    pub sts_endpoint: Option<url::Url>,
     pub region: String,
     // -------- S3 specific settings --------
     #[builder(default)]
@@ -148,6 +152,7 @@ impl S3Settings {
             assume_role_arn,
             sts_session_tags,
             endpoint,
+            sts_endpoint,
             region,
             // S3 specific settings
             path_style_access: _,
@@ -198,8 +203,20 @@ impl S3Settings {
         };
 
         if let Some(assume_role_arn) = assume_role_arn {
+            // If a separate STS endpoint is configured, build a dedicated SdkConfig
+            // so that STS calls go to the correct endpoint.
+            let sts_sdk_config;
+            let configure_from = if let Some(sts_ep) = sts_endpoint {
+                sts_sdk_config = sdk_config
+                    .to_builder()
+                    .endpoint_url(sts_ep.to_string())
+                    .build();
+                &sts_sdk_config
+            } else {
+                &sdk_config
+            };
             let mut assume_role_provider = AssumeRoleProvider::builder(assume_role_arn)
-                .configure(&sdk_config)
+                .configure(configure_from)
                 .session_name("lakekeeper-assume-role");
 
             if let Some(external_id) = s3_credential.and_then(S3Auth::external_id) {

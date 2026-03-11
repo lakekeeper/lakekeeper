@@ -62,6 +62,7 @@ jobs:
           - spark_minio_remote_signing-1.9.2
           - spark_minio_remote_signing-1.10.1
           - spark_minio_s3a-1.10.1
+          - spark_minio_sts_separate_endpoint-1.10.1
           - spark_aws_system_identity_sts-1.10.1
           - spark_aws_system_identity_remote_signing-1.10.1
     uses: ./.github/workflows/integration_test_workflow.yml
