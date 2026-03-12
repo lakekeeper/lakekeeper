@@ -9,7 +9,7 @@ use aws_config::{
 };
 use aws_sdk_s3::config::{
     IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
-    SharedIdentityCache, http::HttpRequest,
+    http::HttpRequest,
 };
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
@@ -32,8 +32,6 @@ mod s3_storage;
 pub use s3_location::{InvalidBucketName, S3Location, validate_bucket_name};
 pub use s3_storage::S3Storage;
 
-static IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
-    LazyLock::new(|| IdentityCache::lazy().build());
 static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
     aws_smithy_http_client::Builder::new()
         .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
@@ -52,7 +50,7 @@ static SLEEP_IMPL: LazyLock<SharedAsyncSleep> =
 
 const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
 
-/// Macro to apply common AWS configuration to any builder that supports these methods
+/// Macro to apply common AWS configuration to any builder that supports these methods.
 macro_rules! apply_aws_config {
     ($builder:expr, $region:expr) => {
         $builder
@@ -63,7 +61,7 @@ macro_rules! apply_aws_config {
             .sleep_impl(SLEEP_IMPL.clone())
             .behavior_version(BehaviorVersion::latest())
             .http_client((*SMITHY_HTTP_CLIENT).clone())
-            .identity_cache(IDENTITY_CACHE.clone())
+            .identity_cache(IdentityCache::lazy().build())
             .app_name(AppName::new("lakekeeper").unwrap())
     };
 }

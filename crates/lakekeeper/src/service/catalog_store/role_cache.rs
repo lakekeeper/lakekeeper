@@ -112,6 +112,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role")
         .set(ROLE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role_ident_to_id")
+        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
@@ -160,9 +162,11 @@ pub(super) async fn role_cache_get_by_ident(
     update_cache_size_metric();
     let ident_key = (project_id, ident.clone());
     let Some(role_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
-        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
+        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role_ident_to_id")
+            .increment(1);
         return None;
     };
+    metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role_ident_to_id").increment(1);
     tracing::debug!("Role ident {ident} resolved in ident-to-id cache to id {role_id}");
 
     if let Some(role) = ROLE_CACHE.get(&role_id).await {

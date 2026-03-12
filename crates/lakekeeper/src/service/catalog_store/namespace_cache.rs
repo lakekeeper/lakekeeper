@@ -153,6 +153,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_NAMESPACE_CACHE_SIZE, "cache_type" => "namespace")
         .set(NAMESPACE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_NAMESPACE_CACHE_SIZE, "cache_type" => "namespace_ident_to_id")
+        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
 }
 
 /// Get a namespace by ID, reconstructing the hierarchy from cached parents.
@@ -183,8 +185,13 @@ pub(super) async fn namespace_cache_get_by_ident(
 ) -> Option<NamespaceHierarchy> {
     update_cache_size_metric();
     let ident_key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
-    let namespace_id = IDENT_TO_ID_CACHE.get(&ident_key).await?;
-
+    let Some(namespace_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
+        metrics::counter!(METRIC_NAMESPACE_CACHE_MISSES, "cache_type" => "namespace_ident_to_id")
+            .increment(1);
+        return None;
+    };
+    metrics::counter!(METRIC_NAMESPACE_CACHE_HITS, "cache_type" => "namespace_ident_to_id")
+        .increment(1);
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
     let result = namespace_cache_get_by_id(namespace_id).await;
     if result.is_none() {

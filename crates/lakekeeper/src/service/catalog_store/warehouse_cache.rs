@@ -139,6 +139,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse")
         .set(WAREHOUSE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse_name_to_id")
+        .set(NAME_TO_ID_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn warehouse_cache_get_by_id(
@@ -162,9 +164,12 @@ pub(super) async fn warehouse_cache_get_by_name(
     update_cache_size_metric();
     let name_key = (project_id.clone(), UniCase::new(name.to_string()));
     let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
+        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse_name_to_id")
+            .increment(1);
         return None;
     };
+    metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse_name_to_id")
+        .increment(1);
     tracing::debug!("Warehouse name {name} resolved in name-to-id cache to id {warehouse_id}");
 
     if let Some(value) = WAREHOUSE_CACHE.get(&(warehouse_id)).await {
