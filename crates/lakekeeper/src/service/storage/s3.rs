@@ -924,10 +924,14 @@ impl S3Profile {
     fn permission_to_actions(storage_permissions: StoragePermissions) -> &'static str {
         match storage_permissions {
             StoragePermissions::Read => "\"s3:GetObject\"",
-            StoragePermissions::ReadWrite => "\"s3:GetObject\", \"s3:PutObject\"",
-            StoragePermissions::ReadWriteDelete => {
-                "\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\""
-            }
+            StoragePermissions::ReadWrite => concat!(
+                "\"s3:GetObject\", \"s3:PutObject\", ",
+                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\""
+            ),
+            StoragePermissions::ReadWriteDelete => concat!(
+                "\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\", ",
+                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\""
+            ),
         }
     }
 
@@ -1668,6 +1672,131 @@ pub(crate) mod test {
                     ))
                     .await
                     .unwrap();
+                },
+                true,
+            );
+        }
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test_multipart_upload_with_vended_credentials() {
+            crate::tests::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+
+                    let s3_auth = S3Auth::try_from(cred).unwrap();
+                    let table_location: lakekeeper_io::Location = format!(
+                        "s3://{}/{}",
+                        profile.bucket,
+                        profile.key_prefix.as_deref().unwrap_or("test")
+                    )
+                    .parse()
+                    .unwrap();
+
+                    // Get the downscoped STS policy that Lakekeeper generates
+                    let policy = profile
+                        .get_sts_policy_string(&table_location, StoragePermissions::ReadWriteDelete)
+                        .unwrap();
+
+                    // Verify the policy includes the multipart-specific actions
+                    assert!(
+                        policy.contains("s3:AbortMultipartUpload"),
+                        "STS policy must include s3:AbortMultipartUpload"
+                    );
+                    assert!(
+                        policy.contains("s3:ListMultipartUploadParts"),
+                        "STS policy must include s3:ListMultipartUploadParts"
+                    );
+
+                    // Assume role with the downscoped policy
+                    let sts_creds = profile
+                        .assume_role_with_sts(
+                            Some(&s3_auth),
+                            profile.sts_role_arn.as_deref(),
+                            Some(policy),
+                        )
+                        .await
+                        .unwrap();
+
+                    // Build an S3 client using the vended credentials
+                    let s3_creds = aws_credential_types::Credentials::new(
+                        sts_creds.access_key_id(),
+                        sts_creds.secret_access_key(),
+                        Some(sts_creds.session_token().to_string()),
+                        None,
+                        "lakekeeper-test",
+                    );
+                    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                        .region(aws_config::Region::new(profile.region.clone()))
+                        .credentials_provider(s3_creds)
+                        .load()
+                        .await;
+
+                    let mut s3_builder = aws_sdk_s3::config::Config::from(&sdk_config).to_builder();
+                    if profile.path_style_access.unwrap_or(false) {
+                        s3_builder.set_force_path_style(Some(true));
+                    }
+                    if let Some(ref endpoint) = profile.endpoint {
+                        s3_builder = s3_builder.endpoint_url(endpoint.to_string());
+                    }
+                    let s3_client = aws_sdk_s3::Client::from_conf(s3_builder.build());
+
+                    // Perform a multipart upload
+                    let key = format!(
+                        "{}/multipart-test-{}",
+                        profile.key_prefix.as_deref().unwrap_or("test"),
+                        uuid::Uuid::now_v7()
+                    );
+                    let create_resp = s3_client
+                        .create_multipart_upload()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .send()
+                        .await
+                        .expect("create_multipart_upload must succeed with vended credentials");
+
+                    let upload_id = create_resp.upload_id().unwrap();
+
+                    s3_client
+                        .upload_part()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .part_number(1)
+                        .body(aws_sdk_s3::primitives::ByteStream::from(vec![
+                            b'x';
+                            5 * 1024
+                                * 1024
+                        ]))
+                        .send()
+                        .await
+                        .expect("upload_part must succeed with vended credentials");
+
+                    // Exercise s3:ListMultipartUploadParts
+                    let list_resp = s3_client
+                        .list_parts()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .expect("list_parts must succeed with vended credentials");
+                    assert_eq!(
+                        list_resp.parts().len(),
+                        1,
+                        "list_parts should return the uploaded part"
+                    );
+
+                    // Exercise s3:AbortMultipartUpload
+                    s3_client
+                        .abort_multipart_upload()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .expect("abort_multipart_upload must succeed with vended credentials");
                 },
                 true,
             );
