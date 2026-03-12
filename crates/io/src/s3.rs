@@ -8,8 +8,7 @@ use aws_config::{
     timeout::TimeoutConfig,
 };
 use aws_sdk_s3::config::{
-    IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
-    http::HttpRequest,
+    IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient, http::HttpRequest,
 };
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
