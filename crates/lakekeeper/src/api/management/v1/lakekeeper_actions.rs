@@ -712,7 +712,7 @@ async fn authorize_get_table_actions<C: CatalogStore>(
                         ActionOnTable {
                             info: &table_info,
                             action: action.clone(),
-                            user: for_user,
+                            user: for_user.as_ref(),
                             is_delegated_execution: false,
                         },
                     )
@@ -828,7 +828,7 @@ async fn authorize_get_view_actions<C: CatalogStore>(
                         ActionOnView {
                             info: &view_info,
                             action: action.clone(),
-                            user: for_user,
+                            user: for_user.as_ref(),
                             is_delegated_execution: false,
                         },
                     )

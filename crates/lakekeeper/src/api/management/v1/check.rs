@@ -688,7 +688,7 @@ fn convert_tabular_action<'a, 'u>(
     tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
-    user: Option<&'u UserOrRole>,
+    user: Option<&'u AuthzUserOrRole>,
 ) -> Option<ActionOnTableOrView<'a, 'u, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>>
 {
     match tabular_info {
@@ -1327,7 +1327,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), for_user.as_ref()) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1440,7 +1440,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), for_user.as_ref()) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }

@@ -412,7 +412,7 @@ pub trait AuthZViewOps: Authorizer {
         namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: impl Into<Self::ViewAction> + Send,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let parent_namespaces: HashMap<_, _> = namespace
             .parents
             .iter()
@@ -450,7 +450,7 @@ pub trait AuthZViewOps: Authorizer {
             &NamespaceWithParent,
             ActionOnView<'_, '_, impl AuthZViewInfo, A>,
         ); N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let actions_vec: Vec<_> = actions
             .iter()
             .map(|(ns, action)| (*ns, action.clone()))
@@ -475,7 +475,7 @@ pub trait AuthZViewOps: Authorizer {
             &NamespaceWithParent,
             ActionOnView<'_, '_, impl AuthZViewInfo, A>,
         )],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
             let namespaces: Vec<&NamespaceWithParent> = actions.iter().map(|(ns, _)| *ns).collect();

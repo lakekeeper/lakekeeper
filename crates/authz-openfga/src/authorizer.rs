@@ -14,7 +14,7 @@ use lakekeeper::{
         ErrorModel, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore,
         ServerId, State, TableId, UserId, ViewId,
         authz::{
-            ActionOnTable, ActionOnView, AuthorizationBackendUnavailable, Authorizer,
+            ActionOnTable, ActionOnView, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
             CatalogUserAction, IsAllowedActionError, ListProjectsResponse, NamespaceParent,
             UserOrRole,
