@@ -1513,7 +1513,7 @@ pub(crate) mod test {
     }
 
     pub(crate) mod minio_integration_tests {
-        use std::{collections::BTreeMap, sync::LazyLock};
+        use std::sync::LazyLock;
 
         use crate::{
             api::RequestMetadata,

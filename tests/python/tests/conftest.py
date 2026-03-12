@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     s3_bucket: Optional[str] = None
     s3_endpoint: Optional[str] = None
     s3_sts_endpoint: Optional[str] = None
+    s3_require_sts_endpoint: Optional[bool] = None
     s3_region: Optional[str] = None
     s3_path_style_access: Optional[str] = None
     s3_sts_mode: Optional[str] = None
@@ -154,6 +155,11 @@ def storage_config(request) -> dict:
         extra_config = {}
         if settings.s3_allow_alternative_protocols:
             extra_config["allow-alternative-protocols"] = True
+        if settings.s3_require_sts_endpoint and not settings.s3_sts_endpoint:
+            raise ValueError(
+                "LAKEKEEPER_TEST__S3_STS_ENDPOINT must be set when "
+                "LAKEKEEPER_TEST__S3_REQUIRE_STS_ENDPOINT is true"
+            )
         if settings.s3_sts_endpoint:
             extra_config["sts-endpoint"] = settings.s3_sts_endpoint
 

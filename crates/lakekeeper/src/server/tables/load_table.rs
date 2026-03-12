@@ -937,12 +937,12 @@ mod tests {
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec![etag.as_str().trim_matches('"').into()];
-        let load_table_result = load_table(
+        let load_table_result = Box::pin(load_table(
             parameters,
             LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-        )
+        ))
         .await;
         let Ok(result) = load_table_result else {
             panic!("Dummy table could not be loaded");
@@ -972,12 +972,12 @@ mod tests {
             etag.as_str().trim_matches('"').into(),
             "b6f8c2d4a45f".into(),
         ];
-        let load_table_result = load_table(
+        let load_table_result = Box::pin(load_table(
             parameters,
             LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-        )
+        ))
         .await;
         let Ok(result) = load_table_result else {
             panic!("Dummy table could not be loaded");
@@ -1001,12 +1001,12 @@ mod tests {
 
         let etag = create_etag(&table.metadata_location.unwrap());
         let etags = vec!["*".into()];
-        let load_table_result = load_table(
+        let load_table_result = Box::pin(load_table(
             parameters,
             LoadTableRequest::builder().etags(etags).build(),
             api_context,
             request_metadata,
-        )
+        ))
         .await;
         let Ok(result) = load_table_result else {
             panic!("Dummy table could not be loaded");

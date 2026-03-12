@@ -6,6 +6,12 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/ 2>/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
     networks:
       - iceberg_rest_tests
 
@@ -17,4 +23,4 @@ services:
       - LAKEKEEPER_TEST__S3_STS_ENDPOINT=http://s3-proxy:8081
     depends_on:
       s3-proxy:
-        condition: service_started
+        condition: service_healthy
