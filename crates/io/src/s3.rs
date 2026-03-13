@@ -51,9 +51,24 @@ static SLEEP_IMPL: LazyLock<SharedAsyncSleep> =
 
 const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
 
+/// Shared identity cache for system identity (IMDS/ECS task role).
+/// Safe as a global static because there is only one system identity,
+/// so only one cache partition is ever created.
+static SYSTEM_IDENTITY_CACHE: LazyLock<aws_sdk_s3::config::SharedIdentityCache> =
+    LazyLock::new(|| IdentityCache::lazy().build());
+
 /// Macro to apply common AWS configuration to any builder that supports these methods.
+/// Uses `no_cache` by default to avoid the unbounded partition growth described in
+/// https://github.com/smithy-lang/smithy-rs/issues/4340.
+/// Pass `system_identity` to use a shared cache for IMDS/ECS credential resolution.
 macro_rules! apply_aws_config {
     ($builder:expr, $region:expr) => {
+        apply_aws_config!($builder, $region, IdentityCache::no_cache())
+    };
+    ($builder:expr, $region:expr, system_identity) => {
+        apply_aws_config!($builder, $region, SYSTEM_IDENTITY_CACHE.clone())
+    };
+    ($builder:expr, $region:expr, $identity_cache:expr) => {
         $builder
             .region($region)
             .retry_config(RETRY_CONFIG.clone())
@@ -62,7 +77,7 @@ macro_rules! apply_aws_config {
             .sleep_impl(SLEEP_IMPL.clone())
             .behavior_version(BehaviorVersion::latest())
             .http_client((*SMITHY_HTTP_CLIENT).clone())
-            .identity_cache(IdentityCache::no_cache())
+            .identity_cache($identity_cache)
             .app_name(AppName::new("lakekeeper").unwrap())
     };
 }
@@ -181,7 +196,7 @@ impl S3Settings {
             Some(S3Auth::AwsSystemIdentity(S3AwsSystemIdentityAuth {
                 external_id: _, // External ID handled below in this function in the assume role path
             })) => {
-                let mut builder = apply_aws_config!(aws_config::from_env(), region);
+                let mut builder = apply_aws_config!(aws_config::from_env(), region, system_identity);
                 if let Some(endpoint) = endpoint {
                     builder = builder.endpoint_url(endpoint.to_string());
                 }
