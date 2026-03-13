@@ -1371,8 +1371,7 @@ pub(crate) mod tests {
             let blocked = self.blocked_actions.read().unwrap();
             // Exact match or prefix match (e.g. "namespace:CreateTable" matches
             // "namespace:CreateTable { name: Some(...), ... }").
-            blocked.contains(action)
-                || blocked.iter().any(|b| action.starts_with(b.as_str()))
+            blocked.contains(action) || blocked.iter().any(|b| action.starts_with(b.as_str()))
         }
 
         pub(crate) fn block_action(&self, object: &str) {
