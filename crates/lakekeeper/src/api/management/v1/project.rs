@@ -115,31 +115,35 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CreateProjectResponse> {
+        let CreateProjectRequest {
+            project_name,
+            project_id,
+        } = request;
+
+        let project_id = project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7()));
+
         // Create event context for tracking authorization and operation events
         let event_ctx = APIEventContext::for_server(
             Arc::new(request_metadata),
             context.v1_state.events,
-            CatalogServerAction::CreateProject,
+            CatalogServerAction::CreateProject {
+                name: Some(project_name.clone()),
+                project_id: Some(project_id.clone()),
+            },
             context.v1_state.authz.server_id(),
         );
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
-        let action = *event_ctx.action();
+        let action = event_ctx.action().clone();
 
         let authz_result = authorizer
             .require_server_action(event_ctx.request_metadata(), None, action)
             .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
-
-        // ------------------- Business Logic -------------------
-        let CreateProjectRequest {
-            project_name,
-            project_id,
-        } = request;
         validate_project_name(&project_name)?;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let project_id = Arc::new(project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7())));
+        let project_id = Arc::new(project_id);
         C::create_project(&project_id, project_name.clone(), t.transaction()).await?;
         authorizer
             .create_project(event_ctx.request_metadata(), &project_id)
@@ -191,7 +195,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 &project_id,
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -224,7 +228,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 &project_id,
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -266,7 +270,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 &project_id,
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -395,7 +399,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_project_action(
                         event_ctx.request_metadata(),
                         &project_id,
-                        *event_ctx.action(),
+                        event_ctx.action().clone(),
                     )
                     .await;
                 let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -439,7 +443,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity_arc_ref(),
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -469,7 +473,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity_arc_ref(),
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;

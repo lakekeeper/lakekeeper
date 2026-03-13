@@ -348,14 +348,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id,
-            Arc::new(CatalogProjectAction::CreateWarehouse),
+            Arc::new(CatalogProjectAction::CreateWarehouse {
+                name: Some(warehouse_name.clone()),
+            }),
         );
 
         let authz_result = authorizer
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity_arc_ref(),
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
 
@@ -459,7 +461,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity_arc_ref(),
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;

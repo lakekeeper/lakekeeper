@@ -210,6 +210,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             parameters.namespace.clone(),
             // Preliminary action, updated after Metadata is read
             CatalogNamespaceAction::CreateTable {
+                name: Some(request.name.clone()),
+                table_id: None,
                 properties: Arc::new(BTreeMap::new()),
             },
         );
@@ -244,6 +246,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         storage_profile.require_allowed_location(&table_location)?;
 
         let action = CatalogNamespaceAction::CreateTable {
+            name: Some(request.name.clone()),
+            table_id: Some(TableId::from(table_metadata.uuid())),
             properties: Arc::new(
                 table_metadata
                     .properties()
@@ -4175,6 +4179,8 @@ pub(crate) mod test {
             format!(
                 "namespace:{:?}",
                 CatalogNamespaceAction::CreateTable {
+                    name: None,
+                    table_id: None,
                     properties: Arc::default(),
                 }
             )

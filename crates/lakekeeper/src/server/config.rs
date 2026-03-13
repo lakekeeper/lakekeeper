@@ -47,7 +47,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 request_metadata_arc.clone(),
                 api_context.v1_state.events.clone(),
                 project_id.clone(),
-                Arc::new(action),
+                Arc::new(action.clone()),
             );
 
             let authz_result = authorizer
