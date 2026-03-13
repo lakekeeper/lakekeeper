@@ -143,6 +143,8 @@ pub enum ContextValue {
     Map(BTreeMap<String, String>),
     /// A list of plain strings (e.g. `removed_properties`).
     List(Vec<String>),
+    /// A single string value (e.g. resource name, ID).
+    String(String),
 }
 
 impl std::fmt::Display for ContextValue {
@@ -159,6 +161,7 @@ impl std::fmt::Display for ContextValue {
             Self::List(list) => {
                 write!(f, "[{}]", list.join(", "))
             }
+            Self::String(s) => write!(f, "{s}"),
         }
     }
 }
@@ -172,6 +175,10 @@ impl std::fmt::Display for ContextValue {
     #[allow(unreachable_pub)]
     pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
         self.context.push((key, ContextValue::List(list.into())));
+    }
+    #[allow(unreachable_pub)]
+    pub fn context_string(&mut self, key: &'static str, value: impl Into<String>) {
+        self.context.push((key, ContextValue::String(value.into())));
     }
 ))]
 pub struct ActionDescriptor {
@@ -291,7 +298,16 @@ impl CatalogServerAction {
 }
 impl CatalogAction for CatalogServerAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::CreateProject { name, project_id } = self {
+            if let Some(n) = name {
+                b = b.context_string("name", n.clone());
+            }
+            if let Some(pid) = project_id {
+                b = b.context_string("project_id", pid.to_string());
+            }
+        }
+        b.build()
     }
 }
 
@@ -360,7 +376,14 @@ impl CatalogProjectAction {
 }
 impl CatalogAction for CatalogProjectAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        match self {
+            Self::CreateWarehouse { name: Some(n) } | Self::CreateRole { name: Some(n) } => {
+                b = b.context_string("name", n.clone());
+            }
+            _ => {}
+        }
+        b.build()
     }
 }
 
@@ -478,13 +501,13 @@ impl CatalogWarehouseAction {
 impl CatalogAction for CatalogWarehouseAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::CreateNamespace {
-            name: _,
-            properties,
-        } = self
-            && !properties.is_empty()
-        {
-            b = b.context_map("properties", properties.as_ref().clone());
+        if let Self::CreateNamespace { name, properties } = self {
+            if let Some(n) = name {
+                b = b.context_string("name", n.clone());
+            }
+            if !properties.is_empty() {
+                b = b.context_map("properties", properties.as_ref().clone());
+            }
         }
         b.build()
     }
@@ -590,18 +613,24 @@ impl CatalogAction for CatalogNamespaceAction {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
             Self::CreateTable {
-                name: _,
-                table_id: _,
-                properties,
-            }
-            | Self::CreateView {
-                name: _,
-                properties,
-            }
-            | Self::CreateNamespace {
-                name: _,
+                name,
+                table_id,
                 properties,
             } => {
+                if let Some(n) = name {
+                    b = b.context_string("name", n.clone());
+                }
+                if let Some(tid) = table_id {
+                    b = b.context_string("table_id", tid.to_string());
+                }
+                if !properties.is_empty() {
+                    b = b.context_map("properties", properties.as_ref().clone());
+                }
+            }
+            Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
+                if let Some(n) = name {
+                    b = b.context_string("name", n.clone());
+                }
                 if !properties.is_empty() {
                     b = b.context_map("properties", properties.as_ref().clone());
                 }

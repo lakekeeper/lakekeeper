@@ -172,6 +172,7 @@ impl Valuable for ContextValue {
         match self {
             Self::Map(map) => map.as_value(),
             Self::List(list) => list.as_value(),
+            Self::String(s) => Value::String(s),
         }
     }
 
@@ -179,6 +180,7 @@ impl Valuable for ContextValue {
         match self {
             Self::Map(map) => map.visit(visit),
             Self::List(list) => list.visit(visit),
+            Self::String(s) => s.visit(visit),
         }
     }
 }
