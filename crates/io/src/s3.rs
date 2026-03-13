@@ -59,7 +59,7 @@ static SYSTEM_IDENTITY_CACHE: LazyLock<aws_sdk_s3::config::SharedIdentityCache> 
 
 /// Macro to apply common AWS configuration to any builder that supports these methods.
 /// Uses `no_cache` by default to avoid the unbounded partition growth described in
-/// https://github.com/smithy-lang/smithy-rs/issues/4340.
+/// `<https://github.com/smithy-lang/smithy-rs/issues/4340>`.
 /// Pass `system_identity` to use a shared cache for IMDS/ECS credential resolution.
 macro_rules! apply_aws_config {
     ($builder:expr, $region:expr) => {
@@ -196,7 +196,8 @@ impl S3Settings {
             Some(S3Auth::AwsSystemIdentity(S3AwsSystemIdentityAuth {
                 external_id: _, // External ID handled below in this function in the assume role path
             })) => {
-                let mut builder = apply_aws_config!(aws_config::from_env(), region, system_identity);
+                let mut builder =
+                    apply_aws_config!(aws_config::from_env(), region, system_identity);
                 if let Some(endpoint) = endpoint {
                     builder = builder.endpoint_url(endpoint.to_string());
                 }
